@@ -168,8 +168,10 @@ type internalFakeStorage struct {
 	entries        []raftpb.Entry
 	snapshot       raftpb.Snapshot
 	saveCount      int
+	saveErr        error
 	lastSavedIndex uint64
 	lastApplied    uint64
+	markAppliedErr error
 }
 
 func (f *internalFakeStorage) InitialState(ctx context.Context) (BootstrapState, error) {
@@ -232,6 +234,9 @@ func (f *internalFakeStorage) Snapshot(ctx context.Context) (raftpb.Snapshot, er
 func (f *internalFakeStorage) Save(ctx context.Context, st PersistentState) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.saveErr != nil {
+		return f.saveErr
+	}
 
 	f.saveCount++
 	if st.HardState != nil {
@@ -254,6 +259,9 @@ func (f *internalFakeStorage) Save(ctx context.Context, st PersistentState) erro
 func (f *internalFakeStorage) MarkApplied(ctx context.Context, index uint64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.markAppliedErr != nil {
+		return f.markAppliedErr
+	}
 
 	f.lastApplied = index
 	f.state.AppliedIndex = index

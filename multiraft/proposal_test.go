@@ -212,6 +212,100 @@ func TestRemoteCommitDoesNotResolveLocalFuture(t *testing.T) {
 	}
 }
 
+func TestReadyPersistenceFailureDoesNotAdvance(t *testing.T) {
+	rt := newStartedRuntime(t)
+	groupID := openSingleNodeLeader(t, rt, 17)
+	store := fakeStorageFor(rt, groupID)
+	if store == nil {
+		t.Fatal("fakeStorageFor() = nil")
+	}
+	fsm := fakeStateMachineFor(rt, groupID)
+	if fsm == nil {
+		t.Fatal("fakeStateMachineFor() = nil")
+	}
+
+	saveErr := errors.New("save failed")
+	store.mu.Lock()
+	baselineSaves := store.saveCount
+	baselineApplied := store.lastApplied
+	store.saveErr = saveErr
+	store.mu.Unlock()
+
+	fut, err := rt.Propose(context.Background(), groupID, []byte("persist-fail"))
+	if err != nil {
+		t.Fatalf("Propose() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := fut.Wait(ctx); !errors.Is(err, saveErr) {
+		t.Fatalf("Wait() error = %v, want %v", err, saveErr)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.saveCount != baselineSaves {
+		t.Fatalf("Save() count = %d, want %d", store.saveCount, baselineSaves)
+	}
+	if store.lastApplied != baselineApplied {
+		t.Fatalf("MarkApplied() = %d, want %d", store.lastApplied, baselineApplied)
+	}
+
+	fsm.mu.Lock()
+	defer fsm.mu.Unlock()
+	if len(fsm.applied) != 0 {
+		t.Fatalf("Apply() count = %d, want 0", len(fsm.applied))
+	}
+}
+
+func TestApplyFatalStopsGroup(t *testing.T) {
+	rt := newStartedRuntime(t)
+	groupID := GroupID(18)
+	fatalErr := errors.New("fatal apply")
+	store := &internalFakeStorage{}
+	fsm := &internalFakeStateMachine{applyErr: fatalErr}
+
+	err := rt.BootstrapGroup(context.Background(), BootstrapGroupRequest{
+		Group: GroupOptions{
+			ID:           groupID,
+			Storage:      store,
+			StateMachine: fsm,
+		},
+		Voters: []NodeID{1},
+	})
+	if err != nil {
+		t.Fatalf("BootstrapGroup() error = %v", err)
+	}
+
+	waitForCondition(t, func() bool {
+		st, err := rt.Status(groupID)
+		return err == nil && st.Role == RoleLeader
+	})
+
+	store.mu.Lock()
+	baselineApplied := store.lastApplied
+	store.mu.Unlock()
+
+	fut, err := rt.Propose(context.Background(), groupID, []byte("boom"))
+	if err != nil {
+		t.Fatalf("Propose() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := fut.Wait(ctx); !errors.Is(err, fatalErr) {
+		t.Fatalf("Wait() error = %v, want %v", err, fatalErr)
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.lastApplied != baselineApplied {
+		t.Fatalf("MarkApplied() advanced to %d, want %d", store.lastApplied, baselineApplied)
+	}
+}
+
 func openSingleNodeLeader(t *testing.T, rt *Runtime, id GroupID) GroupID {
 	t.Helper()
 
@@ -235,13 +329,27 @@ func openSingleNodeLeader(t *testing.T, rt *Runtime, id GroupID) GroupID {
 }
 
 func fakeStorageFor(rt *Runtime, id GroupID) *internalFakeStorage {
-	rt.mu.RLock()
-	defer rt.mu.RUnlock()
-
-	g := rt.groups[id]
+	g := groupFor(rt, id)
 	if g == nil {
 		return nil
 	}
 	store, _ := g.storage.(*internalFakeStorage)
 	return store
+}
+
+func fakeStateMachineFor(rt *Runtime, id GroupID) *internalFakeStateMachine {
+	g := groupFor(rt, id)
+	if g == nil {
+		return nil
+	}
+	fsm, _ := g.stateMachine.(*internalFakeStateMachine)
+	return fsm
+}
+
+func groupFor(rt *Runtime, id GroupID) *group {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+
+	g := rt.groups[id]
+	return g
 }

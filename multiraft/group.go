@@ -202,8 +202,7 @@ func (g *group) processReady(ctx context.Context, transport Transport) bool {
 	ready := g.rawNode.Ready()
 	if err := g.storageView.persistReady(ctx, ready); err != nil {
 		g.failPending(err)
-		g.rawNode.Advance(ready)
-		return g.rawNode.HasReady()
+		return false
 	}
 	g.trackReadyEntries(ready.Entries)
 

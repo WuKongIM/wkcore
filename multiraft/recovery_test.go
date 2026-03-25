@@ -2,6 +2,7 @@ package multiraft
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"go.etcd.io/raft/v3/raftpb"
@@ -72,5 +73,54 @@ func TestOpenGroupRestoresSnapshotIntoStateMachine(t *testing.T) {
 	}
 	if fsm.lastSnapshot.Index != 5 {
 		t.Fatalf("Restore() snapshot index = %d", fsm.lastSnapshot.Index)
+	}
+}
+
+func TestRestoreFatalStopsGroup(t *testing.T) {
+	rt := newStartedRuntime(t)
+	fatalErr := errors.New("fatal restore")
+	store := &internalFakeStorage{}
+	fsm := &internalFakeStateMachine{restoreErr: fatalErr}
+
+	if err := rt.OpenGroup(context.Background(), GroupOptions{
+		ID:           42,
+		Storage:      store,
+		StateMachine: fsm,
+	}); err != nil {
+		t.Fatalf("OpenGroup() error = %v", err)
+	}
+
+	err := rt.Step(context.Background(), Envelope{
+		GroupID: 42,
+		Message: raftpb.Message{
+			Type: raftpb.MsgSnap,
+			From: 2,
+			To:   1,
+			Term: 2,
+			Snapshot: &raftpb.Snapshot{
+				Data: []byte("snap"),
+				Metadata: raftpb.SnapshotMetadata{
+					Index: 5,
+					Term:  2,
+					ConfState: raftpb.ConfState{
+						Voters: []uint64{1, 2},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Step(MsgSnap) error = %v", err)
+	}
+
+	waitForCondition(t, func() bool {
+		_, err := rt.Status(42)
+		return errors.Is(err, fatalErr)
+	})
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.lastApplied != 0 {
+		t.Fatalf("MarkApplied() = %d, want 0", store.lastApplied)
 	}
 }
