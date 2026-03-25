@@ -3,7 +3,12 @@ package multiraft_test
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
@@ -26,6 +31,38 @@ func TestPublicTypesExposeApprovedFields(t *testing.T) {
 	if opts.NodeID != 1 {
 		t.Fatalf("unexpected NodeID: %d", opts.NodeID)
 	}
+}
+
+func TestPublicAPIReflectsLearnerSupport(t *testing.T) {
+	reqType := reflect.TypeOf(multiraft.BootstrapGroupRequest{})
+	if _, ok := reqType.FieldByName("Learners"); ok {
+		t.Fatal("BootstrapGroupRequest unexpectedly exposes Learners without end-to-end support")
+	}
+
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller() failed")
+	}
+	typesPath := filepath.Join(filepath.Dir(file), "types.go")
+
+	fset := token.NewFileSet()
+	parsed, err := parser.ParseFile(fset, typesPath, nil, 0)
+	if err != nil {
+		t.Fatalf("ParseFile() error = %v", err)
+	}
+
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		valueSpec, ok := node.(*ast.ValueSpec)
+		if !ok {
+			return true
+		}
+		for _, name := range valueSpec.Names {
+			if name.Name == "RoleLearner" {
+				t.Fatal("RoleLearner is exported but runtime does not surface learner status")
+			}
+		}
+		return true
+	})
 }
 
 func TestOpenGroupRegistersGroup(t *testing.T) {
@@ -57,9 +94,8 @@ func TestOpenGroupRejectsDuplicateID(t *testing.T) {
 func TestBootstrapGroupCreatesInitialMembership(t *testing.T) {
 	rt := newTestRuntime(t)
 	err := rt.BootstrapGroup(context.Background(), multiraft.BootstrapGroupRequest{
-		Group:    newGroupOptions(20),
-		Voters:   []multiraft.NodeID{1, 2, 3},
-		Learners: nil,
+		Group:  newGroupOptions(20),
+		Voters: []multiraft.NodeID{1, 2, 3},
 	})
 	if err != nil {
 		t.Fatalf("BootstrapGroup() error = %v", err)

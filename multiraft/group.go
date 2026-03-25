@@ -18,6 +18,8 @@ type group struct {
 	storageView        *storageAdapter
 	closed             bool
 	fatalErr           error
+	cond               *sync.Cond
+	processing         bool
 	rawNode            *raft.RawNode
 	requests           []raftpb.Message
 	requestCount       int
@@ -87,6 +89,7 @@ func newGroup(ctx context.Context, nodeID NodeID, raftOpts RaftOptions, opts Gro
 		storageView: newStorageAdapter(opts.Storage),
 		rawNode:     rawNode,
 	}
+	g.cond = sync.NewCond(&g.mu)
 	g.storageView.memory = memory
 	if !raft.IsEmptySnap(snapshot) {
 		if err := g.stateMachine.Restore(ctx, Snapshot{
@@ -314,6 +317,28 @@ func (g *group) shouldProcess() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.admissionErrLocked() == nil
+}
+
+func (g *group) beginProcessing() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.admissionErrLocked() != nil {
+		return false
+	}
+	if g.processing {
+		return false
+	}
+	g.processing = true
+	return true
+}
+
+func (g *group) finishProcessing() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.processing = false
+	if g.cond != nil {
+		g.cond.Broadcast()
+	}
 }
 
 func (g *group) fail(err error) {

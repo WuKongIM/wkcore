@@ -42,6 +42,256 @@ func TestRuntimeTickLoopEnqueuesOpenGroups(t *testing.T) {
 	waitForCondition(t, func() bool { return groupTickCount(rt, 101) > 0 })
 }
 
+func TestStatusIsRaceFree(t *testing.T) {
+	rt := newStartedRuntime(t)
+	groupID := openSingleNodeLeader(t, rt, 102)
+
+	done := make(chan struct{})
+	defer close(done)
+
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				_, _ = rt.Status(groupID)
+			}
+		}
+	}()
+
+	for i := 0; i < 5; i++ {
+		fut, err := rt.Propose(context.Background(), groupID, []byte("status"))
+		if err != nil {
+			t.Fatalf("Propose() error = %v", err)
+		}
+		if _, err := fut.Wait(context.Background()); err != nil {
+			t.Fatalf("Wait() error = %v", err)
+		}
+	}
+}
+
+func TestCloseGroupStopsFurtherProcessing(t *testing.T) {
+	rt := newStartedRuntime(t)
+	groupID := GroupID(103)
+	fsm := newBlockingStateMachine()
+	t.Cleanup(func() {
+		fsm.unblock()
+	})
+
+	err := rt.BootstrapGroup(context.Background(), BootstrapGroupRequest{
+		Group: GroupOptions{
+			ID:           groupID,
+			Storage:      &internalFakeStorage{},
+			StateMachine: fsm,
+		},
+		Voters: []NodeID{1},
+	})
+	if err != nil {
+		t.Fatalf("BootstrapGroup() error = %v", err)
+	}
+
+	waitForCondition(t, func() bool {
+		st, err := rt.Status(groupID)
+		return err == nil && st.Role == RoleLeader
+	})
+
+	fut, err := rt.Propose(context.Background(), groupID, []byte("slow"))
+	if err != nil {
+		t.Fatalf("Propose() error = %v", err)
+	}
+
+	select {
+	case <-fsm.started:
+	case <-time.After(time.Second):
+		t.Fatal("Apply() did not start")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- rt.CloseGroup(context.Background(), groupID)
+	}()
+
+	select {
+	case err := <-closeDone:
+		t.Fatalf("CloseGroup() returned before in-flight apply finished: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	fsm.unblock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := fut.Wait(ctx); !errors.Is(err, ErrGroupClosed) {
+		t.Fatalf("Wait() error = %v, want %v", err, ErrGroupClosed)
+	}
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("CloseGroup() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CloseGroup() did not return after apply completed")
+	}
+}
+
+func TestCloseGroupBlocksNewAdmissions(t *testing.T) {
+	rt := newStartedRuntime(t)
+	if err := rt.OpenGroup(context.Background(), newInternalGroupOptions(104)); err != nil {
+		t.Fatalf("OpenGroup() error = %v", err)
+	}
+
+	g := groupFor(rt, 104)
+	if g == nil {
+		t.Fatal("groupFor() = nil")
+	}
+	if err := rt.CloseGroup(context.Background(), 104); err != nil {
+		t.Fatalf("CloseGroup() error = %v", err)
+	}
+
+	if err := g.enqueueRequest(raftpb.Message{Type: raftpb.MsgHeartbeat}); !errors.Is(err, ErrGroupClosed) {
+		t.Fatalf("enqueueRequest() error = %v, want %v", err, ErrGroupClosed)
+	}
+	if err := g.enqueueControl(controlAction{kind: controlTransferLeader, target: 2}); !errors.Is(err, ErrGroupClosed) {
+		t.Fatalf("enqueueControl() error = %v, want %v", err, ErrGroupClosed)
+	}
+}
+
+func TestRuntimeTickLoopDoesNotHoldLockAcrossEnqueue(t *testing.T) {
+	rt := newStartedRuntimeWithTick(t, time.Millisecond)
+	blockedGroupID := GroupID(105)
+	fsm := newBlockingStateMachine()
+	t.Cleanup(func() {
+		fsm.unblock()
+	})
+
+	if err := rt.BootstrapGroup(context.Background(), BootstrapGroupRequest{
+		Group: GroupOptions{
+			ID:           blockedGroupID,
+			Storage:      &internalFakeStorage{},
+			StateMachine: fsm,
+		},
+		Voters: []NodeID{1},
+	}); err != nil {
+		t.Fatalf("BootstrapGroup() error = %v", err)
+	}
+
+	waitForCondition(t, func() bool {
+		st, err := rt.Status(blockedGroupID)
+		return err == nil && st.Role == RoleLeader
+	})
+
+	fut, err := rt.Propose(context.Background(), blockedGroupID, []byte("slow"))
+	if err != nil {
+		t.Fatalf("Propose() error = %v", err)
+	}
+
+	select {
+	case <-fsm.started:
+	case <-time.After(time.Second):
+		t.Fatal("Apply() did not start")
+	}
+
+	for i := 0; i < cap(rt.scheduler.ch)+1; i++ {
+		if err := rt.OpenGroup(context.Background(), newInternalGroupOptions(GroupID(2000+i))); err != nil {
+			t.Fatalf("OpenGroup(%d) error = %v", 2000+i, err)
+		}
+	}
+
+	waitForCondition(t, func() bool { return len(rt.scheduler.ch) == cap(rt.scheduler.ch) })
+	time.Sleep(20 * time.Millisecond)
+
+	openDone := make(chan error, 1)
+	go func() {
+		openDone <- rt.OpenGroup(context.Background(), newInternalGroupOptions(5000))
+	}()
+
+	select {
+	case err := <-openDone:
+		if err != nil {
+			t.Fatalf("OpenGroup() error = %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("OpenGroup() blocked behind scheduler enqueue while ticker was running")
+	}
+
+	fsm.unblock()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := fut.Wait(ctx); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+}
+
+func TestSchedulerBackpressureDoesNotBlockRuntime(t *testing.T) {
+	rt := newStartedRuntimeWithTick(t, time.Millisecond)
+	blockedGroupID := GroupID(106)
+	fsm := newBlockingStateMachine()
+	t.Cleanup(func() {
+		fsm.unblock()
+	})
+
+	if err := rt.BootstrapGroup(context.Background(), BootstrapGroupRequest{
+		Group: GroupOptions{
+			ID:           blockedGroupID,
+			Storage:      &internalFakeStorage{},
+			StateMachine: fsm,
+		},
+		Voters: []NodeID{1},
+	}); err != nil {
+		t.Fatalf("BootstrapGroup() error = %v", err)
+	}
+
+	waitForCondition(t, func() bool {
+		st, err := rt.Status(blockedGroupID)
+		return err == nil && st.Role == RoleLeader
+	})
+
+	fut, err := rt.Propose(context.Background(), blockedGroupID, []byte("slow"))
+	if err != nil {
+		t.Fatalf("Propose() error = %v", err)
+	}
+
+	select {
+	case <-fsm.started:
+	case <-time.After(time.Second):
+		t.Fatal("Apply() did not start")
+	}
+
+	targetGroupID := GroupID(3000)
+	for i := 0; i < cap(rt.scheduler.ch)+1; i++ {
+		id := GroupID(3000 + i)
+		if err := rt.OpenGroup(context.Background(), newInternalGroupOptions(id)); err != nil {
+			t.Fatalf("OpenGroup(%d) error = %v", id, err)
+		}
+	}
+
+	waitForCondition(t, func() bool { return len(rt.scheduler.ch) == cap(rt.scheduler.ch) })
+	time.Sleep(20 * time.Millisecond)
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- rt.CloseGroup(context.Background(), targetGroupID)
+	}()
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("CloseGroup() error = %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("CloseGroup() blocked behind scheduler enqueue while ticker was running")
+	}
+
+	fsm.unblock()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := fut.Wait(ctx); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+}
+
 func TestWrapMessagesClonesRaftMessagePayloads(t *testing.T) {
 	msgs := []raftpb.Message{{
 		Type:    raftpb.MsgApp,
@@ -88,11 +338,15 @@ func TestWrapMessagesClonesRaftMessagePayloads(t *testing.T) {
 }
 
 func newStartedRuntime(t *testing.T) *Runtime {
+	return newStartedRuntimeWithTick(t, 10*time.Millisecond)
+}
+
+func newStartedRuntimeWithTick(t *testing.T, tickInterval time.Duration) *Runtime {
 	t.Helper()
 
 	rt, err := New(Options{
 		NodeID:       1,
-		TickInterval: 10 * time.Millisecond,
+		TickInterval: tickInterval,
 		Workers:      1,
 		Transport:    &internalFakeTransport{},
 		Raft: RaftOptions{
@@ -160,6 +414,42 @@ type internalFakeTransport struct{}
 
 func (f *internalFakeTransport) Send(ctx context.Context, batch []Envelope) error {
 	return nil
+}
+
+type blockingStateMachine struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingStateMachine() *blockingStateMachine {
+	return &blockingStateMachine{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (f *blockingStateMachine) Apply(ctx context.Context, cmd Command) ([]byte, error) {
+	select {
+	case f.started <- struct{}{}:
+	default:
+	}
+	<-f.release
+	return append([]byte("ok:"), cmd.Data...), nil
+}
+
+func (f *blockingStateMachine) Restore(ctx context.Context, snap Snapshot) error {
+	return nil
+}
+
+func (f *blockingStateMachine) Snapshot(ctx context.Context) (Snapshot, error) {
+	return Snapshot{}, nil
+}
+
+func (f *blockingStateMachine) unblock() {
+	f.once.Do(func() {
+		close(f.release)
+	})
 }
 
 type internalFakeStorage struct {

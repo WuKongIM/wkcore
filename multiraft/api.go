@@ -66,12 +66,12 @@ func (r *Runtime) BootstrapGroup(ctx context.Context, req BootstrapGroupRequest)
 	}
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	if r.closed {
+		r.mu.Unlock()
 		return ErrRuntimeClosed
 	}
 	if _, exists := r.groups[req.Group.ID]; exists {
+		r.mu.Unlock()
 		return ErrGroupExists
 	}
 	r.groups[req.Group.ID] = g
@@ -82,35 +82,43 @@ func (r *Runtime) BootstrapGroup(ctx context.Context, req BootstrapGroupRequest)
 		}
 		if err := g.rawNode.Bootstrap(peers); err != nil {
 			delete(r.groups, req.Group.ID)
+			r.mu.Unlock()
 			return err
 		}
 		if len(req.Voters) == 1 && req.Voters[0] == r.opts.NodeID {
 			if err := g.enqueueControl(controlAction{kind: controlCampaign}); err != nil {
 				delete(r.groups, req.Group.ID)
+				r.mu.Unlock()
 				return err
 			}
 		}
 	}
+	r.mu.Unlock()
+
 	r.scheduler.enqueue(req.Group.ID)
 	return nil
 }
 
 func (r *Runtime) CloseGroup(ctx context.Context, groupID GroupID) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	if r.closed {
+		r.mu.Unlock()
 		return ErrRuntimeClosed
 	}
 	g, ok := r.groups[groupID]
 	if !ok {
+		r.mu.Unlock()
 		return ErrGroupNotFound
 	}
 	g.mu.Lock()
 	g.closed = true
 	g.failPendingLocked(ErrGroupClosed)
-	g.mu.Unlock()
 	delete(r.groups, groupID)
+	r.mu.Unlock()
+	for g.processing {
+		g.cond.Wait()
+	}
+	g.mu.Unlock()
 	return nil
 }
 

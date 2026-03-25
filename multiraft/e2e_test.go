@@ -123,10 +123,11 @@ type asyncTestNetwork struct {
 	maxDelay time.Duration
 	stopCh   chan struct{}
 
-	mu  sync.Mutex
-	rng *rand.Rand
-	err error
-	wg  sync.WaitGroup
+	mu     sync.Mutex
+	closed bool
+	rng    *rand.Rand
+	err    error
+	wg     sync.WaitGroup
 
 	blocked map[networkLink]struct{}
 
@@ -565,8 +566,25 @@ func (n *asyncTestNetwork) isBlocked(from, to NodeID) bool {
 }
 
 func (n *asyncTestNetwork) close() {
+	n.mu.Lock()
+	if n.closed {
+		n.mu.Unlock()
+		return
+	}
+	n.closed = true
 	close(n.stopCh)
+	n.mu.Unlock()
 	n.wg.Wait()
+}
+
+func (n *asyncTestNetwork) beginDelivery() bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.closed {
+		return false
+	}
+	n.wg.Add(1)
+	return true
 }
 
 type clusterTransport struct {
@@ -576,7 +594,9 @@ type clusterTransport struct {
 
 func (t *clusterTransport) Send(ctx context.Context, batch []Envelope) error {
 	for _, env := range batch {
-		t.network.wg.Add(1)
+		if !t.network.beginDelivery() {
+			return nil
+		}
 		env := Envelope{
 			GroupID: env.GroupID,
 			Message: cloneMessage(env.Message),

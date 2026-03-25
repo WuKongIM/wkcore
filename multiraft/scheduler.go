@@ -6,6 +6,7 @@ type scheduler struct {
 	ch chan GroupID
 
 	mu         sync.Mutex
+	pending    []GroupID
 	queued     map[GroupID]struct{}
 	processing map[GroupID]struct{}
 	dirty      map[GroupID]struct{}
@@ -32,15 +33,16 @@ func (s *scheduler) enqueue(groupID GroupID) {
 		return
 	}
 	s.queued[groupID] = struct{}{}
+	s.pending = append(s.pending, groupID)
+	s.dispatchLocked()
 	s.mu.Unlock()
-
-	s.ch <- groupID
 }
 
 func (s *scheduler) begin(groupID GroupID) {
 	s.mu.Lock()
 	delete(s.queued, groupID)
 	s.processing[groupID] = struct{}{}
+	s.dispatchLocked()
 	s.mu.Unlock()
 }
 
@@ -63,7 +65,18 @@ func (s *scheduler) requeue(groupID GroupID) {
 		return
 	}
 	s.queued[groupID] = struct{}{}
+	s.pending = append(s.pending, groupID)
+	s.dispatchLocked()
 	s.mu.Unlock()
+}
 
-	s.ch <- groupID
+func (s *scheduler) dispatchLocked() {
+	for len(s.pending) > 0 {
+		select {
+		case s.ch <- s.pending[0]:
+			s.pending = s.pending[1:]
+		default:
+			return
+		}
+	}
 }

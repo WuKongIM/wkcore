@@ -34,9 +34,8 @@ type GroupOptions struct {
 }
 
 type BootstrapGroupRequest struct {
-	Group    GroupOptions
-	Voters   []NodeID
-	Learners []NodeID
+	Group  GroupOptions
+	Voters []NodeID
 }
 
 type Envelope struct {
@@ -132,5 +131,4 @@ const (
 	RoleFollower Role = iota + 1
 	RoleCandidate
 	RoleLeader
-	RoleLearner
 )

@@ -76,12 +76,16 @@ func (r *Runtime) runTicker() {
 		case <-r.stopCh:
 			return
 		case <-ticker.C:
+			var groups []*group
 			r.mu.RLock()
 			for _, g := range r.groups {
+				groups = append(groups, g)
+			}
+			r.mu.RUnlock()
+			for _, g := range groups {
 				g.markTickPending()
 				r.scheduler.enqueue(g.id)
 			}
-			r.mu.RUnlock()
 		}
 	}
 }
@@ -93,9 +97,10 @@ func (r *Runtime) processGroup(groupID GroupID) bool {
 	if g == nil {
 		return false
 	}
-	if !g.shouldProcess() {
+	if !g.beginProcessing() {
 		return false
 	}
+	defer g.finishProcessing()
 
 	g.processRequests()
 	if !g.shouldProcess() {
