@@ -1,7 +1,9 @@
 package multiraft_test
 
 import (
+	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -23,5 +25,31 @@ func TestPublicTypesExposeApprovedFields(t *testing.T) {
 
 	if opts.NodeID != 1 {
 		t.Fatalf("unexpected NodeID: %d", opts.NodeID)
+	}
+}
+
+func TestOpenGroupRegistersGroup(t *testing.T) {
+	rt := newTestRuntime(t)
+	err := rt.OpenGroup(context.Background(), multiraft.GroupOptions{
+		ID:           10,
+		Storage:      newFakeStorage(),
+		StateMachine: newFakeStateMachine(),
+	})
+	if err != nil {
+		t.Fatalf("OpenGroup() error = %v", err)
+	}
+	if got := rt.Groups(); !reflect.DeepEqual(got, []multiraft.GroupID{10}) {
+		t.Fatalf("Groups() = %v", got)
+	}
+}
+
+func TestOpenGroupRejectsDuplicateID(t *testing.T) {
+	rt := newTestRuntime(t)
+	if err := rt.OpenGroup(context.Background(), newGroupOptions(10)); err != nil {
+		t.Fatalf("first OpenGroup() error = %v", err)
+	}
+	err := rt.OpenGroup(context.Background(), newGroupOptions(10))
+	if !errors.Is(err, multiraft.ErrGroupExists) {
+		t.Fatalf("expected ErrGroupExists, got %v", err)
 	}
 }

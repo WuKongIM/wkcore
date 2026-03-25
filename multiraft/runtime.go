@@ -1,7 +1,12 @@
 package multiraft
 
+import "sync"
+
 type Runtime struct {
 	opts Options
+
+	mu     sync.RWMutex
+	groups map[GroupID]*group
 }
 
 func New(opts Options) (*Runtime, error) {
@@ -15,5 +20,8 @@ func New(opts Options) (*Runtime, error) {
 		return nil, ErrInvalidOptions
 	}
 
-	return &Runtime{opts: opts}, nil
+	return &Runtime{
+		opts:   opts,
+		groups: make(map[GroupID]*group),
+	}, nil
 }
