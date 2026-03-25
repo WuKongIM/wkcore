@@ -93,10 +93,22 @@ func (r *Runtime) processGroup(groupID GroupID) bool {
 	if g == nil {
 		return false
 	}
+	if !g.shouldProcess() {
+		return false
+	}
 
 	g.processRequests()
+	if !g.shouldProcess() {
+		return false
+	}
 	g.processControls()
+	if !g.shouldProcess() {
+		return false
+	}
 	g.processTick()
+	if !g.shouldProcess() {
+		return false
+	}
 	if g.processReady(context.Background(), r.opts.Transport) {
 		g.refreshStatus()
 		return true

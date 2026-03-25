@@ -2,6 +2,7 @@ package multiraft
 
 import (
 	"context"
+	"errors"
 	"sort"
 
 	raft "go.etcd.io/raft/v3"
@@ -84,7 +85,10 @@ func (r *Runtime) BootstrapGroup(ctx context.Context, req BootstrapGroupRequest)
 			return err
 		}
 		if len(req.Voters) == 1 && req.Voters[0] == r.opts.NodeID {
-			g.enqueueControl(controlAction{kind: controlCampaign})
+			if err := g.enqueueControl(controlAction{kind: controlCampaign}); err != nil {
+				delete(r.groups, req.Group.ID)
+				return err
+			}
 		}
 	}
 	r.scheduler.enqueue(req.Group.ID)
@@ -122,7 +126,9 @@ func (r *Runtime) Step(ctx context.Context, msg Envelope) error {
 		return ErrGroupNotFound
 	}
 
-	g.enqueueRequest(msg.Message)
+	if err := g.enqueueRequest(msg.Message); err != nil {
+		return err
+	}
 	r.scheduler.enqueue(msg.GroupID)
 	return nil
 }
@@ -140,11 +146,13 @@ func (r *Runtime) Propose(ctx context.Context, groupID GroupID, data []byte) (Fu
 	}
 
 	fut := newFuture()
-	g.enqueueControl(controlAction{
+	if err := g.enqueueControl(controlAction{
 		kind:   controlPropose,
 		data:   append([]byte(nil), data...),
 		future: fut,
-	})
+	}); err != nil {
+		return nil, err
+	}
 	r.scheduler.enqueue(groupID)
 	return fut, nil
 }
@@ -162,11 +170,13 @@ func (r *Runtime) ChangeConfig(ctx context.Context, groupID GroupID, change Conf
 	}
 
 	fut := newFuture()
-	g.enqueueControl(controlAction{
+	if err := g.enqueueControl(controlAction{
 		kind:   controlConfigChange,
 		change: change,
 		future: fut,
-	})
+	}); err != nil {
+		return nil, err
+	}
 	r.scheduler.enqueue(groupID)
 	return fut, nil
 }
@@ -183,10 +193,12 @@ func (r *Runtime) TransferLeadership(ctx context.Context, groupID GroupID, targe
 		return ErrGroupNotFound
 	}
 
-	g.enqueueControl(controlAction{
+	if err := g.enqueueControl(controlAction{
 		kind:   controlTransferLeader,
 		target: target,
-	})
+	}); err != nil {
+		return err
+	}
 	r.scheduler.enqueue(groupID)
 	return nil
 }
@@ -199,10 +211,14 @@ func (r *Runtime) Status(groupID GroupID) (Status, error) {
 		return Status{}, ErrRuntimeClosed
 	}
 	g, ok := r.groups[groupID]
-	if !ok || g.closed {
+	if !ok {
 		return Status{}, ErrGroupNotFound
 	}
-	return g.status, nil
+	st, err := g.statusSnapshot()
+	if errors.Is(err, ErrGroupClosed) {
+		return Status{}, ErrGroupNotFound
+	}
+	return st, err
 }
 
 func (r *Runtime) Groups() []GroupID {

@@ -17,6 +17,7 @@ type group struct {
 	status       Status
 	storageView  *storageAdapter
 	closed       bool
+	fatalErr     error
 	rawNode      *raft.RawNode
 	requests     []raftpb.Message
 	requestCount int
@@ -93,10 +94,14 @@ func newGroup(ctx context.Context, nodeID NodeID, raftOpts RaftOptions, opts Gro
 	return g, nil
 }
 
-func (g *group) enqueueRequest(msg raftpb.Message) {
+func (g *group) enqueueRequest(msg raftpb.Message) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if err := g.admissionErrLocked(); err != nil {
+		return err
+	}
 	g.requests = append(g.requests, msg)
+	return nil
 }
 
 func (g *group) processRequests() {
@@ -111,10 +116,20 @@ func (g *group) processRequests() {
 	}
 }
 
-func (g *group) enqueueControl(action controlAction) {
+func (g *group) enqueueControl(action controlAction) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if err := g.admissionErrLocked(); err != nil {
+		return err
+	}
+	switch action.kind {
+	case controlPropose, controlConfigChange:
+		if g.status.Role != RoleLeader {
+			return ErrNotLeader
+		}
+	}
 	g.controls = append(g.controls, action)
+	return nil
 }
 
 func (g *group) processControls() {
@@ -188,13 +203,16 @@ func (g *group) processReady(ctx context.Context, transport Transport) bool {
 		_ = transport.Send(ctx, wrapMessages(g.id, ready.Messages))
 	}
 
-	lastApplied := g.status.AppliedIndex
+	lastApplied := g.appliedIndex()
 	if !raft.IsEmptySnap(ready.Snapshot) {
-		_ = g.stateMachine.Restore(ctx, Snapshot{
+		if err := g.stateMachine.Restore(ctx, Snapshot{
 			Index: ready.Snapshot.Metadata.Index,
 			Term:  ready.Snapshot.Metadata.Term,
 			Data:  append([]byte(nil), ready.Snapshot.Data...),
-		})
+		}); err != nil {
+			g.fail(err)
+			return false
+		}
 		lastApplied = ready.Snapshot.Metadata.Index
 	}
 
@@ -216,6 +234,10 @@ func (g *group) processReady(ctx context.Context, transport Transport) bool {
 				Term:  entry.Term,
 				Data:  result,
 			}, err)
+			if err != nil {
+				g.fail(err)
+				return false
+			}
 		case raftpb.EntryConfChange:
 			var cc raftpb.ConfChange
 			if err := cc.Unmarshal(entry.Data); err != nil {
@@ -247,6 +269,50 @@ func (g *group) refreshStatus() {
 	g.status.CommitIndex = st.Commit
 	g.status.AppliedIndex = st.Applied
 	g.status.Role = mapRole(st.RaftState)
+}
+
+func (g *group) appliedIndex() uint64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.status.AppliedIndex
+}
+
+func (g *group) statusSnapshot() (Status, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return Status{}, ErrGroupClosed
+	}
+	if g.fatalErr != nil {
+		return Status{}, g.fatalErr
+	}
+	return g.status, nil
+}
+
+func (g *group) admissionErrLocked() error {
+	if g.closed {
+		return ErrGroupClosed
+	}
+	if g.fatalErr != nil {
+		return g.fatalErr
+	}
+	return nil
+}
+
+func (g *group) shouldProcess() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.admissionErrLocked() == nil
+}
+
+func (g *group) fail(err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err == nil || g.closed || g.fatalErr != nil {
+		return
+	}
+	g.fatalErr = err
+	g.failPendingLocked(err)
 }
 
 func (g *group) resolveNextProposal(result Result, err error) {

@@ -263,8 +263,10 @@ func (f *internalFakeStorage) MarkApplied(ctx context.Context, index uint64) err
 type internalFakeStateMachine struct {
 	mu           sync.Mutex
 	applied      [][]byte
+	applyErr     error
 	restoreCount int
 	lastSnapshot Snapshot
+	restoreErr   error
 }
 
 func (f *internalFakeStateMachine) Apply(ctx context.Context, cmd Command) ([]byte, error) {
@@ -272,6 +274,9 @@ func (f *internalFakeStateMachine) Apply(ctx context.Context, cmd Command) ([]by
 	defer f.mu.Unlock()
 
 	f.applied = append(f.applied, append([]byte(nil), cmd.Data...))
+	if f.applyErr != nil {
+		return nil, f.applyErr
+	}
 	return append([]byte("ok:"), cmd.Data...), nil
 }
 
@@ -280,6 +285,9 @@ func (f *internalFakeStateMachine) Restore(ctx context.Context, snap Snapshot) e
 	defer f.mu.Unlock()
 	f.restoreCount++
 	f.lastSnapshot = snap
+	if f.restoreErr != nil {
+		return f.restoreErr
+	}
 	return nil
 }
 
