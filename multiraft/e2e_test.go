@@ -2,21 +2,25 @@ package multiraft
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"math/rand"
 	"sync"
 	"testing"
 	"time"
 )
 
 func TestThreeNodeClusterReplicatesProposalEndToEnd(t *testing.T) {
-	cluster := newTestCluster(t, []NodeID{1, 2, 3})
+	cluster := newAsyncTestCluster(t, []NodeID{1, 2, 3}, asyncNetworkConfig{
+		MaxDelay: 5 * time.Millisecond,
+		Seed:     1,
+	})
 	groupID := GroupID(100)
 
 	cluster.bootstrapGroup(t, groupID, []NodeID{1, 2, 3})
 	cluster.waitForBootstrapApplied(t, groupID, 3)
-	cluster.campaign(t, 1, groupID)
-	cluster.waitForSpecificLeader(t, groupID, 1)
 
-	leaderID := NodeID(1)
+	leaderID := cluster.waitForLeader(t, groupID)
 	fut, err := cluster.runtime(leaderID).Propose(context.Background(), groupID, []byte("set a=1"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
@@ -31,15 +35,16 @@ func TestThreeNodeClusterReplicatesProposalEndToEnd(t *testing.T) {
 }
 
 func TestThreeNodeClusterReplicatesMultipleProposalsInOrder(t *testing.T) {
-	cluster := newTestCluster(t, []NodeID{1, 2, 3})
+	cluster := newAsyncTestCluster(t, []NodeID{1, 2, 3}, asyncNetworkConfig{
+		MaxDelay: 5 * time.Millisecond,
+		Seed:     2,
+	})
 	groupID := GroupID(101)
 
 	cluster.bootstrapGroup(t, groupID, []NodeID{1, 2, 3})
 	cluster.waitForBootstrapApplied(t, groupID, 3)
-	cluster.campaign(t, 1, groupID)
-	cluster.waitForSpecificLeader(t, groupID, 1)
 
-	leaderID := NodeID(1)
+	leaderID := cluster.waitForLeader(t, groupID)
 	commands := [][]byte{
 		[]byte("set a=1"),
 		[]byte("set b=2"),
@@ -62,15 +67,16 @@ func TestThreeNodeClusterReplicatesMultipleProposalsInOrder(t *testing.T) {
 }
 
 func TestThreeNodeClusterTransfersLeadershipAndReplicatesAgain(t *testing.T) {
-	cluster := newTestCluster(t, []NodeID{1, 2, 3})
+	cluster := newAsyncTestCluster(t, []NodeID{1, 2, 3}, asyncNetworkConfig{
+		MaxDelay: 5 * time.Millisecond,
+		Seed:     3,
+	})
 	groupID := GroupID(102)
 
 	cluster.bootstrapGroup(t, groupID, []NodeID{1, 2, 3})
 	cluster.waitForBootstrapApplied(t, groupID, 3)
-	cluster.campaign(t, 1, groupID)
-	cluster.waitForSpecificLeader(t, groupID, 1)
 
-	leaderID := NodeID(1)
+	leaderID := cluster.waitForLeader(t, groupID)
 	warmup, err := cluster.runtime(leaderID).Propose(context.Background(), groupID, []byte("warmup"))
 	if err != nil {
 		t.Fatalf("Propose(warmup) error = %v", err)
@@ -101,24 +107,45 @@ func TestThreeNodeClusterTransfersLeadershipAndReplicatesAgain(t *testing.T) {
 
 type testCluster struct {
 	mu         sync.RWMutex
+	network    *asyncTestNetwork
 	runtimes   map[NodeID]*Runtime
 	transports map[NodeID]*clusterTransport
 	stores     map[NodeID]map[GroupID]*internalFakeStorage
 	fsms       map[NodeID]map[GroupID]*internalFakeStateMachine
 }
 
-func newTestCluster(t *testing.T, nodeIDs []NodeID) *testCluster {
+type asyncNetworkConfig struct {
+	MaxDelay time.Duration
+	Seed     int64
+}
+
+type asyncTestNetwork struct {
+	maxDelay time.Duration
+	stopCh   chan struct{}
+
+	mu  sync.Mutex
+	rng *rand.Rand
+	err error
+	wg  sync.WaitGroup
+
+	cluster *testCluster
+}
+
+func newAsyncTestCluster(t *testing.T, nodeIDs []NodeID, cfg asyncNetworkConfig) *testCluster {
 	t.Helper()
 
+	network := newAsyncTestNetwork(cfg)
 	cluster := &testCluster{
+		network:    network,
 		runtimes:   make(map[NodeID]*Runtime),
 		transports: make(map[NodeID]*clusterTransport),
 		stores:     make(map[NodeID]map[GroupID]*internalFakeStorage),
 		fsms:       make(map[NodeID]map[GroupID]*internalFakeStateMachine),
 	}
+	network.cluster = cluster
 
 	for _, nodeID := range nodeIDs {
-		transport := &clusterTransport{cluster: cluster, from: nodeID}
+		transport := &clusterTransport{network: network, from: nodeID}
 		rt, err := New(Options{
 			NodeID:       nodeID,
 			TickInterval: 10 * time.Millisecond,
@@ -140,6 +167,7 @@ func newTestCluster(t *testing.T, nodeIDs []NodeID) *testCluster {
 	}
 
 	t.Cleanup(func() {
+		network.close()
 		for _, rt := range cluster.runtimes {
 			if err := rt.Close(); err != nil {
 				t.Fatalf("Close() error = %v", err)
@@ -148,6 +176,17 @@ func newTestCluster(t *testing.T, nodeIDs []NodeID) *testCluster {
 	})
 
 	return cluster
+}
+
+func newAsyncTestNetwork(cfg asyncNetworkConfig) *asyncTestNetwork {
+	if cfg.Seed == 0 {
+		cfg.Seed = 1
+	}
+	return &asyncTestNetwork{
+		maxDelay: cfg.MaxDelay,
+		stopCh:   make(chan struct{}),
+		rng:      rand.New(rand.NewSource(cfg.Seed)),
+	}
 }
 
 func (c *testCluster) runtime(nodeID NodeID) *Runtime {
@@ -179,29 +218,10 @@ func (c *testCluster) bootstrapGroup(t *testing.T, groupID GroupID, voters []Nod
 	}
 }
 
-func (c *testCluster) campaign(t *testing.T, nodeID NodeID, groupID GroupID) {
-	t.Helper()
-
-	rt := c.runtime(nodeID)
-	if rt == nil {
-		t.Fatalf("runtime(node=%d) not found", nodeID)
-	}
-
-	rt.mu.RLock()
-	g := rt.groups[groupID]
-	rt.mu.RUnlock()
-	if g == nil {
-		t.Fatalf("group(node=%d, group=%d) not found", nodeID, groupID)
-	}
-
-	g.enqueueControl(controlAction{kind: controlCampaign})
-	rt.scheduler.enqueue(groupID)
-}
-
 func waitForFutureResult(t *testing.T, fut Future) Result {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	res, err := fut.Wait(ctx)
@@ -214,53 +234,21 @@ func waitForFutureResult(t *testing.T, fut Future) Result {
 func (c *testCluster) waitForLeader(t *testing.T, groupID GroupID) NodeID {
 	t.Helper()
 
-	var leader NodeID
-	waitForClusterCondition(t, func() bool {
-		count := 0
-		var current NodeID
-		for nodeID, rt := range c.runtimes {
-			st, err := rt.Status(groupID)
-			if err != nil {
-				return false
-			}
-			if st.Role == RoleLeader {
-				count++
-				current = nodeID
-			}
-		}
-		if count == 1 {
-			leader = current
-			return true
-		}
-		return false
-	})
-	return leader
+	return c.waitForStableLeader(t, groupID, 0)
 }
 
 func (c *testCluster) waitForSpecificLeader(t *testing.T, groupID GroupID, leaderID NodeID) {
 	t.Helper()
 
-	waitForClusterCondition(t, func() bool {
-		for nodeID, rt := range c.runtimes {
-			st, err := rt.Status(groupID)
-			if err != nil {
-				return false
-			}
-			if nodeID == leaderID && st.Role != RoleLeader {
-				return false
-			}
-			if nodeID != leaderID && st.Role == RoleLeader {
-				return false
-			}
-		}
-		return true
-	})
+	if got := c.waitForStableLeader(t, groupID, leaderID); got != leaderID {
+		t.Fatalf("waitForStableLeader() = %d, want %d", got, leaderID)
+	}
 }
 
 func (c *testCluster) waitForBootstrapApplied(t *testing.T, groupID GroupID, appliedIndex uint64) {
 	t.Helper()
 
-	waitForClusterCondition(t, func() bool {
+	c.waitForCondition(t, func() bool {
 		for _, rt := range c.runtimes {
 			st, err := rt.Status(groupID)
 			if err != nil {
@@ -289,7 +277,7 @@ func (c *testCluster) pickFollower(leaderID NodeID) NodeID {
 func (c *testCluster) waitForAllApplied(t *testing.T, groupID GroupID, data []byte) {
 	t.Helper()
 
-	waitForClusterCondition(t, func() bool {
+	c.waitForCondition(t, func() bool {
 		for nodeID := range c.runtimes {
 			fsm := c.fsms[nodeID][groupID]
 			if fsm == nil {
@@ -309,7 +297,7 @@ func (c *testCluster) waitForAllApplied(t *testing.T, groupID GroupID, data []by
 func (c *testCluster) waitForAllAppliedSequence(t *testing.T, groupID GroupID, commands [][]byte) {
 	t.Helper()
 
-	waitForClusterCondition(t, func() bool {
+	c.waitForCondition(t, func() bool {
 		for nodeID := range c.runtimes {
 			fsm := c.fsms[nodeID][groupID]
 			if fsm == nil {
@@ -332,34 +320,172 @@ func (c *testCluster) waitForAllAppliedSequence(t *testing.T, groupID GroupID, c
 	})
 }
 
-func waitForClusterCondition(t *testing.T, fn func() bool) {
+func (c *testCluster) waitForStableLeader(t *testing.T, groupID GroupID, want NodeID) NodeID {
 	t.Helper()
 
-	deadline := time.Now().Add(3 * time.Second)
+	const stableWindow = 100 * time.Millisecond
+
+	var (
+		lastLeader NodeID
+		stableFrom time.Time
+	)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
+		c.requireHealthyNetwork(t)
+
+		leaderID, ok := c.currentLeader(groupID)
+		if ok && (want == 0 || leaderID == want) {
+			if leaderID != lastLeader {
+				lastLeader = leaderID
+				stableFrom = time.Now()
+			}
+			if time.Since(stableFrom) >= stableWindow {
+				return leaderID
+			}
+		} else {
+			lastLeader = 0
+			stableFrom = time.Time{}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	c.requireHealthyNetwork(t)
+	t.Fatal("cluster condition not satisfied before timeout")
+	return 0
+}
+
+func (c *testCluster) currentLeader(groupID GroupID) (NodeID, bool) {
+	var (
+		leaderID    NodeID
+		leaderCount int
+	)
+	for _, rt := range c.runtimes {
+		st, err := rt.Status(groupID)
+		if err != nil {
+			return 0, false
+		}
+		if st.Role == RoleCandidate {
+			return 0, false
+		}
+		if st.Role == RoleLeader {
+			leaderCount++
+			if leaderID == 0 {
+				leaderID = st.NodeID
+			}
+			if st.NodeID != leaderID {
+				return 0, false
+			}
+		}
+		if st.LeaderID != 0 {
+			if leaderID == 0 {
+				leaderID = st.LeaderID
+			}
+			if st.LeaderID != leaderID {
+				return 0, false
+			}
+		}
+	}
+	return leaderID, leaderCount == 1 && leaderID != 0
+}
+
+func (c *testCluster) waitForCondition(t *testing.T, fn func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		c.requireHealthyNetwork(t)
 		if fn() {
+			c.requireHealthyNetwork(t)
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+
+	c.requireHealthyNetwork(t)
 	t.Fatal("cluster condition not satisfied before timeout")
 }
 
+func (c *testCluster) requireHealthyNetwork(t *testing.T) {
+	t.Helper()
+
+	if err := c.network.firstError(); err != nil {
+		t.Fatalf("network delivery error: %v", err)
+	}
+}
+
+func (n *asyncTestNetwork) firstError() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.err
+}
+
+func (n *asyncTestNetwork) recordError(err error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.err == nil {
+		n.err = err
+	}
+}
+
+func (n *asyncTestNetwork) randomDelay() time.Duration {
+	if n.maxDelay <= 0 {
+		return 0
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return time.Duration(n.rng.Int63n(int64(n.maxDelay) + 1))
+}
+
+func (n *asyncTestNetwork) close() {
+	close(n.stopCh)
+	n.wg.Wait()
+}
+
 type clusterTransport struct {
-	cluster *testCluster
+	network *asyncTestNetwork
 	from    NodeID
 }
 
 func (t *clusterTransport) Send(ctx context.Context, batch []Envelope) error {
 	for _, env := range batch {
-		target := NodeID(env.Message.To)
-		rt := t.cluster.runtime(target)
-		if rt == nil {
-			continue
+		t.network.wg.Add(1)
+		env := Envelope{
+			GroupID: env.GroupID,
+			Message: cloneMessage(env.Message),
 		}
-		if err := rt.Step(ctx, env); err != nil {
-			return err
-		}
+		go func(env Envelope) {
+			defer t.network.wg.Done()
+
+			delay := t.network.randomDelay()
+			if delay > 0 {
+				timer := time.NewTimer(delay)
+				defer timer.Stop()
+				select {
+				case <-t.network.stopCh:
+					return
+				case <-timer.C:
+				}
+			} else {
+				select {
+				case <-t.network.stopCh:
+					return
+				default:
+				}
+			}
+
+			target := NodeID(env.Message.To)
+			rt := t.network.cluster.runtime(target)
+			if rt == nil {
+				return
+			}
+			if err := rt.Step(context.Background(), env); err != nil &&
+				!errors.Is(err, ErrRuntimeClosed) &&
+				!errors.Is(err, ErrGroupClosed) &&
+				!errors.Is(err, ErrGroupNotFound) {
+				t.network.recordError(fmt.Errorf("deliver from=%d to=%d group=%d: %w", t.from, target, env.GroupID, err))
+			}
+		}(env)
 	}
 	return nil
 }
