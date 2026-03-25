@@ -1,6 +1,7 @@
 package multiraft
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -55,8 +56,11 @@ func (r *Runtime) runWorker() {
 		case <-r.stopCh:
 			return
 		case groupID := <-r.scheduler.ch:
-			r.processGroup(groupID)
-			r.scheduler.done(groupID)
+			r.scheduler.begin(groupID)
+			requeue := r.processGroup(groupID)
+			if r.scheduler.done(groupID) || requeue {
+				r.scheduler.requeue(groupID)
+			}
 		}
 	}
 }
@@ -82,14 +86,21 @@ func (r *Runtime) runTicker() {
 	}
 }
 
-func (r *Runtime) processGroup(groupID GroupID) {
+func (r *Runtime) processGroup(groupID GroupID) bool {
 	r.mu.RLock()
 	g := r.groups[groupID]
 	r.mu.RUnlock()
 	if g == nil {
-		return
+		return false
 	}
 
 	g.processRequests()
+	g.processControls()
 	g.processTick()
+	if g.processReady(context.Background(), r.opts.Transport) {
+		g.refreshStatus()
+		return true
+	}
+	g.refreshStatus()
+	return false
 }

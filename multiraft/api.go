@@ -3,6 +3,8 @@ package multiraft
 import (
 	"context"
 	"sort"
+
+	raft "go.etcd.io/raft/v3"
 )
 
 func (r *Runtime) Close() error {
@@ -12,6 +14,12 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	r.closed = true
+	for _, g := range r.groups {
+		g.mu.Lock()
+		g.closed = true
+		g.failPendingLocked(ErrRuntimeClosed)
+		g.mu.Unlock()
+	}
 	close(r.stopCh)
 	r.mu.Unlock()
 
@@ -28,7 +36,7 @@ func (r *Runtime) OpenGroup(ctx context.Context, opts GroupOptions) error {
 		return err
 	}
 
-	g, err := newGroup(ctx, r.opts.NodeID, opts)
+	g, err := newGroup(ctx, r.opts.NodeID, r.opts.Raft, opts)
 	if err != nil {
 		return err
 	}
@@ -51,7 +59,7 @@ func (r *Runtime) BootstrapGroup(ctx context.Context, req BootstrapGroupRequest)
 		return err
 	}
 
-	g, err := newGroup(ctx, r.opts.NodeID, req.Group)
+	g, err := newGroup(ctx, r.opts.NodeID, r.opts.Raft, req.Group)
 	if err != nil {
 		return err
 	}
@@ -66,6 +74,20 @@ func (r *Runtime) BootstrapGroup(ctx context.Context, req BootstrapGroupRequest)
 		return ErrGroupExists
 	}
 	r.groups[req.Group.ID] = g
+	if len(req.Voters) > 0 {
+		peers := make([]raft.Peer, 0, len(req.Voters))
+		for _, id := range req.Voters {
+			peers = append(peers, raft.Peer{ID: uint64(id)})
+		}
+		if err := g.rawNode.Bootstrap(peers); err != nil {
+			delete(r.groups, req.Group.ID)
+			return err
+		}
+		if len(req.Voters) == 1 && req.Voters[0] == r.opts.NodeID {
+			g.enqueueControl(controlAction{kind: controlCampaign})
+		}
+	}
+	r.scheduler.enqueue(req.Group.ID)
 	return nil
 }
 
@@ -80,7 +102,10 @@ func (r *Runtime) CloseGroup(ctx context.Context, groupID GroupID) error {
 	if !ok {
 		return ErrGroupNotFound
 	}
+	g.mu.Lock()
 	g.closed = true
+	g.failPendingLocked(ErrGroupClosed)
+	g.mu.Unlock()
 	delete(r.groups, groupID)
 	return nil
 }
@@ -103,15 +128,67 @@ func (r *Runtime) Step(ctx context.Context, msg Envelope) error {
 }
 
 func (r *Runtime) Propose(ctx context.Context, groupID GroupID, data []byte) (Future, error) {
-	return nil, errNotImplemented
+	r.mu.RLock()
+	if r.closed {
+		r.mu.RUnlock()
+		return nil, ErrRuntimeClosed
+	}
+	g, ok := r.groups[groupID]
+	r.mu.RUnlock()
+	if !ok {
+		return nil, ErrGroupNotFound
+	}
+
+	fut := newFuture()
+	g.enqueueControl(controlAction{
+		kind:   controlPropose,
+		data:   append([]byte(nil), data...),
+		future: fut,
+	})
+	r.scheduler.enqueue(groupID)
+	return fut, nil
 }
 
 func (r *Runtime) ChangeConfig(ctx context.Context, groupID GroupID, change ConfigChange) (Future, error) {
-	return nil, errNotImplemented
+	r.mu.RLock()
+	if r.closed {
+		r.mu.RUnlock()
+		return nil, ErrRuntimeClosed
+	}
+	g, ok := r.groups[groupID]
+	r.mu.RUnlock()
+	if !ok {
+		return nil, ErrGroupNotFound
+	}
+
+	fut := newFuture()
+	g.enqueueControl(controlAction{
+		kind:   controlConfigChange,
+		change: change,
+		future: fut,
+	})
+	r.scheduler.enqueue(groupID)
+	return fut, nil
 }
 
 func (r *Runtime) TransferLeadership(ctx context.Context, groupID GroupID, target NodeID) error {
-	return errNotImplemented
+	r.mu.RLock()
+	if r.closed {
+		r.mu.RUnlock()
+		return ErrRuntimeClosed
+	}
+	g, ok := r.groups[groupID]
+	r.mu.RUnlock()
+	if !ok {
+		return ErrGroupNotFound
+	}
+
+	g.enqueueControl(controlAction{
+		kind:   controlTransferLeader,
+		target: target,
+	})
+	r.scheduler.enqueue(groupID)
+	return nil
 }
 
 func (r *Runtime) Status(groupID GroupID) (Status, error) {

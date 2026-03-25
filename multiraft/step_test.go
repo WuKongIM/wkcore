@@ -3,6 +3,7 @@ package multiraft
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -116,47 +117,124 @@ func (f *internalFakeTransport) Send(ctx context.Context, batch []Envelope) erro
 	return nil
 }
 
-type internalFakeStorage struct{}
+type internalFakeStorage struct {
+	mu             sync.Mutex
+	state          BootstrapState
+	entries        []raftpb.Entry
+	snapshot       raftpb.Snapshot
+	saveCount      int
+	lastSavedIndex uint64
+	lastApplied    uint64
+}
 
 func (f *internalFakeStorage) InitialState(ctx context.Context) (BootstrapState, error) {
-	return BootstrapState{}, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.state, nil
 }
 
 func (f *internalFakeStorage) Entries(ctx context.Context, lo, hi, maxSize uint64) ([]raftpb.Entry, error) {
-	return nil, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var out []raftpb.Entry
+	for _, entry := range f.entries {
+		if entry.Index >= lo && entry.Index < hi {
+			out = append(out, entry)
+		}
+	}
+	return out, nil
 }
 
 func (f *internalFakeStorage) Term(ctx context.Context, index uint64) (uint64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	for _, entry := range f.entries {
+		if entry.Index == index {
+			return entry.Term, nil
+		}
+	}
 	return 0, nil
 }
 
 func (f *internalFakeStorage) FirstIndex(ctx context.Context) (uint64, error) {
-	return 0, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if len(f.entries) == 0 {
+		return 1, nil
+	}
+	return f.entries[0].Index, nil
 }
 
 func (f *internalFakeStorage) LastIndex(ctx context.Context) (uint64, error) {
-	return 0, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if len(f.entries) == 0 {
+		return f.snapshot.Metadata.Index, nil
+	}
+	return f.entries[len(f.entries)-1].Index, nil
 }
 
 func (f *internalFakeStorage) Snapshot(ctx context.Context) (raftpb.Snapshot, error) {
-	return raftpb.Snapshot{}, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.snapshot, nil
 }
 
 func (f *internalFakeStorage) Save(ctx context.Context, st PersistentState) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.saveCount++
+	if st.HardState != nil {
+		f.state.HardState = *st.HardState
+		if st.HardState.Commit > f.lastSavedIndex {
+			f.lastSavedIndex = st.HardState.Commit
+		}
+	}
+	if len(st.Entries) > 0 {
+		f.entries = append([]raftpb.Entry(nil), st.Entries...)
+		f.lastSavedIndex = st.Entries[len(st.Entries)-1].Index
+	}
+	if st.Snapshot != nil {
+		f.snapshot = *st.Snapshot
+		f.lastSavedIndex = st.Snapshot.Metadata.Index
+	}
 	return nil
 }
 
 func (f *internalFakeStorage) MarkApplied(ctx context.Context, index uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.lastApplied = index
+	f.state.AppliedIndex = index
 	return nil
 }
 
-type internalFakeStateMachine struct{}
+type internalFakeStateMachine struct {
+	mu           sync.Mutex
+	applied      [][]byte
+	restoreCount int
+	lastSnapshot Snapshot
+}
 
 func (f *internalFakeStateMachine) Apply(ctx context.Context, cmd Command) ([]byte, error) {
-	return nil, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.applied = append(f.applied, append([]byte(nil), cmd.Data...))
+	return append([]byte("ok:"), cmd.Data...), nil
 }
 
 func (f *internalFakeStateMachine) Restore(ctx context.Context, snap Snapshot) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.restoreCount++
+	f.lastSnapshot = snap
 	return nil
 }
 
