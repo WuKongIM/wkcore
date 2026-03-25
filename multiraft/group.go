@@ -10,22 +10,29 @@ import (
 )
 
 type group struct {
-	mu           sync.Mutex
-	id           GroupID
-	storage      Storage
-	stateMachine StateMachine
-	status       Status
-	storageView  *storageAdapter
-	closed       bool
-	fatalErr     error
-	rawNode      *raft.RawNode
-	requests     []raftpb.Message
-	requestCount int
-	controls     []controlAction
-	proposals    []*future
-	configs      []*future
-	tickPending  bool
-	tickCount    int
+	mu                 sync.Mutex
+	id                 GroupID
+	storage            Storage
+	stateMachine       StateMachine
+	status             Status
+	storageView        *storageAdapter
+	closed             bool
+	fatalErr           error
+	rawNode            *raft.RawNode
+	requests           []raftpb.Message
+	requestCount       int
+	controls           []controlAction
+	submittedProposals []*future
+	submittedConfigs   []*future
+	pendingProposals   map[uint64]trackedFuture
+	pendingConfigs     map[uint64]trackedFuture
+	tickPending        bool
+	tickCount          int
+}
+
+type trackedFuture struct {
+	future *future
+	term   uint64
 }
 
 type controlKind uint8
@@ -146,7 +153,7 @@ func (g *group) processControls() {
 				continue
 			}
 			g.mu.Lock()
-			g.proposals = append(g.proposals, action.future)
+			g.submittedProposals = append(g.submittedProposals, action.future)
 			g.mu.Unlock()
 		case controlConfigChange:
 			cc, err := toRaftConfChange(action.change)
@@ -159,7 +166,7 @@ func (g *group) processControls() {
 				continue
 			}
 			g.mu.Lock()
-			g.configs = append(g.configs, action.future)
+			g.submittedConfigs = append(g.submittedConfigs, action.future)
 			g.mu.Unlock()
 		case controlCampaign:
 			_ = g.rawNode.Campaign()
@@ -198,6 +205,7 @@ func (g *group) processReady(ctx context.Context, transport Transport) bool {
 		g.rawNode.Advance(ready)
 		return g.rawNode.HasReady()
 	}
+	g.trackReadyEntries(ready.Entries)
 
 	if len(ready.Messages) > 0 {
 		_ = transport.Send(ctx, wrapMessages(g.id, ready.Messages))
@@ -229,7 +237,7 @@ func (g *group) processReady(ctx context.Context, transport Transport) bool {
 				Term:    entry.Term,
 				Data:    append([]byte(nil), entry.Data...),
 			})
-			g.resolveNextProposal(Result{
+			g.resolveProposal(entry.Index, entry.Term, Result{
 				Index: entry.Index,
 				Term:  entry.Term,
 				Data:  result,
@@ -241,11 +249,11 @@ func (g *group) processReady(ctx context.Context, transport Transport) bool {
 		case raftpb.EntryConfChange:
 			var cc raftpb.ConfChange
 			if err := cc.Unmarshal(entry.Data); err != nil {
-				g.resolveNextConfig(Result{}, err)
+				g.resolveConfig(entry.Index, entry.Term, Result{}, err)
 				continue
 			}
 			g.rawNode.ApplyConfChange(cc)
-			g.resolveNextConfig(Result{
+			g.resolveConfig(entry.Index, entry.Term, Result{
 				Index: entry.Index,
 				Term:  entry.Term,
 			}, nil)
@@ -264,11 +272,15 @@ func (g *group) refreshStatus() {
 	st := g.rawNode.Status()
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	prevRole := g.status.Role
 	g.status.LeaderID = NodeID(st.Lead)
 	g.status.Term = st.Term
 	g.status.CommitIndex = st.Commit
 	g.status.AppliedIndex = st.Applied
 	g.status.Role = mapRole(st.RaftState)
+	if prevRole == RoleLeader && g.status.Role != RoleLeader {
+		g.failLeadershipDependentLocked(ErrNotLeader)
+	}
 }
 
 func (g *group) appliedIndex() uint64 {
@@ -315,15 +327,50 @@ func (g *group) fail(err error) {
 	g.failPendingLocked(err)
 }
 
-func (g *group) resolveNextProposal(result Result, err error) {
+func (g *group) trackReadyEntries(entries []raftpb.Entry) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if len(g.proposals) == 0 {
+
+	for _, entry := range entries {
+		switch entry.Type {
+		case raftpb.EntryNormal:
+			if len(entry.Data) == 0 || len(g.submittedProposals) == 0 {
+				continue
+			}
+			if g.pendingProposals == nil {
+				g.pendingProposals = make(map[uint64]trackedFuture)
+			}
+			g.pendingProposals[entry.Index] = trackedFuture{
+				future: g.submittedProposals[0],
+				term:   entry.Term,
+			}
+			g.submittedProposals = g.submittedProposals[1:]
+		case raftpb.EntryConfChange:
+			if len(g.submittedConfigs) == 0 {
+				continue
+			}
+			if g.pendingConfigs == nil {
+				g.pendingConfigs = make(map[uint64]trackedFuture)
+			}
+			g.pendingConfigs[entry.Index] = trackedFuture{
+				future: g.submittedConfigs[0],
+				term:   entry.Term,
+			}
+			g.submittedConfigs = g.submittedConfigs[1:]
+		}
+	}
+}
+
+func (g *group) resolveProposal(index, term uint64, result Result, err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	pending, ok := g.pendingProposals[index]
+	if !ok || pending.term != term {
 		return
 	}
-	fut := g.proposals[0]
-	g.proposals = g.proposals[1:]
-	fut.resolve(result, err)
+	delete(g.pendingProposals, index)
+	pending.future.resolve(result, err)
 }
 
 func (g *group) failPending(err error) {
@@ -333,25 +380,56 @@ func (g *group) failPending(err error) {
 }
 
 func (g *group) failPendingLocked(err error) {
-	for _, fut := range g.proposals {
+	for _, fut := range g.submittedProposals {
 		fut.resolve(Result{}, err)
 	}
-	for _, fut := range g.configs {
+	for _, fut := range g.submittedConfigs {
 		fut.resolve(Result{}, err)
 	}
-	g.proposals = nil
-	g.configs = nil
+	for index, pending := range g.pendingProposals {
+		pending.future.resolve(Result{}, err)
+		delete(g.pendingProposals, index)
+	}
+	for index, pending := range g.pendingConfigs {
+		pending.future.resolve(Result{}, err)
+		delete(g.pendingConfigs, index)
+	}
+	g.submittedProposals = nil
+	g.submittedConfigs = nil
 }
 
-func (g *group) resolveNextConfig(result Result, err error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if len(g.configs) == 0 {
+func (g *group) failLeadershipDependentLocked(err error) {
+	if err == nil {
 		return
 	}
-	fut := g.configs[0]
-	g.configs = g.configs[1:]
-	fut.resolve(result, err)
+	for _, fut := range g.submittedProposals {
+		fut.resolve(Result{}, err)
+	}
+	for _, fut := range g.submittedConfigs {
+		fut.resolve(Result{}, err)
+	}
+	for index, pending := range g.pendingProposals {
+		pending.future.resolve(Result{}, err)
+		delete(g.pendingProposals, index)
+	}
+	for index, pending := range g.pendingConfigs {
+		pending.future.resolve(Result{}, err)
+		delete(g.pendingConfigs, index)
+	}
+	g.submittedProposals = nil
+	g.submittedConfigs = nil
+}
+
+func (g *group) resolveConfig(index, term uint64, result Result, err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	pending, ok := g.pendingConfigs[index]
+	if !ok || pending.term != term {
+		return
+	}
+	delete(g.pendingConfigs, index)
+	pending.future.resolve(result, err)
 }
 
 func wrapMessages(groupID GroupID, messages []raftpb.Message) []Envelope {

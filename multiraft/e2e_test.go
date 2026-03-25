@@ -128,7 +128,14 @@ type asyncTestNetwork struct {
 	err error
 	wg  sync.WaitGroup
 
+	blocked map[networkLink]struct{}
+
 	cluster *testCluster
+}
+
+type networkLink struct {
+	from NodeID
+	to   NodeID
 }
 
 func newAsyncTestCluster(t *testing.T, nodeIDs []NodeID, cfg asyncNetworkConfig) *testCluster {
@@ -186,6 +193,7 @@ func newAsyncTestNetwork(cfg asyncNetworkConfig) *asyncTestNetwork {
 		maxDelay: cfg.MaxDelay,
 		stopCh:   make(chan struct{}),
 		rng:      rand.New(rand.NewSource(cfg.Seed)),
+		blocked:  make(map[networkLink]struct{}),
 	}
 }
 
@@ -193,6 +201,19 @@ func (c *testCluster) runtime(nodeID NodeID) *Runtime {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.runtimes[nodeID]
+}
+
+func (c *testCluster) otherNodes(nodeID NodeID) []NodeID {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	out := make([]NodeID, 0, len(c.runtimes)-1)
+	for id := range c.runtimes {
+		if id != nodeID {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func (c *testCluster) bootstrapGroup(t *testing.T, groupID GroupID, voters []NodeID) {
@@ -274,6 +295,20 @@ func (c *testCluster) pickFollower(leaderID NodeID) NodeID {
 	return 0
 }
 
+func (c *testCluster) partitionNode(nodeID NodeID) {
+	for _, peer := range c.otherNodes(nodeID) {
+		c.network.block(nodeID, peer)
+		c.network.block(peer, nodeID)
+	}
+}
+
+func (c *testCluster) healNode(nodeID NodeID) {
+	for _, peer := range c.otherNodes(nodeID) {
+		c.network.unblock(nodeID, peer)
+		c.network.unblock(peer, nodeID)
+	}
+}
+
 func (c *testCluster) waitForAllApplied(t *testing.T, groupID GroupID, data []byte) {
 	t.Helper()
 
@@ -317,6 +352,49 @@ func (c *testCluster) waitForAllAppliedSequence(t *testing.T, groupID GroupID, c
 			fsm.mu.Unlock()
 		}
 		return true
+	})
+}
+
+func (c *testCluster) waitForLeaderAmong(t *testing.T, groupID GroupID, candidates []NodeID) NodeID {
+	t.Helper()
+
+	const stableWindow = 100 * time.Millisecond
+
+	var (
+		lastLeader NodeID
+		stableFrom time.Time
+	)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		c.requireHealthyNetwork(t)
+
+		leaderID, ok := c.currentLeaderAmong(groupID, candidates)
+		if ok {
+			if leaderID != lastLeader {
+				lastLeader = leaderID
+				stableFrom = time.Now()
+			}
+			if time.Since(stableFrom) >= stableWindow {
+				return leaderID
+			}
+		} else {
+			lastLeader = 0
+			stableFrom = time.Time{}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	c.requireHealthyNetwork(t)
+	t.Fatal("cluster condition not satisfied before timeout")
+	return 0
+}
+
+func (c *testCluster) waitForNodeCommitIndex(t *testing.T, nodeID NodeID, groupID GroupID, index uint64) {
+	t.Helper()
+
+	c.waitForCondition(t, func() bool {
+		st, err := c.runtime(nodeID).Status(groupID)
+		return err == nil && st.CommitIndex >= index
 	})
 }
 
@@ -388,6 +466,36 @@ func (c *testCluster) currentLeader(groupID GroupID) (NodeID, bool) {
 	return leaderID, leaderCount == 1 && leaderID != 0
 }
 
+func (c *testCluster) currentLeaderAmong(groupID GroupID, candidates []NodeID) (NodeID, bool) {
+	var (
+		leaderID    NodeID
+		leaderCount int
+	)
+	for _, nodeID := range candidates {
+		rt := c.runtime(nodeID)
+		if rt == nil {
+			return 0, false
+		}
+		st, err := rt.Status(groupID)
+		if err != nil {
+			return 0, false
+		}
+		if st.Role == RoleCandidate {
+			return 0, false
+		}
+		if st.Role == RoleLeader {
+			leaderCount++
+			if leaderID == 0 {
+				leaderID = st.NodeID
+			}
+			if st.NodeID != leaderID {
+				return 0, false
+			}
+		}
+	}
+	return leaderID, leaderCount == 1 && leaderID != 0
+}
+
 func (c *testCluster) waitForCondition(t *testing.T, fn func() bool) {
 	t.Helper()
 
@@ -437,6 +545,25 @@ func (n *asyncTestNetwork) randomDelay() time.Duration {
 	return time.Duration(n.rng.Int63n(int64(n.maxDelay) + 1))
 }
 
+func (n *asyncTestNetwork) block(from, to NodeID) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.blocked[networkLink{from: from, to: to}] = struct{}{}
+}
+
+func (n *asyncTestNetwork) unblock(from, to NodeID) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	delete(n.blocked, networkLink{from: from, to: to})
+}
+
+func (n *asyncTestNetwork) isBlocked(from, to NodeID) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	_, ok := n.blocked[networkLink{from: from, to: to}]
+	return ok
+}
+
 func (n *asyncTestNetwork) close() {
 	close(n.stopCh)
 	n.wg.Wait()
@@ -475,6 +602,9 @@ func (t *clusterTransport) Send(ctx context.Context, batch []Envelope) error {
 			}
 
 			target := NodeID(env.Message.To)
+			if t.network.isBlocked(t.from, target) {
+				return
+			}
 			rt := t.network.cluster.runtime(target)
 			if rt == nil {
 				return

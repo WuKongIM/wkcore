@@ -146,6 +146,72 @@ func TestFatalGroupRejectsFutureOperations(t *testing.T) {
 	}
 }
 
+func TestProposeCorrelatesFutureByCommittedIndex(t *testing.T) {
+	rt := newStartedRuntime(t)
+	groupID := openSingleNodeLeader(t, rt, 15)
+
+	fut, err := rt.Propose(context.Background(), groupID, []byte("set idx=1"))
+	if err != nil {
+		t.Fatalf("Propose() error = %v", err)
+	}
+
+	res := waitForFutureResult(t, fut)
+	if res.Index == 0 {
+		t.Fatalf("Wait().Index = 0")
+	}
+
+	st, err := rt.Status(groupID)
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if res.Index != st.AppliedIndex {
+		t.Fatalf("Wait().Index = %d, want applied index %d", res.Index, st.AppliedIndex)
+	}
+}
+
+func TestRemoteCommitDoesNotResolveLocalFuture(t *testing.T) {
+	cluster := newAsyncTestCluster(t, []NodeID{1, 2, 3}, asyncNetworkConfig{
+		MaxDelay: 5 * time.Millisecond,
+		Seed:     13,
+	})
+	groupID := GroupID(16)
+
+	cluster.bootstrapGroup(t, groupID, []NodeID{1, 2, 3})
+	cluster.waitForBootstrapApplied(t, groupID, 3)
+
+	oldLeader := cluster.waitForLeader(t, groupID)
+	cluster.partitionNode(oldLeader)
+
+	stale, err := cluster.runtime(oldLeader).Propose(context.Background(), groupID, []byte("stale"))
+	if err != nil {
+		t.Fatalf("Propose(stale) error = %v", err)
+	}
+
+	newLeader := cluster.waitForLeaderAmong(t, groupID, cluster.otherNodes(oldLeader))
+	fresh, err := cluster.runtime(newLeader).Propose(context.Background(), groupID, []byte("fresh"))
+	if err != nil {
+		t.Fatalf("Propose(fresh) error = %v", err)
+	}
+
+	freshRes := waitForFutureResult(t, fresh)
+	if string(freshRes.Data) != "ok:fresh" {
+		t.Fatalf("fresh Wait().Data = %q", freshRes.Data)
+	}
+
+	cluster.healNode(oldLeader)
+	cluster.waitForNodeCommitIndex(t, oldLeader, groupID, freshRes.Index)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	res, err := stale.Wait(ctx)
+	if err == nil {
+		t.Fatalf("stale future resolved unexpectedly: result=%+v err=%v", res, err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, ErrNotLeader) {
+		t.Fatalf("stale future error = %v", err)
+	}
+}
+
 func openSingleNodeLeader(t *testing.T, rt *Runtime, id GroupID) GroupID {
 	t.Helper()
 
