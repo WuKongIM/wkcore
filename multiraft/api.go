@@ -7,10 +7,19 @@ import (
 
 func (r *Runtime) Close() error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
+	if r.closed {
+		r.mu.Unlock()
+		return nil
+	}
 	r.closed = true
+	close(r.stopCh)
+	r.mu.Unlock()
+
+	r.wg.Wait()
+
+	r.mu.Lock()
 	r.groups = make(map[GroupID]*group)
+	r.mu.Unlock()
 	return nil
 }
 
@@ -77,7 +86,20 @@ func (r *Runtime) CloseGroup(ctx context.Context, groupID GroupID) error {
 }
 
 func (r *Runtime) Step(ctx context.Context, msg Envelope) error {
-	return errNotImplemented
+	r.mu.RLock()
+	if r.closed {
+		r.mu.RUnlock()
+		return ErrRuntimeClosed
+	}
+	g, ok := r.groups[msg.GroupID]
+	r.mu.RUnlock()
+	if !ok {
+		return ErrGroupNotFound
+	}
+
+	g.enqueueRequest(msg.Message)
+	r.scheduler.enqueue(msg.GroupID)
+	return nil
 }
 
 func (r *Runtime) Propose(ctx context.Context, groupID GroupID, data []byte) (Future, error) {
