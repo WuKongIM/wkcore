@@ -53,3 +53,36 @@ func TestOpenGroupRejectsDuplicateID(t *testing.T) {
 		t.Fatalf("expected ErrGroupExists, got %v", err)
 	}
 }
+
+func TestBootstrapGroupCreatesInitialMembership(t *testing.T) {
+	rt := newTestRuntime(t)
+	err := rt.BootstrapGroup(context.Background(), multiraft.BootstrapGroupRequest{
+		Group:    newGroupOptions(20),
+		Voters:   []multiraft.NodeID{1, 2, 3},
+		Learners: nil,
+	})
+	if err != nil {
+		t.Fatalf("BootstrapGroup() error = %v", err)
+	}
+	st, err := rt.Status(20)
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if st.GroupID != multiraft.GroupID(20) {
+		t.Fatalf("Status().GroupID = %d", st.GroupID)
+	}
+}
+
+func TestCloseGroupMakesFutureOperationsFail(t *testing.T) {
+	rt := newTestRuntime(t)
+	if err := rt.OpenGroup(context.Background(), newGroupOptions(10)); err != nil {
+		t.Fatalf("OpenGroup() error = %v", err)
+	}
+	if err := rt.CloseGroup(context.Background(), 10); err != nil {
+		t.Fatalf("CloseGroup() error = %v", err)
+	}
+	_, err := rt.Status(10)
+	if !errors.Is(err, multiraft.ErrGroupNotFound) {
+		t.Fatalf("expected ErrGroupNotFound, got %v", err)
+	}
+}

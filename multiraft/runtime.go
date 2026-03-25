@@ -6,6 +6,7 @@ type Runtime struct {
 	opts Options
 
 	mu     sync.RWMutex
+	closed bool
 	groups map[GroupID]*group
 }
 

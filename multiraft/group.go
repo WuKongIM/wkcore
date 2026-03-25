@@ -8,6 +8,7 @@ type group struct {
 	stateMachine StateMachine
 	status       Status
 	storageView  *storageAdapter
+	closed       bool
 }
 
 func newGroup(ctx context.Context, nodeID NodeID, opts GroupOptions) (*group, error) {
