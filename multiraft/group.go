@@ -337,6 +337,8 @@ func toRaftConfChange(change ConfigChange) (raftpb.ConfChange, error) {
 		cc.Type = raftpb.ConfChangeRemoveNode
 	case AddLearner:
 		cc.Type = raftpb.ConfChangeAddLearnerNode
+	case PromoteLearner:
+		cc.Type = raftpb.ConfChangeAddNode
 	default:
 		return raftpb.ConfChange{}, errNotImplemented
 	}
