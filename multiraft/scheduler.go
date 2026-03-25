@@ -53,7 +53,6 @@ func (s *scheduler) done(groupID GroupID) bool {
 		return false
 	}
 	delete(s.dirty, groupID)
-	s.queued[groupID] = struct{}{}
 	return true
 }
 

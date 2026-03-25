@@ -42,6 +42,51 @@ func TestRuntimeTickLoopEnqueuesOpenGroups(t *testing.T) {
 	waitForCondition(t, func() bool { return groupTickCount(rt, 101) > 0 })
 }
 
+func TestWrapMessagesClonesRaftMessagePayloads(t *testing.T) {
+	msgs := []raftpb.Message{{
+		Type:    raftpb.MsgApp,
+		From:    1,
+		To:      2,
+		Context: []byte("ctx"),
+		Entries: []raftpb.Entry{{
+			Index: 1,
+			Term:  1,
+			Data:  []byte("entry"),
+		}},
+		Snapshot: &raftpb.Snapshot{
+			Data: []byte("snap"),
+			Metadata: raftpb.SnapshotMetadata{
+				Index: 1,
+				Term:  1,
+				ConfState: raftpb.ConfState{
+					Voters: []uint64{1, 2, 3},
+				},
+			},
+		},
+	}}
+
+	batch := wrapMessages(42, msgs)
+
+	msgs[0].Context[0] = 'x'
+	msgs[0].Entries[0].Data[0] = 'X'
+	msgs[0].Snapshot.Data[0] = 'Y'
+	msgs[0].Snapshot.Metadata.ConfState.Voters[0] = 99
+
+	got := batch[0].Message
+	if string(got.Context) != "ctx" {
+		t.Fatalf("Context = %q", got.Context)
+	}
+	if string(got.Entries[0].Data) != "entry" {
+		t.Fatalf("Entries[0].Data = %q", got.Entries[0].Data)
+	}
+	if got.Snapshot == nil || string(got.Snapshot.Data) != "snap" {
+		t.Fatalf("Snapshot.Data = %v", got.Snapshot)
+	}
+	if got.Snapshot.Metadata.ConfState.Voters[0] != 1 {
+		t.Fatalf("Snapshot.Metadata.ConfState.Voters[0] = %d", got.Snapshot.Metadata.ConfState.Voters[0])
+	}
+}
+
 func newStartedRuntime(t *testing.T) *Runtime {
 	t.Helper()
 

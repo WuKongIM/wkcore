@@ -293,10 +293,68 @@ func wrapMessages(groupID GroupID, messages []raftpb.Message) []Envelope {
 	for _, msg := range messages {
 		out = append(out, Envelope{
 			GroupID: groupID,
-			Message: msg,
+			Message: cloneMessage(msg),
 		})
 	}
 	return out
+}
+
+func cloneMessage(msg raftpb.Message) raftpb.Message {
+	cloned := msg
+	if len(msg.Context) > 0 {
+		cloned.Context = append([]byte(nil), msg.Context...)
+	}
+	if len(msg.Entries) > 0 {
+		cloned.Entries = make([]raftpb.Entry, len(msg.Entries))
+		for i, entry := range msg.Entries {
+			cloned.Entries[i] = cloneEntry(entry)
+		}
+	}
+	if msg.Snapshot != nil {
+		snap := cloneSnapshot(*msg.Snapshot)
+		cloned.Snapshot = &snap
+	}
+	if len(msg.Responses) > 0 {
+		cloned.Responses = make([]raftpb.Message, len(msg.Responses))
+		for i, response := range msg.Responses {
+			cloned.Responses[i] = cloneMessage(response)
+		}
+	}
+	return cloned
+}
+
+func cloneEntry(entry raftpb.Entry) raftpb.Entry {
+	cloned := entry
+	if len(entry.Data) > 0 {
+		cloned.Data = append([]byte(nil), entry.Data...)
+	}
+	return cloned
+}
+
+func cloneSnapshot(snapshot raftpb.Snapshot) raftpb.Snapshot {
+	cloned := snapshot
+	if len(snapshot.Data) > 0 {
+		cloned.Data = append([]byte(nil), snapshot.Data...)
+	}
+	cloned.Metadata.ConfState = cloneConfState(snapshot.Metadata.ConfState)
+	return cloned
+}
+
+func cloneConfState(state raftpb.ConfState) raftpb.ConfState {
+	cloned := state
+	if len(state.Voters) > 0 {
+		cloned.Voters = append([]uint64(nil), state.Voters...)
+	}
+	if len(state.Learners) > 0 {
+		cloned.Learners = append([]uint64(nil), state.Learners...)
+	}
+	if len(state.VotersOutgoing) > 0 {
+		cloned.VotersOutgoing = append([]uint64(nil), state.VotersOutgoing...)
+	}
+	if len(state.LearnersNext) > 0 {
+		cloned.LearnersNext = append([]uint64(nil), state.LearnersNext...)
+	}
+	return cloned
 }
 
 func mapRole(state raft.StateType) Role {
