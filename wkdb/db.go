@@ -34,6 +34,10 @@ func (db *DB) Close() error {
 	return db.db.Close()
 }
 
+func (db *DB) ForSlot(slot uint64) *ShardStore {
+	return &ShardStore{db: db, slot: slot}
+}
+
 func (db *DB) getValue(key []byte) ([]byte, error) {
 	value, closer, err := db.db.Get(key)
 	if err != nil {

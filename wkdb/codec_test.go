@@ -6,8 +6,52 @@ import (
 	"encoding/hex"
 	"errors"
 	"hash/crc32"
+	"path/filepath"
 	"testing"
 )
+
+func openTestDB(t *testing.T) *DB {
+	t.Helper()
+
+	db, err := Open(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close db: %v", err)
+		}
+	})
+	return db
+}
+
+func TestForSlotReturnsShardStore(t *testing.T) {
+	db := openTestDB(t)
+
+	shard := db.ForSlot(7)
+	if shard == nil || shard.db != db || shard.slot != 7 {
+		t.Fatalf("ForSlot(7) = %#v", shard)
+	}
+}
+
+func TestStateAndIndexPrefixesIncludeSlotAndSortStably(t *testing.T) {
+	aState := encodeStatePrefix(1, TableIDUser)
+	bState := encodeStatePrefix(2, TableIDUser)
+	if bytes.Compare(aState, bState) >= 0 {
+		t.Fatalf("state prefixes did not sort by slot: %x >= %x", aState, bState)
+	}
+
+	aIndex := encodeIndexPrefix(1, TableIDChannel, channelIndexIDChannelID)
+	bIndex := encodeIndexPrefix(2, TableIDChannel, channelIndexIDChannelID)
+	if bytes.Compare(aIndex, bIndex) >= 0 {
+		t.Fatalf("index prefixes did not sort by slot: %x >= %x", aIndex, bIndex)
+	}
+
+	meta := encodeMetaPrefix(1)
+	if len(meta) == 0 {
+		t.Fatal("encodeMetaPrefix(1) returned empty prefix")
+	}
+}
 
 func TestUserPrimaryKeyEncodingMatchesDoc(t *testing.T) {
 	got := encodeUserPrimaryKey("u1001", 0)

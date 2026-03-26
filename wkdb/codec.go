@@ -12,7 +12,36 @@ const (
 	wrappedValueTag          byte = 0x0A
 	valueTypeInt             byte = 0x03
 	valueTypeBytes           byte = 0x06
+
+	keyspaceState byte = 0x10
+	keyspaceIndex byte = 0x11
+	keyspaceMeta  byte = 0x12
+	keyspaceRaft  byte = 0x20
 )
+
+func encodeStatePrefix(slot uint64, tableID uint32) []byte {
+	key := make([]byte, 0, 1+8+4)
+	key = append(key, keyspaceState)
+	key = binary.BigEndian.AppendUint64(key, slot)
+	key = binary.BigEndian.AppendUint32(key, tableID)
+	return key
+}
+
+func encodeIndexPrefix(slot uint64, tableID uint32, indexID uint16) []byte {
+	key := make([]byte, 0, 1+8+4+2)
+	key = append(key, keyspaceIndex)
+	key = binary.BigEndian.AppendUint64(key, slot)
+	key = binary.BigEndian.AppendUint32(key, tableID)
+	key = binary.BigEndian.AppendUint16(key, indexID)
+	return key
+}
+
+func encodeMetaPrefix(slot uint64) []byte {
+	key := make([]byte, 0, 1+8)
+	key = append(key, keyspaceMeta)
+	key = binary.BigEndian.AppendUint64(key, slot)
+	return key
+}
 
 func encodeUserPrimaryKey(uid string, familyID uint16) []byte {
 	key := make([]byte, 0, 32)
