@@ -7,6 +7,22 @@ import (
 	"time"
 )
 
+func TestEnsurePendingConfigCapacityPreservesTrackedFuture(t *testing.T) {
+	fut := newFuture()
+	g := &group{
+		pendingConfigs: map[uint64]trackedFuture{
+			9: {future: fut, term: 4},
+		},
+	}
+
+	g.ensurePendingConfigCapacity(3)
+
+	tracked, ok := g.pendingConfigs[9]
+	if !ok || tracked.future != fut || tracked.term != 4 {
+		t.Fatalf("tracked future was lost: %+v ok=%v", tracked, ok)
+	}
+}
+
 func TestChangeConfigAppliesAddLearner(t *testing.T) {
 	rt := newStartedRuntime(t)
 	groupID := openSingleNodeLeader(t, rt, 30)
@@ -60,6 +76,74 @@ func TestChangeConfigCorrelatesFutureByCommittedIndex(t *testing.T) {
 	}
 }
 
+func TestChangeConfigRejectsWhileAnotherConfigChangeIsPending(t *testing.T) {
+	rt := newStartedRuntime(t)
+	groupID := GroupID(34)
+	store := newBlockingMarkAppliedStorage()
+
+	err := rt.BootstrapGroup(context.Background(), BootstrapGroupRequest{
+		Group: GroupOptions{
+			ID:           groupID,
+			Storage:      store,
+			StateMachine: &internalFakeStateMachine{},
+		},
+		Voters: []NodeID{1},
+	})
+	if err != nil {
+		t.Fatalf("BootstrapGroup() error = %v", err)
+	}
+
+	waitForCondition(t, func() bool {
+		st, err := rt.Status(groupID)
+		return err == nil && st.Role == RoleLeader
+	})
+
+	store.internalFakeStorage.mu.Lock()
+	baselineApplied := store.internalFakeStorage.lastApplied
+	store.internalFakeStorage.mu.Unlock()
+	store.armAfter(baselineApplied + 1)
+
+	first := mustChangeConfig(t, rt, groupID, 2)
+
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		t.Fatal("first MarkApplied() did not start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := first.Wait(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first Wait() error = %v, want %v", err, context.DeadlineExceeded)
+	}
+
+	second, err := rt.ChangeConfig(context.Background(), groupID, ConfigChange{
+		Type:   AddLearner,
+		NodeID: 3,
+	})
+	if !errors.Is(err, ErrConfigChangePending) {
+		t.Fatalf("expected ErrConfigChangePending, got future=%v err=%v", second, err)
+	}
+
+	store.unblock()
+
+	if _, err := first.Wait(context.Background()); err != nil {
+		t.Fatalf("first Wait() after unblock error = %v", err)
+	}
+}
+
+func TestChangeConfigAllowsNextConfigChangeAfterPreviousApplied(t *testing.T) {
+	rt := newStartedRuntime(t)
+	groupID := openSingleNodeLeader(t, rt, 35)
+
+	first := waitForFutureResult(t, mustChangeConfig(t, rt, groupID, 2))
+	second := waitForFutureResult(t, mustChangeConfig(t, rt, groupID, 3))
+
+	if second.Index <= first.Index {
+		t.Fatalf("second.Index = %d, want > first.Index %d", second.Index, first.Index)
+	}
+}
+
 func TestRemoteConfigChangeDoesNotResolveLocalFuture(t *testing.T) {
 	cluster := newAsyncTestCluster(t, []NodeID{1, 2, 3}, asyncNetworkConfig{
 		MaxDelay: 5 * time.Millisecond,
@@ -107,4 +191,70 @@ func TestRemoteConfigChangeDoesNotResolveLocalFuture(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, ErrNotLeader) {
 		t.Fatalf("stale config future error = %v", err)
 	}
+}
+
+func TestChangeConfigWaitBlocksUntilReadyBatchFullyCompletes(t *testing.T) {
+	rt := newStartedRuntime(t)
+	groupID := GroupID(33)
+	store := newBlockingMarkAppliedStorage()
+
+	err := rt.BootstrapGroup(context.Background(), BootstrapGroupRequest{
+		Group: GroupOptions{
+			ID:           groupID,
+			Storage:      store,
+			StateMachine: &internalFakeStateMachine{},
+		},
+		Voters: []NodeID{1},
+	})
+	if err != nil {
+		t.Fatalf("BootstrapGroup() error = %v", err)
+	}
+
+	waitForCondition(t, func() bool {
+		st, err := rt.Status(groupID)
+		return err == nil && st.Role == RoleLeader
+	})
+	store.internalFakeStorage.mu.Lock()
+	baselineApplied := store.internalFakeStorage.lastApplied
+	store.internalFakeStorage.mu.Unlock()
+	store.armAfter(baselineApplied + 1)
+
+	fut, err := rt.ChangeConfig(context.Background(), groupID, ConfigChange{
+		Type:   AddLearner,
+		NodeID: 2,
+	})
+	if err != nil {
+		t.Fatalf("ChangeConfig() error = %v", err)
+	}
+
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		t.Fatal("MarkApplied() did not start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := fut.Wait(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Wait() error = %v, want %v", err, context.DeadlineExceeded)
+	}
+
+	store.unblock()
+
+	if _, err := fut.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait() after unblock error = %v", err)
+	}
+}
+
+func mustChangeConfig(t *testing.T, rt *Runtime, groupID GroupID, nodeID NodeID) Future {
+	t.Helper()
+
+	fut, err := rt.ChangeConfig(context.Background(), groupID, ConfigChange{
+		Type:   AddLearner,
+		NodeID: nodeID,
+	})
+	if err != nil {
+		t.Fatalf("ChangeConfig(node=%d) error = %v", nodeID, err)
+	}
+	return fut
 }

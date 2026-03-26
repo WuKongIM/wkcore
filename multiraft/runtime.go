@@ -76,8 +76,8 @@ func (r *Runtime) runTicker() {
 		case <-r.stopCh:
 			return
 		case <-ticker.C:
-			var groups []*group
 			r.mu.RLock()
+			groups := make([]*group, 0, len(r.groups))
 			for _, g := range r.groups {
 				groups = append(groups, g)
 			}

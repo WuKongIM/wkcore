@@ -292,7 +292,29 @@ func TestSchedulerBackpressureDoesNotBlockRuntime(t *testing.T) {
 	}
 }
 
-func TestWrapMessagesClonesRaftMessagePayloads(t *testing.T) {
+func TestWrapMessagesIntoReusesDestinationSlice(t *testing.T) {
+	backing := make([]Envelope, 4)
+	dst := backing[:0]
+	msgs := []raftpb.Message{{
+		Type: raftpb.MsgHeartbeat,
+		From: 1,
+		To:   2,
+	}}
+
+	batch := wrapMessagesInto(dst, 42, msgs)
+
+	if len(batch) != 1 {
+		t.Fatalf("len(batch) = %d, want 1", len(batch))
+	}
+	if cap(batch) != cap(dst) {
+		t.Fatalf("cap(batch) = %d, want %d", cap(batch), cap(dst))
+	}
+	if &batch[0] != &backing[0] {
+		t.Fatal("expected destination backing slice to be reused")
+	}
+}
+
+func TestWrapMessagesIntoStillClonesRaftMessagePayloads(t *testing.T) {
 	msgs := []raftpb.Message{{
 		Type:    raftpb.MsgApp,
 		From:    1,
@@ -315,7 +337,7 @@ func TestWrapMessagesClonesRaftMessagePayloads(t *testing.T) {
 		},
 	}}
 
-	batch := wrapMessages(42, msgs)
+	batch := wrapMessagesInto(nil, 42, msgs)
 
 	msgs[0].Context[0] = 'x'
 	msgs[0].Entries[0].Data[0] = 'X'
@@ -334,6 +356,58 @@ func TestWrapMessagesClonesRaftMessagePayloads(t *testing.T) {
 	}
 	if got.Snapshot.Metadata.ConfState.Voters[0] != 1 {
 		t.Fatalf("Snapshot.Metadata.ConfState.Voters[0] = %d", got.Snapshot.Metadata.ConfState.Voters[0])
+	}
+}
+
+func TestRequestDrainHelperMovesQueuedMessagesIntoReusableWorkSlice(t *testing.T) {
+	g := newTestGroupForDrain()
+	if err := g.enqueueRequest(raftpb.Message{Type: raftpb.MsgHeartbeat, From: 2, To: 1}); err != nil {
+		t.Fatalf("enqueueRequest() error = %v", err)
+	}
+
+	batch := g.takeRequestBatch()
+	if len(batch) != 1 {
+		t.Fatalf("len(batch) = %d, want 1", len(batch))
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.requests) != 0 {
+		t.Fatalf("len(g.requests) = %d, want 0", len(g.requests))
+	}
+}
+
+func TestControlDrainHelperMovesQueuedActionsIntoReusableWorkSlice(t *testing.T) {
+	g := newLeaderTestGroupForDrain()
+	if err := g.enqueueControl(controlAction{kind: controlTransferLeader, target: 2}); err != nil {
+		t.Fatalf("enqueueControl() error = %v", err)
+	}
+
+	batch := g.takeControlBatch()
+	if len(batch) != 1 {
+		t.Fatalf("len(batch) = %d, want 1", len(batch))
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.controls) != 0 {
+		t.Fatalf("len(g.controls) = %d, want 0", len(g.controls))
+	}
+}
+
+func TestResolutionBufferHelpersReuseBackingSlice(t *testing.T) {
+	g := newTestGroupForDrain()
+
+	buf := g.takeResolutionBuffer()
+	buf = append(buf, futureResolution{index: 1})
+	g.releaseResolutionBuffer(buf)
+
+	reused := g.takeResolutionBuffer()
+	if len(reused) != 0 {
+		t.Fatalf("len(reused) = %d, want 0", len(reused))
+	}
+	if cap(reused) == 0 {
+		t.Fatal("expected reused capacity to be retained")
 	}
 }
 
@@ -371,6 +445,18 @@ func newInternalGroupOptions(id GroupID) GroupOptions {
 		Storage:      &internalFakeStorage{},
 		StateMachine: &internalFakeStateMachine{},
 	}
+}
+
+func newTestGroupForDrain() *group {
+	g := &group{}
+	g.cond = sync.NewCond(&g.mu)
+	return g
+}
+
+func newLeaderTestGroupForDrain() *group {
+	g := newTestGroupForDrain()
+	g.status.Role = RoleLeader
+	return g
 }
 
 func waitForCondition(t *testing.T, fn func() bool) {

@@ -22,12 +22,18 @@ type group struct {
 	processing         bool
 	rawNode            *raft.RawNode
 	requests           []raftpb.Message
+	requestWorkBuf     []raftpb.Message
 	requestCount       int
 	controls           []controlAction
+	controlWorkBuf     []controlAction
 	submittedProposals []*future
 	submittedConfigs   []*future
 	pendingProposals   map[uint64]trackedFuture
 	pendingConfigs     map[uint64]trackedFuture
+	pendingProposalCap int
+	pendingConfigCap   int
+	resolutionBuf      []futureResolution
+	transportBuf       []Envelope
 	tickPending        bool
 	tickCount          int
 }
@@ -35,6 +41,14 @@ type group struct {
 type trackedFuture struct {
 	future *future
 	term   uint64
+}
+
+type futureResolution struct {
+	kind   controlKind
+	index  uint64
+	term   uint64
+	result Result
+	err    error
 }
 
 type controlKind uint8
@@ -110,16 +124,14 @@ func (g *group) enqueueRequest(msg raftpb.Message) error {
 	if err := g.admissionErrLocked(); err != nil {
 		return err
 	}
+	g.observeQueuedMessageLocked(msg)
 	g.requests = append(g.requests, msg)
 	return nil
 }
 
 func (g *group) processRequests() {
-	g.mu.Lock()
-	requests := append([]raftpb.Message(nil), g.requests...)
-	g.requestCount += len(g.requests)
-	g.requests = g.requests[:0]
-	g.mu.Unlock()
+	requests := g.takeRequestBatch()
+	defer g.releaseRequestBatch(requests)
 
 	for _, msg := range requests {
 		_ = g.rawNode.Step(msg)
@@ -137,16 +149,17 @@ func (g *group) enqueueControl(action controlAction) error {
 		if g.status.Role != RoleLeader {
 			return ErrNotLeader
 		}
+		if action.kind == controlConfigChange && g.hasPendingConfigChangeLocked() {
+			return ErrConfigChangePending
+		}
 	}
 	g.controls = append(g.controls, action)
 	return nil
 }
 
 func (g *group) processControls() {
-	g.mu.Lock()
-	controls := append([]controlAction(nil), g.controls...)
-	g.controls = g.controls[:0]
-	g.mu.Unlock()
+	controls := g.takeControlBatch()
+	defer g.releaseControlBatch(controls)
 
 	for _, action := range controls {
 		switch action.kind {
@@ -179,6 +192,66 @@ func (g *group) processControls() {
 	}
 }
 
+func (g *group) takeRequestBatch() []raftpb.Message {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	batch := g.requests
+	g.requestCount += len(batch)
+	g.requests = g.requestWorkBuf[:0]
+	g.requestWorkBuf = nil
+	return batch
+}
+
+func (g *group) releaseRequestBatch(batch []raftpb.Message) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.requestWorkBuf = batch[:0]
+}
+
+func (g *group) takeControlBatch() []controlAction {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	batch := g.controls
+	g.controls = g.controlWorkBuf[:0]
+	g.controlWorkBuf = nil
+	return batch
+}
+
+func (g *group) releaseControlBatch(batch []controlAction) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.controlWorkBuf = batch[:0]
+}
+
+func (g *group) hasPendingConfigChangeLocked() bool {
+	if len(g.submittedConfigs) > 0 || len(g.pendingConfigs) > 0 {
+		return true
+	}
+	for _, action := range g.controls {
+		if action.kind == controlConfigChange {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *group) takeResolutionBuffer() []futureResolution {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	buf := g.resolutionBuf[:0]
+	g.resolutionBuf = nil
+	return buf
+}
+
+func (g *group) releaseResolutionBuffer(buf []futureResolution) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.resolutionBuf = buf[:0]
+}
+
 func (g *group) markTickPending() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -207,13 +280,21 @@ func (g *group) processReady(ctx context.Context, transport Transport) bool {
 		g.failPending(err)
 		return false
 	}
+	proposalCount, configCount := countTrackedReadyEntries(ready.Entries)
+	g.ensurePendingProposalCapacity(proposalCount)
+	g.ensurePendingConfigCapacity(configCount)
 	g.trackReadyEntries(ready.Entries)
 
 	if len(ready.Messages) > 0 {
-		_ = transport.Send(ctx, wrapMessages(g.id, ready.Messages))
+		g.transportBuf = wrapMessagesInto(g.transportBuf[:0], g.id, ready.Messages)
+		_ = transport.Send(ctx, g.transportBuf)
 	}
 
 	lastApplied := g.appliedIndex()
+	resolutions := g.takeResolutionBuffer()
+	defer func() {
+		g.releaseResolutionBuffer(resolutions)
+	}()
 	if !raft.IsEmptySnap(ready.Snapshot) {
 		if err := g.stateMachine.Restore(ctx, Snapshot{
 			Index: ready.Snapshot.Metadata.Index,
@@ -239,35 +320,69 @@ func (g *group) processReady(ctx context.Context, transport Transport) bool {
 				Term:    entry.Term,
 				Data:    append([]byte(nil), entry.Data...),
 			})
-			g.resolveProposal(entry.Index, entry.Term, Result{
-				Index: entry.Index,
-				Term:  entry.Term,
-				Data:  result,
-			}, err)
+			resolution := futureResolution{
+				kind:  controlPropose,
+				index: entry.Index,
+				term:  entry.Term,
+				result: Result{
+					Index: entry.Index,
+					Term:  entry.Term,
+					Data:  result,
+				},
+				err: err,
+			}
 			if err != nil {
+				g.resolveProposal(entry.Index, entry.Term, resolution.result, err)
 				g.fail(err)
 				return false
 			}
+			resolutions = append(resolutions, resolution)
 		case raftpb.EntryConfChange:
 			var cc raftpb.ConfChange
 			if err := cc.Unmarshal(entry.Data); err != nil {
-				g.resolveConfig(entry.Index, entry.Term, Result{}, err)
+				resolutions = append(resolutions, futureResolution{
+					kind:  controlConfigChange,
+					index: entry.Index,
+					term:  entry.Term,
+					err:   err,
+				})
 				continue
 			}
 			g.rawNode.ApplyConfChange(cc)
-			g.resolveConfig(entry.Index, entry.Term, Result{
-				Index: entry.Index,
-				Term:  entry.Term,
-			}, nil)
+			resolutions = append(resolutions, futureResolution{
+				kind:  controlConfigChange,
+				index: entry.Index,
+				term:  entry.Term,
+				result: Result{
+					Index: entry.Index,
+					Term:  entry.Term,
+				},
+			})
 		}
 	}
 
 	if lastApplied > 0 {
-		_ = g.storage.MarkApplied(ctx, lastApplied)
+		if err := g.storage.MarkApplied(ctx, lastApplied); err != nil {
+			g.fail(err)
+			return false
+		}
 	}
 
 	g.rawNode.Advance(ready)
+	g.refreshStatus()
+	g.completeResolutions(resolutions)
 	return g.rawNode.HasReady()
+}
+
+func (g *group) completeResolutions(resolutions []futureResolution) {
+	for _, resolution := range resolutions {
+		switch resolution.kind {
+		case controlPropose:
+			g.resolveProposal(resolution.index, resolution.term, resolution.result, resolution.err)
+		case controlConfigChange:
+			g.resolveConfig(resolution.index, resolution.term, resolution.result, resolution.err)
+		}
+	}
 }
 
 func (g *group) refreshStatus() {
@@ -313,6 +428,22 @@ func (g *group) admissionErrLocked() error {
 	return nil
 }
 
+func (g *group) observeQueuedMessageLocked(msg raftpb.Message) {
+	if msg.Term <= g.status.Term {
+		return
+	}
+
+	g.status.Term = msg.Term
+	g.status.Role = RoleFollower
+
+	switch msg.Type {
+	case raftpb.MsgApp, raftpb.MsgHeartbeat, raftpb.MsgSnap:
+		g.status.LeaderID = NodeID(msg.From)
+	default:
+		g.status.LeaderID = 0
+	}
+}
+
 func (g *group) shouldProcess() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -349,6 +480,74 @@ func (g *group) fail(err error) {
 	}
 	g.fatalErr = err
 	g.failPendingLocked(err)
+}
+
+func countTrackedReadyEntries(entries []raftpb.Entry) (proposalCount, configCount int) {
+	for _, entry := range entries {
+		switch entry.Type {
+		case raftpb.EntryNormal:
+			if len(entry.Data) > 0 {
+				proposalCount++
+			}
+		case raftpb.EntryConfChange:
+			configCount++
+		}
+	}
+	return proposalCount, configCount
+}
+
+func (g *group) ensurePendingProposalCapacity(additional int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pendingProposals, g.pendingProposalCap = ensureTrackedFutureMapCapacity(
+		g.pendingProposals,
+		g.pendingProposalCap,
+		additional,
+	)
+}
+
+func (g *group) ensurePendingConfigCapacity(additional int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pendingConfigs, g.pendingConfigCap = ensureTrackedFutureMapCapacity(
+		g.pendingConfigs,
+		g.pendingConfigCap,
+		additional,
+	)
+}
+
+func ensureTrackedFutureMapCapacity(
+	current map[uint64]trackedFuture,
+	currentCap int,
+	additional int,
+) (map[uint64]trackedFuture, int) {
+	if additional <= 0 {
+		if current == nil {
+			return nil, 0
+		}
+		if currentCap < len(current) {
+			currentCap = len(current)
+		}
+		return current, currentCap
+	}
+
+	required := len(current) + additional
+	if current == nil {
+		return make(map[uint64]trackedFuture, required), required
+	}
+	if currentCap >= required {
+		return current, currentCap
+	}
+
+	nextCap := currentCap * 2
+	if nextCap < required {
+		nextCap = required
+	}
+	resized := make(map[uint64]trackedFuture, nextCap)
+	for index, pending := range current {
+		resized[index] = pending
+	}
+	return resized, nextCap
 }
 
 func (g *group) trackReadyEntries(entries []raftpb.Entry) {
@@ -457,7 +656,11 @@ func (g *group) resolveConfig(index, term uint64, result Result, err error) {
 }
 
 func wrapMessages(groupID GroupID, messages []raftpb.Message) []Envelope {
-	out := make([]Envelope, 0, len(messages))
+	return wrapMessagesInto(nil, groupID, messages)
+}
+
+func wrapMessagesInto(dst []Envelope, groupID GroupID, messages []raftpb.Message) []Envelope {
+	out := dst[:0]
 	for _, msg := range messages {
 		out = append(out, Envelope{
 			GroupID: groupID,
