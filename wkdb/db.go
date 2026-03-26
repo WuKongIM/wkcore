@@ -17,6 +17,7 @@ type DB struct {
 
 type dbTestHooks struct {
 	afterExistenceCheck func()
+	beforeImportCommit  func() error
 }
 
 func Open(path string) (*DB, error) {

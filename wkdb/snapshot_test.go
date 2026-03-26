@@ -54,6 +54,140 @@ func TestDeleteSlotDataRemovesOnlyTargetSlot(t *testing.T) {
 	}
 }
 
+func TestSlotSnapshotRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	shard := db.ForSlot(9)
+
+	originalUser := User{UID: "u1", Token: "t1", DeviceFlag: 1, DeviceLevel: 2}
+	originalChannel := Channel{ChannelID: "c1", ChannelType: 1, Ban: 1}
+	if err := shard.CreateUser(ctx, originalUser); err != nil {
+		t.Fatalf("CreateUser(): %v", err)
+	}
+	if err := shard.CreateChannel(ctx, originalChannel); err != nil {
+		t.Fatalf("CreateChannel(): %v", err)
+	}
+
+	snap, err := db.ExportSlotSnapshot(ctx, 9)
+	if err != nil {
+		t.Fatalf("ExportSlotSnapshot(): %v", err)
+	}
+	if snap.SlotID != 9 || len(snap.Data) == 0 {
+		t.Fatalf("snapshot = %#v", snap)
+	}
+
+	if err := db.DeleteSlotData(ctx, 9); err != nil {
+		t.Fatalf("DeleteSlotData(): %v", err)
+	}
+	if _, err := shard.GetUser(ctx, "u1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetUser() after delete err = %v, want ErrNotFound", err)
+	}
+
+	if err := db.ImportSlotSnapshot(ctx, snap); err != nil {
+		t.Fatalf("ImportSlotSnapshot(): %v", err)
+	}
+
+	gotUser, err := shard.GetUser(ctx, "u1")
+	if err != nil {
+		t.Fatalf("GetUser() after restore: %v", err)
+	}
+	if gotUser.Token != originalUser.Token || gotUser.DeviceLevel != originalUser.DeviceLevel {
+		t.Fatalf("restored user = %#v", gotUser)
+	}
+
+	gotChannel, err := shard.GetChannel(ctx, "c1", 1)
+	if err != nil {
+		t.Fatalf("GetChannel() after restore: %v", err)
+	}
+	if gotChannel.Ban != originalChannel.Ban {
+		t.Fatalf("restored channel = %#v", gotChannel)
+	}
+}
+
+func TestImportSlotSnapshotRejectsWrongSlot(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	if err := db.ForSlot(9).CreateUser(ctx, User{UID: "u1", Token: "t1"}); err != nil {
+		t.Fatalf("CreateUser(): %v", err)
+	}
+
+	snap, err := db.ExportSlotSnapshot(ctx, 9)
+	if err != nil {
+		t.Fatalf("ExportSlotSnapshot(): %v", err)
+	}
+	snap.SlotID = 10
+
+	if err := db.ImportSlotSnapshot(ctx, snap); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("ImportSlotSnapshot() err = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestImportSlotSnapshotRejectsChecksumMismatch(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	if err := db.ForSlot(9).CreateUser(ctx, User{UID: "u1", Token: "t1"}); err != nil {
+		t.Fatalf("CreateUser(): %v", err)
+	}
+
+	snap, err := db.ExportSlotSnapshot(ctx, 9)
+	if err != nil {
+		t.Fatalf("ExportSlotSnapshot(): %v", err)
+	}
+	snap.Data[len(snap.Data)-1] ^= 0xff
+
+	if err := db.ImportSlotSnapshot(ctx, snap); !errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("ImportSlotSnapshot() err = %v, want ErrChecksumMismatch", err)
+	}
+}
+
+func TestImportSlotSnapshotCanBeRetried(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	shard := db.ForSlot(9)
+
+	if err := shard.CreateUser(ctx, User{UID: "u1", Token: "old"}); err != nil {
+		t.Fatalf("CreateUser(old): %v", err)
+	}
+
+	restoreDB := openTestDB(t)
+	restoreShard := restoreDB.ForSlot(9)
+	if err := restoreShard.CreateUser(ctx, User{UID: "u1", Token: "stale"}); err != nil {
+		t.Fatalf("CreateUser(stale): %v", err)
+	}
+
+	snap, err := db.ExportSlotSnapshot(ctx, 9)
+	if err != nil {
+		t.Fatalf("ExportSlotSnapshot(): %v", err)
+	}
+
+	injectedErr := errors.New("injected import failure")
+	restoreDB.testHooks.beforeImportCommit = func() error {
+		restoreDB.testHooks.beforeImportCommit = nil
+		return injectedErr
+	}
+
+	if err := restoreDB.ImportSlotSnapshot(ctx, snap); !errors.Is(err, injectedErr) {
+		t.Fatalf("first ImportSlotSnapshot() err = %v, want %v", err, injectedErr)
+	}
+	if _, err := restoreShard.GetUser(ctx, "u1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetUser() after failed import err = %v, want ErrNotFound", err)
+	}
+
+	if err := restoreDB.ImportSlotSnapshot(ctx, snap); err != nil {
+		t.Fatalf("second ImportSlotSnapshot(): %v", err)
+	}
+
+	gotUser, err := restoreShard.GetUser(ctx, "u1")
+	if err != nil {
+		t.Fatalf("GetUser() after retry: %v", err)
+	}
+	if gotUser.Token != "old" {
+		t.Fatalf("restored token = %q", gotUser.Token)
+	}
+}
+
 func TestSlotAllDataSpansAreOrderedAndDisjoint(t *testing.T) {
 	spans := slotAllDataSpans(7)
 	if len(spans) != 3 {
