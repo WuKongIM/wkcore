@@ -62,16 +62,16 @@ func TestUserPrimaryKeyEncodingMatchesDoc(t *testing.T) {
 }
 
 func TestChannelPrimaryKeyEncodingMatchesDoc(t *testing.T) {
-	got := encodeChannelPrimaryKey("group-001", 1, 0)
-	want := mustHex(t, "01 00 00 00 02 00 01 00 09 67 72 6f 75 70 2d 30 30 31 80 00 00 00 00 00 00 01 00")
+	got := encodeChannelPrimaryKey(7, "group-001", 1, 0)
+	want := mustHex(t, "10 00 00 00 00 00 00 00 07 00 00 00 02 00 09 67 72 6f 75 70 2d 30 30 31 80 00 00 00 00 00 00 01 00")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("unexpected key:\n got: %x\nwant: %x", got, want)
 	}
 }
 
 func TestChannelIndexKeyEncodingMatchesDoc(t *testing.T) {
-	got := encodeChannelIDIndexKey("group-001", 1)
-	want := mustHex(t, "02 00 00 00 02 00 02 00 09 67 72 6f 75 70 2d 30 30 31 80 00 00 00 00 00 00 01")
+	got := encodeChannelIDIndexKey(7, "group-001", 1)
+	want := mustHex(t, "11 00 00 00 00 00 00 00 07 00 00 00 02 00 02 00 09 67 72 6f 75 70 2d 30 30 31 80 00 00 00 00 00 00 01")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("unexpected key:\n got: %x\nwant: %x", got, want)
 	}
@@ -87,9 +87,9 @@ func TestUserValueEncodingMatchesDoc(t *testing.T) {
 }
 
 func TestChannelValueEncodingMatchesDoc(t *testing.T) {
-	key := encodeChannelPrimaryKey("group-001", 1, 0)
+	key := encodeChannelPrimaryKey(7, "group-001", 1, 0)
 	got := encodeChannelFamilyValue(0, key)
-	want := mustHex(t, "6f 27 0b 83 0a 33 00")
+	want := mustHex(t, "91 e9 17 a3 0a 33 00")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("unexpected value:\n got: %x\nwant: %x", got, want)
 	}

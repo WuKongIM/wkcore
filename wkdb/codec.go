@@ -51,24 +51,24 @@ func encodeUserPrimaryKey(slot uint64, uid string, familyID uint16) []byte {
 	return key
 }
 
-func encodeChannelPrimaryKey(channelID string, channelType int64, familyID uint16) []byte {
+func encodeChannelPrimaryKey(slot uint64, channelID string, channelType int64, familyID uint16) []byte {
 	key := make([]byte, 0, 48)
-	key = appendTableIndexPrefix(key, recordKindPrimary, ChannelTable.ID, channelPrimaryIndexID)
+	key = encodeStatePrefix(slot, ChannelTable.ID)
 	key = appendKeyString(key, channelID)
 	key = appendKeyInt64Ordered(key, channelType)
 	key = binary.AppendUvarint(key, uint64(familyID))
 	return key
 }
 
-func encodeChannelIDIndexKey(channelID string, channelType int64) []byte {
-	key := encodeChannelIDIndexPrefix(channelID)
+func encodeChannelIDIndexKey(slot uint64, channelID string, channelType int64) []byte {
+	key := encodeChannelIDIndexPrefix(slot, channelID)
 	key = appendKeyInt64Ordered(key, channelType)
 	return key
 }
 
-func encodeChannelIDIndexPrefix(channelID string) []byte {
+func encodeChannelIDIndexPrefix(slot uint64, channelID string) []byte {
 	key := make([]byte, 0, 40)
-	key = appendTableIndexPrefix(key, recordKindSecondaryIndex, ChannelTable.ID, channelIndexIDChannelID)
+	key = encodeIndexPrefix(slot, ChannelTable.ID, channelIndexIDChannelID)
 	key = appendKeyString(key, channelID)
 	return key
 }

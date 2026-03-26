@@ -15,32 +15,35 @@ type Channel struct {
 	Ban         int64
 }
 
-func (db *DB) CreateChannel(ctx context.Context, ch Channel) error {
-	if err := db.checkContext(ctx); err != nil {
+func (s *ShardStore) CreateChannel(ctx context.Context, ch Channel) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if err := s.db.checkContext(ctx); err != nil {
 		return err
 	}
 	if err := validateChannel(ch); err != nil {
 		return err
 	}
 
-	db.mu.Lock()
-	defer db.mu.Unlock()
+	s.db.mu.Lock()
+	defer s.db.mu.Unlock()
 
-	primaryKey := encodeChannelPrimaryKey(ch.ChannelID, ch.ChannelType, channelPrimaryFamilyID)
-	if _, err := db.getValue(primaryKey); err == nil {
+	primaryKey := encodeChannelPrimaryKey(s.slot, ch.ChannelID, ch.ChannelType, channelPrimaryFamilyID)
+	if _, err := s.db.getValue(primaryKey); err == nil {
 		return ErrAlreadyExists
 	} else if !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	db.runAfterExistenceCheckHook()
-	if err := db.checkContext(ctx); err != nil {
+	s.db.runAfterExistenceCheckHook()
+	if err := s.db.checkContext(ctx); err != nil {
 		return err
 	}
 
 	value := encodeChannelFamilyValue(ch.Ban, primaryKey)
-	indexKey := encodeChannelIDIndexKey(ch.ChannelID, ch.ChannelType)
+	indexKey := encodeChannelIDIndexKey(s.slot, ch.ChannelID, ch.ChannelType)
 
-	batch := db.db.NewBatch()
+	batch := s.db.db.NewBatch()
 	defer batch.Close()
 
 	if err := batch.Set(primaryKey, value, nil); err != nil {
@@ -52,23 +55,26 @@ func (db *DB) CreateChannel(ctx context.Context, ch Channel) error {
 	return batch.Commit(pebble.Sync)
 }
 
-func (db *DB) GetChannel(ctx context.Context, channelID string, channelType int64) (Channel, error) {
-	if err := db.checkContext(ctx); err != nil {
+func (s *ShardStore) GetChannel(ctx context.Context, channelID string, channelType int64) (Channel, error) {
+	if err := s.validate(); err != nil {
+		return Channel{}, err
+	}
+	if err := s.db.checkContext(ctx); err != nil {
 		return Channel{}, err
 	}
 	if channelID == "" {
 		return Channel{}, ErrInvalidArgument
 	}
 
-	db.mu.RLock()
-	defer db.mu.RUnlock()
+	s.db.mu.RLock()
+	defer s.db.mu.RUnlock()
 
-	return db.getChannelLocked(channelID, channelType)
+	return s.getChannelLocked(channelID, channelType)
 }
 
-func (db *DB) getChannelLocked(channelID string, channelType int64) (Channel, error) {
-	primaryKey := encodeChannelPrimaryKey(channelID, channelType, channelPrimaryFamilyID)
-	value, err := db.getValue(primaryKey)
+func (s *ShardStore) getChannelLocked(channelID string, channelType int64) (Channel, error) {
+	primaryKey := encodeChannelPrimaryKey(s.slot, channelID, channelType, channelPrimaryFamilyID)
+	value, err := s.db.getValue(primaryKey)
 	if err != nil {
 		return Channel{}, err
 	}
@@ -85,19 +91,22 @@ func (db *DB) getChannelLocked(channelID string, channelType int64) (Channel, er
 	}, nil
 }
 
-func (db *DB) ListChannelsByChannelID(ctx context.Context, channelID string) ([]Channel, error) {
-	if err := db.checkContext(ctx); err != nil {
+func (s *ShardStore) ListChannelsByChannelID(ctx context.Context, channelID string) ([]Channel, error) {
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
+	if err := s.db.checkContext(ctx); err != nil {
 		return nil, err
 	}
 	if channelID == "" {
 		return nil, ErrInvalidArgument
 	}
 
-	db.mu.RLock()
-	defer db.mu.RUnlock()
+	s.db.mu.RLock()
+	defer s.db.mu.RUnlock()
 
-	prefix := encodeChannelIDIndexPrefix(channelID)
-	iter, err := db.db.NewIter(nil)
+	prefix := encodeChannelIDIndexPrefix(s.slot, channelID)
+	iter, err := s.db.db.NewIter(nil)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +114,7 @@ func (db *DB) ListChannelsByChannelID(ctx context.Context, channelID string) ([]
 
 	var channels []Channel
 	for iter.SeekGE(prefix); iter.Valid(); iter.Next() {
-		if err := db.checkContext(ctx); err != nil {
+		if err := s.db.checkContext(ctx); err != nil {
 			return nil, err
 		}
 		key := iter.Key()
@@ -121,7 +130,7 @@ func (db *DB) ListChannelsByChannelID(ctx context.Context, channelID string) ([]
 			return nil, fmt.Errorf("%w: malformed channel index key", ErrCorruptValue)
 		}
 
-		ch, err := db.getChannelLocked(channelID, channelType)
+		ch, err := s.getChannelLocked(channelID, channelType)
 		if err != nil {
 			return nil, err
 		}
@@ -134,28 +143,31 @@ func (db *DB) ListChannelsByChannelID(ctx context.Context, channelID string) ([]
 	return channels, nil
 }
 
-func (db *DB) UpdateChannel(ctx context.Context, ch Channel) error {
-	if err := db.checkContext(ctx); err != nil {
+func (s *ShardStore) UpdateChannel(ctx context.Context, ch Channel) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if err := s.db.checkContext(ctx); err != nil {
 		return err
 	}
 	if err := validateChannel(ch); err != nil {
 		return err
 	}
 
-	db.mu.Lock()
-	defer db.mu.Unlock()
+	s.db.mu.Lock()
+	defer s.db.mu.Unlock()
 
-	primaryKey := encodeChannelPrimaryKey(ch.ChannelID, ch.ChannelType, channelPrimaryFamilyID)
-	if _, err := db.getValue(primaryKey); err != nil {
+	primaryKey := encodeChannelPrimaryKey(s.slot, ch.ChannelID, ch.ChannelType, channelPrimaryFamilyID)
+	if _, err := s.db.getValue(primaryKey); err != nil {
 		return err
 	}
-	if err := db.checkContext(ctx); err != nil {
+	if err := s.db.checkContext(ctx); err != nil {
 		return err
 	}
 
 	value := encodeChannelFamilyValue(ch.Ban, primaryKey)
 
-	batch := db.db.NewBatch()
+	batch := s.db.db.NewBatch()
 	defer batch.Close()
 
 	if err := batch.Set(primaryKey, value, nil); err != nil {
@@ -164,28 +176,31 @@ func (db *DB) UpdateChannel(ctx context.Context, ch Channel) error {
 	return batch.Commit(pebble.Sync)
 }
 
-func (db *DB) DeleteChannel(ctx context.Context, channelID string, channelType int64) error {
-	if err := db.checkContext(ctx); err != nil {
+func (s *ShardStore) DeleteChannel(ctx context.Context, channelID string, channelType int64) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if err := s.db.checkContext(ctx); err != nil {
 		return err
 	}
 	if channelID == "" {
 		return ErrInvalidArgument
 	}
 
-	db.mu.Lock()
-	defer db.mu.Unlock()
+	s.db.mu.Lock()
+	defer s.db.mu.Unlock()
 
-	primaryKey := encodeChannelPrimaryKey(channelID, channelType, channelPrimaryFamilyID)
-	if _, err := db.getValue(primaryKey); err != nil {
+	primaryKey := encodeChannelPrimaryKey(s.slot, channelID, channelType, channelPrimaryFamilyID)
+	if _, err := s.db.getValue(primaryKey); err != nil {
 		return err
 	}
-	if err := db.checkContext(ctx); err != nil {
+	if err := s.db.checkContext(ctx); err != nil {
 		return err
 	}
 
-	indexKey := encodeChannelIDIndexKey(channelID, channelType)
+	indexKey := encodeChannelIDIndexKey(s.slot, channelID, channelType)
 
-	batch := db.db.NewBatch()
+	batch := s.db.db.NewBatch()
 	defer batch.Close()
 
 	if err := batch.Delete(primaryKey, nil); err != nil {
