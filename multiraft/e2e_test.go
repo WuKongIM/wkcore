@@ -139,7 +139,7 @@ type networkLink struct {
 	to   NodeID
 }
 
-func newAsyncTestCluster(t *testing.T, nodeIDs []NodeID, cfg asyncNetworkConfig) *testCluster {
+func newAsyncTestCluster(t testing.TB, nodeIDs []NodeID, cfg asyncNetworkConfig) *testCluster {
 	t.Helper()
 
 	network := newAsyncTestNetwork(cfg)
@@ -217,7 +217,7 @@ func (c *testCluster) otherNodes(nodeID NodeID) []NodeID {
 	return out
 }
 
-func (c *testCluster) bootstrapGroup(t *testing.T, groupID GroupID, voters []NodeID) {
+func (c *testCluster) bootstrapGroup(t testing.TB, groupID GroupID, voters []NodeID) {
 	t.Helper()
 
 	for _, nodeID := range voters {
@@ -240,7 +240,7 @@ func (c *testCluster) bootstrapGroup(t *testing.T, groupID GroupID, voters []Nod
 	}
 }
 
-func waitForFutureResult(t *testing.T, fut Future) Result {
+func waitForFutureResult(t testing.TB, fut Future) Result {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -253,13 +253,13 @@ func waitForFutureResult(t *testing.T, fut Future) Result {
 	return res
 }
 
-func (c *testCluster) waitForLeader(t *testing.T, groupID GroupID) NodeID {
+func (c *testCluster) waitForLeader(t testing.TB, groupID GroupID) NodeID {
 	t.Helper()
 
 	return c.waitForStableLeader(t, groupID, 0)
 }
 
-func (c *testCluster) waitForSpecificLeader(t *testing.T, groupID GroupID, leaderID NodeID) {
+func (c *testCluster) waitForSpecificLeader(t testing.TB, groupID GroupID, leaderID NodeID) {
 	t.Helper()
 
 	if got := c.waitForStableLeader(t, groupID, leaderID); got != leaderID {
@@ -267,7 +267,7 @@ func (c *testCluster) waitForSpecificLeader(t *testing.T, groupID GroupID, leade
 	}
 }
 
-func (c *testCluster) waitForBootstrapApplied(t *testing.T, groupID GroupID, appliedIndex uint64) {
+func (c *testCluster) waitForBootstrapApplied(t testing.TB, groupID GroupID, appliedIndex uint64) {
 	t.Helper()
 
 	c.waitForCondition(t, func() bool {
@@ -310,7 +310,7 @@ func (c *testCluster) healNode(nodeID NodeID) {
 	}
 }
 
-func (c *testCluster) waitForAllApplied(t *testing.T, groupID GroupID, data []byte) {
+func (c *testCluster) waitForAllApplied(t testing.TB, groupID GroupID, data []byte) {
 	t.Helper()
 
 	c.waitForCondition(t, func() bool {
@@ -330,7 +330,7 @@ func (c *testCluster) waitForAllApplied(t *testing.T, groupID GroupID, data []by
 	})
 }
 
-func (c *testCluster) waitForAllAppliedSequence(t *testing.T, groupID GroupID, commands [][]byte) {
+func (c *testCluster) waitForAllAppliedSequence(t testing.TB, groupID GroupID, commands [][]byte) {
 	t.Helper()
 
 	c.waitForCondition(t, func() bool {
@@ -356,7 +356,7 @@ func (c *testCluster) waitForAllAppliedSequence(t *testing.T, groupID GroupID, c
 	})
 }
 
-func (c *testCluster) waitForLeaderAmong(t *testing.T, groupID GroupID, candidates []NodeID) NodeID {
+func (c *testCluster) waitForLeaderAmong(t testing.TB, groupID GroupID, candidates []NodeID) NodeID {
 	t.Helper()
 
 	const stableWindow = 100 * time.Millisecond
@@ -390,7 +390,7 @@ func (c *testCluster) waitForLeaderAmong(t *testing.T, groupID GroupID, candidat
 	return 0
 }
 
-func (c *testCluster) waitForNodeCommitIndex(t *testing.T, nodeID NodeID, groupID GroupID, index uint64) {
+func (c *testCluster) waitForNodeCommitIndex(t testing.TB, nodeID NodeID, groupID GroupID, index uint64) {
 	t.Helper()
 
 	c.waitForCondition(t, func() bool {
@@ -399,7 +399,24 @@ func (c *testCluster) waitForNodeCommitIndex(t *testing.T, nodeID NodeID, groupI
 	})
 }
 
-func (c *testCluster) waitForStableLeader(t *testing.T, groupID GroupID, want NodeID) NodeID {
+func (c *testCluster) waitForAllNodesAppliedIndex(t testing.TB, groupID GroupID, index uint64) {
+	t.Helper()
+
+	c.waitForCondition(t, func() bool {
+		for nodeID := range c.runtimes {
+			st, err := c.runtime(nodeID).Status(groupID)
+			if err != nil {
+				return false
+			}
+			if st.AppliedIndex < index || st.CommitIndex < index {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+func (c *testCluster) waitForStableLeader(t testing.TB, groupID GroupID, want NodeID) NodeID {
 	t.Helper()
 
 	const stableWindow = 100 * time.Millisecond
@@ -497,7 +514,7 @@ func (c *testCluster) currentLeaderAmong(groupID GroupID, candidates []NodeID) (
 	return leaderID, leaderCount == 1 && leaderID != 0
 }
 
-func (c *testCluster) waitForCondition(t *testing.T, fn func() bool) {
+func (c *testCluster) waitForCondition(t testing.TB, fn func() bool) {
 	t.Helper()
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -514,7 +531,7 @@ func (c *testCluster) waitForCondition(t *testing.T, fn func() bool) {
 	t.Fatal("cluster condition not satisfied before timeout")
 }
 
-func (c *testCluster) requireHealthyNetwork(t *testing.T) {
+func (c *testCluster) requireHealthyNetwork(t testing.TB) {
 	t.Helper()
 
 	if err := c.network.firstError(); err != nil {
