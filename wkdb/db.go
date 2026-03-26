@@ -63,3 +63,26 @@ func (db *DB) runAfterExistenceCheckHook() {
 		db.testHooks.afterExistenceCheck()
 	}
 }
+
+func (db *DB) DeleteSlotData(ctx context.Context, slotID uint64) error {
+	if err := validateSlot(slotID); err != nil {
+		return err
+	}
+	if err := db.checkContext(ctx); err != nil {
+		return err
+	}
+
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	batch := db.db.NewBatch()
+	defer batch.Close()
+
+	for _, span := range slotAllDataSpans(slotID) {
+		if err := batch.DeleteRange(span.Start, span.End, nil); err != nil {
+			return err
+		}
+	}
+
+	return batch.Commit(pebble.Sync)
+}
