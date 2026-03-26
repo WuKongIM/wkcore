@@ -43,9 +43,9 @@ func encodeMetaPrefix(slot uint64) []byte {
 	return key
 }
 
-func encodeUserPrimaryKey(uid string, familyID uint16) []byte {
+func encodeUserPrimaryKey(slot uint64, uid string, familyID uint16) []byte {
 	key := make([]byte, 0, 32)
-	key = appendTableIndexPrefix(key, recordKindPrimary, UserTable.ID, userPrimaryIndexID)
+	key = encodeStatePrefix(slot, UserTable.ID)
 	key = appendKeyString(key, uid)
 	key = binary.AppendUvarint(key, uint64(familyID))
 	return key

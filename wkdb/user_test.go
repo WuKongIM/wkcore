@@ -3,7 +3,6 @@ package wkdb
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -11,9 +10,7 @@ import (
 )
 
 func TestOpenClose(t *testing.T) {
-	dir := t.TempDir()
-
-	db, err := Open(filepath.Join(dir, "db"))
+	db, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -32,21 +29,13 @@ func TestErrorsExposeStableSentinels(t *testing.T) {
 	}
 }
 
-func TestUserCRUD(t *testing.T) {
+func TestUserCRUDIsSlotScoped(t *testing.T) {
 	ctx := context.Background()
-	dir := t.TempDir()
+	db := openTestDB(t)
+	left := db.ForSlot(1)
+	right := db.ForSlot(2)
 
-	db, err := Open(filepath.Join(dir, "db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Fatalf("close db: %v", err)
-		}
-	})
-
-	_, err = db.GetUser(ctx, "missing")
+	_, err := left.GetUser(ctx, "missing")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for missing user, got %v", err)
 	}
@@ -57,15 +46,20 @@ func TestUserCRUD(t *testing.T) {
 		DeviceFlag:  1,
 		DeviceLevel: 2,
 	}
-	if err := db.CreateUser(ctx, created); err != nil {
+	if err := left.CreateUser(ctx, created); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 
-	if err := db.CreateUser(ctx, created); !errors.Is(err, ErrAlreadyExists) {
+	if err := left.CreateUser(ctx, created); !errors.Is(err, ErrAlreadyExists) {
 		t.Fatalf("expected ErrAlreadyExists, got %v", err)
 	}
 
-	got, err := db.GetUser(ctx, created.UID)
+	_, err = right.GetUser(ctx, created.UID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound in other slot, got %v", err)
+	}
+
+	got, err := left.GetUser(ctx, created.UID)
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
@@ -79,11 +73,11 @@ func TestUserCRUD(t *testing.T) {
 		DeviceFlag:  5,
 		DeviceLevel: 9,
 	}
-	if err := db.UpdateUser(ctx, updated); err != nil {
+	if err := left.UpdateUser(ctx, updated); err != nil {
 		t.Fatalf("update user: %v", err)
 	}
 
-	got, err = db.GetUser(ctx, updated.UID)
+	got, err = left.GetUser(ctx, updated.UID)
 	if err != nil {
 		t.Fatalf("get updated user: %v", err)
 	}
@@ -91,29 +85,59 @@ func TestUserCRUD(t *testing.T) {
 		t.Fatalf("unexpected updated user:\n got: %#v\nwant: %#v", got, updated)
 	}
 
-	if err := db.DeleteUser(ctx, updated.UID); err != nil {
+	if err := right.CreateUser(ctx, User{UID: created.UID, Token: "tk_right"}); err != nil {
+		t.Fatalf("create same uid in right slot: %v", err)
+	}
+
+	if err := left.DeleteUser(ctx, updated.UID); err != nil {
 		t.Fatalf("delete user: %v", err)
 	}
 
-	_, err = db.GetUser(ctx, updated.UID)
+	_, err = left.GetUser(ctx, updated.UID)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound after delete, got %v", err)
+	}
+
+	got, err = right.GetUser(ctx, created.UID)
+	if err != nil {
+		t.Fatalf("get user from right slot: %v", err)
+	}
+	if got.Token != "tk_right" {
+		t.Fatalf("right slot token = %q", got.Token)
+	}
+}
+
+func TestCreateUserSameUIDAllowedAcrossSlots(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	left := db.ForSlot(1)
+	right := db.ForSlot(2)
+
+	if err := left.CreateUser(ctx, User{UID: "u1001", Token: "left"}); err != nil {
+		t.Fatalf("left create: %v", err)
+	}
+	if err := right.CreateUser(ctx, User{UID: "u1001", Token: "right"}); err != nil {
+		t.Fatalf("right create: %v", err)
+	}
+
+	leftUser, err := left.GetUser(ctx, "u1001")
+	if err != nil {
+		t.Fatalf("left get: %v", err)
+	}
+	rightUser, err := right.GetUser(ctx, "u1001")
+	if err != nil {
+		t.Fatalf("right get: %v", err)
+	}
+
+	if leftUser.Token != "left" || rightUser.Token != "right" {
+		t.Fatalf("tokens = (%q, %q)", leftUser.Token, rightUser.Token)
 	}
 }
 
 func TestCreateUserConcurrentDuplicateReturnsErrAlreadyExists(t *testing.T) {
 	ctx := context.Background()
-	dir := t.TempDir()
-
-	db, err := Open(filepath.Join(dir, "db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Fatalf("close db: %v", err)
-		}
-	})
+	db := openTestDB(t)
+	shard := db.ForSlot(1)
 
 	blocked := make(chan struct{})
 	reached := make(chan struct{})
@@ -126,13 +150,13 @@ func TestCreateUserConcurrentDuplicateReturnsErrAlreadyExists(t *testing.T) {
 	secondErr := make(chan error, 1)
 
 	go func() {
-		firstErr <- db.CreateUser(ctx, User{UID: "u2001"})
+		firstErr <- shard.CreateUser(ctx, User{UID: "u2001"})
 	}()
 
 	<-reached
 
 	go func() {
-		secondErr <- db.CreateUser(ctx, User{UID: "u2001"})
+		secondErr <- shard.CreateUser(ctx, User{UID: "u2001"})
 	}()
 
 	select {
@@ -153,42 +177,24 @@ func TestCreateUserConcurrentDuplicateReturnsErrAlreadyExists(t *testing.T) {
 
 func TestCreateUserRejectsOverlongUID(t *testing.T) {
 	ctx := context.Background()
-	dir := t.TempDir()
-
-	db, err := Open(filepath.Join(dir, "db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Fatalf("close db: %v", err)
-		}
-	})
+	db := openTestDB(t)
+	shard := db.ForSlot(1)
 
 	u := User{UID: strings.Repeat("a", maxKeyStringLen+1)}
-	err = db.CreateUser(ctx, u)
+	err := shard.CreateUser(ctx, u)
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument, got %v", err)
 	}
 }
 
 func TestGetUserHonorsCanceledContext(t *testing.T) {
-	dir := t.TempDir()
-
-	db, err := Open(filepath.Join(dir, "db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Fatalf("close db: %v", err)
-		}
-	})
+	db := openTestDB(t)
+	shard := db.ForSlot(1)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err = db.GetUser(ctx, "u1001")
+	_, err := shard.GetUser(ctx, "u1001")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}

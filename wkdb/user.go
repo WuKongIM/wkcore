@@ -14,31 +14,34 @@ type User struct {
 	DeviceLevel int64
 }
 
-func (db *DB) CreateUser(ctx context.Context, u User) error {
-	if err := db.checkContext(ctx); err != nil {
+func (s *ShardStore) CreateUser(ctx context.Context, u User) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if err := s.db.checkContext(ctx); err != nil {
 		return err
 	}
 	if err := validateUser(u); err != nil {
 		return err
 	}
 
-	db.mu.Lock()
-	defer db.mu.Unlock()
+	s.db.mu.Lock()
+	defer s.db.mu.Unlock()
 
-	key := encodeUserPrimaryKey(u.UID, userPrimaryFamilyID)
-	if _, err := db.getValue(key); err == nil {
+	key := encodeUserPrimaryKey(s.slot, u.UID, userPrimaryFamilyID)
+	if _, err := s.db.getValue(key); err == nil {
 		return ErrAlreadyExists
 	} else if !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	db.runAfterExistenceCheckHook()
-	if err := db.checkContext(ctx); err != nil {
+	s.db.runAfterExistenceCheckHook()
+	if err := s.db.checkContext(ctx); err != nil {
 		return err
 	}
 
 	value := encodeUserFamilyValue(u.Token, u.DeviceFlag, u.DeviceLevel, key)
 
-	batch := db.db.NewBatch()
+	batch := s.db.db.NewBatch()
 	defer batch.Close()
 
 	if err := batch.Set(key, value, nil); err != nil {
@@ -47,23 +50,26 @@ func (db *DB) CreateUser(ctx context.Context, u User) error {
 	return batch.Commit(pebble.Sync)
 }
 
-func (db *DB) GetUser(ctx context.Context, uid string) (User, error) {
-	if err := db.checkContext(ctx); err != nil {
+func (s *ShardStore) GetUser(ctx context.Context, uid string) (User, error) {
+	if err := s.validate(); err != nil {
+		return User{}, err
+	}
+	if err := s.db.checkContext(ctx); err != nil {
 		return User{}, err
 	}
 	if uid == "" {
 		return User{}, ErrInvalidArgument
 	}
 
-	db.mu.RLock()
-	defer db.mu.RUnlock()
+	s.db.mu.RLock()
+	defer s.db.mu.RUnlock()
 
-	return db.getUserLocked(uid)
+	return s.getUserLocked(uid)
 }
 
-func (db *DB) getUserLocked(uid string) (User, error) {
-	key := encodeUserPrimaryKey(uid, userPrimaryFamilyID)
-	value, err := db.getValue(key)
+func (s *ShardStore) getUserLocked(uid string) (User, error) {
+	key := encodeUserPrimaryKey(s.slot, uid, userPrimaryFamilyID)
+	value, err := s.db.getValue(key)
 	if err != nil {
 		return User{}, err
 	}
@@ -81,28 +87,31 @@ func (db *DB) getUserLocked(uid string) (User, error) {
 	}, nil
 }
 
-func (db *DB) UpdateUser(ctx context.Context, u User) error {
-	if err := db.checkContext(ctx); err != nil {
+func (s *ShardStore) UpdateUser(ctx context.Context, u User) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if err := s.db.checkContext(ctx); err != nil {
 		return err
 	}
 	if err := validateUser(u); err != nil {
 		return err
 	}
 
-	db.mu.Lock()
-	defer db.mu.Unlock()
+	s.db.mu.Lock()
+	defer s.db.mu.Unlock()
 
-	key := encodeUserPrimaryKey(u.UID, userPrimaryFamilyID)
-	if _, err := db.getValue(key); err != nil {
+	key := encodeUserPrimaryKey(s.slot, u.UID, userPrimaryFamilyID)
+	if _, err := s.db.getValue(key); err != nil {
 		return err
 	}
-	if err := db.checkContext(ctx); err != nil {
+	if err := s.db.checkContext(ctx); err != nil {
 		return err
 	}
 
 	value := encodeUserFamilyValue(u.Token, u.DeviceFlag, u.DeviceLevel, key)
 
-	batch := db.db.NewBatch()
+	batch := s.db.db.NewBatch()
 	defer batch.Close()
 
 	if err := batch.Set(key, value, nil); err != nil {
@@ -111,26 +120,29 @@ func (db *DB) UpdateUser(ctx context.Context, u User) error {
 	return batch.Commit(pebble.Sync)
 }
 
-func (db *DB) DeleteUser(ctx context.Context, uid string) error {
-	if err := db.checkContext(ctx); err != nil {
+func (s *ShardStore) DeleteUser(ctx context.Context, uid string) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if err := s.db.checkContext(ctx); err != nil {
 		return err
 	}
 	if uid == "" {
 		return ErrInvalidArgument
 	}
 
-	db.mu.Lock()
-	defer db.mu.Unlock()
+	s.db.mu.Lock()
+	defer s.db.mu.Unlock()
 
-	key := encodeUserPrimaryKey(uid, userPrimaryFamilyID)
-	if _, err := db.getValue(key); err != nil {
+	key := encodeUserPrimaryKey(s.slot, uid, userPrimaryFamilyID)
+	if _, err := s.db.getValue(key); err != nil {
 		return err
 	}
-	if err := db.checkContext(ctx); err != nil {
+	if err := s.db.checkContext(ctx); err != nil {
 		return err
 	}
 
-	batch := db.db.NewBatch()
+	batch := s.db.db.NewBatch()
 	defer batch.Close()
 
 	if err := batch.Delete(key, nil); err != nil {

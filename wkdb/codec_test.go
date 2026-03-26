@@ -54,8 +54,8 @@ func TestStateAndIndexPrefixesIncludeSlotAndSortStably(t *testing.T) {
 }
 
 func TestUserPrimaryKeyEncodingMatchesDoc(t *testing.T) {
-	got := encodeUserPrimaryKey("u1001", 0)
-	want := mustHex(t, "01 00 00 00 01 00 01 00 05 75 31 30 30 31 00")
+	got := encodeUserPrimaryKey(7, "u1001", 0)
+	want := mustHex(t, "10 00 00 00 00 00 00 00 07 00 00 00 01 00 05 75 31 30 30 31 00")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("unexpected key:\n got: %x\nwant: %x", got, want)
 	}
@@ -78,9 +78,9 @@ func TestChannelIndexKeyEncodingMatchesDoc(t *testing.T) {
 }
 
 func TestUserValueEncodingMatchesDoc(t *testing.T) {
-	key := encodeUserPrimaryKey("u1001", 0)
+	key := encodeUserPrimaryKey(7, "u1001", 0)
 	got := encodeUserFamilyValue("tk_abc", 1, 2, key)
-	want := mustHex(t, "42 b6 f5 91 0a 26 06 74 6b 5f 61 62 63 13 02 13 04")
+	want := mustHex(t, "fe 52 14 ed 0a 26 06 74 6b 5f 61 62 63 13 02 13 04")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("unexpected value:\n got: %x\nwant: %x", got, want)
 	}
@@ -96,7 +96,7 @@ func TestChannelValueEncodingMatchesDoc(t *testing.T) {
 }
 
 func TestDecodeWrappedValueDetectsChecksumMismatch(t *testing.T) {
-	key := encodeUserPrimaryKey("u1001", 0)
+	key := encodeUserPrimaryKey(7, "u1001", 0)
 	value := encodeUserFamilyValue("tk_abc", 1, 2, key)
 	value[len(value)-1] ^= 0xff
 
@@ -107,7 +107,7 @@ func TestDecodeWrappedValueDetectsChecksumMismatch(t *testing.T) {
 }
 
 func TestDecodeUserFamilyValueRejectsUnexpectedTag(t *testing.T) {
-	key := encodeUserPrimaryKey("u1001", 0)
+	key := encodeUserPrimaryKey(7, "u1001", 0)
 	value := encodeUserFamilyValue("tk_abc", 1, 2, key)
 	value[4] = 0x09
 	binary.BigEndian.PutUint32(value[:4], crc32.ChecksumIEEE(append(append([]byte{}, key...), value[4:]...)))
@@ -119,7 +119,7 @@ func TestDecodeUserFamilyValueRejectsUnexpectedTag(t *testing.T) {
 }
 
 func TestDecodeUserFamilyValueRejectsMissingColumns(t *testing.T) {
-	key := encodeUserPrimaryKey("u1001", 0)
+	key := encodeUserPrimaryKey(7, "u1001", 0)
 	payload := appendBytesValue(nil, userColumnIDToken, 0, "tk_only")
 	value := wrapFamilyValue(key, payload)
 
