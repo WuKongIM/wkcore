@@ -1,11 +1,14 @@
 package raftstore
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +29,29 @@ type pebbleStressConfig struct {
 	groups   int
 	writers  int
 	payload  int
+}
+
+type stressGroupModel struct {
+	mu           sync.Mutex
+	groupID      uint64
+	firstIndex   uint64
+	lastIndex    uint64
+	appliedIndex uint64
+	snapshotIndex uint64
+	snapshotTerm  uint64
+	entryTerm     uint64
+	confState     raftpb.ConfState
+}
+
+type stressGroupExpectation struct {
+	groupID       uint64
+	firstIndex    uint64
+	lastIndex     uint64
+	appliedIndex  uint64
+	snapshotIndex uint64
+	snapshotTerm  uint64
+	entryTerm     uint64
+	confState     raftpb.ConfState
 }
 
 func loadPebbleBenchConfig(tb testing.TB) pebbleBenchConfig {
@@ -245,6 +271,98 @@ func mustInitialState(tb testing.TB, store multiraft.Storage) multiraft.Bootstra
 		tb.Fatalf("InitialState() error = %v", err)
 	}
 	return state
+}
+
+func openStressDB(tb testing.TB) (*DB, string) {
+	tb.Helper()
+	return openBenchDB(tb)
+}
+
+func newStressGroupModels(groupCount int, entryTerm uint64) []stressGroupModel {
+	models := make([]stressGroupModel, groupCount)
+	for i := range models {
+		models[i] = stressGroupModel{
+			groupID:    uint64(i + 1),
+			firstIndex: 1,
+			entryTerm:  entryTerm,
+		}
+	}
+	return models
+}
+
+func (m *stressGroupModel) snapshot() stressGroupExpectation {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return stressGroupExpectation{
+		groupID:       m.groupID,
+		firstIndex:    m.firstIndex,
+		lastIndex:     m.lastIndex,
+		appliedIndex:  m.appliedIndex,
+		snapshotIndex: m.snapshotIndex,
+		snapshotTerm:  m.snapshotTerm,
+		entryTerm:     m.entryTerm,
+		confState:     cloneConfState(m.confState),
+	}
+}
+
+func verifyPebbleGroupState(tb testing.TB, store multiraft.Storage, model stressGroupExpectation, payloadSize int) {
+	tb.Helper()
+
+	state := mustInitialState(tb, store)
+	if state.AppliedIndex != model.appliedIndex {
+		tb.Fatalf("group %d AppliedIndex = %d, want %d", model.groupID, state.AppliedIndex, model.appliedIndex)
+	}
+	if model.snapshotIndex > 0 && !reflect.DeepEqual(state.ConfState, model.confState) {
+		tb.Fatalf("group %d ConfState = %#v, want %#v", model.groupID, state.ConfState, model.confState)
+	}
+
+	wantFirst := model.firstIndex
+	if model.snapshotIndex > 0 {
+		wantFirst = model.snapshotIndex + 1
+	}
+	if model.lastIndex == 0 && model.snapshotIndex == 0 {
+		wantFirst = 1
+	}
+	if got := mustFirstIndex(tb, store); got != wantFirst {
+		tb.Fatalf("group %d FirstIndex() = %d, want %d", model.groupID, got, wantFirst)
+	}
+	if got := mustLastIndex(tb, store); got != model.lastIndex {
+		tb.Fatalf("group %d LastIndex() = %d, want %d", model.groupID, got, model.lastIndex)
+	}
+	if model.snapshotIndex > 0 {
+		if got := mustTerm(tb, store, model.snapshotIndex); got != model.snapshotTerm {
+			tb.Fatalf("group %d Term(snapshot=%d) = %d, want %d", model.groupID, model.snapshotIndex, got, model.snapshotTerm)
+		}
+	}
+	if model.lastIndex == 0 {
+		return
+	}
+
+	lo := model.lastIndex
+	if lo > 15 {
+		lo -= 15
+	}
+	if lo < wantFirst {
+		lo = wantFirst
+	}
+	entries := mustEntries(tb, store, lo, model.lastIndex+1, 0)
+	if len(entries) != int(model.lastIndex-lo+1) {
+		tb.Fatalf("group %d len(Entries()) = %d, want %d", model.groupID, len(entries), model.lastIndex-lo+1)
+	}
+	for i, entry := range entries {
+		wantIndex := lo + uint64(i)
+		if entry.Index != wantIndex {
+			tb.Fatalf("group %d entries[%d].Index = %d, want %d", model.groupID, i, entry.Index, wantIndex)
+		}
+		if entry.Term != model.entryTerm {
+			tb.Fatalf("group %d entries[%d].Term = %d, want %d", model.groupID, i, entry.Term, model.entryTerm)
+		}
+		wantData := bytes.Repeat([]byte{byte(wantIndex)}, payloadSize)
+		if !bytes.Equal(entry.Data, wantData) {
+			tb.Fatalf("group %d entries[%d].Data mismatch", model.groupID, i)
+		}
+	}
 }
 
 func TestPebbleBenchScaleConfigDefaultsAndOverrides(t *testing.T) {
