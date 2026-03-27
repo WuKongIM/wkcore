@@ -1,9 +1,12 @@
 package wkfsm
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/WuKongIM/wraft/multiraft"
 	"github.com/WuKongIM/wraft/wkdb"
 )
 
@@ -20,4 +23,47 @@ func openTestDB(t *testing.T) *wkdb.DB {
 		}
 	})
 	return db
+}
+
+func newStartedRuntime(t *testing.T) *multiraft.Runtime {
+	t.Helper()
+
+	rt, err := multiraft.New(multiraft.Options{
+		NodeID:       1,
+		TickInterval: 10 * time.Millisecond,
+		Workers:      1,
+		Transport:    fakeTransport{},
+		Raft: multiraft.RaftOptions{
+			ElectionTick:  10,
+			HeartbeatTick: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := rt.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	return rt
+}
+
+type fakeTransport struct{}
+
+func (fakeTransport) Send(ctx context.Context, batch []multiraft.Envelope) error {
+	return nil
+}
+
+func waitForCondition(t *testing.T, fn func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition not satisfied before timeout")
 }
