@@ -19,6 +19,18 @@ func encodeGroupMetaKey(group uint64, keyType byte) []byte {
 	return key
 }
 
+func encodeHardStateKey(group uint64) []byte {
+	return encodeGroupMetaKey(group, keyTypeHardState)
+}
+
+func encodeAppliedIndexKey(group uint64) []byte {
+	return encodeGroupMetaKey(group, keyTypeAppliedIndex)
+}
+
+func encodeSnapshotKey(group uint64) []byte {
+	return encodeGroupMetaKey(group, keyTypeSnapshot)
+}
+
 func encodeEntryKey(group, index uint64) []byte {
 	key := make([]byte, 0, 1+8+1+8)
 	key = append(key, keyKindGroupMeta)
