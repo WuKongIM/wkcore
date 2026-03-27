@@ -368,6 +368,13 @@ Cockroach 的 family payload 在更外层还会再包：
 PebbleValue = [4-byte-checksum][1-byte-tag][family payload]
 ```
 
+和当前仓库里的 `wkdb/` 实现对齐说明：
+
+- `wkdb/codec.go` 已经实现了这层外层包装：`wrapFamilyValue` 负责写入 `checksum + tag + payload`，`decodeWrappedValue` 负责按 key 重新计算并校验 checksum
+- `user/channel` 的主记录 CRUD 已经在写路径调用 `encodeUserFamilyValue` / `encodeChannelFamilyValue`，在读路径调用 `decodeUserFamilyValue` / `decodeChannelFamilyValue`
+- 当前没有包这层 checksum 的，是 value 为空的二级索引记录；这不等于“整个 wkdb 没有 checksum”
+- `wkdb/snapshot_codec.go` 里的 slot snapshot payload 也有独立 CRC32 校验，但不属于本文讨论的主记录 family value 编码范围
+
 其中：
 
 - `family payload` 仍然是前面定义的 tuple/value-side encoding 结果
