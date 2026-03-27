@@ -379,7 +379,7 @@ func TestPebbleBenchScaleConfigDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
-func TestPebbleStressConfigRejectsInvalidValues(t *testing.T) {
+func TestPebbleLoadStressConfigRejectsInvalidValues(t *testing.T) {
 	t.Setenv("WRAFT_RAFTSTORE_STRESS", "1")
 	t.Setenv("WRAFT_RAFTSTORE_STRESS_DURATION", "not-a-duration")
 

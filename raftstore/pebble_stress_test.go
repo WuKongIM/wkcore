@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/wraft/multiraft"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 func TestPebbleStressConcurrentWriters(t *testing.T) {
@@ -84,6 +85,36 @@ func TestPebbleStressMixedReadWriteReopen(t *testing.T) {
 		for i := range models {
 			verifyPebbleGroupState(t, stores[i], models[i].snapshot(), cfg.payload)
 		}
+	}
+}
+
+func TestPebbleStressSnapshotAndRecovery(t *testing.T) {
+	cfg, err := loadPebbleStressConfig()
+	if err != nil {
+		t.Fatalf("loadPebbleStressConfig() error = %v", err)
+	}
+	if !cfg.enabled {
+		t.Skip("set WRAFT_RAFTSTORE_STRESS=1 to enable")
+	}
+
+	db, path := openStressDB(t)
+	defer func() {
+		closeBenchDB(t, db, path)
+	}()
+
+	stores := stressStoresForGroups(db, cfg.groups)
+	models := newStressGroupModels(cfg.groups, 3)
+
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.duration)
+	defer cancel()
+	if err := runPebbleSnapshotStress(ctx, stores, models, cfg); err != nil {
+		t.Fatalf("runPebbleSnapshotStress() error = %v", err)
+	}
+
+	db = reopenPebbleDB(t, db, path)
+	stores = stressStoresForGroups(db, cfg.groups)
+	for i := range models {
+		verifyPebbleGroupState(t, stores[i], models[i].snapshot(), cfg.payload)
 	}
 }
 
@@ -270,5 +301,103 @@ func runStressReadChecks(store multiraft.Storage, payloadSize int) error {
 	if term != 1 {
 		return fmt.Errorf("Term(%d) = %d, want 1", last, term)
 	}
+	return nil
+}
+
+func runPebbleSnapshotStress(ctx context.Context, stores []multiraft.Storage, models []stressGroupModel, cfg pebbleStressConfig) error {
+	var (
+		nextOp uint64
+		failed atomic.Bool
+		wg     sync.WaitGroup
+	)
+	errCh := make(chan error, 1)
+
+	reportErr := func(err error) {
+		if err == nil {
+			return
+		}
+		if failed.CompareAndSwap(false, true) {
+			errCh <- err
+		}
+	}
+
+	for worker := 0; worker < cfg.writers; worker++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+
+			for {
+				if failed.Load() {
+					return
+				}
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				op := int(atomic.AddUint64(&nextOp, 1)) - 1
+				group := op % len(stores)
+				if err := applySnapshotStressWrite(ctx, stores[group], &models[group], cfg.payload); err != nil {
+					reportErr(fmt.Errorf("snapshot worker %d group %d: %w", workerID, group+1, err))
+					return
+				}
+			}
+		}(worker)
+	}
+
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		return err
+	default:
+		return nil
+	}
+}
+
+func applySnapshotStressWrite(ctx context.Context, store multiraft.Storage, model *stressGroupModel, payloadSize int) error {
+	const (
+		snapshotAdvance = 8
+		postSnapEntries = 4
+		snapshotTerm    = 2
+		entryTerm       = 3
+	)
+
+	model.mu.Lock()
+	defer model.mu.Unlock()
+
+	snapshotIndex := model.lastIndex + snapshotAdvance
+	confState := raftpb.ConfState{Voters: []uint64{1, 2, 3}}
+	snap := raftpb.Snapshot{
+		Data: []byte{byte(model.groupID), byte(snapshotIndex)},
+		Metadata: raftpb.SnapshotMetadata{
+			Index:     snapshotIndex,
+			Term:      snapshotTerm,
+			ConfState: cloneConfState(confState),
+		},
+	}
+	entries := benchEntries(snapshotIndex+1, postSnapEntries, entryTerm, payloadSize)
+	hs := raftpb.HardState{
+		Term:   entryTerm,
+		Commit: snapshotIndex + postSnapEntries,
+	}
+	if err := store.Save(ctx, multiraft.PersistentState{
+		HardState: &hs,
+		Snapshot:  &snap,
+		Entries:   entries,
+	}); err != nil {
+		return err
+	}
+	if err := store.MarkApplied(ctx, hs.Commit); err != nil {
+		return err
+	}
+
+	model.snapshotIndex = snapshotIndex
+	model.snapshotTerm = snapshotTerm
+	model.firstIndex = snapshotIndex + 1
+	model.lastIndex = hs.Commit
+	model.appliedIndex = hs.Commit
+	model.entryTerm = entryTerm
+	model.confState = cloneConfState(confState)
 	return nil
 }
