@@ -6,7 +6,7 @@ Module: `github.com/WuKongIM/wraft` | Go 1.23
 
 - `multiraft` — Multi-group Raft runtime (etcd/raft RawNode)
 - `wkdb` — Pebble-backed slot-scoped business KV store and business snapshot import/export
-- `raftstore` — `multiraft.Storage` implementations, currently in-memory only
+- `raftstore` — `multiraft.Storage` implementations, with in-memory and Pebble-backed backends
 - `wkfsm` — `multiraft.StateMachine` implementation backed by `wkdb`
 
 **Slot = Group**: `multiraft.GroupID` == `wkdb` slot ID. All data slot-prefixed.
