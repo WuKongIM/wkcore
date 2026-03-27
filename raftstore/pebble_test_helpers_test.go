@@ -1,11 +1,16 @@
 package raftstore
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/WuKongIM/wraft/multiraft"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 type pebbleBenchConfig struct {
@@ -100,6 +105,146 @@ func loadPositiveIntEnv(name string, fallback int) (int, error) {
 		return 0, fmt.Errorf("%s must be > 0", name)
 	}
 	return parsed, nil
+}
+
+func openBenchDB(tb testing.TB) (*DB, string) {
+	tb.Helper()
+
+	path := filepath.Join(tb.TempDir(), "raft")
+	db, err := Open(path)
+	if err != nil {
+		tb.Fatalf("Open(%q) error = %v", path, err)
+	}
+	return db, path
+}
+
+func mustOpenPebbleDB(tb testing.TB, path string) *DB {
+	tb.Helper()
+
+	db, err := Open(path)
+	if err != nil {
+		tb.Fatalf("Open(%q) error = %v", path, err)
+	}
+	return db
+}
+
+func reopenPebbleDB(tb testing.TB, db *DB, path string) *DB {
+	tb.Helper()
+
+	if db != nil {
+		if err := db.Close(); err != nil {
+			tb.Fatalf("Close(%q) error = %v", path, err)
+		}
+	}
+	return mustOpenPebbleDB(tb, path)
+}
+
+func closeBenchDB(tb testing.TB, db *DB, path string) {
+	tb.Helper()
+	if db == nil {
+		return
+	}
+	if err := db.Close(); err != nil {
+		tb.Fatalf("Close(%q) error = %v", path, err)
+	}
+}
+
+func benchEntry(index, term uint64, payloadSize int) raftpb.Entry {
+	entry := raftpb.Entry{
+		Index: index,
+		Term:  term,
+	}
+	if payloadSize > 0 {
+		entry.Data = make([]byte, payloadSize)
+		fill := byte(index)
+		for i := range entry.Data {
+			entry.Data[i] = fill
+		}
+	}
+	return entry
+}
+
+func benchEntries(startIndex uint64, count int, term uint64, payloadSize int) []raftpb.Entry {
+	entries := make([]raftpb.Entry, 0, count)
+	for i := 0; i < count; i++ {
+		entries = append(entries, benchEntry(startIndex+uint64(i), term, payloadSize))
+	}
+	return entries
+}
+
+func benchPersistentState(startIndex uint64, count int, term uint64, payloadSize int) multiraft.PersistentState {
+	entries := benchEntries(startIndex, count, term, payloadSize)
+	if len(entries) == 0 {
+		return multiraft.PersistentState{}
+	}
+
+	hs := raftpb.HardState{
+		Term:   term,
+		Commit: entries[len(entries)-1].Index,
+	}
+	return multiraft.PersistentState{
+		HardState: &hs,
+		Entries:   entries,
+	}
+}
+
+func mustSave(tb testing.TB, store multiraft.Storage, st multiraft.PersistentState) {
+	tb.Helper()
+	if err := store.Save(context.Background(), st); err != nil {
+		tb.Fatalf("Save() error = %v", err)
+	}
+}
+
+func mustMarkApplied(tb testing.TB, store multiraft.Storage, index uint64) {
+	tb.Helper()
+	if err := store.MarkApplied(context.Background(), index); err != nil {
+		tb.Fatalf("MarkApplied(%d) error = %v", index, err)
+	}
+}
+
+func mustEntries(tb testing.TB, store multiraft.Storage, lo, hi, maxSize uint64) []raftpb.Entry {
+	tb.Helper()
+	entries, err := store.Entries(context.Background(), lo, hi, maxSize)
+	if err != nil {
+		tb.Fatalf("Entries(%d,%d,%d) error = %v", lo, hi, maxSize, err)
+	}
+	return entries
+}
+
+func mustLastIndex(tb testing.TB, store multiraft.Storage) uint64 {
+	tb.Helper()
+	index, err := store.LastIndex(context.Background())
+	if err != nil {
+		tb.Fatalf("LastIndex() error = %v", err)
+	}
+	return index
+}
+
+func mustFirstIndex(tb testing.TB, store multiraft.Storage) uint64 {
+	tb.Helper()
+	index, err := store.FirstIndex(context.Background())
+	if err != nil {
+		tb.Fatalf("FirstIndex() error = %v", err)
+	}
+	return index
+}
+
+func mustTerm(tb testing.TB, store multiraft.Storage, index uint64) uint64 {
+	tb.Helper()
+	term, err := store.Term(context.Background(), index)
+	if err != nil {
+		tb.Fatalf("Term(%d) error = %v", index, err)
+	}
+	return term
+}
+
+func mustInitialState(tb testing.TB, store multiraft.Storage) multiraft.BootstrapState {
+	tb.Helper()
+	state, err := store.InitialState(context.Background())
+	if err != nil {
+		tb.Fatalf("InitialState() error = %v", err)
+	}
+	return state
 }
 
 func TestPebbleBenchScaleConfigDefaultsAndOverrides(t *testing.T) {
