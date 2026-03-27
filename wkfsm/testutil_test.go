@@ -10,6 +10,13 @@ import (
 	"github.com/WuKongIM/wraft/wkdb"
 )
 
+const (
+	testTickInterval = 10 * time.Millisecond
+	testElectionTick = 10
+	testWaitTimeout  = testTickInterval * time.Duration(testElectionTick*20)
+	testPollInterval = testTickInterval
+)
+
 func openTestDB(t *testing.T) *wkdb.DB {
 	t.Helper()
 
@@ -30,11 +37,11 @@ func newStartedRuntime(t *testing.T) *multiraft.Runtime {
 
 	rt, err := multiraft.New(multiraft.Options{
 		NodeID:       1,
-		TickInterval: 10 * time.Millisecond,
+		TickInterval: testTickInterval,
 		Workers:      1,
 		Transport:    fakeTransport{},
 		Raft: multiraft.RaftOptions{
-			ElectionTick:  10,
+			ElectionTick:  testElectionTick,
 			HeartbeatTick: 1,
 		},
 	})
@@ -58,12 +65,12 @@ func (fakeTransport) Send(ctx context.Context, batch []multiraft.Envelope) error
 func waitForCondition(t *testing.T, fn func() bool) {
 	t.Helper()
 
-	deadline := time.Now().Add(500 * time.Millisecond)
+	deadline := time.Now().Add(testWaitTimeout)
 	for time.Now().Before(deadline) {
 		if fn() {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(testPollInterval)
 	}
 	t.Fatal("condition not satisfied before timeout")
 }

@@ -6,7 +6,9 @@ import (
 
 	"github.com/WuKongIM/wraft/multiraft"
 	raft "go.etcd.io/raft/v3"
+	"go.etcd.io/raft/v3/confchange"
 	"go.etcd.io/raft/v3/raftpb"
+	"go.etcd.io/raft/v3/tracker"
 )
 
 type memoryStore struct {
@@ -27,10 +29,11 @@ func (m *memoryStore) InitialState(ctx context.Context) (multiraft.BootstrapStat
 	defer m.mu.Unlock()
 
 	state := m.state
-	state.ConfState = raftpb.ConfState{}
-	if !raft.IsEmptySnap(m.snapshot) {
-		state.ConfState = cloneConfState(m.snapshot.Metadata.ConfState)
+	confState, err := deriveConfState(m.snapshot, m.entries, state.HardState.Commit)
+	if err != nil {
+		return multiraft.BootstrapState{}, err
 	}
+	state.ConfState = confState
 	return state, nil
 }
 
@@ -176,14 +179,6 @@ func cloneEntry(entry raftpb.Entry) raftpb.Entry {
 	return cloned
 }
 
-func cloneEntries(entries []raftpb.Entry) []raftpb.Entry {
-	cloned := make([]raftpb.Entry, 0, len(entries))
-	for _, entry := range entries {
-		cloned = append(cloned, cloneEntry(entry))
-	}
-	return cloned
-}
-
 func cloneSnapshot(snapshot raftpb.Snapshot) raftpb.Snapshot {
 	cloned := snapshot
 	if len(snapshot.Data) > 0 {
@@ -208,4 +203,82 @@ func cloneConfState(state raftpb.ConfState) raftpb.ConfState {
 		cloned.LearnersNext = append([]uint64(nil), state.LearnersNext...)
 	}
 	return cloned
+}
+
+func deriveConfState(snapshot raftpb.Snapshot, entries []raftpb.Entry, committed uint64) (raftpb.ConfState, error) {
+	var (
+		base       raftpb.ConfState
+		lastIndex  uint64
+		progress   = tracker.MakeProgressTracker(1, 0)
+		cfg        tracker.Config
+		progresses tracker.ProgressMap
+		err        error
+	)
+
+	if !raft.IsEmptySnap(snapshot) {
+		base = cloneConfState(snapshot.Metadata.ConfState)
+		lastIndex = snapshot.Metadata.Index
+	}
+
+	if !isZeroConfState(base) {
+		cfg, progresses, err = confchange.Restore(confchange.Changer{
+			Tracker:   progress,
+			LastIndex: lastIndex,
+		}, base)
+		if err != nil {
+			return raftpb.ConfState{}, err
+		}
+		progress.Config = cfg
+		progress.Progress = progresses
+	}
+
+	if committed < lastIndex {
+		committed = lastIndex
+	}
+	for _, entry := range entries {
+		if entry.Index <= lastIndex || entry.Index > committed || entry.Type != raftpb.EntryConfChange {
+			continue
+		}
+
+		var cc raftpb.ConfChange
+		if err := cc.Unmarshal(entry.Data); err != nil {
+			return raftpb.ConfState{}, err
+		}
+
+		nextCfg, nextProgress, err := applyConfChange(progress, entry.Index, cc.AsV2())
+		if err != nil {
+			return raftpb.ConfState{}, err
+		}
+		progress.Config = nextCfg
+		progress.Progress = nextProgress
+	}
+
+	return cloneConfState(progress.ConfState()), nil
+}
+
+func applyConfChange(
+	progress tracker.ProgressTracker,
+	lastIndex uint64,
+	change raftpb.ConfChangeV2,
+) (tracker.Config, tracker.ProgressMap, error) {
+	changer := confchange.Changer{
+		Tracker:   progress,
+		LastIndex: lastIndex,
+	}
+
+	if change.LeaveJoint() {
+		return changer.LeaveJoint()
+	}
+	if autoLeave, ok := change.EnterJoint(); ok {
+		return changer.EnterJoint(autoLeave, change.Changes...)
+	}
+	return changer.Simple(change.Changes...)
+}
+
+func isZeroConfState(state raftpb.ConfState) bool {
+	return len(state.Voters) == 0 &&
+		len(state.Learners) == 0 &&
+		len(state.VotersOutgoing) == 0 &&
+		len(state.LearnersNext) == 0 &&
+		!state.AutoLeave
 }

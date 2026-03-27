@@ -18,8 +18,8 @@ func TestStateMachineEncodeUpsertCommands(t *testing.T) {
 	if err := json.Unmarshal(userCmd, &userDecoded); err != nil {
 		t.Fatalf("json.Unmarshal(user) error = %v", err)
 	}
-	if userDecoded["type"] != "upsert_user" {
-		t.Fatalf("user type = %#v, want %q", userDecoded["type"], "upsert_user")
+	if userDecoded["type"] != commandTypeUpsertUser {
+		t.Fatalf("user type = %#v, want %q", userDecoded["type"], commandTypeUpsertUser)
 	}
 	if _, ok := userDecoded["user"]; !ok {
 		t.Fatal("user payload missing")
@@ -29,8 +29,8 @@ func TestStateMachineEncodeUpsertCommands(t *testing.T) {
 	if err := json.Unmarshal(channelCmd, &channelDecoded); err != nil {
 		t.Fatalf("json.Unmarshal(channel) error = %v", err)
 	}
-	if channelDecoded["type"] != "upsert_channel" {
-		t.Fatalf("channel type = %#v, want %q", channelDecoded["type"], "upsert_channel")
+	if channelDecoded["type"] != commandTypeUpsertChannel {
+		t.Fatalf("channel type = %#v, want %q", channelDecoded["type"], commandTypeUpsertChannel)
 	}
 	if _, ok := channelDecoded["channel"]; !ok {
 		t.Fatal("channel payload missing")
@@ -51,8 +51,8 @@ func TestStateMachineApplyUpsertsUserAndChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply(user create) error = %v", err)
 	}
-	if string(result) != "ok" {
-		t.Fatalf("Apply(user create) result = %q, want %q", result, "ok")
+	if string(result) != applyResultOK {
+		t.Fatalf("Apply(user create) result = %q, want %q", result, applyResultOK)
 	}
 
 	if _, err := sm.Apply(ctx, multiraft.Command{

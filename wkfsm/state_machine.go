@@ -36,7 +36,7 @@ func (m *stateMachine) Apply(ctx context.Context, cmd multiraft.Command) ([]byte
 
 	shard := m.db.ForSlot(m.slot)
 	switch decoded.Type {
-	case "upsert_user":
+	case commandTypeUpsertUser:
 		if decoded.User == nil {
 			return nil, wkdb.ErrInvalidArgument
 		}
@@ -51,7 +51,7 @@ func (m *stateMachine) Apply(ctx context.Context, cmd multiraft.Command) ([]byte
 		} else {
 			return nil, err
 		}
-	case "upsert_channel":
+	case commandTypeUpsertChannel:
 		if decoded.Channel == nil {
 			return nil, wkdb.ErrInvalidArgument
 		}
@@ -70,7 +70,7 @@ func (m *stateMachine) Apply(ctx context.Context, cmd multiraft.Command) ([]byte
 		return nil, wkdb.ErrInvalidArgument
 	}
 
-	return []byte("ok"), nil
+	return []byte(applyResultOK), nil
 }
 
 func (m *stateMachine) Restore(ctx context.Context, snap multiraft.Snapshot) error {

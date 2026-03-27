@@ -9,6 +9,16 @@ import (
 	"go.etcd.io/raft/v3/raftpb"
 )
 
+func mustMarshalConfChange(t *testing.T, cc raftpb.ConfChange) []byte {
+	t.Helper()
+
+	data, err := cc.Marshal()
+	if err != nil {
+		t.Fatalf("ConfChange.Marshal() error = %v", err)
+	}
+	return data
+}
+
 func TestMemoryInitialStateIsEmpty(t *testing.T) {
 	store := NewMemory()
 
@@ -206,6 +216,96 @@ func TestMemorySaveSnapshotTrimsCoveredEntries(t *testing.T) {
 	}
 	if term != 2 {
 		t.Fatalf("Term(6) = %d, want 2", term)
+	}
+}
+
+func TestMemoryInitialStateDerivesConfStateFromCommittedEntriesWithoutSnapshot(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemory()
+
+	hs := raftpb.HardState{Term: 1, Commit: 3}
+	entries := []raftpb.Entry{
+		{
+			Index: 1,
+			Term:  1,
+			Type:  raftpb.EntryConfChange,
+			Data:  mustMarshalConfChange(t, raftpb.ConfChange{Type: raftpb.ConfChangeAddNode, NodeID: 1}),
+		},
+		{
+			Index: 2,
+			Term:  1,
+			Type:  raftpb.EntryConfChange,
+			Data:  mustMarshalConfChange(t, raftpb.ConfChange{Type: raftpb.ConfChangeAddNode, NodeID: 2}),
+		},
+		{
+			Index: 3,
+			Term:  1,
+			Type:  raftpb.EntryConfChange,
+			Data:  mustMarshalConfChange(t, raftpb.ConfChange{Type: raftpb.ConfChangeAddNode, NodeID: 3}),
+		},
+	}
+
+	if err := store.Save(ctx, multiraft.PersistentState{
+		HardState: &hs,
+		Entries:   entries,
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if err := store.MarkApplied(ctx, 3); err != nil {
+		t.Fatalf("MarkApplied() error = %v", err)
+	}
+
+	state, err := store.InitialState(ctx)
+	if err != nil {
+		t.Fatalf("InitialState() error = %v", err)
+	}
+	want := raftpb.ConfState{Voters: []uint64{1, 2, 3}}
+	if !reflect.DeepEqual(state.ConfState, want) {
+		t.Fatalf("ConfState = %#v, want %#v", state.ConfState, want)
+	}
+}
+
+func TestMemoryInitialStateAppliesPostSnapshotConfChanges(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemory()
+
+	snap := raftpb.Snapshot{
+		Metadata: raftpb.SnapshotMetadata{
+			Index: 2,
+			Term:  1,
+			ConfState: raftpb.ConfState{
+				Voters: []uint64{1, 2},
+			},
+		},
+	}
+	hs := raftpb.HardState{Term: 2, Commit: 3}
+	entries := []raftpb.Entry{
+		{
+			Index: 3,
+			Term:  2,
+			Type:  raftpb.EntryConfChange,
+			Data:  mustMarshalConfChange(t, raftpb.ConfChange{Type: raftpb.ConfChangeAddNode, NodeID: 3}),
+		},
+	}
+
+	if err := store.Save(ctx, multiraft.PersistentState{
+		HardState: &hs,
+		Snapshot:  &snap,
+		Entries:   entries,
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if err := store.MarkApplied(ctx, 3); err != nil {
+		t.Fatalf("MarkApplied() error = %v", err)
+	}
+
+	state, err := store.InitialState(ctx)
+	if err != nil {
+		t.Fatalf("InitialState() error = %v", err)
+	}
+	want := raftpb.ConfState{Voters: []uint64{1, 2, 3}}
+	if !reflect.DeepEqual(state.ConfState, want) {
+		t.Fatalf("ConfState = %#v, want %#v", state.ConfState, want)
 	}
 }
 

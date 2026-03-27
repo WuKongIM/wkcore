@@ -113,3 +113,75 @@ func TestMemoryBackedGroupDoesNotRecoverDeletedSlotDataAfterOpenGroup(t *testing
 		t.Fatalf("GetUser() after reopen err = %v, want ErrNotFound", err)
 	}
 }
+
+func TestMemoryBackedGroupReopensWithRecoveredMembership(t *testing.T) {
+	ctx := context.Background()
+	groupID := multiraft.GroupID(52)
+	db := openTestDB(t)
+	store := raftstore.NewMemory()
+
+	rt := newStartedRuntime(t)
+	if err := rt.BootstrapGroup(ctx, multiraft.BootstrapGroupRequest{
+		Group: multiraft.GroupOptions{
+			ID:           groupID,
+			Storage:      store,
+			StateMachine: New(db, uint64(groupID)),
+		},
+		Voters: []multiraft.NodeID{1},
+	}); err != nil {
+		t.Fatalf("BootstrapGroup() error = %v", err)
+	}
+
+	waitForCondition(t, func() bool {
+		st, err := rt.Status(groupID)
+		return err == nil && st.Role == multiraft.RoleLeader
+	})
+
+	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(wkdb.User{
+		UID:   "u1",
+		Token: "before-reopen",
+	}))
+	if err != nil {
+		t.Fatalf("Propose(before reopen) error = %v", err)
+	}
+	if _, err := fut.Wait(ctx); err != nil {
+		t.Fatalf("Wait(before reopen) error = %v", err)
+	}
+
+	if err := rt.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopenRT := newStartedRuntime(t)
+	if err := reopenRT.OpenGroup(ctx, multiraft.GroupOptions{
+		ID:           groupID,
+		Storage:      store,
+		StateMachine: New(db, uint64(groupID)),
+	}); err != nil {
+		t.Fatalf("OpenGroup() error = %v", err)
+	}
+
+	waitForCondition(t, func() bool {
+		st, err := reopenRT.Status(groupID)
+		return err == nil && st.Role == multiraft.RoleLeader
+	})
+
+	fut, err = reopenRT.Propose(ctx, groupID, EncodeUpsertUserCommand(wkdb.User{
+		UID:   "u1",
+		Token: "after-reopen",
+	}))
+	if err != nil {
+		t.Fatalf("Propose(after reopen) error = %v", err)
+	}
+	if _, err := fut.Wait(ctx); err != nil {
+		t.Fatalf("Wait(after reopen) error = %v", err)
+	}
+
+	got, err := db.ForSlot(uint64(groupID)).GetUser(ctx, "u1")
+	if err != nil {
+		t.Fatalf("GetUser() error = %v", err)
+	}
+	if got.Token != "after-reopen" {
+		t.Fatalf("stored user = %#v", got)
+	}
+}

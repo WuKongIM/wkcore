@@ -7,7 +7,7 @@ import (
 	"go.etcd.io/raft/v3/raftpb"
 )
 
-func (s *storageAdapter) load(ctx context.Context) (BootstrapState, raftpb.Snapshot, *raft.MemoryStorage, error) {
+func (s *storageAdapter) load(ctx context.Context) (BootstrapState, raftpb.Snapshot, *loadedMemoryStorage, error) {
 	state, err := s.storage.InitialState(ctx)
 	if err != nil {
 		return BootstrapState{}, raftpb.Snapshot{}, nil, err
@@ -51,7 +51,7 @@ func (s *storageAdapter) load(ctx context.Context) (BootstrapState, raftpb.Snaps
 		}
 	}
 
-	return state, snap, memory, nil
+	return state, snap, newLoadedMemoryStorage(memory, state.ConfState), nil
 }
 
 func (s *storageAdapter) persistReady(ctx context.Context, ready raft.Ready) error {

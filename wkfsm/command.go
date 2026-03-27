@@ -6,6 +6,12 @@ import (
 	"github.com/WuKongIM/wraft/wkdb"
 )
 
+const (
+	commandTypeUpsertUser    = "upsert_user"
+	commandTypeUpsertChannel = "upsert_channel"
+	applyResultOK            = "ok"
+)
+
 type commandEnvelope struct {
 	Type    string        `json:"type"`
 	User    *wkdb.User    `json:"user,omitempty"`
@@ -14,7 +20,7 @@ type commandEnvelope struct {
 
 func EncodeUpsertUserCommand(user wkdb.User) []byte {
 	data, _ := json.Marshal(commandEnvelope{
-		Type: "upsert_user",
+		Type: commandTypeUpsertUser,
 		User: &user,
 	})
 	return data
@@ -22,7 +28,7 @@ func EncodeUpsertUserCommand(user wkdb.User) []byte {
 
 func EncodeUpsertChannelCommand(channel wkdb.Channel) []byte {
 	data, _ := json.Marshal(commandEnvelope{
-		Type:    "upsert_channel",
+		Type:    commandTypeUpsertChannel,
 		Channel: &channel,
 	})
 	return data
