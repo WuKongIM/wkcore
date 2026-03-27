@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/wraft/multiraft"
+	"github.com/WuKongIM/wraft/raftstore"
 	"github.com/WuKongIM/wraft/wkdb"
 )
 
@@ -20,11 +21,38 @@ const (
 func openTestDB(t *testing.T) *wkdb.DB {
 	t.Helper()
 
-	db, err := wkdb.Open(filepath.Join(t.TempDir(), "db"))
+	return openTestDBAt(t, filepath.Join(t.TempDir(), "db"))
+}
+
+func openTestDBAt(t *testing.T, path string) *wkdb.DB {
+	t.Helper()
+
+	db, err := wkdb.Open(path)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
 	t.Cleanup(func() {
+		defer func() {
+			_ = recover()
+		}()
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	return db
+}
+
+func openTestRaftDBAt(t *testing.T, path string) *raftstore.DB {
+	t.Helper()
+
+	db, err := raftstore.Open(path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		defer func() {
+			_ = recover()
+		}()
 		if err := db.Close(); err != nil {
 			t.Fatalf("Close() error = %v", err)
 		}
