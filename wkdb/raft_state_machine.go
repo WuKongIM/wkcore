@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-
-	"github.com/WuKongIM/wraft/multiraft"
 )
 
 type wkdbStateMachine struct {
@@ -19,14 +17,14 @@ type stateMachineCommand struct {
 	Channel *Channel `json:"channel,omitempty"`
 }
 
-func NewStateMachine(db *DB, slot uint64) multiraft.StateMachine {
+func NewStateMachine(db *DB, slot uint64) RaftStateMachine {
 	return &wkdbStateMachine{
 		db:   db,
 		slot: slot,
 	}
 }
 
-func encodeUpsertUserCommand(user User) []byte {
+func EncodeUpsertUserCommand(user User) []byte {
 	data, _ := json.Marshal(stateMachineCommand{
 		Type: "upsert_user",
 		User: &user,
@@ -34,7 +32,7 @@ func encodeUpsertUserCommand(user User) []byte {
 	return data
 }
 
-func encodeUpsertChannelCommand(channel Channel) []byte {
+func EncodeUpsertChannelCommand(channel Channel) []byte {
 	data, _ := json.Marshal(stateMachineCommand{
 		Type:    "upsert_channel",
 		Channel: &channel,
@@ -42,7 +40,7 @@ func encodeUpsertChannelCommand(channel Channel) []byte {
 	return data
 }
 
-func (m *wkdbStateMachine) Apply(ctx context.Context, cmd multiraft.Command) ([]byte, error) {
+func (m *wkdbStateMachine) Apply(ctx context.Context, cmd RaftCommand) ([]byte, error) {
 	if m == nil || m.db == nil {
 		return nil, ErrInvalidArgument
 	}
@@ -91,7 +89,7 @@ func (m *wkdbStateMachine) Apply(ctx context.Context, cmd multiraft.Command) ([]
 	return []byte("ok"), nil
 }
 
-func (m *wkdbStateMachine) Restore(ctx context.Context, snap multiraft.Snapshot) error {
+func (m *wkdbStateMachine) Restore(ctx context.Context, snap RaftSnapshot) error {
 	if m == nil || m.db == nil {
 		return ErrInvalidArgument
 	}
@@ -101,16 +99,16 @@ func (m *wkdbStateMachine) Restore(ctx context.Context, snap multiraft.Snapshot)
 	})
 }
 
-func (m *wkdbStateMachine) Snapshot(ctx context.Context) (multiraft.Snapshot, error) {
+func (m *wkdbStateMachine) Snapshot(ctx context.Context) (RaftSnapshot, error) {
 	if m == nil || m.db == nil {
-		return multiraft.Snapshot{}, ErrInvalidArgument
+		return RaftSnapshot{}, ErrInvalidArgument
 	}
 
 	snap, err := m.db.ExportSlotSnapshot(ctx, m.slot)
 	if err != nil {
-		return multiraft.Snapshot{}, err
+		return RaftSnapshot{}, err
 	}
-	return multiraft.Snapshot{
+	return RaftSnapshot{
 		Data: snap.Data,
 	}, nil
 }

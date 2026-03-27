@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 
-	"github.com/WuKongIM/wraft/multiraft"
 	"github.com/cockroachdb/pebble"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
@@ -23,45 +22,45 @@ type wkdbRaftStorage struct {
 	group uint64
 }
 
-func NewRaftStorage(db *DB, group uint64) multiraft.Storage {
+func NewRaftStorage(db *DB, group uint64) RaftStorage {
 	return &wkdbRaftStorage{
 		db:    db,
 		group: group,
 	}
 }
 
-func (s *wkdbRaftStorage) InitialState(ctx context.Context) (multiraft.BootstrapState, error) {
+func (s *wkdbRaftStorage) InitialState(ctx context.Context) (RaftBootstrapState, error) {
 	if err := s.validate(); err != nil {
-		return multiraft.BootstrapState{}, err
+		return RaftBootstrapState{}, err
 	}
 	if err := s.db.checkContext(ctx); err != nil {
-		return multiraft.BootstrapState{}, err
+		return RaftBootstrapState{}, err
 	}
 
 	s.db.mu.RLock()
 	defer s.db.mu.RUnlock()
 
-	state := multiraft.BootstrapState{}
+	state := RaftBootstrapState{}
 	if data, err := s.db.getValue(encodeRaftHardStateKey(s.group)); err == nil {
 		if err := state.HardState.Unmarshal(data); err != nil {
-			return multiraft.BootstrapState{}, err
+			return RaftBootstrapState{}, err
 		}
 	} else if !errors.Is(err, ErrNotFound) {
-		return multiraft.BootstrapState{}, err
+		return RaftBootstrapState{}, err
 	}
 
 	if data, err := s.db.getValue(encodeRaftAppliedKey(s.group)); err == nil {
 		if len(data) != 8 {
-			return multiraft.BootstrapState{}, ErrCorruptValue
+			return RaftBootstrapState{}, ErrCorruptValue
 		}
 		state.AppliedIndex = binary.BigEndian.Uint64(data)
 	} else if !errors.Is(err, ErrNotFound) {
-		return multiraft.BootstrapState{}, err
+		return RaftBootstrapState{}, err
 	}
 
 	snap, err := s.snapshotLocked()
 	if err != nil {
-		return multiraft.BootstrapState{}, err
+		return RaftBootstrapState{}, err
 	}
 	if !raft.IsEmptySnap(snap) {
 		state.ConfState = snap.Metadata.ConfState
@@ -241,7 +240,7 @@ func (s *wkdbRaftStorage) Snapshot(ctx context.Context) (raftpb.Snapshot, error)
 	return s.snapshotLocked()
 }
 
-func (s *wkdbRaftStorage) Save(ctx context.Context, st multiraft.PersistentState) error {
+func (s *wkdbRaftStorage) Save(ctx context.Context, st RaftPersistentState) error {
 	if err := s.validate(); err != nil {
 		return err
 	}

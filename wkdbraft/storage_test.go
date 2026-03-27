@@ -1,18 +1,18 @@
-package wkdb
+package wkdbraft
 
 import (
 	"context"
 	"reflect"
 	"testing"
 
-	"github.com/WuKongIM/wraft/multiraft"
+	"github.com/WuKongIM/wraft/wkdb"
 	"go.etcd.io/raft/v3/raftpb"
 )
 
 func TestWKDBRaftStorageSaveAndLoadRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
-	store := NewRaftStorage(db, 13)
+	store := wkdb.NewRaftStorage(db, 13)
 
 	hs := raftpb.HardState{Term: 2, Vote: 1, Commit: 7}
 	entries := []raftpb.Entry{
@@ -30,7 +30,7 @@ func TestWKDBRaftStorageSaveAndLoadRoundTrip(t *testing.T) {
 		},
 	}
 
-	if err := store.Save(ctx, multiraft.PersistentState{
+	if err := store.Save(ctx, wkdb.RaftPersistentState{
 		HardState: &hs,
 		Entries:   entries,
 		Snapshot:  &snap,
@@ -38,7 +38,7 @@ func TestWKDBRaftStorageSaveAndLoadRoundTrip(t *testing.T) {
 		t.Fatalf("Save(): %v", err)
 	}
 
-	reopened := NewRaftStorage(db, 13)
+	reopened := wkdb.NewRaftStorage(db, 13)
 	state, err := reopened.InitialState(ctx)
 	if err != nil {
 		t.Fatalf("InitialState(): %v", err)
@@ -70,13 +70,13 @@ func TestWKDBRaftStorageSaveAndLoadRoundTrip(t *testing.T) {
 func TestWKDBRaftStorageMarkAppliedPersists(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
-	store := NewRaftStorage(db, 13)
+	store := wkdb.NewRaftStorage(db, 13)
 
 	if err := store.MarkApplied(ctx, 9); err != nil {
 		t.Fatalf("MarkApplied(): %v", err)
 	}
 
-	state, err := NewRaftStorage(db, 13).InitialState(ctx)
+	state, err := wkdb.NewRaftStorage(db, 13).InitialState(ctx)
 	if err != nil {
 		t.Fatalf("InitialState(): %v", err)
 	}
@@ -88,14 +88,14 @@ func TestWKDBRaftStorageMarkAppliedPersists(t *testing.T) {
 func TestWKDBRaftStorageEntriesWindowing(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
-	store := NewRaftStorage(db, 13)
+	store := wkdb.NewRaftStorage(db, 13)
 
 	entries := []raftpb.Entry{
 		{Index: 5, Term: 1, Data: []byte("a")},
 		{Index: 6, Term: 2, Data: []byte("b")},
 		{Index: 7, Term: 2, Data: []byte("c")},
 	}
-	if err := store.Save(ctx, multiraft.PersistentState{Entries: entries}); err != nil {
+	if err := store.Save(ctx, wkdb.RaftPersistentState{Entries: entries}); err != nil {
 		t.Fatalf("Save(): %v", err)
 	}
 

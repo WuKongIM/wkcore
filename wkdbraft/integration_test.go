@@ -1,10 +1,9 @@
-package multiraft_test
+package wkdbraft
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,18 +16,10 @@ func TestWKDBBackedGroupRestoresStateFromSnapshotOnReopen(t *testing.T) {
 	ctx := context.Background()
 	groupID := multiraft.GroupID(51)
 
-	db, err := wkdb.Open(filepath.Join(t.TempDir(), "db"))
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
-	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
-		}
-	})
+	db := openTestDB(t)
 
-	store := wkdb.NewRaftStorage(db, uint64(groupID))
-	fsm := wkdb.NewStateMachine(db, uint64(groupID))
+	store := NewStorage(db, uint64(groupID))
+	fsm := NewStateMachine(db, uint64(groupID))
 
 	rt := newStartedRuntime(t)
 	if err := rt.BootstrapGroup(ctx, multiraft.BootstrapGroupRequest{
@@ -65,7 +56,8 @@ func TestWKDBBackedGroupRestoresStateFromSnapshotOnReopen(t *testing.T) {
 		t.Fatalf("Wait() error = %v", err)
 	}
 
-	snap, err := fsm.Snapshot(ctx)
+	innerFSM := wkdb.NewStateMachine(db, uint64(groupID))
+	snap, err := innerFSM.Snapshot(ctx)
 	if err != nil {
 		t.Fatalf("Snapshot() error = %v", err)
 	}
@@ -73,7 +65,8 @@ func TestWKDBBackedGroupRestoresStateFromSnapshotOnReopen(t *testing.T) {
 		t.Fatal("Snapshot().Data is empty")
 	}
 
-	if err := store.Save(ctx, multiraft.PersistentState{
+	innerStore := wkdb.NewRaftStorage(db, uint64(groupID))
+	if err := innerStore.Save(ctx, wkdb.RaftPersistentState{
 		Snapshot: &raftpb.Snapshot{
 			Data: snap.Data,
 			Metadata: raftpb.SnapshotMetadata{
@@ -102,8 +95,8 @@ func TestWKDBBackedGroupRestoresStateFromSnapshotOnReopen(t *testing.T) {
 	reopenRT := newStartedRuntime(t)
 	if err := reopenRT.OpenGroup(ctx, multiraft.GroupOptions{
 		ID:           groupID,
-		Storage:      wkdb.NewRaftStorage(db, uint64(groupID)),
-		StateMachine: wkdb.NewStateMachine(db, uint64(groupID)),
+		Storage:      NewStorage(db, uint64(groupID)),
+		StateMachine: NewStateMachine(db, uint64(groupID)),
 	}); err != nil {
 		t.Fatalf("OpenGroup() error = %v", err)
 	}
@@ -124,7 +117,7 @@ func newStartedRuntime(t *testing.T) *multiraft.Runtime {
 		NodeID:       1,
 		TickInterval: 10 * time.Millisecond,
 		Workers:      1,
-		Transport:    internalFakeTransport{},
+		Transport:    fakeTransport{},
 		Raft: multiraft.RaftOptions{
 			ElectionTick:  10,
 			HeartbeatTick: 1,
@@ -141,9 +134,9 @@ func newStartedRuntime(t *testing.T) *multiraft.Runtime {
 	return rt
 }
 
-type internalFakeTransport struct{}
+type fakeTransport struct{}
 
-func (internalFakeTransport) Send(ctx context.Context, batch []multiraft.Envelope) error {
+func (fakeTransport) Send(ctx context.Context, batch []multiraft.Envelope) error {
 	return nil
 }
 
