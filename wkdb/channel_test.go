@@ -151,6 +151,47 @@ func TestDeleteChannelRemovesOnlySlotLocalIndex(t *testing.T) {
 	}
 }
 
+func TestChannelIndexValueTracksListPayload(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	shard := db.ForSlot(7)
+
+	ch := Channel{ChannelID: "group-001", ChannelType: 3, Ban: 1}
+	if err := shard.CreateChannel(ctx, ch); err != nil {
+		t.Fatalf("CreateChannel(): %v", err)
+	}
+
+	indexKey := encodeChannelIDIndexKey(7, ch.ChannelID, ch.ChannelType)
+	value, err := db.getValue(indexKey)
+	if err != nil {
+		t.Fatalf("getValue(indexKey): %v", err)
+	}
+	ban, err := decodeChannelIndexValue(indexKey, value)
+	if err != nil {
+		t.Fatalf("decodeChannelIndexValue(create): %v", err)
+	}
+	if ban != ch.Ban {
+		t.Fatalf("create index ban = %d, want %d", ban, ch.Ban)
+	}
+
+	updated := Channel{ChannelID: ch.ChannelID, ChannelType: ch.ChannelType, Ban: 9}
+	if err := shard.UpdateChannel(ctx, updated); err != nil {
+		t.Fatalf("UpdateChannel(): %v", err)
+	}
+
+	value, err = db.getValue(indexKey)
+	if err != nil {
+		t.Fatalf("getValue(indexKey) after update: %v", err)
+	}
+	ban, err = decodeChannelIndexValue(indexKey, value)
+	if err != nil {
+		t.Fatalf("decodeChannelIndexValue(update): %v", err)
+	}
+	if ban != updated.Ban {
+		t.Fatalf("updated index ban = %d, want %d", ban, updated.Ban)
+	}
+}
+
 func TestListChannelsByChannelIDHonorsCanceledContext(t *testing.T) {
 	db := openTestDB(t)
 	shard := db.ForSlot(1)

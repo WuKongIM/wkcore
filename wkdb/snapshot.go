@@ -20,7 +20,8 @@ func (db *DB) ExportSlotSnapshot(ctx context.Context, slotID uint64) (SlotSnapsh
 	view := db.db.NewSnapshot()
 	defer view.Close()
 
-	var entries []snapshotEntry
+	data, countPos := beginSlotSnapshotPayload(slotID)
+	entryCount := 0
 	for _, span := range slotAllDataSpans(slotID) {
 		iter, err := view.NewIter(&pebble.IterOptions{
 			LowerBound: span.Start,
@@ -42,10 +43,8 @@ func (db *DB) ExportSlotSnapshot(ctx context.Context, slotID uint64) (SlotSnapsh
 				return SlotSnapshot{}, err
 			}
 
-			entries = append(entries, snapshotEntry{
-				Key:   append([]byte(nil), iter.Key()...),
-				Value: append([]byte(nil), value...),
-			})
+			data = appendSlotSnapshotEntry(data, iter.Key(), value)
+			entryCount++
 		}
 		if err := iter.Error(); err != nil {
 			iter.Close()
@@ -56,7 +55,7 @@ func (db *DB) ExportSlotSnapshot(ctx context.Context, slotID uint64) (SlotSnapsh
 		}
 	}
 
-	data, stats := encodeSlotSnapshotPayload(slotID, entries)
+	data, stats := finishSlotSnapshotPayload(data, countPos, entryCount)
 	return SlotSnapshot{
 		SlotID: slotID,
 		Data:   data,
@@ -78,6 +77,27 @@ func (db *DB) ImportSlotSnapshot(ctx context.Context, snap SlotSnapshot) error {
 	}
 	if decoded.SlotID != snap.SlotID {
 		return ErrInvalidArgument
+	}
+
+	if db.testHooks.beforeImportCommit == nil {
+		db.mu.Lock()
+		defer db.mu.Unlock()
+
+		batch := db.db.NewBatch()
+		defer batch.Close()
+
+		for _, span := range slotAllDataSpans(snap.SlotID) {
+			if err := batch.DeleteRange(span.Start, span.End, nil); err != nil {
+				return err
+			}
+		}
+		for _, entry := range decoded.Entries {
+			if err := batch.Set(entry.Key, entry.Value, nil); err != nil {
+				return err
+			}
+		}
+
+		return batch.Commit(pebble.Sync)
 	}
 
 	if err := db.DeleteSlotData(ctx, snap.SlotID); err != nil {

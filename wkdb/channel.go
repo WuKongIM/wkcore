@@ -3,7 +3,6 @@ package wkdb
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/cockroachdb/pebble"
@@ -30,10 +29,12 @@ func (s *ShardStore) CreateChannel(ctx context.Context, ch Channel) error {
 	defer s.db.mu.Unlock()
 
 	primaryKey := encodeChannelPrimaryKey(s.slot, ch.ChannelID, ch.ChannelType, channelPrimaryFamilyID)
-	if _, err := s.db.getValue(primaryKey); err == nil {
-		return ErrAlreadyExists
-	} else if !errors.Is(err, ErrNotFound) {
+	exists, err := s.db.hasKey(primaryKey)
+	if err != nil {
 		return err
+	}
+	if exists {
+		return ErrAlreadyExists
 	}
 	s.db.runAfterExistenceCheckHook()
 	if err := s.db.checkContext(ctx); err != nil {
@@ -42,6 +43,7 @@ func (s *ShardStore) CreateChannel(ctx context.Context, ch Channel) error {
 
 	value := encodeChannelFamilyValue(ch.Ban, primaryKey)
 	indexKey := encodeChannelIDIndexKey(s.slot, ch.ChannelID, ch.ChannelType)
+	indexValue := encodeChannelIndexValue(ch.Ban)
 
 	batch := s.db.db.NewBatch()
 	defer batch.Close()
@@ -49,7 +51,7 @@ func (s *ShardStore) CreateChannel(ctx context.Context, ch Channel) error {
 	if err := batch.Set(primaryKey, value, nil); err != nil {
 		return err
 	}
-	if err := batch.Set(indexKey, []byte{}, nil); err != nil {
+	if err := batch.Set(indexKey, indexValue, nil); err != nil {
 		return err
 	}
 	return batch.Commit(pebble.Sync)
@@ -117,12 +119,12 @@ func (s *ShardStore) ListChannelsByChannelID(ctx context.Context, channelID stri
 		if err := s.db.checkContext(ctx); err != nil {
 			return nil, err
 		}
-		key := iter.Key()
-		if !bytes.HasPrefix(key, prefix) {
+		indexKey := iter.Key()
+		if !bytes.HasPrefix(indexKey, prefix) {
 			break
 		}
 
-		channelType, rest, err := decodeOrderedInt64(key[len(prefix):])
+		channelType, rest, err := decodeOrderedInt64(indexKey[len(prefix):])
 		if err != nil {
 			return nil, err
 		}
@@ -130,11 +132,19 @@ func (s *ShardStore) ListChannelsByChannelID(ctx context.Context, channelID stri
 			return nil, fmt.Errorf("%w: malformed channel index key", ErrCorruptValue)
 		}
 
-		ch, err := s.getChannelLocked(channelID, channelType)
+		indexValue, err := iter.ValueAndErr()
 		if err != nil {
 			return nil, err
 		}
-		channels = append(channels, ch)
+		ban, err := decodeChannelIndexValue(indexKey, indexValue)
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, Channel{
+			ChannelID:   channelID,
+			ChannelType: channelType,
+			Ban:         ban,
+		})
 	}
 
 	if err := iter.Error(); err != nil {
@@ -158,19 +168,28 @@ func (s *ShardStore) UpdateChannel(ctx context.Context, ch Channel) error {
 	defer s.db.mu.Unlock()
 
 	primaryKey := encodeChannelPrimaryKey(s.slot, ch.ChannelID, ch.ChannelType, channelPrimaryFamilyID)
-	if _, err := s.db.getValue(primaryKey); err != nil {
+	exists, err := s.db.hasKey(primaryKey)
+	if err != nil {
 		return err
+	}
+	if !exists {
+		return ErrNotFound
 	}
 	if err := s.db.checkContext(ctx); err != nil {
 		return err
 	}
 
 	value := encodeChannelFamilyValue(ch.Ban, primaryKey)
+	indexKey := encodeChannelIDIndexKey(s.slot, ch.ChannelID, ch.ChannelType)
+	indexValue := encodeChannelIndexValue(ch.Ban)
 
 	batch := s.db.db.NewBatch()
 	defer batch.Close()
 
 	if err := batch.Set(primaryKey, value, nil); err != nil {
+		return err
+	}
+	if err := batch.Set(indexKey, indexValue, nil); err != nil {
 		return err
 	}
 	return batch.Commit(pebble.Sync)
@@ -191,8 +210,12 @@ func (s *ShardStore) DeleteChannel(ctx context.Context, channelID string, channe
 	defer s.db.mu.Unlock()
 
 	primaryKey := encodeChannelPrimaryKey(s.slot, channelID, channelType, channelPrimaryFamilyID)
-	if _, err := s.db.getValue(primaryKey); err != nil {
+	exists, err := s.db.hasKey(primaryKey)
+	if err != nil {
 		return err
+	}
+	if !exists {
+		return ErrNotFound
 	}
 	if err := s.db.checkContext(ctx); err != nil {
 		return err

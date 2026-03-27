@@ -79,6 +79,35 @@ func TestChannelValueEncodingMatchesDoc(t *testing.T) {
 	}
 }
 
+func TestChannelIndexValueEncodingIsCompact(t *testing.T) {
+	got := encodeChannelIndexValue(1)
+	want := mustHex(t, "02")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("unexpected index value:\n got: %x\nwant: %x", got, want)
+	}
+
+	decoded, err := decodeChannelIndexValue(nil, got)
+	if err != nil {
+		t.Fatalf("decodeChannelIndexValue(): %v", err)
+	}
+	if decoded != 1 {
+		t.Fatalf("decoded = %d, want 1", decoded)
+	}
+}
+
+func TestDecodeChannelIndexValueAcceptsLegacyWrappedValue(t *testing.T) {
+	key := encodeChannelIDIndexKey(7, "group-001", 1)
+	legacy := encodeChannelFamilyValue(9, key)
+
+	decoded, err := decodeChannelIndexValue(key, legacy)
+	if err != nil {
+		t.Fatalf("decodeChannelIndexValue(legacy): %v", err)
+	}
+	if decoded != 9 {
+		t.Fatalf("decoded = %d, want 9", decoded)
+	}
+}
+
 func TestDecodeWrappedValueDetectsChecksumMismatch(t *testing.T) {
 	key := encodeUserPrimaryKey(7, "u1001", 0)
 	value := encodeUserFamilyValue("tk_abc", 1, 2, key)
@@ -108,6 +137,27 @@ func TestDecodeUserFamilyValueRejectsMissingColumns(t *testing.T) {
 	value := wrapFamilyValue(key, payload)
 
 	_, _, _, err := decodeUserFamilyValue(key, value)
+	if !errors.Is(err, ErrCorruptValue) {
+		t.Fatalf("expected ErrCorruptValue, got %v", err)
+	}
+}
+
+func TestDecodeChannelFamilyValueRejectsMissingBan(t *testing.T) {
+	key := encodeChannelPrimaryKey(7, "group-001", 1, 0)
+	value := wrapFamilyValue(key, nil)
+
+	_, err := decodeChannelFamilyValue(key, value)
+	if !errors.Is(err, ErrCorruptValue) {
+		t.Fatalf("expected ErrCorruptValue, got %v", err)
+	}
+}
+
+func TestDecodeChannelFamilyValueRejectsWrongType(t *testing.T) {
+	key := encodeChannelPrimaryKey(7, "group-001", 1, 0)
+	payload := appendBytesValue(nil, channelColumnIDBan, 0, "bad")
+	value := wrapFamilyValue(key, payload)
+
+	_, err := decodeChannelFamilyValue(key, value)
 	if !errors.Is(err, ErrCorruptValue) {
 		t.Fatalf("expected ErrCorruptValue, got %v", err)
 	}

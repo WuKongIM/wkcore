@@ -86,22 +86,78 @@ func decodeUserFamilyValue(key, value []byte) (string, int64, int64, error) {
 	if err != nil {
 		return "", 0, 0, err
 	}
-	cols, err := decodeFamilyPayload(payload)
-	if err != nil {
-		return "", 0, 0, err
+
+	var (
+		token       string
+		deviceFlag  int64
+		deviceLevel int64
+		colID       uint16
+		haveToken   bool
+		haveFlag    bool
+		haveLevel   bool
+	)
+
+	for len(payload) > 0 {
+		tag := payload[0]
+		payload = payload[1:]
+
+		delta := uint16(tag >> 4)
+		valueType := tag & 0x0f
+		if delta == 0 {
+			return "", 0, 0, fmt.Errorf("%w: zero column delta", ErrCorruptValue)
+		}
+		colID += delta
+
+		switch valueType {
+		case valueTypeBytes:
+			length, n := binary.Uvarint(payload)
+			if n <= 0 {
+				return "", 0, 0, fmt.Errorf("wkdb: invalid bytes length")
+			}
+			payload = payload[n:]
+			if uint64(len(payload)) < length {
+				return "", 0, 0, fmt.Errorf("wkdb: bytes payload truncated")
+			}
+			raw := payload[:length]
+			payload = payload[length:]
+
+			switch colID {
+			case userColumnIDToken:
+				token = string(raw)
+				haveToken = true
+			case userColumnIDDeviceFlag, userColumnIDDeviceLevel:
+				return "", 0, 0, fmt.Errorf("%w: invalid int column %d", ErrCorruptValue, colID)
+			}
+		case valueTypeInt:
+			raw, n := binary.Uvarint(payload)
+			if n <= 0 {
+				return "", 0, 0, fmt.Errorf("wkdb: invalid int payload")
+			}
+			payload = payload[n:]
+
+			switch colID {
+			case userColumnIDToken:
+				return "", 0, 0, fmt.Errorf("%w: invalid string column %d", ErrCorruptValue, colID)
+			case userColumnIDDeviceFlag:
+				deviceFlag = decodeZigZagInt64(raw)
+				haveFlag = true
+			case userColumnIDDeviceLevel:
+				deviceLevel = decodeZigZagInt64(raw)
+				haveLevel = true
+			}
+		default:
+			return "", 0, 0, fmt.Errorf("wkdb: unsupported value type %d", valueType)
+		}
 	}
 
-	token, err := requireStringColumn(cols, userColumnIDToken)
-	if err != nil {
-		return "", 0, 0, err
+	if !haveToken {
+		return "", 0, 0, fmt.Errorf("%w: missing string column %d", ErrCorruptValue, userColumnIDToken)
 	}
-	deviceFlag, err := requireInt64Column(cols, userColumnIDDeviceFlag)
-	if err != nil {
-		return "", 0, 0, err
+	if !haveFlag {
+		return "", 0, 0, fmt.Errorf("%w: missing int column %d", ErrCorruptValue, userColumnIDDeviceFlag)
 	}
-	deviceLevel, err := requireInt64Column(cols, userColumnIDDeviceLevel)
-	if err != nil {
-		return "", 0, 0, err
+	if !haveLevel {
+		return "", 0, 0, fmt.Errorf("%w: missing int column %d", ErrCorruptValue, userColumnIDDeviceLevel)
 	}
 	return token, deviceFlag, deviceLevel, nil
 }
@@ -112,32 +168,97 @@ func encodeChannelFamilyValue(ban int64, key []byte) []byte {
 	return wrapFamilyValue(key, payload)
 }
 
+func encodeChannelIndexValue(ban int64) []byte {
+	return binary.AppendUvarint(make([]byte, 0, binary.MaxVarintLen64), encodeZigZagInt64(ban))
+}
+
 func decodeChannelFamilyValue(key, value []byte) (int64, error) {
 	_, payload, err := decodeWrappedValue(key, value)
 	if err != nil {
 		return 0, err
 	}
-	cols, err := decodeFamilyPayload(payload)
-	if err != nil {
-		return 0, err
+
+	var (
+		ban     int64
+		colID   uint16
+		haveBan bool
+	)
+
+	for len(payload) > 0 {
+		tag := payload[0]
+		payload = payload[1:]
+
+		delta := uint16(tag >> 4)
+		valueType := tag & 0x0f
+		if delta == 0 {
+			return 0, fmt.Errorf("%w: zero column delta", ErrCorruptValue)
+		}
+		colID += delta
+
+		switch valueType {
+		case valueTypeInt:
+			raw, n := binary.Uvarint(payload)
+			if n <= 0 {
+				return 0, fmt.Errorf("wkdb: invalid int payload")
+			}
+			payload = payload[n:]
+
+			switch colID {
+			case channelColumnIDBan:
+				ban = decodeZigZagInt64(raw)
+				haveBan = true
+			}
+		case valueTypeBytes:
+			if colID == channelColumnIDBan {
+				return 0, fmt.Errorf("%w: invalid int column %d", ErrCorruptValue, colID)
+			}
+			length, n := binary.Uvarint(payload)
+			if n <= 0 {
+				return 0, fmt.Errorf("wkdb: invalid bytes length")
+			}
+			payload = payload[n:]
+			if uint64(len(payload)) < length {
+				return 0, fmt.Errorf("wkdb: bytes payload truncated")
+			}
+			payload = payload[length:]
+		default:
+			return 0, fmt.Errorf("wkdb: unsupported value type %d", valueType)
+		}
 	}
-	ban, err := requireInt64Column(cols, channelColumnIDBan)
-	if err != nil {
-		return 0, err
+
+	if !haveBan {
+		return 0, fmt.Errorf("%w: missing int column %d", ErrCorruptValue, channelColumnIDBan)
 	}
 	return ban, nil
 }
 
+func decodeChannelIndexValue(key, value []byte) (int64, error) {
+	if len(value) == 0 {
+		return 0, ErrCorruptValue
+	}
+	if len(value) >= 5 {
+		if decoded, err := decodeChannelFamilyValue(key, value); err == nil {
+			return decoded, nil
+		}
+	}
+	raw, n := binary.Uvarint(value)
+	if n <= 0 || n != len(value) {
+		return 0, ErrCorruptValue
+	}
+	return decodeZigZagInt64(raw), nil
+}
+
 func wrapFamilyValue(key, payload []byte) []byte {
-	body := append([]byte{wrappedValueTag}, payload...)
-	sum := crc32.ChecksumIEEE(append(append([]byte{}, key...), body...))
+	value := make([]byte, 5+len(payload))
+	value[4] = wrappedValueTag
+	copy(value[5:], payload)
+
+	sum := crc32.Update(0, crc32.IEEETable, key)
+	sum = crc32.Update(sum, crc32.IEEETable, value[4:])
 	if sum == 0 {
 		sum = 1
 	}
-
-	value := make([]byte, 4, 4+len(body))
 	binary.BigEndian.PutUint32(value[:4], sum)
-	value = append(value, body...)
 	return value
 }
 
@@ -147,7 +268,8 @@ func decodeWrappedValue(key, value []byte) (byte, []byte, error) {
 	}
 	want := binary.BigEndian.Uint32(value[:4])
 	body := value[4:]
-	got := crc32.ChecksumIEEE(append(append([]byte{}, key...), body...))
+	got := crc32.Update(0, crc32.IEEETable, key)
+	got = crc32.Update(got, crc32.IEEETable, body)
 	if got == 0 {
 		got = 1
 	}

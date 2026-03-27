@@ -269,7 +269,7 @@ func assertSlotMatchesModel(t *testing.T, db *DB, slot uint64, model *stressMode
 		expected[string(primaryKey)] = encodeChannelFamilyValue(ch.Ban, primaryKey)
 
 		indexKey := encodeChannelIDIndexKey(slot, ch.ChannelID, ch.ChannelType)
-		expected[string(indexKey)] = []byte{}
+		expected[string(indexKey)] = encodeChannelIndexValue(ch.Ban)
 	}
 
 	if len(actual) != len(expected) {

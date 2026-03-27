@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -185,6 +186,50 @@ func TestImportSlotSnapshotCanBeRetried(t *testing.T) {
 	}
 	if gotUser.Token != "old" {
 		t.Fatalf("restored token = %q", gotUser.Token)
+	}
+}
+
+func TestVisitSlotSnapshotPayloadMatchesDecodedEntries(t *testing.T) {
+	entries := []snapshotEntry{
+		{Key: []byte("k1"), Value: []byte("v1")},
+		{Key: []byte("k2"), Value: []byte("value-2")},
+	}
+	data, wantStats := encodeSlotSnapshotPayload(7, entries)
+
+	var got []snapshotEntry
+	meta, err := visitSlotSnapshotPayload(data, func(key, value []byte) error {
+		got = append(got, snapshotEntry{
+			Key:   append([]byte(nil), key...),
+			Value: append([]byte(nil), value...),
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("visitSlotSnapshotPayload(): %v", err)
+	}
+
+	if meta.SlotID != 7 {
+		t.Fatalf("meta.SlotID = %d, want 7", meta.SlotID)
+	}
+	if meta.Stats != wantStats {
+		t.Fatalf("meta.Stats = %#v, want %#v", meta.Stats, wantStats)
+	}
+	if !reflect.DeepEqual(got, entries) {
+		t.Fatalf("visited entries = %#v, want %#v", got, entries)
+	}
+}
+
+func TestVisitSlotSnapshotPayloadReturnsCallbackError(t *testing.T) {
+	data, _ := encodeSlotSnapshotPayload(7, []snapshotEntry{
+		{Key: []byte("k1"), Value: []byte("v1")},
+	})
+
+	injectedErr := errors.New("stop visiting")
+	_, err := visitSlotSnapshotPayload(data, func(key, value []byte) error {
+		return injectedErr
+	})
+	if !errors.Is(err, injectedErr) {
+		t.Fatalf("visitSlotSnapshotPayload() err = %v, want %v", err, injectedErr)
 	}
 }
 

@@ -2,7 +2,6 @@ package wkdb
 
 import (
 	"context"
-	"errors"
 
 	"github.com/cockroachdb/pebble"
 )
@@ -29,10 +28,12 @@ func (s *ShardStore) CreateUser(ctx context.Context, u User) error {
 	defer s.db.mu.Unlock()
 
 	key := encodeUserPrimaryKey(s.slot, u.UID, userPrimaryFamilyID)
-	if _, err := s.db.getValue(key); err == nil {
-		return ErrAlreadyExists
-	} else if !errors.Is(err, ErrNotFound) {
+	exists, err := s.db.hasKey(key)
+	if err != nil {
 		return err
+	}
+	if exists {
+		return ErrAlreadyExists
 	}
 	s.db.runAfterExistenceCheckHook()
 	if err := s.db.checkContext(ctx); err != nil {
@@ -102,8 +103,12 @@ func (s *ShardStore) UpdateUser(ctx context.Context, u User) error {
 	defer s.db.mu.Unlock()
 
 	key := encodeUserPrimaryKey(s.slot, u.UID, userPrimaryFamilyID)
-	if _, err := s.db.getValue(key); err != nil {
+	exists, err := s.db.hasKey(key)
+	if err != nil {
 		return err
+	}
+	if !exists {
+		return ErrNotFound
 	}
 	if err := s.db.checkContext(ctx); err != nil {
 		return err
@@ -135,8 +140,12 @@ func (s *ShardStore) DeleteUser(ctx context.Context, uid string) error {
 	defer s.db.mu.Unlock()
 
 	key := encodeUserPrimaryKey(s.slot, uid, userPrimaryFamilyID)
-	if _, err := s.db.getValue(key); err != nil {
+	exists, err := s.db.hasKey(key)
+	if err != nil {
 		return err
+	}
+	if !exists {
+		return ErrNotFound
 	}
 	if err := s.db.checkContext(ctx); err != nil {
 		return err

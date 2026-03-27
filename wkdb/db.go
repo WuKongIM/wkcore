@@ -52,6 +52,18 @@ func (db *DB) getValue(key []byte) ([]byte, error) {
 	return append([]byte(nil), value...), nil
 }
 
+func (db *DB) hasKey(key []byte) (bool, error) {
+	_, closer, err := db.db.Get(key)
+	if err != nil {
+		if errors.Is(err, pebble.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer closer.Close()
+	return true, nil
+}
+
 func (db *DB) checkContext(ctx context.Context) error {
 	if ctx == nil {
 		return nil
