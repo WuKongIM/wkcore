@@ -6,24 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"hash/crc32"
-	"path/filepath"
 	"testing"
 )
-
-func openTestDB(t *testing.T) *DB {
-	t.Helper()
-
-	db, err := Open(filepath.Join(t.TempDir(), "db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Fatalf("close db: %v", err)
-		}
-	})
-	return db
-}
 
 func TestForSlotReturnsShardStore(t *testing.T) {
 	db := openTestDB(t)
