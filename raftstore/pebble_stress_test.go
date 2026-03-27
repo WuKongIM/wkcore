@@ -118,6 +118,48 @@ func TestPebbleStressSnapshotAndRecovery(t *testing.T) {
 	}
 }
 
+func TestPebbleStressAckedWritesSurvivePeriodicReopen(t *testing.T) {
+	cfg, err := loadPebbleStressConfig()
+	if err != nil {
+		t.Fatalf("loadPebbleStressConfig() error = %v", err)
+	}
+	if !cfg.enabled {
+		t.Skip("set WRAFT_RAFTSTORE_STRESS=1 to enable")
+	}
+
+	db, path := openStressDB(t)
+	defer func() {
+		closeBenchDB(t, db, path)
+	}()
+
+	stores := stressStoresForGroups(db, cfg.groups)
+	models := newStressGroupModels(cfg.groups, 1)
+
+	rounds := 3
+	if cfg.duration < 3*time.Second {
+		rounds = 1
+	}
+	roundDuration := cfg.duration / time.Duration(rounds)
+	if roundDuration <= 0 {
+		roundDuration = cfg.duration
+	}
+
+	for round := 0; round < rounds; round++ {
+		ctx, cancel := context.WithTimeout(context.Background(), roundDuration)
+		err := runPebbleStressLoad(ctx, stores, models, cfg, 0)
+		cancel()
+		if err != nil {
+			t.Fatalf("round %d runPebbleStressLoad() error = %v", round, err)
+		}
+
+		db = reopenPebbleDB(t, db, path)
+		stores = stressStoresForGroups(db, cfg.groups)
+		for i := range models {
+			verifyPebbleGroupState(t, stores[i], models[i].snapshot(), cfg.payload)
+		}
+	}
+}
+
 func stressStoresForGroups(db *DB, groupCount int) []multiraft.Storage {
 	stores := make([]multiraft.Storage, groupCount)
 	for i := range stores {

@@ -456,6 +456,347 @@ func TestPebbleInitialStateAppliesPostSnapshotConfChanges(t *testing.T) {
 	}
 }
 
+func TestPebbleInitialStateReopenUsesPersistedMetadata(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "raft")
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	store := db.ForGroup(21)
+
+	hs := raftpb.HardState{Term: 2, Commit: 3}
+	entries := []raftpb.Entry{
+		{
+			Index: 1,
+			Term:  1,
+			Type:  raftpb.EntryConfChange,
+			Data:  mustMarshalConfChange(t, raftpb.ConfChange{Type: raftpb.ConfChangeAddNode, NodeID: 1}),
+		},
+		{
+			Index: 2,
+			Term:  1,
+			Type:  raftpb.EntryConfChange,
+			Data:  mustMarshalConfChange(t, raftpb.ConfChange{Type: raftpb.ConfChangeAddNode, NodeID: 2}),
+		},
+		{
+			Index: 3,
+			Term:  2,
+			Type:  raftpb.EntryConfChange,
+			Data:  mustMarshalConfChange(t, raftpb.ConfChange{Type: raftpb.ConfChangeAddNode, NodeID: 3}),
+		},
+	}
+	if err := store.Save(ctx, multiraft.PersistentState{HardState: &hs, Entries: entries}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if err := store.MarkApplied(ctx, 3); err != nil {
+		t.Fatalf("MarkApplied() error = %v", err)
+	}
+	if _, err := store.(*pebbleStore).getValue(encodeGroupStateKey(21)); err != nil {
+		t.Fatalf("group metadata missing before reopen: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	state, err := reopened.ForGroup(21).InitialState(ctx)
+	if err != nil {
+		t.Fatalf("InitialState() error = %v", err)
+	}
+	want := raftpb.ConfState{Voters: []uint64{1, 2, 3}}
+	if !reflect.DeepEqual(state.ConfState, want) {
+		t.Fatalf("ConfState = %#v, want %#v", state.ConfState, want)
+	}
+	if _, err := reopened.ForGroup(21).(*pebbleStore).getValue(encodeGroupStateKey(21)); err != nil {
+		t.Fatalf("group metadata missing after reopen: %v", err)
+	}
+}
+
+func TestPebbleFirstAndLastIndexUsePersistedMetadataAfterSnapshotTrim(t *testing.T) {
+	ctx := context.Background()
+	store := openTestPebbleStore(t, 22)
+
+	if err := store.Save(ctx, multiraft.PersistentState{
+		Entries: benchEntries(5, 4, 1, 8),
+	}); err != nil {
+		t.Fatalf("Save(entries) error = %v", err)
+	}
+	snap := raftpb.Snapshot{
+		Metadata: raftpb.SnapshotMetadata{
+			Index: 6,
+			Term:  1,
+			ConfState: raftpb.ConfState{
+				Voters: []uint64{1, 2},
+			},
+		},
+	}
+	if err := store.Save(ctx, multiraft.PersistentState{Snapshot: &snap}); err != nil {
+		t.Fatalf("Save(snapshot) error = %v", err)
+	}
+	if _, err := store.(*pebbleStore).getValue(encodeGroupStateKey(22)); err != nil {
+		t.Fatalf("group metadata missing after snapshot trim: %v", err)
+	}
+
+	first, err := store.FirstIndex(ctx)
+	if err != nil {
+		t.Fatalf("FirstIndex() error = %v", err)
+	}
+	last, err := store.LastIndex(ctx)
+	if err != nil {
+		t.Fatalf("LastIndex() error = %v", err)
+	}
+	if first != 7 || last != 8 {
+		t.Fatalf("FirstIndex()/LastIndex() = %d/%d, want 7/8", first, last)
+	}
+}
+
+func TestPebbleInitialStateReopenBackfillsLegacyStoreMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "raft")
+	mustWriteLegacyPebbleState(t, path, 31, legacyPebbleState{
+		hardState: raftpb.HardState{Term: 2, Commit: 3},
+		applied:   3,
+		entries: []raftpb.Entry{
+			{
+				Index: 1,
+				Term:  1,
+				Type:  raftpb.EntryConfChange,
+				Data:  mustMarshalConfChange(t, raftpb.ConfChange{Type: raftpb.ConfChangeAddNode, NodeID: 1}),
+			},
+			{
+				Index: 2,
+				Term:  1,
+				Type:  raftpb.EntryConfChange,
+				Data:  mustMarshalConfChange(t, raftpb.ConfChange{Type: raftpb.ConfChangeAddNode, NodeID: 2}),
+			},
+			{
+				Index: 3,
+				Term:  2,
+				Type:  raftpb.EntryConfChange,
+				Data:  mustMarshalConfChange(t, raftpb.ConfChange{Type: raftpb.ConfChangeAddNode, NodeID: 3}),
+			},
+		},
+	})
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	state, err := db.ForGroup(31).InitialState(context.Background())
+	if err != nil {
+		t.Fatalf("InitialState() error = %v", err)
+	}
+	want := raftpb.ConfState{Voters: []uint64{1, 2, 3}}
+	if !reflect.DeepEqual(state.ConfState, want) {
+		t.Fatalf("ConfState = %#v, want %#v", state.ConfState, want)
+	}
+	if !hasGroupMetadata(t, db, 31) {
+		t.Fatal("metadata was not backfilled after legacy reopen")
+	}
+}
+
+func TestPebbleCloseDrainsConcurrentWritesBeforeClosingDB(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "raft")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	const writers = 16
+	reqs := make([]*writeRequest, 0, writers)
+	for i := 0; i < writers; i++ {
+		hs := raftpb.HardState{Term: 1, Commit: 16}
+		req := &writeRequest{
+			group: uint64(i + 1),
+			state: &multiraft.PersistentState{
+				HardState: &hs,
+				Entries:   benchEntries(1, 16, 1, 1024),
+			},
+			done: make(chan error, 1),
+		}
+		db.writeCh <- req
+		reqs = append(reqs, req)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	for _, req := range reqs {
+		if err := <-req.done; err != nil {
+			t.Fatalf("concurrent Save() error = %v", err)
+		}
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	for group := uint64(1); group <= writers; group++ {
+		last, err := reopened.ForGroup(group).LastIndex(context.Background())
+		if err != nil {
+			t.Fatalf("group %d LastIndex() error = %v", group, err)
+		}
+		if last != 16 {
+			t.Fatalf("group %d LastIndex() = %d, want 16", group, last)
+		}
+	}
+}
+
+func TestPebbleConcurrentSaveAndMarkAppliedAreDurableAcrossReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "raft")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	const writers = 8
+	errCh := make(chan error, writers)
+	for i := 0; i < writers; i++ {
+		go func(group uint64) {
+			store := db.ForGroup(group)
+			hs := raftpb.HardState{Term: 1, Commit: 4}
+			if err := store.Save(context.Background(), multiraft.PersistentState{
+				HardState: &hs,
+				Entries:   benchEntries(1, 4, 1, 32),
+			}); err != nil {
+				errCh <- err
+				return
+			}
+			errCh <- store.MarkApplied(context.Background(), 4)
+		}(uint64(i + 1))
+	}
+
+	for i := 0; i < writers; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("concurrent Save/MarkApplied error = %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	for group := uint64(1); group <= writers; group++ {
+		state, err := reopened.ForGroup(group).InitialState(context.Background())
+		if err != nil {
+			t.Fatalf("group %d InitialState() error = %v", group, err)
+		}
+		if state.AppliedIndex != 4 {
+			t.Fatalf("group %d AppliedIndex = %d, want 4", group, state.AppliedIndex)
+		}
+	}
+}
+
+func TestPebbleSameGroupSaveThenMarkAppliedPreservesOrder(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "raft")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	store := db.ForGroup(51)
+
+	hs := raftpb.HardState{Term: 2, Commit: 3}
+	if err := store.Save(ctx, multiraft.PersistentState{
+		HardState: &hs,
+		Entries:   benchEntries(1, 3, 2, 16),
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if err := store.MarkApplied(ctx, 3); err != nil {
+		t.Fatalf("MarkApplied() error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	state, err := reopened.ForGroup(51).InitialState(ctx)
+	if err != nil {
+		t.Fatalf("InitialState() error = %v", err)
+	}
+	if state.HardState.Commit != 3 || state.AppliedIndex != 3 {
+		t.Fatalf("commit/applied = %d/%d, want 3/3", state.HardState.Commit, state.AppliedIndex)
+	}
+}
+
+func TestPebbleMetadataTracksTailReplaceAndSnapshotTrim(t *testing.T) {
+	ctx := context.Background()
+	store := openTestPebbleStore(t, 52)
+
+	if err := store.Save(ctx, multiraft.PersistentState{Entries: benchEntries(5, 4, 1, 16)}); err != nil {
+		t.Fatalf("Save(initial) error = %v", err)
+	}
+	if err := store.Save(ctx, multiraft.PersistentState{Entries: benchEntries(7, 3, 2, 16)}); err != nil {
+		t.Fatalf("Save(replace) error = %v", err)
+	}
+	snap := raftpb.Snapshot{
+		Metadata: raftpb.SnapshotMetadata{
+			Index: 8,
+			Term:  2,
+			ConfState: raftpb.ConfState{
+				Voters: []uint64{1, 2},
+			},
+		},
+	}
+	if err := store.Save(ctx, multiraft.PersistentState{Snapshot: &snap}); err != nil {
+		t.Fatalf("Save(snapshot) error = %v", err)
+	}
+
+	first, err := store.FirstIndex(ctx)
+	if err != nil {
+		t.Fatalf("FirstIndex() error = %v", err)
+	}
+	last, err := store.LastIndex(ctx)
+	if err != nil {
+		t.Fatalf("LastIndex() error = %v", err)
+	}
+	if first != 9 || last != 9 {
+		t.Fatalf("FirstIndex()/LastIndex() = %d/%d, want 9/9", first, last)
+	}
+}
+
 func TestPebbleReturnsClonedData(t *testing.T) {
 	ctx := context.Background()
 	store := openTestPebbleStore(t, 15)

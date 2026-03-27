@@ -3,6 +3,8 @@ package raftstore
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +15,8 @@ import (
 	"time"
 
 	"github.com/WuKongIM/wraft/multiraft"
+	"github.com/cockroachdb/pebble"
+	raft "go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 )
 
@@ -52,6 +56,13 @@ type stressGroupExpectation struct {
 	snapshotTerm  uint64
 	entryTerm     uint64
 	confState     raftpb.ConfState
+}
+
+type legacyPebbleState struct {
+	hardState raftpb.HardState
+	applied   uint64
+	snapshot  raftpb.Snapshot
+	entries   []raftpb.Entry
 }
 
 func loadPebbleBenchConfig(tb testing.TB) pebbleBenchConfig {
@@ -271,6 +282,76 @@ func mustInitialState(tb testing.TB, store multiraft.Storage) multiraft.Bootstra
 		tb.Fatalf("InitialState() error = %v", err)
 	}
 	return state
+}
+
+func mustWriteLegacyPebbleState(tb testing.TB, path string, group uint64, state legacyPebbleState) {
+	tb.Helper()
+
+	db, err := pebble.Open(path, &pebble.Options{})
+	if err != nil {
+		tb.Fatalf("pebble.Open(%q) error = %v", path, err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			tb.Fatalf("Close(%q) error = %v", path, err)
+		}
+	}()
+
+	batch := db.NewBatch()
+	defer batch.Close()
+
+	if !raft.IsEmptyHardState(state.hardState) {
+		data, err := state.hardState.Marshal()
+		if err != nil {
+			tb.Fatalf("HardState.Marshal() error = %v", err)
+		}
+		if err := batch.Set(encodeHardStateKey(group), data, nil); err != nil {
+			tb.Fatalf("batch.Set(hardState) error = %v", err)
+		}
+	}
+	if state.applied > 0 {
+		value := make([]byte, 8)
+		binary.BigEndian.PutUint64(value, state.applied)
+		if err := batch.Set(encodeAppliedIndexKey(group), value, nil); err != nil {
+			tb.Fatalf("batch.Set(appliedIndex) error = %v", err)
+		}
+	}
+	if !raft.IsEmptySnap(state.snapshot) {
+		data, err := state.snapshot.Marshal()
+		if err != nil {
+			tb.Fatalf("Snapshot.Marshal() error = %v", err)
+		}
+		if err := batch.Set(encodeSnapshotKey(group), data, nil); err != nil {
+			tb.Fatalf("batch.Set(snapshot) error = %v", err)
+		}
+	}
+	for _, entry := range state.entries {
+		data, err := entry.Marshal()
+		if err != nil {
+			tb.Fatalf("Entry.Marshal() error = %v", err)
+		}
+		if err := batch.Set(encodeEntryKey(group, entry.Index), data, nil); err != nil {
+			tb.Fatalf("batch.Set(entry %d) error = %v", entry.Index, err)
+		}
+	}
+
+	if err := batch.Commit(pebble.Sync); err != nil {
+		tb.Fatalf("batch.Commit() error = %v", err)
+	}
+}
+
+func hasGroupMetadata(tb testing.TB, db *DB, group uint64) bool {
+	tb.Helper()
+
+	_, closer, err := db.db.Get(encodeGroupStateKey(group))
+	if err != nil {
+		if errors.Is(err, pebble.ErrNotFound) {
+			return false
+		}
+		tb.Fatalf("Get(group metadata) error = %v", err)
+	}
+	defer closer.Close()
+	return true
 }
 
 func openStressDB(tb testing.TB) (*DB, string) {

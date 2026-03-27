@@ -7,6 +7,7 @@ const (
 	keyTypeHardState       byte = 0x01
 	keyTypeAppliedIndex    byte = 0x02
 	keyTypeSnapshot        byte = 0x03
+	keyTypeGroupState      byte = 0x04
 	keyTypeEntry           byte = 0x10
 	keyTypeTruncatedState  byte = 0x11
 )
@@ -29,6 +30,10 @@ func encodeAppliedIndexKey(group uint64) []byte {
 
 func encodeSnapshotKey(group uint64) []byte {
 	return encodeGroupMetaKey(group, keyTypeSnapshot)
+}
+
+func encodeGroupStateKey(group uint64) []byte {
+	return encodeGroupMetaKey(group, keyTypeGroupState)
 }
 
 func encodeEntryPrefix(group uint64) []byte {

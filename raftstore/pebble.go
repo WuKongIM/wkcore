@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"sync"
 
 	"github.com/WuKongIM/wraft/multiraft"
 	"github.com/cockroachdb/pebble"
@@ -13,6 +14,23 @@ import (
 
 type DB struct {
 	db *pebble.DB
+
+	mu      sync.Mutex
+	closing bool
+
+	writeCh  chan *writeRequest
+	workerWG sync.WaitGroup
+
+	stateCache map[uint64]groupWriteState
+}
+
+type groupMeta struct {
+	FirstIndex    uint64
+	LastIndex     uint64
+	AppliedIndex  uint64
+	SnapshotIndex uint64
+	SnapshotTerm  uint64
+	ConfState     raftpb.ConfState
 }
 
 type pebbleStore struct {
@@ -20,19 +38,55 @@ type pebbleStore struct {
 	group uint64
 }
 
+type writeRequest struct {
+	group        uint64
+	state        *multiraft.PersistentState
+	appliedIndex *uint64
+	done         chan error
+}
+
+type groupWriteState struct {
+	hardState raftpb.HardState
+	snapshot  raftpb.Snapshot
+	entries   []raftpb.Entry
+	meta      groupMeta
+}
+
 func Open(path string) (*DB, error) {
 	pdb, err := pebble.Open(path, &pebble.Options{})
 	if err != nil {
 		return nil, err
 	}
-	return &DB{db: pdb}, nil
+
+	db := &DB{
+		db:         pdb,
+		writeCh:    make(chan *writeRequest, 1024),
+		stateCache: make(map[uint64]groupWriteState),
+	}
+	db.workerWG.Add(1)
+	go db.runWriteWorker()
+	return db, nil
 }
 
 func (db *DB) Close() error {
 	if db == nil || db.db == nil {
 		return nil
 	}
-	return db.db.Close()
+
+	db.mu.Lock()
+	if db.closing {
+		db.mu.Unlock()
+		return nil
+	}
+	db.closing = true
+	close(db.writeCh)
+	db.mu.Unlock()
+
+	db.workerWG.Wait()
+
+	err := db.db.Close()
+	db.db = nil
+	return err
 }
 
 func (db *DB) ForGroup(group uint64) multiraft.Storage {
@@ -44,6 +98,22 @@ func (db *DB) ForGroup(group uint64) multiraft.Storage {
 
 func (s *pebbleStore) InitialState(ctx context.Context) (multiraft.BootstrapState, error) {
 	_ = ctx
+
+	meta, ok, err := s.loadOrBackfillGroupMeta()
+	if err != nil {
+		return multiraft.BootstrapState{}, err
+	}
+	if ok {
+		hs, err := s.loadHardState()
+		if err != nil {
+			return multiraft.BootstrapState{}, err
+		}
+		return multiraft.BootstrapState{
+			HardState:    hs,
+			ConfState:    cloneConfState(meta.ConfState),
+			AppliedIndex: meta.AppliedIndex,
+		}, nil
+	}
 
 	snap, err := s.loadSnapshot()
 	if err != nil {
@@ -61,15 +131,9 @@ func (s *pebbleStore) InitialState(ctx context.Context) (multiraft.BootstrapStat
 	if err != nil {
 		return multiraft.BootstrapState{}, err
 	}
-	confState, err := deriveConfState(snap, nil, hs.Commit)
+	confState, err := deriveConfState(snap, entries, hs.Commit)
 	if err != nil {
 		return multiraft.BootstrapState{}, err
-	}
-	if len(entries) > 0 {
-		confState, err = deriveConfState(snap, entries, hs.Commit)
-		if err != nil {
-			return multiraft.BootstrapState{}, err
-		}
 	}
 	return multiraft.BootstrapState{
 		HardState:    hs,
@@ -124,6 +188,14 @@ func (s *pebbleStore) Term(ctx context.Context, index uint64) (uint64, error) {
 func (s *pebbleStore) FirstIndex(ctx context.Context) (uint64, error) {
 	_ = ctx
 
+	meta, ok, err := s.loadOrBackfillGroupMeta()
+	if err != nil {
+		return 0, err
+	}
+	if ok {
+		return meta.FirstIndex, nil
+	}
+
 	iter, err := s.db.db.NewIter(&pebble.IterOptions{
 		LowerBound: encodeEntryPrefix(s.group),
 		UpperBound: encodeEntryPrefixEnd(s.group),
@@ -153,6 +225,14 @@ func (s *pebbleStore) FirstIndex(ctx context.Context) (uint64, error) {
 
 func (s *pebbleStore) LastIndex(ctx context.Context) (uint64, error) {
 	_ = ctx
+
+	meta, ok, err := s.loadOrBackfillGroupMeta()
+	if err != nil {
+		return 0, err
+	}
+	if ok {
+		return meta.LastIndex, nil
+	}
 
 	iter, err := s.db.db.NewIter(&pebble.IterOptions{
 		LowerBound: encodeEntryPrefix(s.group),
@@ -186,98 +266,23 @@ func (s *pebbleStore) Snapshot(ctx context.Context) (raftpb.Snapshot, error) {
 func (s *pebbleStore) Save(ctx context.Context, st multiraft.PersistentState) error {
 	_ = ctx
 
-	batch := s.db.db.NewBatch()
-	defer batch.Close()
-
-	hs := raftpb.HardState{}
-	persistHardState := false
-	if st.HardState != nil {
-		hs = *st.HardState
-		persistHardState = true
-	} else if st.Snapshot != nil {
-		var err error
-		hs, err = s.loadHardState()
-		if err != nil {
-			return err
-		}
-		persistHardState = true
+	req := &writeRequest{
+		group: s.group,
+		state: &st,
+		done:  make(chan error, 1),
 	}
-
-	if st.Snapshot != nil {
-		data, err := st.Snapshot.Marshal()
-		if err != nil {
-			return err
-		}
-		if err := batch.Set(encodeSnapshotKey(s.group), data, nil); err != nil {
-			return err
-		}
-		if st.Snapshot.Metadata.Index < ^uint64(0) {
-			if err := batch.DeleteRange(
-				encodeEntryPrefix(s.group),
-				encodeEntryKey(s.group, st.Snapshot.Metadata.Index+1),
-				nil,
-			); err != nil {
-				return err
-			}
-		} else {
-			if err := batch.DeleteRange(
-				encodeEntryPrefix(s.group),
-				encodeEntryPrefixEnd(s.group),
-				nil,
-			); err != nil {
-				return err
-			}
-		}
-		if hs.Commit < st.Snapshot.Metadata.Index {
-			hs.Commit = st.Snapshot.Metadata.Index
-		}
-	}
-
-	if len(st.Entries) > 0 {
-		first := st.Entries[0].Index
-		if err := batch.DeleteRange(
-			encodeEntryKey(s.group, first),
-			encodeEntryPrefixEnd(s.group),
-			nil,
-		); err != nil {
-			return err
-		}
-		for _, entry := range st.Entries {
-			data, err := entry.Marshal()
-			if err != nil {
-				return err
-			}
-			if err := batch.Set(encodeEntryKey(s.group, entry.Index), data, nil); err != nil {
-				return err
-			}
-		}
-	}
-
-	if persistHardState {
-		data, err := hs.Marshal()
-		if err != nil {
-			return err
-		}
-		if err := batch.Set(encodeHardStateKey(s.group), data, nil); err != nil {
-			return err
-		}
-	}
-
-	return batch.Commit(pebble.Sync)
+	return s.db.submitWrite(req)
 }
 
 func (s *pebbleStore) MarkApplied(ctx context.Context, index uint64) error {
 	_ = ctx
 
-	value := make([]byte, 8)
-	binary.BigEndian.PutUint64(value, index)
-
-	batch := s.db.db.NewBatch()
-	defer batch.Close()
-	if err := batch.Set(encodeAppliedIndexKey(s.group), value, nil); err != nil {
-		return err
+	req := &writeRequest{
+		group:        s.group,
+		appliedIndex: &index,
+		done:         make(chan error, 1),
 	}
-	return batch.Commit(pebble.Sync)
+	return s.db.submitWrite(req)
 }
 
 func (s *pebbleStore) loadHardState() (raftpb.HardState, error) {
@@ -310,6 +315,49 @@ func (s *pebbleStore) loadAppliedIndex() (uint64, error) {
 	return binary.BigEndian.Uint64(value), nil
 }
 
+func (m groupMeta) Marshal() ([]byte, error) {
+	confState, err := m.ConfState.Marshal()
+	if err != nil {
+		return nil, err
+	}
+
+	data := make([]byte, 0, 44+len(confState))
+	data = binary.BigEndian.AppendUint64(data, m.FirstIndex)
+	data = binary.BigEndian.AppendUint64(data, m.LastIndex)
+	data = binary.BigEndian.AppendUint64(data, m.AppliedIndex)
+	data = binary.BigEndian.AppendUint64(data, m.SnapshotIndex)
+	data = binary.BigEndian.AppendUint64(data, m.SnapshotTerm)
+	data = binary.BigEndian.AppendUint32(data, uint32(len(confState)))
+	data = append(data, confState...)
+	return data, nil
+}
+
+func (m *groupMeta) Unmarshal(data []byte) error {
+	if len(data) < 44 {
+		return errors.New("raftstore: invalid group metadata encoding")
+	}
+
+	m.FirstIndex = binary.BigEndian.Uint64(data[0:8])
+	m.LastIndex = binary.BigEndian.Uint64(data[8:16])
+	m.AppliedIndex = binary.BigEndian.Uint64(data[16:24])
+	m.SnapshotIndex = binary.BigEndian.Uint64(data[24:32])
+	m.SnapshotTerm = binary.BigEndian.Uint64(data[32:40])
+
+	confStateSize := binary.BigEndian.Uint32(data[40:44])
+	if len(data[44:]) != int(confStateSize) {
+		return errors.New("raftstore: invalid group metadata conf state size")
+	}
+
+	var confState raftpb.ConfState
+	if confStateSize > 0 {
+		if err := confState.Unmarshal(data[44:]); err != nil {
+			return err
+		}
+	}
+	m.ConfState = cloneConfState(confState)
+	return nil
+}
+
 type unmarshaler interface {
 	Unmarshal(data []byte) error
 }
@@ -332,6 +380,298 @@ func (s *pebbleStore) getValue(key []byte) ([]byte, error) {
 	}
 	defer closer.Close()
 	return append([]byte(nil), value...), nil
+}
+
+func (s *pebbleStore) loadGroupMeta() (groupMeta, bool, error) {
+	value, err := s.getValue(encodeGroupStateKey(s.group))
+	if err != nil {
+		if errors.Is(err, pebble.ErrNotFound) {
+			return groupMeta{}, false, nil
+		}
+		return groupMeta{}, false, err
+	}
+
+	var meta groupMeta
+	if err := meta.Unmarshal(value); err != nil {
+		return groupMeta{}, false, err
+	}
+	return meta, true, nil
+}
+
+func (s *pebbleStore) currentGroupMeta() (groupMeta, bool, error) {
+	meta, ok, err := s.loadGroupMeta()
+	if err != nil {
+		return groupMeta{}, false, err
+	}
+	if ok {
+		return meta, true, nil
+	}
+
+	snap, err := s.loadSnapshot()
+	if err != nil {
+		return groupMeta{}, false, err
+	}
+	hs, err := s.loadHardState()
+	if err != nil {
+		return groupMeta{}, false, err
+	}
+	appliedIndex, err := s.loadAppliedIndex()
+	if err != nil {
+		return groupMeta{}, false, err
+	}
+	entries, err := s.loadEntries(0, 0)
+	if err != nil {
+		return groupMeta{}, false, err
+	}
+
+	meta = groupMeta{AppliedIndex: appliedIndex}
+	if err := updateGroupMeta(&meta, snap, entries, hs.Commit); err != nil {
+		return groupMeta{}, false, err
+	}
+	return meta, false, nil
+}
+
+func (s *pebbleStore) loadOrBackfillGroupMeta() (groupMeta, bool, error) {
+	meta, ok, err := s.loadGroupMeta()
+	if err != nil {
+		return groupMeta{}, false, err
+	}
+	if ok {
+		return meta, true, nil
+	}
+
+	meta, _, err = s.currentGroupMeta()
+	if err != nil {
+		return groupMeta{}, false, err
+	}
+	if err := s.persistGroupMeta(meta); err != nil {
+		return groupMeta{}, false, err
+	}
+	return meta, true, nil
+}
+
+func (s *pebbleStore) setGroupMeta(batch *pebble.Batch, meta groupMeta) error {
+	data, err := meta.Marshal()
+	if err != nil {
+		return err
+	}
+	return batch.Set(encodeGroupStateKey(s.group), data, nil)
+}
+
+func (s *pebbleStore) persistGroupMeta(meta groupMeta) error {
+	data, err := meta.Marshal()
+	if err != nil {
+		return err
+	}
+	return s.db.db.Set(encodeGroupStateKey(s.group), data, pebble.Sync)
+}
+
+func (db *DB) submitWrite(req *writeRequest) error {
+	db.mu.Lock()
+	if db.closing {
+		db.mu.Unlock()
+		return errors.New("raftstore: db closing")
+	}
+	db.writeCh <- req
+	db.mu.Unlock()
+	return <-req.done
+}
+
+func (db *DB) runWriteWorker() {
+	defer db.workerWG.Done()
+
+	for {
+		req, ok := <-db.writeCh
+		if !ok {
+			return
+		}
+
+		reqs := []*writeRequest{req}
+		closed := false
+		for {
+			select {
+			case next, ok := <-db.writeCh:
+				if !ok {
+					closed = true
+					goto flush
+				}
+				reqs = append(reqs, next)
+			default:
+				goto flush
+			}
+		}
+
+	flush:
+		err := db.flushWriteRequests(reqs)
+		for _, req := range reqs {
+			req.done <- err
+			close(req.done)
+		}
+		if closed {
+			return
+		}
+	}
+}
+
+func (db *DB) flushWriteRequests(reqs []*writeRequest) error {
+	batch := db.db.NewBatch()
+	defer batch.Close()
+
+	stateCache := make(map[uint64]*groupWriteState, len(reqs))
+	for _, req := range reqs {
+		state, err := db.loadGroupWriteState(stateCache, req.group)
+		if err != nil {
+			return err
+		}
+		if req.state != nil {
+			if err := db.applySaveToBatch(batch, req.group, state, *req.state); err != nil {
+				return err
+			}
+		}
+		if req.appliedIndex != nil {
+			if err := db.applyMarkAppliedToBatch(batch, req.group, state, *req.appliedIndex); err != nil {
+				return err
+			}
+		}
+	}
+
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+	for group, state := range stateCache {
+		db.stateCache[group] = cloneGroupWriteState(*state)
+	}
+	return nil
+}
+
+func (db *DB) loadGroupWriteState(cache map[uint64]*groupWriteState, group uint64) (*groupWriteState, error) {
+	if state, ok := cache[group]; ok {
+		return state, nil
+	}
+
+	if cached, ok := db.stateCache[group]; ok {
+		state := cloneGroupWriteState(cached)
+		cache[group] = &state
+		return &state, nil
+	}
+
+	store := &pebbleStore{db: db, group: group}
+	meta, _, err := store.currentGroupMeta()
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := store.loadSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	hardState, err := store.loadHardState()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := store.loadEntries(0, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	state := &groupWriteState{
+		hardState: hardState,
+		snapshot:  snapshot,
+		entries:   entries,
+		meta:      meta,
+	}
+	cache[group] = state
+	return state, nil
+}
+
+func (db *DB) applySaveToBatch(batch *pebble.Batch, group uint64, state *groupWriteState, st multiraft.PersistentState) error {
+	hs := state.hardState
+	persistHardState := false
+	if st.HardState != nil {
+		hs = *st.HardState
+		persistHardState = true
+	} else if st.Snapshot != nil {
+		persistHardState = true
+	}
+
+	if st.Snapshot != nil {
+		data, err := st.Snapshot.Marshal()
+		if err != nil {
+			return err
+		}
+		if err := batch.Set(encodeSnapshotKey(group), data, nil); err != nil {
+			return err
+		}
+		if st.Snapshot.Metadata.Index < ^uint64(0) {
+			if err := batch.DeleteRange(
+				encodeEntryPrefix(group),
+				encodeEntryKey(group, st.Snapshot.Metadata.Index+1),
+				nil,
+			); err != nil {
+				return err
+			}
+		} else {
+			if err := batch.DeleteRange(
+				encodeEntryPrefix(group),
+				encodeEntryPrefixEnd(group),
+				nil,
+			); err != nil {
+				return err
+			}
+		}
+		if hs.Commit < st.Snapshot.Metadata.Index {
+			hs.Commit = st.Snapshot.Metadata.Index
+		}
+		state.snapshot = cloneSnapshot(*st.Snapshot)
+		state.entries = trimEntriesAfterSnapshot(state.entries, st.Snapshot.Metadata.Index)
+	}
+
+	if len(st.Entries) > 0 {
+		first := st.Entries[0].Index
+		if err := batch.DeleteRange(
+			encodeEntryKey(group, first),
+			encodeEntryPrefixEnd(group),
+			nil,
+		); err != nil {
+			return err
+		}
+		for _, entry := range st.Entries {
+			data, err := entry.Marshal()
+			if err != nil {
+				return err
+			}
+			if err := batch.Set(encodeEntryKey(group, entry.Index), data, nil); err != nil {
+				return err
+			}
+		}
+		state.entries = replaceEntriesFromIndex(state.entries, first, st.Entries)
+	}
+
+	if persistHardState {
+		data, err := hs.Marshal()
+		if err != nil {
+			return err
+		}
+		if err := batch.Set(encodeHardStateKey(group), data, nil); err != nil {
+			return err
+		}
+	}
+
+	state.hardState = hs
+	if err := updateGroupMeta(&state.meta, state.snapshot, state.entries, state.hardState.Commit); err != nil {
+		return err
+	}
+	return (&pebbleStore{db: db, group: group}).setGroupMeta(batch, state.meta)
+}
+
+func (db *DB) applyMarkAppliedToBatch(batch *pebble.Batch, group uint64, state *groupWriteState, index uint64) error {
+	value := make([]byte, 8)
+	binary.BigEndian.PutUint64(value, index)
+	if err := batch.Set(encodeAppliedIndexKey(group), value, nil); err != nil {
+		return err
+	}
+
+	state.meta.AppliedIndex = index
+	return (&pebbleStore{db: db, group: group}).setGroupMeta(batch, state.meta)
 }
 
 func (s *pebbleStore) loadEntries(lo, hi uint64) ([]raftpb.Entry, error) {
@@ -381,4 +721,55 @@ func decodeEntryValue(iter iterValueReader) (raftpb.Entry, error) {
 		return raftpb.Entry{}, err
 	}
 	return cloneEntry(entry), nil
+}
+
+func updateGroupMeta(meta *groupMeta, snapshot raftpb.Snapshot, entries []raftpb.Entry, committed uint64) error {
+	if meta == nil {
+		return nil
+	}
+
+	meta.SnapshotIndex = snapshot.Metadata.Index
+	meta.SnapshotTerm = snapshot.Metadata.Term
+
+	confState, err := deriveConfState(snapshot, entries, committed)
+	if err != nil {
+		return err
+	}
+	meta.ConfState = cloneConfState(confState)
+
+	switch {
+	case len(entries) > 0:
+		meta.FirstIndex = entries[0].Index
+		meta.LastIndex = entries[len(entries)-1].Index
+	case !raft.IsEmptySnap(snapshot):
+		meta.FirstIndex = snapshot.Metadata.Index + 1
+		meta.LastIndex = snapshot.Metadata.Index
+	default:
+		meta.FirstIndex = 1
+		meta.LastIndex = 0
+	}
+
+	return nil
+}
+
+func cloneGroupWriteState(state groupWriteState) groupWriteState {
+	cloned := groupWriteState{
+		hardState: state.hardState,
+		snapshot:  cloneSnapshot(state.snapshot),
+		meta: groupMeta{
+			FirstIndex:    state.meta.FirstIndex,
+			LastIndex:     state.meta.LastIndex,
+			AppliedIndex:  state.meta.AppliedIndex,
+			SnapshotIndex: state.meta.SnapshotIndex,
+			SnapshotTerm:  state.meta.SnapshotTerm,
+			ConfState:     cloneConfState(state.meta.ConfState),
+		},
+	}
+	if len(state.entries) > 0 {
+		cloned.entries = make([]raftpb.Entry, len(state.entries))
+		for i, entry := range state.entries {
+			cloned.entries[i] = cloneEntry(entry)
+		}
+	}
+	return cloned
 }
