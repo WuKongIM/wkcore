@@ -39,6 +39,8 @@ type NodeID = uint64
 type MessageHandler func(conn net.Conn, body []byte)
 
 // RPCHandler processes an inbound RPC request and returns a response body.
+// The ctx passed by the Server is context.Background(). The handler is responsible
+// for applying its own timeout (e.g., wkcluster wraps with forwardTimeout).
 type RPCHandler func(ctx context.Context, body []byte) ([]byte, error)
 
 // Discovery resolves a NodeID to a network address.
@@ -47,7 +49,7 @@ type Discovery interface {
 }
 ```
 
-- `NodeID` is a plain `uint64` type alias — zero-cost conversion with `multiraft.NodeID`
+- `NodeID` is a plain `uint64` type alias. Note: `multiraft.NodeID` is a named type (`type NodeID uint64`), not an alias. This means `StaticDiscovery.Resolve` must change its parameter type from `multiraft.NodeID` to `uint64` to satisfy `wktransport.Discovery`. The conversion is safe (same underlying type) but the signature change is required.
 - `Discovery` only includes `Resolve`; lifecycle (`Stop`) and enumeration (`GetNodes`) are not transport concerns
 
 ## Wire Protocol (codec.go)
@@ -87,8 +89,6 @@ Moved from `wkcluster/codec.go`. `sync.Pool` of byte slices, capped at 64KB to p
 
 ```go
 const MaxMessageSize = 64 << 20 // 64 MB upper bound
-
-var ErrInvalidMsgType = errors.New("wktransport: invalid message type 0")
 ```
 
 ## Connection Pool (pool.go)
@@ -136,6 +136,8 @@ func NewPool(discovery Discovery, size int, dialTimeout time.Duration) *Pool
 // Get selects a connection by shardKey % size.
 // On success, caller MUST call Release(nodeID, idx) after use.
 // On error (err != nil), caller MUST NOT call Release — the lock is not held.
+// Note: this differs from the existing connPool.getByGroup which unlocks internally on error.
+// The new contract is simpler: error means no lock held, success means lock held.
 func (p *Pool) Get(nodeID NodeID, shardKey uint64) (conn net.Conn, idx int, err error)
 
 // Release unlocks the connection slot.
@@ -321,6 +323,8 @@ RPC(ctx, nodeID, shardKey, body):
 0xFF (response): [msgType:1][bodyLen:4][requestID:8][errCode:1][payload:N]
 ```
 
+The standard frame `[msgType:1][bodyLen:4][body:N]` applies: `bodyLen` is the total length of everything after the header. For 0xFE: `bodyLen = 8 + len(payload)`. For 0xFF: `bodyLen = 8 + 1 + len(payload)`. `ReadMessage` returns the raw body; the RPC layer then parses `requestID` (and `errCode` for responses) from the body prefix.
+
 `errCode` at the transport level:
 - `0` = success
 - `1` = handler error (error message in payload)
@@ -349,9 +353,14 @@ Stop():
     readLoops.Range(func(key, value) {
         value.(net.Conn).Close()
     })
-    // Cancel all pending RPCs
+    // Cancel all pending RPCs (select/default guard prevents blocking
+    // if a readLoop already sent a response to the buffered channel)
     pending.Range(func(key, value) {
-        value.(chan rpcResponse) <- rpcResponse{err: ErrStopped}
+        ch := value.(chan rpcResponse)
+        select {
+        case ch <- rpcResponse{err: ErrStopped}:
+        default:
+        }
     })
     wg.Wait()
 ```
@@ -364,10 +373,11 @@ Stop():
 
 ```go
 var (
-    ErrStopped      = errors.New("wktransport: stopped")
-    ErrTimeout      = errors.New("wktransport: request timeout")
-    ErrNodeNotFound = errors.New("wktransport: node not found")
-    ErrMsgTooLarge  = errors.New("wktransport: message too large")
+    ErrStopped        = errors.New("wktransport: stopped")
+    ErrTimeout        = errors.New("wktransport: request timeout")
+    ErrNodeNotFound   = errors.New("wktransport: node not found")
+    ErrMsgTooLarge    = errors.New("wktransport: message too large")
+    ErrInvalidMsgType = errors.New("wktransport: invalid message type 0")
 )
 ```
 
@@ -446,6 +456,8 @@ func (t *raftTransport) Send(ctx context.Context, batch []multiraft.Envelope) er
         body := encodeRaftBody(uint64(env.GroupID), data)
         // Individual send failures are silently skipped — the raft layer
         // handles retransmission. Only context cancellation is propagated.
+        // encodeRaftBody is a new function in wkcluster/codec.go that encodes
+        // only the body portion (groupID + data); Client.Send handles framing.
         _ = t.client.Send(uint64(env.Message.To), uint64(env.GroupID), msgTypeRaft, body)
     }
     return nil
@@ -481,7 +493,7 @@ Net: +400 new, -500 removed from wkcluster. Overall code slightly decreases.
 
 ### Discovery Adapter
 
-`StaticDiscovery` already has a `Resolve(NodeID) (string, error)` method. Since `wktransport.NodeID` is a type alias for `uint64` (same as `multiraft.NodeID`), `StaticDiscovery` can directly implement `wktransport.Discovery` without a wrapper.
+`StaticDiscovery` currently has `Resolve(multiraft.NodeID) (string, error)`. Since `multiraft.NodeID` is a named type (`type NodeID uint64`), not an alias, the signature must change to `Resolve(uint64) (string, error)` to satisfy `wktransport.Discovery`. This is a source-level change (callers that pass `multiraft.NodeID` must cast to `uint64`), but the underlying types are identical.
 
 The `wkcluster.Discovery` interface (with `GetNodes()` and `Stop()`) is retained as a superset for cluster-level concerns. `StaticDiscovery` implements both:
 
@@ -494,22 +506,24 @@ func (d *StaticDiscovery) GetNodes() []NodeInfo                    // wkcluster-
 func (d *StaticDiscovery) Stop()                                   // wkcluster-only
 ```
 
-The `discovery.go` file in wkcluster retains the broader `Discovery` interface definition. No wrapper needed.
+The `wkcluster.Discovery` interface in `discovery.go` must also update `Resolve` to accept `uint64` (or embed `wktransport.Discovery`). The `discovery.go` file retains the broader interface definition with the additional methods.
 
 ### Shutdown Ordering
 
 Components must be stopped in this order:
 
+**Cluster.Stop() sequence** (managed by wkcluster):
+
 ```
 1. fwdClient.Stop()    — cancel pending forward RPCs, close readLoop connections
 2. raftClient.Stop()   — cancel pending sends, close readLoop connections
-3. bizClient.Stop()    — (business layer) cancel pending RPCs
-4. runtime.Close()     — stop raft processing
-5. server.Stop()       — close listener + all inbound connections, wait for handlers
-6. raftPool.Close()    — close all outbound raft connections
-7. bizPool.Close()     — close all outbound business connections
-8. databases close     — raftDB, wkdb
+3. runtime.Close()     — stop raft processing
+4. server.Stop()       — close listener + all inbound connections, wait for handlers
+5. raftPool.Close()    — close all outbound raft connections
+6. databases close     — raftDB, wkdb
 ```
+
+**Business layer** is responsible for stopping its own `bizClient` and closing its `bizPool` before or concurrently with `Cluster.Stop()`. These are not managed by `Cluster`.
 
 Rationale:
 - Clients stop first to cancel in-flight requests and stop spawning new readLoops
