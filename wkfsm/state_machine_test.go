@@ -412,6 +412,43 @@ func TestEncodeDecodeEdgeCases(t *testing.T) {
 	}
 }
 
+func TestApplyBatch_DeleteChannel(t *testing.T) {
+	db := openTestDB(t)
+	sm := mustNewStateMachine(t, db, 1)
+	ctx := context.Background()
+
+	// First create a channel via upsert
+	createCmd := EncodeUpsertChannelCommand(wkdb.Channel{
+		ChannelID: "ch1", ChannelType: 1, Ban: 0,
+	})
+	_, err := sm.Apply(ctx, multiraft.Command{GroupID: 1, Data: createCmd})
+	if err != nil {
+		t.Fatalf("Apply upsert: %v", err)
+	}
+
+	// Verify channel exists
+	ch, err := db.ForSlot(1).GetChannel(ctx, "ch1", 1)
+	if err != nil {
+		t.Fatalf("GetChannel after create: %v", err)
+	}
+	if ch.ChannelID != "ch1" {
+		t.Fatalf("unexpected channel ID: %s", ch.ChannelID)
+	}
+
+	// Delete the channel
+	deleteCmd := EncodeDeleteChannelCommand("ch1", 1)
+	_, err = sm.Apply(ctx, multiraft.Command{GroupID: 1, Data: deleteCmd})
+	if err != nil {
+		t.Fatalf("Apply delete: %v", err)
+	}
+
+	// Verify channel is gone
+	_, err = db.ForSlot(1).GetChannel(ctx, "ch1", 1)
+	if err != wkdb.ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got: %v", err)
+	}
+}
+
 func TestEncodeDecodeChannelEdgeCases(t *testing.T) {
 	tests := []struct {
 		name    string

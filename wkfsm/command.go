@@ -23,6 +23,7 @@ const (
 
 	cmdTypeUpsertUser    uint8 = 1
 	cmdTypeUpsertChannel uint8 = 2
+	cmdTypeDeleteChannel uint8 = 3
 
 	// User field tags.
 	tagUserUID         uint8 = 1
@@ -60,6 +61,7 @@ type commandDecoder func(data []byte) (command, error)
 var commandDecoders = map[uint8]commandDecoder{
 	cmdTypeUpsertUser:    decodeUpsertUser,
 	cmdTypeUpsertChannel: decodeUpsertChannel,
+	cmdTypeDeleteChannel: decodeDeleteChannel,
 }
 
 // --- UpsertUser ---
@@ -80,6 +82,17 @@ type upsertChannelCmd struct {
 
 func (c *upsertChannelCmd) apply(wb *wkdb.WriteBatch, slot uint64) error {
 	return wb.UpsertChannel(slot, c.channel)
+}
+
+// --- DeleteChannel ---
+
+type deleteChannelCmd struct {
+	channelID   string
+	channelType int64
+}
+
+func (c *deleteChannelCmd) apply(wb *wkdb.WriteBatch, slot uint64) error {
+	return wb.DeleteChannel(slot, c.channelID, c.channelType)
 }
 
 // EncodeUpsertUserCommand encodes a User into a binary command.
@@ -130,6 +143,20 @@ func EncodeUpsertChannelCommand(ch wkdb.Channel) []byte {
 	off = putInt64Field(buf, off, tagChannelType, ch.ChannelType)
 	_ = putInt64Field(buf, off, tagChannelBan, ch.Ban)
 
+	return buf
+}
+
+// EncodeDeleteChannelCommand encodes a channel deletion into a binary command.
+func EncodeDeleteChannelCommand(channelID string, channelType int64) []byte {
+	size := headerSize +
+		tlvOverhead + len(channelID) +
+		tlvOverhead + 8
+	buf := make([]byte, size)
+	buf[0] = commandVersion
+	buf[1] = cmdTypeDeleteChannel
+	off := headerSize
+	off = putStringField(buf, off, tagChannelID, channelID)
+	putInt64Field(buf, off, tagChannelType, channelType)
 	return buf
 }
 
@@ -210,6 +237,30 @@ func decodeUpsertChannel(data []byte) (command, error) {
 		}
 	}
 	return &upsertChannelCmd{channel: ch}, nil
+}
+
+func decodeDeleteChannel(data []byte) (command, error) {
+	var cmd deleteChannelCmd
+	off := 0
+	for off < len(data) {
+		tag, value, n, err := readTLV(data[off:])
+		if err != nil {
+			return nil, err
+		}
+		off += n
+		switch tag {
+		case tagChannelID:
+			cmd.channelID = string(value)
+		case tagChannelType:
+			if len(value) != 8 {
+				return nil, fmt.Errorf("%w: bad ChannelType length", wkdb.ErrCorruptValue)
+			}
+			cmd.channelType = int64(binary.BigEndian.Uint64(value))
+		default:
+			// Unknown tag — skip for forward compatibility.
+		}
+	}
+	return &cmd, nil
 }
 
 // ---------- TLV helpers ----------

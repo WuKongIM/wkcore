@@ -56,6 +56,16 @@ func (b *WriteBatch) UpsertChannel(slot uint64, ch Channel) error {
 	return b.batch.Set(indexKey, indexValue, nil)
 }
 
+// DeleteChannel removes the primary record and ID index for a channel.
+func (b *WriteBatch) DeleteChannel(slot uint64, channelID string, channelType int64) error {
+	primaryKey := encodeChannelPrimaryKey(slot, channelID, channelType, channelPrimaryFamilyID)
+	if err := b.batch.Delete(primaryKey, nil); err != nil {
+		return err
+	}
+	indexKey := encodeChannelIDIndexKey(slot, channelID, channelType)
+	return b.batch.Delete(indexKey, nil)
+}
+
 // Commit atomically writes all staged operations with a single fsync.
 func (b *WriteBatch) Commit() error {
 	b.db.mu.Lock()
