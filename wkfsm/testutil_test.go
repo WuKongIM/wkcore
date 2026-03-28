@@ -3,6 +3,7 @@ package wkfsm
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,13 +19,23 @@ const (
 	testPollInterval = testTickInterval
 )
 
-func openTestDB(t *testing.T) *wkdb.DB {
+func mustNewStateMachine(t testing.TB, db *wkdb.DB, slot uint64) multiraft.StateMachine {
+	t.Helper()
+
+	sm, err := NewStateMachine(db, slot)
+	if err != nil {
+		t.Fatalf("NewStateMachine() error = %v", err)
+	}
+	return sm
+}
+
+func openTestDB(t testing.TB) *wkdb.DB {
 	t.Helper()
 
 	return openTestDBAt(t, filepath.Join(t.TempDir(), "db"))
 }
 
-func openTestDBAt(t *testing.T, path string) *wkdb.DB {
+func openTestDBAt(t testing.TB, path string) *wkdb.DB {
 	t.Helper()
 
 	db, err := wkdb.Open(path)
@@ -32,9 +43,7 @@ func openTestDBAt(t *testing.T, path string) *wkdb.DB {
 		t.Fatalf("Open() error = %v", err)
 	}
 	t.Cleanup(func() {
-		defer func() {
-			_ = recover()
-		}()
+		defer recoverDoubleClose()
 		if err := db.Close(); err != nil {
 			t.Fatalf("Close() error = %v", err)
 		}
@@ -42,7 +51,7 @@ func openTestDBAt(t *testing.T, path string) *wkdb.DB {
 	return db
 }
 
-func openTestRaftDBAt(t *testing.T, path string) *raftstore.DB {
+func openTestRaftDBAt(t testing.TB, path string) *raftstore.DB {
 	t.Helper()
 
 	db, err := raftstore.Open(path)
@@ -50,9 +59,7 @@ func openTestRaftDBAt(t *testing.T, path string) *raftstore.DB {
 		t.Fatalf("Open() error = %v", err)
 	}
 	t.Cleanup(func() {
-		defer func() {
-			_ = recover()
-		}()
+		defer recoverDoubleClose()
 		if err := db.Close(); err != nil {
 			t.Fatalf("Close() error = %v", err)
 		}
@@ -60,7 +67,35 @@ func openTestRaftDBAt(t *testing.T, path string) *raftstore.DB {
 	return db
 }
 
-func newStartedRuntime(t *testing.T) *multiraft.Runtime {
+// recoverDoubleClose catches panics from closing an already-closed database.
+// The underlying storage engine (Pebble) may panic when Close is called
+// on a DB that was already closed by the test. We detect this via
+// isClosedPanic. All other panics are re-raised so real bugs surface.
+func recoverDoubleClose() {
+	r := recover()
+	if r == nil {
+		return
+	}
+	if isClosedPanic(r) {
+		return
+	}
+	panic(r)
+}
+
+// isClosedPanic reports whether the recovered panic value indicates a
+// double-close on an already-closed database.
+func isClosedPanic(r any) bool {
+	switch v := r.(type) {
+	case error:
+		return strings.Contains(v.Error(), "closed")
+	case string:
+		return strings.Contains(v, "closed")
+	default:
+		return false
+	}
+}
+
+func newStartedRuntime(t testing.TB) *multiraft.Runtime {
 	t.Helper()
 
 	rt, err := multiraft.New(multiraft.Options{
@@ -90,7 +125,7 @@ func (fakeTransport) Send(ctx context.Context, batch []multiraft.Envelope) error
 	return nil
 }
 
-func waitForCondition(t *testing.T, fn func() bool) {
+func waitForCondition(t testing.TB, fn func() bool, msg string) {
 	t.Helper()
 
 	deadline := time.Now().Add(testWaitTimeout)
@@ -100,5 +135,5 @@ func waitForCondition(t *testing.T, fn func() bool) {
 		}
 		time.Sleep(testPollInterval)
 	}
-	t.Fatal("condition not satisfied before timeout")
+	t.Fatalf("condition not satisfied before timeout: %s", msg)
 }

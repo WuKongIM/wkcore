@@ -3,7 +3,7 @@ package wkdb
 import (
 	"context"
 
-	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/v2"
 )
 
 type User struct {
@@ -114,6 +114,32 @@ func (s *ShardStore) UpdateUser(ctx context.Context, u User) error {
 		return err
 	}
 
+	value := encodeUserFamilyValue(u.Token, u.DeviceFlag, u.DeviceLevel, key)
+
+	batch := s.db.db.NewBatch()
+	defer batch.Close()
+
+	if err := batch.Set(key, value, nil); err != nil {
+		return err
+	}
+	return batch.Commit(pebble.Sync)
+}
+
+func (s *ShardStore) UpsertUser(ctx context.Context, u User) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if err := s.db.checkContext(ctx); err != nil {
+		return err
+	}
+	if err := validateUser(u); err != nil {
+		return err
+	}
+
+	s.db.mu.Lock()
+	defer s.db.mu.Unlock()
+
+	key := encodeUserPrimaryKey(s.slot, u.UID, userPrimaryFamilyID)
 	value := encodeUserFamilyValue(u.Token, u.DeviceFlag, u.DeviceLevel, key)
 
 	batch := s.db.db.NewBatch()

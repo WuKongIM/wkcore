@@ -97,6 +97,14 @@ type StateMachine interface {
 	Snapshot(ctx context.Context) (Snapshot, error)
 }
 
+// BatchStateMachine extends StateMachine with batched apply support.
+// When implemented, processReady will collect contiguous normal entries
+// and apply them in a single call, amortizing fsync cost.
+type BatchStateMachine interface {
+	StateMachine
+	ApplyBatch(ctx context.Context, cmds []Command) ([][]byte, error)
+}
+
 type Command struct {
 	GroupID GroupID
 	Index   uint64

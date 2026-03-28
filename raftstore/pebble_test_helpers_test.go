@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/wraft/multiraft"
-	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/v2"
 	raft "go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 )

@@ -2,81 +2,74 @@ package wkfsm
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
+	"fmt"
 
 	"github.com/WuKongIM/wraft/multiraft"
 	"github.com/WuKongIM/wraft/wkdb"
 )
+
+// Compile-time interface assertion.
+var _ multiraft.BatchStateMachine = (*stateMachine)(nil)
 
 type stateMachine struct {
 	db   *wkdb.DB
 	slot uint64
 }
 
-func New(db *wkdb.DB, slot uint64) multiraft.StateMachine {
+// NewStateMachine creates a state machine for the given slot.
+// It returns an error if db is nil or slot is zero.
+func NewStateMachine(db *wkdb.DB, slot uint64) (multiraft.StateMachine, error) {
+	if db == nil {
+		return nil, fmt.Errorf("%w: db must not be nil", wkdb.ErrInvalidArgument)
+	}
+	if slot == 0 {
+		return nil, fmt.Errorf("%w: slot must not be zero", wkdb.ErrInvalidArgument)
+	}
 	return &stateMachine{
 		db:   db,
 		slot: slot,
-	}
+	}, nil
 }
 
+// Apply delegates to ApplyBatch with a single-element slice.
 func (m *stateMachine) Apply(ctx context.Context, cmd multiraft.Command) ([]byte, error) {
-	if err := m.validate(); err != nil {
+	results, err := m.ApplyBatch(ctx, []multiraft.Command{cmd})
+	if err != nil {
 		return nil, err
 	}
-	if cmd.GroupID != multiraft.GroupID(m.slot) {
-		return nil, wkdb.ErrInvalidArgument
-	}
+	return results[0], nil
+}
 
-	var decoded commandEnvelope
-	if err := json.Unmarshal(cmd.Data, &decoded); err != nil {
-		return nil, wkdb.ErrCorruptValue
-	}
+func (m *stateMachine) ApplyBatch(ctx context.Context, cmds []multiraft.Command) ([][]byte, error) {
+	wb := m.db.NewWriteBatch()
+	defer wb.Close()
 
-	shard := m.db.ForSlot(m.slot)
-	switch decoded.Type {
-	case commandTypeUpsertUser:
-		if decoded.User == nil {
-			return nil, wkdb.ErrInvalidArgument
-		}
-		if _, err := shard.GetUser(ctx, decoded.User.UID); err == nil {
-			if err := shard.UpdateUser(ctx, *decoded.User); err != nil {
-				return nil, err
-			}
-		} else if errors.Is(err, wkdb.ErrNotFound) {
-			if err := shard.CreateUser(ctx, *decoded.User); err != nil {
-				return nil, err
-			}
-		} else {
+	results := make([][]byte, len(cmds))
+	for i, cmd := range cmds {
+		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-	case commandTypeUpsertChannel:
-		if decoded.Channel == nil {
+		if cmd.GroupID != multiraft.GroupID(m.slot) {
 			return nil, wkdb.ErrInvalidArgument
 		}
-		if _, err := shard.GetChannel(ctx, decoded.Channel.ChannelID, decoded.Channel.ChannelType); err == nil {
-			if err := shard.UpdateChannel(ctx, *decoded.Channel); err != nil {
-				return nil, err
-			}
-		} else if errors.Is(err, wkdb.ErrNotFound) {
-			if err := shard.CreateChannel(ctx, *decoded.Channel); err != nil {
-				return nil, err
-			}
-		} else {
+
+		decoded, err := decodeCommand(cmd.Data)
+		if err != nil {
 			return nil, err
 		}
-	default:
-		return nil, wkdb.ErrInvalidArgument
+		if err := decoded.apply(wb, m.slot); err != nil {
+			return nil, err
+		}
+		results[i] = []byte(ApplyResultOK)
 	}
 
-	return []byte(applyResultOK), nil
+	if err := wb.Commit(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 func (m *stateMachine) Restore(ctx context.Context, snap multiraft.Snapshot) error {
-	if err := m.validate(); err != nil {
-		return err
-	}
 	return m.db.ImportSlotSnapshot(ctx, wkdb.SlotSnapshot{
 		SlotID: m.slot,
 		Data:   append([]byte(nil), snap.Data...),
@@ -84,10 +77,6 @@ func (m *stateMachine) Restore(ctx context.Context, snap multiraft.Snapshot) err
 }
 
 func (m *stateMachine) Snapshot(ctx context.Context) (multiraft.Snapshot, error) {
-	if err := m.validate(); err != nil {
-		return multiraft.Snapshot{}, err
-	}
-
 	snap, err := m.db.ExportSlotSnapshot(ctx, m.slot)
 	if err != nil {
 		return multiraft.Snapshot{}, err
@@ -95,11 +84,4 @@ func (m *stateMachine) Snapshot(ctx context.Context) (multiraft.Snapshot, error)
 	return multiraft.Snapshot{
 		Data: append([]byte(nil), snap.Data...),
 	}, nil
-}
-
-func (m *stateMachine) validate() error {
-	if m == nil || m.db == nil || m.slot == 0 {
-		return wkdb.ErrInvalidArgument
-	}
-	return nil
 }

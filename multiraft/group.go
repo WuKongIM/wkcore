@@ -307,37 +307,127 @@ func (g *group) processReady(ctx context.Context, transport Transport) bool {
 		lastApplied = ready.Snapshot.Metadata.Index
 	}
 
-	for _, entry := range ready.CommittedEntries {
-		lastApplied = entry.Index
-		switch entry.Type {
-		case raftpb.EntryNormal:
-			if len(entry.Data) == 0 {
-				continue
+	batchSM, canBatch := g.stateMachine.(BatchStateMachine)
+	resolutions = g.applyCommittedEntries(ctx, ready.CommittedEntries, &lastApplied, resolutions, batchSM, canBatch)
+	if g.fatalErr != nil {
+		return false
+	}
+
+	if lastApplied > 0 {
+		if err := g.storage.MarkApplied(ctx, lastApplied); err != nil {
+			g.fail(err)
+			return false
+		}
+	}
+
+	g.rawNode.Advance(ready)
+	g.refreshStatus()
+	g.completeResolutions(resolutions)
+	return g.rawNode.HasReady()
+}
+
+func (g *group) applyCommittedEntries(
+	ctx context.Context,
+	entries []raftpb.Entry,
+	lastApplied *uint64,
+	resolutions []futureResolution,
+	batchSM BatchStateMachine,
+	canBatch bool,
+) []futureResolution {
+	// Collect contiguous normal entries for batched apply.
+	var batchEntries []raftpb.Entry
+
+	flushBatch := func() bool {
+		if len(batchEntries) == 0 {
+			return true
+		}
+		defer func() { batchEntries = batchEntries[:0] }()
+
+		if !canBatch || len(batchEntries) == 1 {
+			// Fall back to one-by-one Apply.
+			for _, entry := range batchEntries {
+				result, err := g.stateMachine.Apply(ctx, Command{
+					GroupID: g.id,
+					Index:   entry.Index,
+					Term:    entry.Term,
+					Data:    append([]byte(nil), entry.Data...),
+				})
+				if err != nil {
+					g.resolveProposal(entry.Index, entry.Term, Result{
+						Index: entry.Index,
+						Term:  entry.Term,
+						Data:  result,
+					}, err)
+					g.fail(err)
+					return false
+				}
+				resolutions = append(resolutions, futureResolution{
+					kind:  controlPropose,
+					index: entry.Index,
+					term:  entry.Term,
+					result: Result{
+						Index: entry.Index,
+						Term:  entry.Term,
+						Data:  result,
+					},
+				})
 			}
-			result, err := g.stateMachine.Apply(ctx, Command{
+			return true
+		}
+
+		// Batched apply.
+		cmds := make([]Command, len(batchEntries))
+		for i, entry := range batchEntries {
+			cmds[i] = Command{
 				GroupID: g.id,
 				Index:   entry.Index,
 				Term:    entry.Term,
 				Data:    append([]byte(nil), entry.Data...),
-			})
-			resolution := futureResolution{
+			}
+		}
+		results, err := batchSM.ApplyBatch(ctx, cmds)
+		if err != nil {
+			// Resolve the last entry and fail the group.
+			last := batchEntries[len(batchEntries)-1]
+			g.resolveProposal(last.Index, last.Term, Result{
+				Index: last.Index,
+				Term:  last.Term,
+			}, err)
+			g.fail(err)
+			return false
+		}
+		for i, entry := range batchEntries {
+			var data []byte
+			if i < len(results) {
+				data = results[i]
+			}
+			resolutions = append(resolutions, futureResolution{
 				kind:  controlPropose,
 				index: entry.Index,
 				term:  entry.Term,
 				result: Result{
 					Index: entry.Index,
 					Term:  entry.Term,
-					Data:  result,
+					Data:  data,
 				},
-				err: err,
+			})
+		}
+		return true
+	}
+
+	for _, entry := range entries {
+		*lastApplied = entry.Index
+		switch entry.Type {
+		case raftpb.EntryNormal:
+			if len(entry.Data) == 0 {
+				continue
 			}
-			if err != nil {
-				g.resolveProposal(entry.Index, entry.Term, resolution.result, err)
-				g.fail(err)
-				return false
-			}
-			resolutions = append(resolutions, resolution)
+			batchEntries = append(batchEntries, entry)
 		case raftpb.EntryConfChange:
+			// Flush pending normal entries before processing conf change.
+			if !flushBatch() {
+				return resolutions
+			}
 			var cc raftpb.ConfChange
 			if err := cc.Unmarshal(entry.Data); err != nil {
 				resolutions = append(resolutions, futureResolution{
@@ -361,17 +451,9 @@ func (g *group) processReady(ctx context.Context, transport Transport) bool {
 		}
 	}
 
-	if lastApplied > 0 {
-		if err := g.storage.MarkApplied(ctx, lastApplied); err != nil {
-			g.fail(err)
-			return false
-		}
-	}
-
-	g.rawNode.Advance(ready)
-	g.refreshStatus()
-	g.completeResolutions(resolutions)
-	return g.rawNode.HasReady()
+	// Flush any remaining normal entries.
+	flushBatch()
+	return resolutions
 }
 
 func (g *group) completeResolutions(resolutions []futureResolution) {

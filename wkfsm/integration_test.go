@@ -21,7 +21,7 @@ func TestMemoryBackedGroupAppliesProposalToWKDB(t *testing.T) {
 		Group: multiraft.GroupOptions{
 			ID:           groupID,
 			Storage:      raftstore.NewMemory(),
-			StateMachine: New(db, uint64(groupID)),
+			StateMachine: mustNewStateMachine(t, db, uint64(groupID)),
 		},
 		Voters: []multiraft.NodeID{1},
 	}); err != nil {
@@ -31,7 +31,7 @@ func TestMemoryBackedGroupAppliesProposalToWKDB(t *testing.T) {
 	waitForCondition(t, func() bool {
 		st, err := rt.Status(groupID)
 		return err == nil && st.Role == multiraft.RoleLeader
-	})
+	}, "group become leader")
 
 	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(wkdb.User{
 		UID:         "u1",
@@ -66,7 +66,7 @@ func TestMemoryBackedGroupDoesNotRecoverDeletedSlotDataAfterOpenGroup(t *testing
 		Group: multiraft.GroupOptions{
 			ID:           groupID,
 			Storage:      raftstore.NewMemory(),
-			StateMachine: New(db, uint64(groupID)),
+			StateMachine: mustNewStateMachine(t, db, uint64(groupID)),
 		},
 		Voters: []multiraft.NodeID{1},
 	}); err != nil {
@@ -76,7 +76,7 @@ func TestMemoryBackedGroupDoesNotRecoverDeletedSlotDataAfterOpenGroup(t *testing
 	waitForCondition(t, func() bool {
 		st, err := rt.Status(groupID)
 		return err == nil && st.Role == multiraft.RoleLeader
-	})
+	}, "group become leader")
 
 	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(wkdb.User{
 		UID:   "u1",
@@ -104,7 +104,7 @@ func TestMemoryBackedGroupDoesNotRecoverDeletedSlotDataAfterOpenGroup(t *testing
 	if err := reopenRT.OpenGroup(ctx, multiraft.GroupOptions{
 		ID:           groupID,
 		Storage:      raftstore.NewMemory(),
-		StateMachine: New(db, uint64(groupID)),
+		StateMachine: mustNewStateMachine(t, db, uint64(groupID)),
 	}); err != nil {
 		t.Fatalf("OpenGroup() error = %v", err)
 	}
@@ -126,7 +126,7 @@ func TestMemoryBackedGroupReopensWithRecoveredMembership(t *testing.T) {
 		Group: multiraft.GroupOptions{
 			ID:           groupID,
 			Storage:      store,
-			StateMachine: New(db, uint64(groupID)),
+			StateMachine: mustNewStateMachine(t, db, uint64(groupID)),
 		},
 		Voters: []multiraft.NodeID{1},
 	}); err != nil {
@@ -136,7 +136,7 @@ func TestMemoryBackedGroupReopensWithRecoveredMembership(t *testing.T) {
 	waitForCondition(t, func() bool {
 		st, err := rt.Status(groupID)
 		return err == nil && st.Role == multiraft.RoleLeader
-	})
+	}, "group become leader")
 
 	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(wkdb.User{
 		UID:   "u1",
@@ -157,7 +157,7 @@ func TestMemoryBackedGroupReopensWithRecoveredMembership(t *testing.T) {
 	if err := reopenRT.OpenGroup(ctx, multiraft.GroupOptions{
 		ID:           groupID,
 		Storage:      store,
-		StateMachine: New(db, uint64(groupID)),
+		StateMachine: mustNewStateMachine(t, db, uint64(groupID)),
 	}); err != nil {
 		t.Fatalf("OpenGroup() error = %v", err)
 	}
@@ -165,7 +165,7 @@ func TestMemoryBackedGroupReopensWithRecoveredMembership(t *testing.T) {
 	waitForCondition(t, func() bool {
 		st, err := reopenRT.Status(groupID)
 		return err == nil && st.Role == multiraft.RoleLeader
-	})
+	}, "reopened group become leader")
 
 	fut, err = reopenRT.Propose(ctx, groupID, EncodeUpsertUserCommand(wkdb.User{
 		UID:   "u1",
@@ -202,7 +202,7 @@ func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 		Group: multiraft.GroupOptions{
 			ID:           groupID,
 			Storage:      raftDB.ForGroup(uint64(groupID)),
-			StateMachine: New(bizDB, uint64(groupID)),
+			StateMachine: mustNewStateMachine(t, bizDB, uint64(groupID)),
 		},
 		Voters: []multiraft.NodeID{1},
 	}); err != nil {
@@ -212,7 +212,7 @@ func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 	waitForCondition(t, func() bool {
 		st, err := rt.Status(groupID)
 		return err == nil && st.Role == multiraft.RoleLeader
-	})
+	}, "group become leader")
 
 	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(wkdb.User{
 		UID:   "u1",
@@ -241,7 +241,7 @@ func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 	if err := reopenRT.OpenGroup(ctx, multiraft.GroupOptions{
 		ID:           groupID,
 		Storage:      reopenedRaftDB.ForGroup(uint64(groupID)),
-		StateMachine: New(reopenedBizDB, uint64(groupID)),
+		StateMachine: mustNewStateMachine(t, reopenedBizDB, uint64(groupID)),
 	}); err != nil {
 		t.Fatalf("OpenGroup() error = %v", err)
 	}
@@ -249,7 +249,7 @@ func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 	waitForCondition(t, func() bool {
 		st, err := reopenRT.Status(groupID)
 		return err == nil && st.Role == multiraft.RoleLeader
-	})
+	}, "reopened group become leader")
 
 	fut, err = reopenRT.Propose(ctx, groupID, EncodeUpsertUserCommand(wkdb.User{
 		UID:   "u1",
@@ -286,7 +286,7 @@ func TestPebbleBackedGroupDoesNotRecoverDeletedBusinessStateWithoutSnapshot(t *t
 		Group: multiraft.GroupOptions{
 			ID:           groupID,
 			Storage:      raftDB.ForGroup(uint64(groupID)),
-			StateMachine: New(bizDB, uint64(groupID)),
+			StateMachine: mustNewStateMachine(t, bizDB, uint64(groupID)),
 		},
 		Voters: []multiraft.NodeID{1},
 	}); err != nil {
@@ -296,7 +296,7 @@ func TestPebbleBackedGroupDoesNotRecoverDeletedBusinessStateWithoutSnapshot(t *t
 	waitForCondition(t, func() bool {
 		st, err := rt.Status(groupID)
 		return err == nil && st.Role == multiraft.RoleLeader
-	})
+	}, "group become leader")
 
 	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(wkdb.User{
 		UID:   "u1",
@@ -333,7 +333,7 @@ func TestPebbleBackedGroupDoesNotRecoverDeletedBusinessStateWithoutSnapshot(t *t
 	if err := reopenRT.OpenGroup(ctx, multiraft.GroupOptions{
 		ID:           groupID,
 		Storage:      reopenedRaftDB.ForGroup(uint64(groupID)),
-		StateMachine: New(reopenedBizDB, uint64(groupID)),
+		StateMachine: mustNewStateMachine(t, reopenedBizDB, uint64(groupID)),
 	}); err != nil {
 		t.Fatalf("OpenGroup() error = %v", err)
 	}

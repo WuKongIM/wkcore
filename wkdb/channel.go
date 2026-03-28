@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/v2"
 )
 
 type Channel struct {
@@ -179,6 +179,37 @@ func (s *ShardStore) UpdateChannel(ctx context.Context, ch Channel) error {
 		return err
 	}
 
+	value := encodeChannelFamilyValue(ch.Ban, primaryKey)
+	indexKey := encodeChannelIDIndexKey(s.slot, ch.ChannelID, ch.ChannelType)
+	indexValue := encodeChannelIndexValue(ch.Ban)
+
+	batch := s.db.db.NewBatch()
+	defer batch.Close()
+
+	if err := batch.Set(primaryKey, value, nil); err != nil {
+		return err
+	}
+	if err := batch.Set(indexKey, indexValue, nil); err != nil {
+		return err
+	}
+	return batch.Commit(pebble.Sync)
+}
+
+func (s *ShardStore) UpsertChannel(ctx context.Context, ch Channel) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if err := s.db.checkContext(ctx); err != nil {
+		return err
+	}
+	if err := validateChannel(ch); err != nil {
+		return err
+	}
+
+	s.db.mu.Lock()
+	defer s.db.mu.Unlock()
+
+	primaryKey := encodeChannelPrimaryKey(s.slot, ch.ChannelID, ch.ChannelType, channelPrimaryFamilyID)
 	value := encodeChannelFamilyValue(ch.Ban, primaryKey)
 	indexKey := encodeChannelIDIndexKey(s.slot, ch.ChannelID, ch.ChannelType)
 	indexValue := encodeChannelIndexValue(ch.Ban)
