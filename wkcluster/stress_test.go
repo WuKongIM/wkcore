@@ -134,6 +134,29 @@ func fmtPct(n, total uint64) string {
 
 // ── cluster helpers ─────────────────────────────────────────────────
 
+// waitForAllStableLeaders waits for all groups to elect stable leaders
+// concurrently, reducing multi-group election wait from O(N*20s) to O(20s).
+func waitForAllStableLeaders(t testing.TB, clusters []*Cluster, groupCount int) map[uint64]multiraft.NodeID {
+	t.Helper()
+	type result struct {
+		groupID  uint64
+		leaderID multiraft.NodeID
+	}
+	results := make(chan result, groupCount)
+	for g := 1; g <= groupCount; g++ {
+		go func(gid uint64) {
+			lid := waitForStableLeader(t, clusters, gid)
+			results <- result{gid, lid}
+		}(uint64(g))
+	}
+	leaders := make(map[uint64]multiraft.NodeID, groupCount)
+	for range groupCount {
+		r := <-results
+		leaders[r.groupID] = r.leaderID
+	}
+	return leaders
+}
+
 func startSingleNodeForStress(t testing.TB, groupCount int) *Cluster {
 	t.Helper()
 	dir := t.TempDir()
@@ -368,9 +391,7 @@ func TestStressThreeNodeMixedWorkload(t *testing.T) {
 		}
 	}()
 
-	for g := uint64(1); g <= groupCount; g++ {
-		waitForStableLeader(t, clusters, g)
-	}
+	waitForAllStableLeaders(t, clusters, groupCount)
 
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration)
@@ -520,10 +541,7 @@ func TestStressForwardingContention(t *testing.T) {
 		}
 	}()
 
-	leaders := make(map[uint64]multiraft.NodeID)
-	for g := uint64(1); g <= groupCount; g++ {
-		leaders[g] = waitForStableLeader(t, clusters, g)
-	}
+	leaders := waitForAllStableLeaders(t, clusters, groupCount)
 
 	var followers []*Cluster
 	for _, c := range clusters {

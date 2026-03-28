@@ -80,6 +80,11 @@ type Transport struct {
 	handler   forwardHandler
 	stopCh    chan struct{}
 	wg        sync.WaitGroup
+
+	// accepted tracks incoming connections so Stop() can close them,
+	// unblocking handleConn goroutines stuck in readMessage.
+	accepted   []net.Conn
+	acceptedMu sync.Mutex
 }
 
 func NewTransport(nodeID multiraft.NodeID, discovery Discovery, poolSize int) *Transport {
@@ -111,6 +116,15 @@ func (t *Transport) Stop() {
 	if t.listener != nil {
 		_ = t.listener.Close()
 	}
+	// Close all accepted (incoming) connections to unblock handleConn
+	// goroutines stuck in readMessage.
+	t.acceptedMu.Lock()
+	for _, c := range t.accepted {
+		_ = c.Close()
+	}
+	t.accepted = nil
+	t.acceptedMu.Unlock()
+	// Close outgoing connection pools.
 	t.mu.RLock()
 	for _, p := range t.pools {
 		p.closeAll()
@@ -196,6 +210,10 @@ func (t *Transport) acceptLoop() {
 func (t *Transport) handleConn(conn net.Conn) {
 	defer t.wg.Done()
 	defer conn.Close()
+
+	t.acceptedMu.Lock()
+	t.accepted = append(t.accepted, conn)
+	t.acceptedMu.Unlock()
 
 	var writeMu sync.Mutex
 
