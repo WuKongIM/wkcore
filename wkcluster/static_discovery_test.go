@@ -3,6 +3,8 @@ package wkcluster
 import (
 	"errors"
 	"testing"
+
+	"github.com/WuKongIM/wraft/wktransport"
 )
 
 func TestStaticDiscovery_Resolve(t *testing.T) {
@@ -20,8 +22,8 @@ func TestStaticDiscovery_Resolve(t *testing.T) {
 	}
 
 	_, err = d.Resolve(99)
-	if !errors.Is(err, ErrNodeNotFound) {
-		t.Fatalf("expected ErrNodeNotFound, got: %v", err)
+	if !errors.Is(err, wktransport.ErrNodeNotFound) {
+		t.Fatalf("expected wktransport.ErrNodeNotFound, got: %v", err)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/wraft/multiraft"
+	"github.com/WuKongIM/wraft/wktransport"
 )
 
 // readLoopKey produces a compact numeric key for the readLoops sync.Map,
@@ -68,7 +69,7 @@ func (f *Forwarder) Stop() {
 func (f *Forwarder) Forward(ctx context.Context, targetNode multiraft.NodeID, groupID multiraft.GroupID, cmdBytes []byte) ([]byte, error) {
 	pool := f.transport.getOrCreatePool(targetNode)
 	if pool == nil {
-		return nil, ErrNodeNotFound
+		return nil, wktransport.ErrNodeNotFound
 	}
 
 	requestID := f.nextReqID.Add(1)
@@ -99,11 +100,11 @@ func (f *Forwarder) Forward(ctx context.Context, targetNode multiraft.NodeID, gr
 	case resp := <-respCh:
 		return f.handleResp(resp)
 	case <-deadline:
-		return nil, ErrTimeout
+		return nil, wktransport.ErrTimeout
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-f.stopCh:
-		return nil, ErrStopped
+		return nil, wktransport.ErrStopped
 	}
 }
 
@@ -114,7 +115,7 @@ func (f *Forwarder) handleResp(resp forwardResp) ([]byte, error) {
 	case errCodeNotLeader:
 		return nil, ErrNotLeader
 	case errCodeTimeout:
-		return nil, ErrTimeout
+		return nil, wktransport.ErrTimeout
 	case errCodeNoGroup:
 		return nil, ErrGroupNotFound
 	default:

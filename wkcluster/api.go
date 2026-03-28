@@ -8,6 +8,7 @@ import (
 	"github.com/WuKongIM/wraft/multiraft"
 	"github.com/WuKongIM/wraft/wkdb"
 	"github.com/WuKongIM/wraft/wkfsm"
+	"github.com/WuKongIM/wraft/wktransport"
 )
 
 func (c *Cluster) CreateChannel(ctx context.Context, channelID string, channelType int64) error {
@@ -43,7 +44,7 @@ func (c *Cluster) GetChannel(ctx context.Context, channelID string, channelType 
 
 func (c *Cluster) proposeOrForward(ctx context.Context, groupID multiraft.GroupID, cmd []byte) error {
 	if c.stopped.Load() {
-		return ErrStopped
+		return wktransport.ErrStopped
 	}
 	const maxRetries = 3
 	for attempt := 0; attempt < maxRetries; attempt++ {
