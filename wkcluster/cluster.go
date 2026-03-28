@@ -3,30 +3,30 @@ package wkcluster
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync/atomic"
 
 	"github.com/WuKongIM/wraft/multiraft"
 	"github.com/WuKongIM/wraft/raftstore"
 	"github.com/WuKongIM/wraft/wkdb"
 	"github.com/WuKongIM/wraft/wkfsm"
+	"github.com/WuKongIM/wraft/wktransport"
 	raft "go.etcd.io/raft/v3"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 type Cluster struct {
-	cfg       Config
-	runtime   *multiraft.Runtime
-	transport *Transport
-	discovery Discovery
-	router    *Router
-	forwarder *Forwarder
-	db        *wkdb.DB
-	raftDB    *raftstore.DB
-	// stopped is checked at the start of write operations to reject new work
-	// during shutdown. There is an inherent TOCTOU gap between the check and
-	// the actual proposal, but this is acceptable: the raft layer will reject
-	// proposals on a stopped runtime, so at worst we do slightly more work
-	// before returning an error.
-	stopped atomic.Bool
+	cfg        Config
+	server     *wktransport.Server
+	raftPool   *wktransport.Pool
+	raftClient *wktransport.Client
+	fwdClient  *wktransport.Client
+	runtime    *multiraft.Runtime
+	router     *Router
+	discovery  *StaticDiscovery
+	db         *wkdb.DB
+	raftDB     *raftstore.DB
+	stopped    atomic.Bool
 }
 
 func NewCluster(cfg Config) (*Cluster, error) {
@@ -53,39 +53,46 @@ func (c *Cluster) Start() error {
 	// 2. Discovery
 	c.discovery = NewStaticDiscovery(c.cfg.Nodes)
 
-	// 3. Transport
-	c.transport = NewTransport(c.cfg.NodeID, c.discovery, c.cfg.PoolSize, c.cfg.DialTimeout, c.cfg.ForwardTimeout)
-	if err := c.transport.Start(c.cfg.ListenAddr); err != nil {
+	// 3. Server
+	c.server = wktransport.NewServer()
+	c.server.Handle(msgTypeRaft, c.handleRaftMessage)
+	c.server.HandleRPC(c.handleForwardRPC)
+	if err := c.server.Start(c.cfg.ListenAddr); err != nil {
 		_ = c.raftDB.Close()
 		_ = c.db.Close()
-		return fmt.Errorf("start transport: %w", err)
+		return fmt.Errorf("start server: %w", err)
 	}
 
-	// 4. Runtime
+	// 4. Pools + Clients
+	c.raftPool = wktransport.NewPool(c.discovery, c.cfg.PoolSize, c.cfg.DialTimeout)
+	c.raftClient = wktransport.NewClient(c.raftPool)
+	c.fwdClient = wktransport.NewClient(c.raftPool)
+
+	// 5. Runtime
 	c.runtime, err = multiraft.New(multiraft.Options{
 		NodeID:       c.cfg.NodeID,
 		TickInterval: c.cfg.TickInterval,
 		Workers:      c.cfg.RaftWorkers,
-		Transport:    c.transport,
+		Transport:    &raftTransport{client: c.raftClient},
 		Raft: multiraft.RaftOptions{
 			ElectionTick:  c.cfg.ElectionTick,
 			HeartbeatTick: c.cfg.HeartbeatTick,
 		},
 	})
 	if err != nil {
-		c.transport.Stop()
+		c.fwdClient.Stop()
+		c.raftClient.Stop()
+		c.raftPool.Close()
+		c.server.Stop()
 		_ = c.raftDB.Close()
 		_ = c.db.Close()
 		return fmt.Errorf("create runtime: %w", err)
 	}
-	c.transport.SetRuntime(c.runtime)
 
-	// 5. Router and Forwarder
+	// 6. Router
 	c.router = NewRouter(c.cfg.GroupCount, c.cfg.NodeID, c.runtime)
-	c.forwarder = NewForwarder(c.cfg.NodeID, c.transport, c.cfg.ForwardTimeout)
-	c.transport.SetHandler(c)
 
-	// 6. Open groups
+	// 7. Open groups
 	ctx := context.Background()
 	for _, g := range c.cfg.Groups {
 		if err := c.openOrBootstrapGroup(ctx, g); err != nil {
@@ -125,14 +132,20 @@ func (c *Cluster) openOrBootstrapGroup(ctx context.Context, g GroupConfig) error
 func (c *Cluster) Stop() {
 	c.stopped.Store(true)
 
-	if c.forwarder != nil {
-		c.forwarder.Stop()
+	if c.fwdClient != nil {
+		c.fwdClient.Stop()
+	}
+	if c.raftClient != nil {
+		c.raftClient.Stop()
 	}
 	if c.runtime != nil {
 		_ = c.runtime.Close()
 	}
-	if c.transport != nil {
-		c.transport.Stop()
+	if c.server != nil {
+		c.server.Stop()
+	}
+	if c.raftPool != nil {
+		c.raftPool.Close()
 	}
 	if c.raftDB != nil {
 		_ = c.raftDB.Close()
@@ -142,26 +155,32 @@ func (c *Cluster) Stop() {
 	}
 }
 
-// handleForward implements forwardHandler for the Transport.
-// Called when this node (as leader) receives a forwarded request.
-func (c *Cluster) handleForward(ctx context.Context, groupID multiraft.GroupID, cmd []byte) ([]byte, uint8) {
-	if c.stopped.Load() {
-		return nil, errCodeTimeout
+// handleRaftMessage is the server handler for msgTypeRaft.
+func (c *Cluster) handleRaftMessage(_ net.Conn, body []byte) {
+	if c.runtime == nil {
+		return
 	}
-	_, err := c.runtime.Status(groupID)
+	groupID, data, err := decodeRaftBody(body)
 	if err != nil {
-		return nil, errCodeNoGroup
+		return
 	}
-	future, err := c.runtime.Propose(ctx, groupID, cmd)
-	if err != nil {
-		return nil, errCodeNotLeader
+	var msg raftpb.Message
+	if err := msg.Unmarshal(data); err != nil {
+		return
 	}
-	result, err := future.Wait(ctx)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, errCodeTimeout
-		}
-		return nil, errCodeNotLeader
-	}
-	return result.Data, errCodeOK
+	_ = c.runtime.Step(context.Background(), multiraft.Envelope{
+		GroupID: multiraft.GroupID(groupID),
+		Message: msg,
+	})
+}
+
+// Server returns the underlying wktransport.Server, allowing business layer
+// to register additional handlers on the shared listener.
+func (c *Cluster) Server() *wktransport.Server {
+	return c.server
+}
+
+// Discovery returns the cluster's Discovery instance for creating business pools.
+func (c *Cluster) Discovery() Discovery {
+	return c.discovery
 }

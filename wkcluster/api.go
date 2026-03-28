@@ -69,7 +69,7 @@ func (c *Cluster) proposeOrForward(ctx context.Context, groupID multiraft.GroupI
 			_, err = future.Wait(ctx)
 			return err
 		}
-		_, err = c.forwarder.Forward(ctx, leaderID, groupID, cmd)
+		err = c.forwardToLeader(ctx, leaderID, groupID, cmd)
 		if errors.Is(err, ErrNotLeader) {
 			continue
 		}

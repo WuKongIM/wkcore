@@ -3,177 +3,58 @@ package wkcluster
 import (
 	"context"
 	"fmt"
-	"net"
-	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/WuKongIM/wraft/multiraft"
 	"github.com/WuKongIM/wraft/wktransport"
 )
 
-// readLoopKey produces a compact numeric key for the readLoops sync.Map,
-// avoiding fmt.Sprintf string allocation on the hot path.
-func readLoopKey(nodeID multiraft.NodeID, idx int) uint64 {
-	return uint64(nodeID)<<32 | uint64(idx)
-}
-
-type forwardResp struct {
-	errCode uint8
-	data    []byte
-}
-
-type Forwarder struct {
-	nodeID    multiraft.NodeID
-	transport *Transport
-	timeout   time.Duration
-	nextReqID atomic.Uint64
-	pending   sync.Map // requestID → chan forwardResp
-
-	// readLoops tracks which connections have a reader goroutine
-	readLoops sync.Map // readLoopKey(nodeID, idx) → net.Conn
-	wg        sync.WaitGroup
-	stopCh    chan struct{}
-}
-
-func NewForwarder(nodeID multiraft.NodeID, transport *Transport, timeout time.Duration) *Forwarder {
-	return &Forwarder{
-		nodeID:    nodeID,
-		transport: transport,
-		timeout:   timeout,
-		stopCh:    make(chan struct{}),
-	}
-}
-
-func (f *Forwarder) Stop() {
-	close(f.stopCh)
-	// Close all tracked connections to unblock readLoops
-	f.readLoops.Range(func(key, value any) bool {
-		if conn, ok := value.(net.Conn); ok {
-			_ = conn.Close()
-		}
-		return true
-	})
-	// Cancel all pending requests
-	f.pending.Range(func(key, value any) bool {
-		ch := value.(chan forwardResp)
-		select {
-		case ch <- forwardResp{errCode: errCodeTimeout}:
-		default:
-		}
-		return true
-	})
-	f.wg.Wait()
-}
-
-func (f *Forwarder) Forward(ctx context.Context, targetNode multiraft.NodeID, groupID multiraft.GroupID, cmdBytes []byte) ([]byte, error) {
-	pool := f.transport.getOrCreatePool(targetNode)
-	if pool == nil {
-		return nil, wktransport.ErrNodeNotFound
-	}
-
-	requestID := f.nextReqID.Add(1)
-	respCh := make(chan forwardResp, 1)
-	f.pending.Store(requestID, respCh)
-	defer f.pending.Delete(requestID)
-
-	conn, idx, err := pool.getByGroup(groupID)
+func (c *Cluster) forwardToLeader(ctx context.Context, leaderID multiraft.NodeID, groupID multiraft.GroupID, cmd []byte) error {
+	payload := encodeForwardPayload(uint64(groupID), cmd)
+	resp, err := c.fwdClient.RPC(ctx, uint64(leaderID), uint64(groupID), payload)
 	if err != nil {
-		return nil, fmt.Errorf("connect to leader: %w", err)
+		return err
 	}
-
-	// Ensure a read loop for this connection
-	f.ensureReadLoop(targetNode, idx, conn)
-
-	err = writeForwardMessage(conn, requestID, uint64(groupID), cmdBytes)
-	pool.release(idx)
-	if err != nil {
-		pool.mu[idx].Lock()
-		pool.resetConn(idx)
-		pool.mu[idx].Unlock()
-		return nil, fmt.Errorf("write forward: %w", err)
+	errCode, _, decodeErr := decodeForwardResp(resp)
+	if decodeErr != nil {
+		return fmt.Errorf("decode forward response: %w", decodeErr)
 	}
-
-	// Wait for response
-	deadline := time.After(f.timeout)
-	select {
-	case resp := <-respCh:
-		return f.handleResp(resp)
-	case <-deadline:
-		return nil, wktransport.ErrTimeout
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-f.stopCh:
-		return nil, wktransport.ErrStopped
-	}
-}
-
-func (f *Forwarder) handleResp(resp forwardResp) ([]byte, error) {
-	switch resp.errCode {
+	switch errCode {
 	case errCodeOK:
-		return resp.data, nil
+		return nil
 	case errCodeNotLeader:
-		return nil, ErrNotLeader
+		return ErrNotLeader
 	case errCodeTimeout:
-		return nil, wktransport.ErrTimeout
+		return wktransport.ErrTimeout
 	case errCodeNoGroup:
-		return nil, ErrGroupNotFound
+		return ErrGroupNotFound
 	default:
-		return nil, fmt.Errorf("unknown error code: %d", resp.errCode)
+		return fmt.Errorf("unknown forward error code: %d", errCode)
 	}
 }
 
-func (f *Forwarder) ensureReadLoop(nodeID multiraft.NodeID, idx int, conn net.Conn) {
-	key := readLoopKey(nodeID, idx)
-	for {
-		existing, loaded := f.readLoops.LoadOrStore(key, conn)
-		if !loaded {
-			// New entry — start a readLoop for this connection.
-			f.wg.Add(1)
-			go f.readLoop(key, conn)
-			return
-		}
-		if existing.(net.Conn) == conn {
-			// Same connection, readLoop already running.
-			return
-		}
-		// Connection was reset; replace the stale entry and start a new readLoop.
-		if f.readLoops.CompareAndSwap(key, existing, conn) {
-			f.wg.Add(1)
-			go f.readLoop(key, conn)
-			return
-		}
-		// CAS failed (concurrent update), retry.
+// handleForwardRPC is the server-side RPC handler for forwarded proposals.
+func (c *Cluster) handleForwardRPC(ctx context.Context, body []byte) ([]byte, error) {
+	groupID, cmd, err := decodeForwardPayload(body)
+	if err != nil {
+		return encodeForwardResp(errCodeNoGroup, nil), nil
 	}
-}
-
-func (f *Forwarder) readLoop(key uint64, conn net.Conn) {
-	defer f.wg.Done()
-	defer f.readLoops.Delete(key)
-
-	for {
-		select {
-		case <-f.stopCh:
-			return
-		default:
-		}
-
-		msgType, body, err := readMessage(conn)
-		if err != nil {
-			return
-		}
-		if msgType != msgTypeResp {
-			continue
-		}
-
-		requestID, errCode, data, err := decodeRespBody(body)
-		if err != nil {
-			continue
-		}
-
-		if v, ok := f.pending.LoadAndDelete(requestID); ok {
-			ch := v.(chan forwardResp)
-			ch <- forwardResp{errCode: errCode, data: data}
-		}
+	if c.stopped.Load() {
+		return encodeForwardResp(errCodeTimeout, nil), nil
 	}
+	_, err = c.runtime.Status(multiraft.GroupID(groupID))
+	if err != nil {
+		return encodeForwardResp(errCodeNoGroup, nil), nil
+	}
+	future, err := c.runtime.Propose(ctx, multiraft.GroupID(groupID), cmd)
+	if err != nil {
+		return encodeForwardResp(errCodeNotLeader, nil), nil
+	}
+	result, err := future.Wait(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return encodeForwardResp(errCodeTimeout, nil), nil
+		}
+		return encodeForwardResp(errCodeNotLeader, nil), nil
+	}
+	return encodeForwardResp(errCodeOK, result.Data), nil
 }

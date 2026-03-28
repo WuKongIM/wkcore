@@ -1,129 +1,67 @@
 package wkcluster
 
 import (
-	"net"
+	"context"
 	"testing"
 	"time"
+
+	"github.com/WuKongIM/wraft/wktransport"
 )
 
-func TestForwarder_RoundTrip(t *testing.T) {
-	// Create a server that echoes forward requests as responses
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-
-	go func() {
-		conn, err := ln.Accept()
+func TestForwardToLeader_RoundTrip(t *testing.T) {
+	// Server echoes the forward payload back with errCodeOK
+	srv := wktransport.NewServer()
+	srv.HandleRPC(func(ctx context.Context, body []byte) ([]byte, error) {
+		groupID, cmd, err := decodeForwardPayload(body)
 		if err != nil {
-			return
+			return nil, err
 		}
-		defer conn.Close()
-		for {
-			msgType, body, err := readMessage(conn)
-			if err != nil {
-				return
-			}
-			if msgType == msgTypeForward {
-				reqID, _, cmd, _ := decodeForwardBody(body)
-				resp := encodeRespBody(reqID, errCodeOK, cmd) // echo cmd as data
-				_, _ = conn.Write(encodeMessage(msgTypeResp, resp))
-			}
-		}
-	}()
-
-	// Create forwarder with a direct connection
-	d := NewStaticDiscovery([]NodeConfig{{NodeID: 2, Addr: ln.Addr().String()}})
-	tr := NewTransport(1, d, 2, defaultDialTimeout, defaultForwardTimeout)
-	f := NewForwarder(1, tr, 5*time.Second)
-	defer f.Stop()
-
-	// Set up pool for nodeID=2
-	pool := tr.getOrCreatePool(2)
-	if pool == nil {
-		t.Fatal("pool is nil")
-	}
-
-	// Get a connection and start read loop
-	conn, idx, err := pool.getByGroup(1)
-	if err != nil {
-		t.Fatalf("getByGroup: %v", err)
-	}
-	pool.release(idx)
-	f.ensureReadLoop(2, idx, conn)
-
-	// Send forward
-	requestID := f.nextReqID.Add(1)
-	respCh := make(chan forwardResp, 1)
-	f.pending.Store(requestID, respCh)
-
-	body := encodeForwardBody(requestID, 1, []byte("test-cmd"))
-	msg := encodeMessage(msgTypeForward, body)
-	pool.mu[idx].Lock()
-	_, err = conn.Write(msg)
-	pool.mu[idx].Unlock()
-	if err != nil {
+		_ = groupID
+		return encodeForwardResp(errCodeOK, cmd), nil
+	})
+	if err := srv.Start("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
 	}
+	defer srv.Stop()
 
-	select {
-	case resp := <-respCh:
-		if resp.errCode != errCodeOK {
-			t.Fatalf("expected errCodeOK, got %d", resp.errCode)
-		}
-		if string(resp.data) != "test-cmd" {
-			t.Fatalf("expected echo, got %s", resp.data)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for response")
+	d := NewStaticDiscovery([]NodeConfig{{NodeID: 2, Addr: srv.Listener().Addr().String()}})
+	pool := wktransport.NewPool(d, 2, 5*time.Second)
+	defer pool.Close()
+	client := wktransport.NewClient(pool)
+	defer client.Stop()
+
+	c := &Cluster{fwdClient: client}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := c.forwardToLeader(ctx, 2, 1, []byte("test-cmd"))
+	if err != nil {
+		t.Fatalf("forwardToLeader: %v", err)
 	}
 }
 
-func TestForwarder_Timeout(t *testing.T) {
-	// Server that never responds
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
+func TestForwardToLeader_NotLeader(t *testing.T) {
+	srv := wktransport.NewServer()
+	srv.HandleRPC(func(ctx context.Context, body []byte) ([]byte, error) {
+		return encodeForwardResp(errCodeNotLeader, nil), nil
+	})
+	if err := srv.Start("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer srv.Stop()
 
-	go func() {
-		conn, _ := ln.Accept()
-		if conn != nil {
-			defer conn.Close()
-			select {} // block forever
-		}
-	}()
+	d := NewStaticDiscovery([]NodeConfig{{NodeID: 2, Addr: srv.Listener().Addr().String()}})
+	pool := wktransport.NewPool(d, 2, 5*time.Second)
+	defer pool.Close()
+	client := wktransport.NewClient(pool)
+	defer client.Stop()
 
-	d := NewStaticDiscovery([]NodeConfig{{NodeID: 2, Addr: ln.Addr().String()}})
-	tr := NewTransport(1, d, 2, defaultDialTimeout, defaultForwardTimeout)
-	f := NewForwarder(1, tr, 100*time.Millisecond)
-	defer f.Stop()
+	c := &Cluster{fwdClient: client}
 
-	// Get connection
-	pool := tr.getOrCreatePool(2)
-	conn, idx, err := pool.getByGroup(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pool.release(idx)
-	f.ensureReadLoop(2, idx, conn)
-
-	reqID := f.nextReqID.Add(1)
-	respCh := make(chan forwardResp, 1)
-	f.pending.Store(reqID, respCh)
-	defer f.pending.Delete(reqID)
-
-	body := encodeForwardBody(reqID, 1, []byte("test"))
-	pool.mu[idx].Lock()
-	_, _ = conn.Write(encodeMessage(msgTypeForward, body))
-	pool.mu[idx].Unlock()
-
-	select {
-	case <-respCh:
-		t.Fatal("should not receive response")
-	case <-time.After(200 * time.Millisecond):
-		// expected timeout
+	ctx := context.Background()
+	err := c.forwardToLeader(ctx, 2, 1, []byte("test"))
+	if err != ErrNotLeader {
+		t.Fatalf("expected ErrNotLeader, got: %v", err)
 	}
 }

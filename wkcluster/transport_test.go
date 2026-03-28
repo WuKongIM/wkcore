@@ -2,52 +2,84 @@ package wkcluster
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
 	"github.com/WuKongIM/wraft/multiraft"
+	"github.com/WuKongIM/wraft/wktransport"
 	"go.etcd.io/raft/v3/raftpb"
 )
 
-func TestTransport_StartStop(t *testing.T) {
-	d := NewStaticDiscovery([]NodeConfig{
-		{NodeID: 1, Addr: "127.0.0.1:0"},
+func TestRaftTransport_Send(t *testing.T) {
+	// Start a server that captures raft messages
+	srv := wktransport.NewServer()
+	var receivedBody []byte
+	done := make(chan struct{})
+	srv.Handle(msgTypeRaft, func(_ net.Conn, body []byte) {
+		receivedBody = body
+		close(done)
 	})
-	tr := NewTransport(1, d, 4, defaultDialTimeout, defaultForwardTimeout)
-	if err := tr.Start("127.0.0.1:0"); err != nil {
-		t.Fatalf("Start: %v", err)
+	if err := srv.Start("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
 	}
-	tr.Stop()
-}
+	defer srv.Stop()
 
-func TestTransport_SendReceiveRaft(t *testing.T) {
-	// Start receiver
-	recvDiscovery := NewStaticDiscovery(nil)
-	recv := NewTransport(2, recvDiscovery, 4, defaultDialTimeout, defaultForwardTimeout)
-	if err := recv.Start("127.0.0.1:0"); err != nil {
-		t.Fatalf("Start recv: %v", err)
-	}
-	defer recv.Stop()
-	recvAddr := recv.listener.Addr().String()
+	d := NewStaticDiscovery([]NodeConfig{{NodeID: 2, Addr: srv.Listener().Addr().String()}})
+	pool := wktransport.NewPool(d, 2, 5*time.Second)
+	defer pool.Close()
+	client := wktransport.NewClient(pool)
+	defer client.Stop()
 
-	// Start sender
-	sendDiscovery := NewStaticDiscovery([]NodeConfig{
-		{NodeID: 2, Addr: recvAddr},
-	})
-	sender := NewTransport(1, sendDiscovery, 4, defaultDialTimeout, defaultForwardTimeout)
-	if err := sender.Start("127.0.0.1:0"); err != nil {
-		t.Fatalf("Start sender: %v", err)
-	}
-	defer sender.Stop()
+	rt := &raftTransport{client: client}
 
-	// Send a raft message
-	err := sender.Send(context.Background(), []multiraft.Envelope{
-		{GroupID: 1, Message: raftpb.Message{To: 2, From: 1, Type: raftpb.MsgHeartbeat}},
+	msg := raftpb.Message{To: 2, From: 1, Type: raftpb.MsgHeartbeat}
+	err := rt.Send(context.Background(), []multiraft.Envelope{
+		{GroupID: 1, Message: msg},
 	})
 	if err != nil {
-		t.Fatalf("Send: %v", err)
+		t.Fatal(err)
 	}
 
-	// Give time for delivery
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	// Verify body is a valid raft body
+	groupID, data, err := decodeRaftBody(receivedBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if groupID != 1 {
+		t.Fatalf("expected groupID=1, got %d", groupID)
+	}
+	var decoded raftpb.Message
+	if err := decoded.Unmarshal(data); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Type != raftpb.MsgHeartbeat {
+		t.Fatalf("expected MsgHeartbeat, got %v", decoded.Type)
+	}
+}
+
+func TestRaftTransport_CtxCancel(t *testing.T) {
+	d := NewStaticDiscovery([]NodeConfig{})
+	pool := wktransport.NewPool(d, 2, 5*time.Second)
+	defer pool.Close()
+	client := wktransport.NewClient(pool)
+	defer client.Stop()
+
+	rt := &raftTransport{client: client}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	err := rt.Send(ctx, []multiraft.Envelope{
+		{GroupID: 1, Message: raftpb.Message{To: 2, From: 1}},
+	})
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got: %v", err)
+	}
 }
