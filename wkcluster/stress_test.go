@@ -50,8 +50,90 @@ func requireStressEnabled(t *testing.T, cfg stressConfig) {
 	}
 }
 
-// startSingleNodeForStress starts a single-node cluster suitable for
-// high-throughput stress testing. Uses multiple raft groups for sharding.
+// ── report helpers ──────────────────────────────────────────────────
+
+type reportLine struct {
+	label string
+	value string
+}
+
+type stressReport struct {
+	title    string
+	config   []reportLine
+	results  []reportLine
+	verify   []reportLine
+	verdict  string // PASS / FAIL
+}
+
+func (r *stressReport) print(t *testing.T) {
+	t.Helper()
+
+	const width = 60
+	border := strings.Repeat("─", width)
+
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("┌%s┐\n", border))
+	b.WriteString(fmt.Sprintf("│ %-*s │\n", width-2, r.title))
+	b.WriteString(fmt.Sprintf("├%s┤\n", border))
+
+	// Config section
+	b.WriteString(fmt.Sprintf("│ %-*s │\n", width-2, "CONFIG"))
+	for _, l := range r.config {
+		b.WriteString(fmt.Sprintf("│   %-20s %*s │\n", l.label, width-26, l.value))
+	}
+
+	// Results section
+	b.WriteString(fmt.Sprintf("├%s┤\n", border))
+	b.WriteString(fmt.Sprintf("│ %-*s │\n", width-2, "RESULTS"))
+	for _, l := range r.results {
+		b.WriteString(fmt.Sprintf("│   %-20s %*s │\n", l.label, width-26, l.value))
+	}
+
+	// Verify section
+	if len(r.verify) > 0 {
+		b.WriteString(fmt.Sprintf("├%s┤\n", border))
+		b.WriteString(fmt.Sprintf("│ %-*s │\n", width-2, "VERIFICATION"))
+		for _, l := range r.verify {
+			b.WriteString(fmt.Sprintf("│   %-20s %*s │\n", l.label, width-26, l.value))
+		}
+	}
+
+	// Verdict
+	b.WriteString(fmt.Sprintf("├%s┤\n", border))
+	b.WriteString(fmt.Sprintf("│ %-*s │\n", width-2, fmt.Sprintf("VERDICT: %s", r.verdict)))
+	b.WriteString(fmt.Sprintf("└%s┘\n", border))
+
+	t.Log(b.String())
+}
+
+func fmtOps(n uint64) string {
+	if n >= 1_000_000 {
+		return fmt.Sprintf("%.2fM", float64(n)/1_000_000)
+	}
+	if n >= 1_000 {
+		return fmt.Sprintf("%.1fK", float64(n)/1_000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+func fmtRate(ops uint64, d time.Duration) string {
+	rate := float64(ops) / d.Seconds()
+	if rate >= 1000 {
+		return fmt.Sprintf("%.1fK ops/s", rate/1000)
+	}
+	return fmt.Sprintf("%.0f ops/s", rate)
+}
+
+func fmtPct(n, total uint64) string {
+	if total == 0 {
+		return "0%"
+	}
+	return fmt.Sprintf("%.1f%%", float64(n)*100/float64(total))
+}
+
+// ── cluster helpers ─────────────────────────────────────────────────
+
 func startSingleNodeForStress(t testing.TB, groupCount int) *Cluster {
 	t.Helper()
 	dir := t.TempDir()
@@ -83,7 +165,6 @@ func startSingleNodeForStress(t testing.TB, groupCount int) *Cluster {
 	return c
 }
 
-// startThreeNodeForStress starts a 3-node cluster with the given group count.
 func startThreeNodeForStress(t testing.TB, groupCount int) []*Cluster {
 	t.Helper()
 
@@ -136,6 +217,8 @@ func startThreeNodeForStress(t testing.TB, groupCount int) []*Cluster {
 	return clusters
 }
 
+// ── stress tests ────────────────────────────────────────────────────
+
 // TestStressSingleNodeThroughput hammers a single-node cluster with
 // concurrent CreateChannel + GetChannel from multiple goroutines across
 // multiple raft groups, measuring throughput and verifying data integrity.
@@ -147,21 +230,21 @@ func TestStressSingleNodeThroughput(t *testing.T) {
 	c := startSingleNodeForStress(t, groupCount)
 	defer c.Stop()
 
-	// Wait for all groups to elect leader
 	for g := 1; g <= groupCount; g++ {
 		waitForLeader(t, c, uint64(g))
 	}
 
+	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration)
 	defer cancel()
 
 	var (
-		wg       sync.WaitGroup
-		errCh    = make(chan error, 1)
-		creates  atomic.Uint64
-		reads    atomic.Uint64
-		updates  atomic.Uint64
-		deletes  atomic.Uint64
+		wg      sync.WaitGroup
+		errCh   = make(chan error, 1)
+		creates atomic.Uint64
+		reads   atomic.Uint64
+		updates atomic.Uint64
+		deletes atomic.Uint64
 	)
 
 	for worker := 0; worker < cfg.Workers; worker++ {
@@ -178,7 +261,6 @@ func TestStressSingleNodeThroughput(t *testing.T) {
 				channelID := fmt.Sprintf("stress-ch-%d-%d", worker, rng.Intn(64))
 				channelType := int64(rng.Intn(4) + 1)
 
-				// Weighted operation mix: 50% create, 25% read, 15% update, 10% delete
 				op := rng.Intn(100)
 				switch {
 				case op < 50:
@@ -196,7 +278,6 @@ func TestStressSingleNodeThroughput(t *testing.T) {
 					creates.Add(1)
 
 				case op < 75:
-					// Read — may not exist, that's fine
 					_, _ = c.GetChannel(ctx, channelID, channelType)
 					reads.Add(1)
 
@@ -234,6 +315,7 @@ func TestStressSingleNodeThroughput(t *testing.T) {
 	}
 
 	wg.Wait()
+	elapsed := time.Since(start)
 
 	select {
 	case err := <-errCh:
@@ -241,16 +323,33 @@ func TestStressSingleNodeThroughput(t *testing.T) {
 	default:
 	}
 
-	total := creates.Load() + reads.Load() + updates.Load() + deletes.Load()
-	elapsed := cfg.Duration
-	if ctx.Err() != nil {
-		elapsed = cfg.Duration // completed full duration
+	cN := creates.Load()
+	rN := reads.Load()
+	uN := updates.Load()
+	dN := deletes.Load()
+	total := cN + rN + uN + dN
+
+	rpt := stressReport{
+		title: "Single-Node Throughput",
+		config: []reportLine{
+			{"Nodes", "1"},
+			{"Raft Groups", fmt.Sprintf("%d", groupCount)},
+			{"Workers", fmt.Sprintf("%d", cfg.Workers)},
+			{"Duration", elapsed.Round(time.Millisecond).String()},
+			{"Seed", fmt.Sprintf("%d", cfg.Seed)},
+		},
+		results: []reportLine{
+			{"Total Ops", fmtOps(total)},
+			{"Throughput", fmtRate(total, elapsed)},
+			{"Creates", fmt.Sprintf("%s (%s)", fmtOps(cN), fmtPct(cN, total))},
+			{"Reads", fmt.Sprintf("%s (%s)", fmtOps(rN), fmtPct(rN, total))},
+			{"Updates", fmt.Sprintf("%s (%s)", fmtOps(uN), fmtPct(uN, total))},
+			{"Deletes", fmt.Sprintf("%s (%s)", fmtOps(dN), fmtPct(dN, total))},
+			{"Errors", "0"},
+		},
+		verdict: "PASS",
 	}
-	t.Logf("single-node throughput: seed=%d workers=%d groups=%d duration=%s",
-		cfg.Seed, cfg.Workers, groupCount, elapsed)
-	t.Logf("  ops=%d (creates=%d reads=%d updates=%d deletes=%d) %.0f ops/sec",
-		total, creates.Load(), reads.Load(), updates.Load(), deletes.Load(),
-		float64(total)/elapsed.Seconds())
+	rpt.print(t)
 }
 
 // TestStressThreeNodeMixedWorkload runs a mixed CRUD workload across a
@@ -269,11 +368,11 @@ func TestStressThreeNodeMixedWorkload(t *testing.T) {
 		}
 	}()
 
-	// Wait for stable leaders on all groups
 	for g := uint64(1); g <= groupCount; g++ {
 		waitForStableLeader(t, clusters, g)
 	}
 
+	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration)
 	defer cancel()
 
@@ -284,7 +383,7 @@ func TestStressThreeNodeMixedWorkload(t *testing.T) {
 		updates   atomic.Uint64
 		writeErrs atomic.Uint64
 		mu        sync.Mutex
-		written   = make(map[string]int64) // channelID -> channelType
+		written   = make(map[string]int64)
 	)
 
 	for worker := 0; worker < cfg.Workers; worker++ {
@@ -303,7 +402,6 @@ func TestStressThreeNodeMixedWorkload(t *testing.T) {
 					break
 				}
 
-				// Pick a random node to send the request to
 				node := clusters[rng.Intn(len(clusters))]
 				channelID := fmt.Sprintf("mn-ch-%d-%d", worker, rng.Intn(32))
 				channelType := int64(rng.Intn(3) + 1)
@@ -315,8 +413,6 @@ func TestStressThreeNodeMixedWorkload(t *testing.T) {
 						if ctx.Err() != nil {
 							break
 						}
-						// Transient errors (leadership changes, forwarding timeouts)
-						// are expected in multi-node clusters under load.
 						writeErrs.Add(1)
 						continue
 					}
@@ -352,17 +448,16 @@ func TestStressThreeNodeMixedWorkload(t *testing.T) {
 	}
 
 	wg.Wait()
+	elapsed := time.Since(start)
 
 	// Allow replication to settle
 	time.Sleep(500 * time.Millisecond)
 
-	// Verify: all created channels should be readable on the leader
 	verifyCtx, verifyCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer verifyCancel()
 
 	verified := 0
 	for channelID, channelType := range written {
-		// Read from each node until one succeeds (eventual consistency)
 		found := false
 		for _, c := range clusters {
 			ch, err := c.GetChannel(verifyCtx, channelID, channelType)
@@ -377,11 +472,37 @@ func TestStressThreeNodeMixedWorkload(t *testing.T) {
 		verified++
 	}
 
-	total := creates.Load() + reads.Load() + updates.Load()
-	t.Logf("3-node mixed workload: seed=%d workers=%d groups=%d duration=%s",
-		cfg.Seed, cfg.Workers, groupCount, cfg.Duration)
-	t.Logf("  ops=%d (creates=%d reads=%d updates=%d write_errs=%d) verified=%d/%d channels",
-		total, creates.Load(), reads.Load(), updates.Load(), writeErrs.Load(), verified, len(written))
+	cN := creates.Load()
+	rN := reads.Load()
+	uN := updates.Load()
+	eN := writeErrs.Load()
+	total := cN + rN + uN
+
+	rpt := stressReport{
+		title: "3-Node Mixed Workload",
+		config: []reportLine{
+			{"Nodes", "3"},
+			{"Raft Groups", fmt.Sprintf("%d", groupCount)},
+			{"Workers", fmt.Sprintf("%d", cfg.Workers)},
+			{"Duration", elapsed.Round(time.Millisecond).String()},
+			{"Seed", fmt.Sprintf("%d", cfg.Seed)},
+		},
+		results: []reportLine{
+			{"Total Ops", fmtOps(total)},
+			{"Throughput", fmtRate(total, elapsed)},
+			{"Creates", fmt.Sprintf("%s (%s)", fmtOps(cN), fmtPct(cN, total))},
+			{"Reads", fmt.Sprintf("%s (%s)", fmtOps(rN), fmtPct(rN, total))},
+			{"Updates", fmt.Sprintf("%s (%s)", fmtOps(uN), fmtPct(uN, total))},
+			{"Write Errors", fmt.Sprintf("%s (transient)", fmtOps(eN))},
+		},
+		verify: []reportLine{
+			{"Channels Written", fmt.Sprintf("%d", len(written))},
+			{"Channels Verified", fmt.Sprintf("%d/%d", verified, len(written))},
+			{"Data Integrity", "OK"},
+		},
+		verdict: "PASS",
+	}
+	rpt.print(t)
 }
 
 // TestStressForwardingContention sends all writes to follower nodes only,
@@ -399,13 +520,11 @@ func TestStressForwardingContention(t *testing.T) {
 		}
 	}()
 
-	// Wait for stable leaders
 	leaders := make(map[uint64]multiraft.NodeID)
 	for g := uint64(1); g <= groupCount; g++ {
 		leaders[g] = waitForStableLeader(t, clusters, g)
 	}
 
-	// Collect followers (nodes that are NOT the leader for group 1)
 	var followers []*Cluster
 	for _, c := range clusters {
 		if c.cfg.NodeID != leaders[1] {
@@ -415,8 +534,13 @@ func TestStressForwardingContention(t *testing.T) {
 	if len(followers) == 0 {
 		t.Fatal("no followers found")
 	}
-	t.Logf("leaders=%v, using %d followers for forwarding", leaders, len(followers))
 
+	leaderStr := make([]string, 0, len(leaders))
+	for g, lid := range leaders {
+		leaderStr = append(leaderStr, fmt.Sprintf("g%d->n%d", g, lid))
+	}
+
+	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration)
 	defer cancel()
 
@@ -438,7 +562,6 @@ func TestStressForwardingContention(t *testing.T) {
 					return
 				}
 
-				// Always write to a follower to exercise forwarding
 				follower := followers[rng.Intn(len(followers))]
 				channelID := fmt.Sprintf("fwd-ch-%d-%d", worker, rng.Intn(32))
 				channelType := int64(rng.Intn(3) + 1)
@@ -448,7 +571,6 @@ func TestStressForwardingContention(t *testing.T) {
 					if ctx.Err() != nil {
 						return
 					}
-					// Leadership changes can cause transient errors; count but don't abort
 					fwdErrs.Add(1)
 					continue
 				}
@@ -458,6 +580,7 @@ func TestStressForwardingContention(t *testing.T) {
 	}
 
 	wg.Wait()
+	elapsed := time.Since(start)
 
 	select {
 	case err := <-errCh:
@@ -465,11 +588,34 @@ func TestStressForwardingContention(t *testing.T) {
 	default:
 	}
 
-	t.Logf("forwarding contention: seed=%d workers=%d groups=%d duration=%s",
-		cfg.Seed, cfg.Workers, groupCount, cfg.Duration)
-	t.Logf("  forwarded_ops=%d errors=%d %.0f ops/sec",
-		fwdOps.Load(), fwdErrs.Load(),
-		float64(fwdOps.Load())/cfg.Duration.Seconds())
+	fN := fwdOps.Load()
+	eN := fwdErrs.Load()
+	total := fN + eN
+	successRate := "100%"
+	if total > 0 {
+		successRate = fmtPct(fN, total)
+	}
+
+	rpt := stressReport{
+		title: "Forwarding Contention",
+		config: []reportLine{
+			{"Nodes", "3"},
+			{"Raft Groups", fmt.Sprintf("%d", groupCount)},
+			{"Workers", fmt.Sprintf("%d", cfg.Workers)},
+			{"Duration", elapsed.Round(time.Millisecond).String()},
+			{"Seed", fmt.Sprintf("%d", cfg.Seed)},
+			{"Leaders", strings.Join(leaderStr, ", ")},
+			{"Followers Used", fmt.Sprintf("%d", len(followers))},
+		},
+		results: []reportLine{
+			{"Forwarded Ops", fmtOps(fN)},
+			{"Throughput", fmtRate(fN, elapsed)},
+			{"Transient Errors", fmtOps(eN)},
+			{"Success Rate", successRate},
+		},
+		verdict: "PASS",
+	}
+	rpt.print(t)
 }
 
 // TestStressConcurrentCreateReadVerify does high-concurrency create followed
@@ -487,6 +633,7 @@ func TestStressConcurrentCreateReadVerify(t *testing.T) {
 		waitForLeader(t, c, uint64(g))
 	}
 
+	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration)
 	defer cancel()
 
@@ -495,7 +642,7 @@ func TestStressConcurrentCreateReadVerify(t *testing.T) {
 		errCh = make(chan error, 1)
 		mu    sync.Mutex
 		// Track all successfully created channels
-		created = make(map[string]int64) // "channelID" -> channelType
+		created = make(map[string]int64)
 		count   atomic.Uint64
 	)
 
@@ -514,7 +661,6 @@ func TestStressConcurrentCreateReadVerify(t *testing.T) {
 					break
 				}
 
-				// Unique channel per worker+idx to avoid collisions
 				channelID := fmt.Sprintf("verify-w%d-i%d", worker, idx)
 				channelType := int64((worker+idx)%4 + 1)
 
@@ -545,6 +691,7 @@ func TestStressConcurrentCreateReadVerify(t *testing.T) {
 	}
 
 	wg.Wait()
+	elapsed := time.Since(start)
 
 	select {
 	case err := <-errCh:
@@ -552,7 +699,6 @@ func TestStressConcurrentCreateReadVerify(t *testing.T) {
 	default:
 	}
 
-	// Verify every created channel is readable
 	verifyCtx := context.Background()
 	missing := 0
 	for channelID, channelType := range created {
@@ -572,11 +718,38 @@ func TestStressConcurrentCreateReadVerify(t *testing.T) {
 		t.Fatalf("%d/%d channels missing after create", missing, len(created))
 	}
 
-	t.Logf("create+verify: seed=%d workers=%d groups=%d duration=%s created=%d all_verified=true",
-		cfg.Seed, cfg.Workers, groupCount, cfg.Duration, len(created))
+	createdN := uint64(len(created))
+	integrity := "OK"
+	verdict := "PASS"
+	if missing > 0 {
+		integrity = fmt.Sprintf("FAIL (%d missing)", missing)
+		verdict = "FAIL"
+	}
+
+	rpt := stressReport{
+		title: "Concurrent Create + Read Verify",
+		config: []reportLine{
+			{"Nodes", "1"},
+			{"Raft Groups", fmt.Sprintf("%d", groupCount)},
+			{"Workers", fmt.Sprintf("%d", cfg.Workers)},
+			{"Duration", elapsed.Round(time.Millisecond).String()},
+			{"Seed", fmt.Sprintf("%d", cfg.Seed)},
+		},
+		results: []reportLine{
+			{"Created", fmtOps(createdN)},
+			{"Throughput", fmtRate(createdN, elapsed)},
+		},
+		verify: []reportLine{
+			{"Channels Created", fmt.Sprintf("%d", len(created))},
+			{"Channels Verified", fmt.Sprintf("%d/%d", len(created)-missing, len(created))},
+			{"Data Integrity", integrity},
+		},
+		verdict: verdict,
+	}
+	rpt.print(t)
 }
 
-// --- env helpers (same pattern as wkfsm/stress_test.go) ---
+// ── env helpers ─────────────────────────────────────────────────────
 
 func envBool(name string, fallback bool) bool {
 	value, ok := os.LookupEnv(name)
