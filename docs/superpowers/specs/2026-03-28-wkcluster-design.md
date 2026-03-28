@@ -36,12 +36,15 @@ wkcluster/
 
 ```go
 type Config struct {
-    NodeID     multiraft.NodeID   // This node's ID
-    ListenAddr string             // TCP listen address, e.g. ":9001"
-    GroupCount uint64             // Total group count, hash maps to groupID
-    DataDir    string             // Pebble data directory
-    Nodes      []NodeConfig       // Static node list
-    Groups     []GroupConfig      // Raft group configuration
+    NodeID         multiraft.NodeID   // This node's ID
+    ListenAddr     string             // TCP listen address, e.g. ":9001"
+    GroupCount     uint32             // Total group count, hash maps to groupID
+    DataDir        string             // Base data directory
+    RaftDataDir    string             // Raft log directory (default: DataDir/raft)
+    Nodes          []NodeConfig       // Static node list
+    Groups         []GroupConfig      // Raft group configuration
+    ForwardTimeout time.Duration      // Timeout for leader forwarding (default: 5s)
+    PoolSize       int                // Connections per node pair (default: 4)
 }
 
 type NodeConfig struct {
@@ -54,6 +57,14 @@ type GroupConfig struct {
     Peers   []multiraft.NodeID   // Member nodes for this group
 }
 ```
+
+### Config Validation Rules
+
+- `GroupCount > 0`
+- `len(Groups) == GroupCount`
+- Every `NodeID` in `Groups[].Peers` must exist in `Nodes`
+- This node's `NodeID` must appear as a peer in at least one group
+- `DataDir` is the base directory; raft logs go to `RaftDataDir` (or `DataDir/raft`), business data goes to `DataDir/data`. Two separate Pebble instances.
 
 Example: 3 nodes, 3 groups:
 
@@ -136,22 +147,35 @@ Message types:
 
 ### Implements multiraft.Transport
 
-`Send(msgs []multiraft.Message)` routes each message through `groupID % poolSize` to select connection, encodes as `msgTypeRaft`, and writes to the connection.
+`Send(ctx context.Context, batch []Envelope) error` routes each envelope through `envelope.GroupID % poolSize` to select connection, encodes as `msgTypeRaft`, and writes to the connection.
 
-Incoming `msgTypeRaft` messages are decoded and passed to `runtime.Step()`.
+### Receive-Side Demultiplexer
+
+Each connection has a dedicated read goroutine that decodes incoming messages by `msgType` and dispatches:
+
+- `msgTypeRaft` → `runtime.Step(ctx, groupID, msg)` for raft consensus processing
+- `msgTypeForward` → local request handler: decode groupID + cmd, call `runtime.Propose()`, wait on Future, write `msgTypeResp` back
+- `msgTypeResp` → matched to waiting goroutine via `requestID` (see forward wire format below)
+
+### Connection Failure Handling
+
+- A broken connection is detected by read/write errors (io.EOF, TCP RST, write timeout)
+- On failure: close the connection, rebuild in the same slot on next use
+- In-flight forward requests on a broken connection receive an error; caller retries via `proposeOrForward`
+- TCP keepalive enabled on all connections to detect dead peers
 
 ## Router
 
 ```go
 type Router struct {
-    groupCount uint64
+    groupCount uint32
     runtime    *multiraft.Runtime
     discovery  Discovery
     localNode  multiraft.NodeID
 }
 
 func (r *Router) SlotForChannel(channelID string) multiraft.GroupID {
-    return multiraft.GroupID(crc32.ChecksumIEEE([]byte(channelID))%uint32(r.groupCount) + 1)
+    return multiraft.GroupID(crc32.ChecksumIEEE([]byte(channelID))%r.groupCount + 1)
 }
 
 func (r *Router) LeaderOf(groupID multiraft.GroupID) (multiraft.NodeID, error)
@@ -167,17 +191,22 @@ type Forwarder struct {
     nodeID    multiraft.NodeID
     transport *Transport
     router    *Router
+    timeout   time.Duration       // From Config.ForwardTimeout
+    nextReqID atomic.Uint64       // Monotonic request ID generator
+    pending   sync.Map            // requestID → chan forwardResp
 }
 
-func (f *Forwarder) Forward(groupID multiraft.GroupID, cmdBytes []byte) ([]byte, error)
+func (f *Forwarder) Forward(ctx context.Context, groupID multiraft.GroupID, cmdBytes []byte) ([]byte, error)
 ```
 
 ### Forward Wire Format
 
 ```
-msgTypeForward: [msgType:1][bodyLen:4][groupID:8][cmd:N]
-msgTypeResp:    [msgType:1][bodyLen:4][errCode:1][data:N]
+msgTypeForward: [msgType:1][bodyLen:4][requestID:8][groupID:8][cmd:N]
+msgTypeResp:    [msgType:1][bodyLen:4][requestID:8][errCode:1][data:N]
 ```
+
+`requestID` is a monotonically increasing uint64 used to correlate responses with waiting goroutines. The demultiplexer matches `msgTypeResp` to the pending request channel by `requestID`.
 
 Error codes:
 
@@ -211,43 +240,62 @@ func (c *Cluster) Stop()
 
 ### Startup Sequence
 
-1. Open pebble DB
-2. Initialize StaticDiscovery
+1. Open two pebble DBs: `raftstore.Open(RaftDataDir)` for raft logs, `wkdb.Open(DataDir/data)` for business data
+2. Initialize StaticDiscovery from `Config.Nodes`
 3. Start Transport (TCP listener)
-4. Create multiraft.Runtime (inject transport)
-5. For each GroupConfig: `runtime.OpenGroup()` or `BootstrapGroup()`
+4. Create `multiraft.Runtime` (inject transport)
+5. For each GroupConfig:
+   - Create storage: `raftDB.ForGroup(groupID)` → `multiraft.Storage`
+   - Create state machine: `wkfsm.NewStateMachine(wkDB, groupID)` → `multiraft.StateMachine`
+   - If storage has existing state (`InitialState()` returns non-empty `HardState`): `runtime.OpenGroup(groupID, storage, stateMachine)`
+   - Otherwise (first boot): `runtime.BootstrapGroup(groupID, storage, stateMachine, peers)`
 
 ### Shutdown Sequence
 
-Reverse of startup.
+1. Stop accepting new API requests
+2. Drain in-flight forward requests (wait up to `ForwardTimeout`)
+3. Close `multiraft.Runtime` (stops raft processing)
+4. Stop Transport (close listener, close all connections)
+5. Close pebble DBs
 
 ## Public API
 
 ```go
-// Writes: route to leader
-func (c *Cluster) CreateChannel(channelID string, channelType int64) error
-func (c *Cluster) UpdateChannel(channelID string, channelType int64, ban int64) error
-func (c *Cluster) DeleteChannel(channelID string, channelType int64) error
+// Writes: route to leader. All write methods accept context for timeout/cancellation.
+func (c *Cluster) CreateChannel(ctx context.Context, channelID string, channelType int64) error
+func (c *Cluster) UpdateChannel(ctx context.Context, channelID string, channelType int64, ban int64) error
+func (c *Cluster) DeleteChannel(ctx context.Context, channelID string, channelType int64) error
 
-// Reads: local wkdb, eventual consistency
+// Reads: local wkdb, eventual consistency.
+// Note: reads from a follower behind on replication may return stale data.
 func (c *Cluster) GetChannel(channelID string, channelType int64) (*wkdb.Channel, error)
 ```
 
 ### Core Write Path
 
 ```go
-func (c *Cluster) proposeOrForward(groupID multiraft.GroupID, cmd []byte) error {
-    leaderID, err := c.router.LeaderOf(groupID)
-    if err != nil {
+func (c *Cluster) proposeOrForward(ctx context.Context, groupID multiraft.GroupID, cmd []byte) error {
+    // Retry up to 3 times on leader migration (errCode=1)
+    for attempt := 0; attempt < 3; attempt++ {
+        leaderID, err := c.router.LeaderOf(groupID)
+        if err != nil {
+            return err
+        }
+        if c.router.IsLocal(leaderID) {
+            future, err := c.runtime.Propose(ctx, groupID, cmd)
+            if err != nil {
+                return err
+            }
+            _, err = future.Wait(ctx)
+            return err
+        }
+        _, err = c.forwarder.Forward(ctx, groupID, cmd)
+        if err == ErrNotLeader {
+            continue // leader migrated, retry with fresh lookup
+        }
         return err
     }
-    if c.router.IsLocal(leaderID) {
-        future := c.runtime.Propose(groupID, cmd)
-        result := future.Wait()
-        return result.Err
-    }
-    _, err = c.forwarder.Forward(groupID, cmd)
-    return err
+    return ErrLeaderNotStable
 }
 ```
 
@@ -255,9 +303,15 @@ func (c *Cluster) proposeOrForward(groupID multiraft.GroupID, cmd []byte) error 
 
 Reads go directly to local wkdb via `ShardStore`, accepting eventual consistency. No raft involved.
 
-### New wkfsm Command Required
+### New Commands Required
 
-DeleteChannel requires adding `cmdTypeDeleteChannel` to `wkfsm/command.go`.
+- Add `cmdTypeDeleteChannel` to `wkfsm/command.go` with encoder/decoder
+- Add `deleteChannelCmd` to `wkfsm/state_machine.go` ApplyBatch handling
+- Add `WriteBatch.DeleteChannel(channelID, channelType)` to `wkdb/batch.go`
+
+### CreateChannel Semantics
+
+`CreateChannel` uses `cmdTypeUpsertChannel` (idempotent). In a distributed system, checking existence before proposing introduces TOCTOU races. Upsert semantics avoids this — creating an already-existing channel is a no-op.
 
 ## Dependencies
 
