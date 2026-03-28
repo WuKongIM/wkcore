@@ -249,7 +249,9 @@ func (t *Transport) handleForwardMessage(conn net.Conn, body []byte) {
 		_, _ = conn.Write(encodeMessage(msgTypeResp, resp))
 		return
 	}
-	data, errCode := t.handler.handleForward(context.Background(), multiraft.GroupID(groupID), cmd)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	data, errCode := t.handler.handleForward(ctx, multiraft.GroupID(groupID), cmd)
 	resp := encodeRespBody(requestID, errCode, data)
 	_, _ = conn.Write(encodeMessage(msgTypeResp, resp))
 }
