@@ -9,6 +9,6 @@ type NodeInfo struct {
 
 type Discovery interface {
 	GetNodes() []NodeInfo
-	Resolve(nodeID multiraft.NodeID) (string, error)
+	Resolve(nodeID uint64) (string, error)
 	Stop()
 }

@@ -187,7 +187,7 @@ func (t *Transport) getOrCreatePool(nodeID multiraft.NodeID) *connPool {
 		return p
 	}
 
-	addr, err := t.discovery.Resolve(nodeID)
+	addr, err := t.discovery.Resolve(uint64(nodeID))
 	if err != nil {
 		return nil
 	}
