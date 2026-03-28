@@ -153,7 +153,7 @@ Message types:
 
 Each connection has a dedicated read goroutine that decodes incoming messages by `msgType` and dispatches:
 
-- `msgTypeRaft` → `runtime.Step(ctx, groupID, msg)` for raft consensus processing
+- `msgTypeRaft` → `runtime.Step(ctx, Envelope{GroupID: groupID, Message: msg})` for raft consensus processing
 - `msgTypeForward` → local request handler: decode groupID + cmd, call `runtime.Propose()`, wait on Future, write `msgTypeResp` back
 - `msgTypeResp` → matched to waiting goroutine via `requestID` (see forward wire format below)
 
@@ -245,10 +245,11 @@ func (c *Cluster) Stop()
 3. Start Transport (TCP listener)
 4. Create `multiraft.Runtime` (inject transport)
 5. For each GroupConfig:
-   - Create storage: `raftDB.ForGroup(groupID)` → `multiraft.Storage`
-   - Create state machine: `wkfsm.NewStateMachine(wkDB, groupID)` → `multiraft.StateMachine`
-   - If storage has existing state (`InitialState()` returns non-empty `HardState`): `runtime.OpenGroup(groupID, storage, stateMachine)`
-   - Otherwise (first boot): `runtime.BootstrapGroup(groupID, storage, stateMachine, peers)`
+   - Create storage: `raftDB.ForGroup(uint64(groupID))` → `multiraft.Storage`
+   - Create state machine: `sm, err := wkfsm.NewStateMachine(wkDB, uint64(groupID))` (slot == groupID)
+   - Build group options: `opts := multiraft.GroupOptions{ID: groupID, Storage: storage, StateMachine: sm}`
+   - If storage has existing state (`!raft.IsEmptyHardState(InitialState().HardState)`): `runtime.OpenGroup(ctx, opts)`
+   - Otherwise (first boot): `runtime.BootstrapGroup(ctx, multiraft.BootstrapGroupRequest{Group: opts, Voters: peers})`
 
 ### Shutdown Sequence
 
@@ -268,7 +269,8 @@ func (c *Cluster) DeleteChannel(ctx context.Context, channelID string, channelTy
 
 // Reads: local wkdb, eventual consistency.
 // Note: reads from a follower behind on replication may return stale data.
-func (c *Cluster) GetChannel(channelID string, channelType int64) (*wkdb.Channel, error)
+// Routes channelID → groupID via SlotForChannel, then reads from db.ForSlot(uint64(groupID)).
+func (c *Cluster) GetChannel(ctx context.Context, channelID string, channelType int64) (*wkdb.Channel, error)
 ```
 
 ### Core Write Path
