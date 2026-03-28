@@ -30,6 +30,4 @@ func (s *StaticDiscovery) Resolve(nodeID multiraft.NodeID) (string, error) {
 	return n.Addr, nil
 }
 
-func (s *StaticDiscovery) Watch() <-chan NodeEvent { return nil }
-
 func (s *StaticDiscovery) Stop() {}

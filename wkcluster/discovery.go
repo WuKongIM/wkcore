@@ -7,14 +7,8 @@ type NodeInfo struct {
 	Addr   string
 }
 
-type NodeEvent struct {
-	Type string // "join" | "leave"
-	Node NodeInfo
-}
-
 type Discovery interface {
 	GetNodes() []NodeInfo
 	Resolve(nodeID multiraft.NodeID) (string, error)
-	Watch() <-chan NodeEvent
 	Stop()
 }

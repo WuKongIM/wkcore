@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync/atomic"
-	"time"
 
 	"github.com/WuKongIM/wraft/multiraft"
 	"github.com/WuKongIM/wraft/raftstore"
@@ -55,7 +54,7 @@ func (c *Cluster) Start() error {
 	c.discovery = NewStaticDiscovery(c.cfg.Nodes)
 
 	// 3. Transport
-	c.transport = NewTransport(c.cfg.NodeID, c.discovery, c.cfg.PoolSize)
+	c.transport = NewTransport(c.cfg.NodeID, c.discovery, c.cfg.PoolSize, c.cfg.DialTimeout, c.cfg.ForwardTimeout)
 	if err := c.transport.Start(c.cfg.ListenAddr); err != nil {
 		_ = c.raftDB.Close()
 		_ = c.db.Close()
@@ -65,12 +64,12 @@ func (c *Cluster) Start() error {
 	// 4. Runtime
 	c.runtime, err = multiraft.New(multiraft.Options{
 		NodeID:       c.cfg.NodeID,
-		TickInterval: 100 * time.Millisecond,
-		Workers:      2,
+		TickInterval: c.cfg.TickInterval,
+		Workers:      c.cfg.RaftWorkers,
 		Transport:    c.transport,
 		Raft: multiraft.RaftOptions{
-			ElectionTick:  10,
-			HeartbeatTick: 1,
+			ElectionTick:  c.cfg.ElectionTick,
+			HeartbeatTick: c.cfg.HeartbeatTick,
 		},
 	})
 	if err != nil {
@@ -110,11 +109,11 @@ func (c *Cluster) openOrBootstrapGroup(ctx context.Context, g GroupConfig) error
 		StateMachine: sm,
 	}
 
-	bs, err := storage.InitialState(ctx)
+	initialState, err := storage.InitialState(ctx)
 	if err != nil {
 		return err
 	}
-	if !raft.IsEmptyHardState(bs.HardState) {
+	if !raft.IsEmptyHardState(initialState.HardState) {
 		return c.runtime.OpenGroup(ctx, opts)
 	}
 	return c.runtime.BootstrapGroup(ctx, multiraft.BootstrapGroupRequest{

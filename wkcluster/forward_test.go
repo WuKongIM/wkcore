@@ -35,7 +35,7 @@ func TestForwarder_RoundTrip(t *testing.T) {
 
 	// Create forwarder with a direct connection
 	d := NewStaticDiscovery([]NodeConfig{{NodeID: 2, Addr: ln.Addr().String()}})
-	tr := NewTransport(1, d, 2)
+	tr := NewTransport(1, d, 2, defaultDialTimeout, defaultForwardTimeout)
 	f := NewForwarder(1, tr, 5*time.Second)
 	defer f.Stop()
 
@@ -97,7 +97,7 @@ func TestForwarder_Timeout(t *testing.T) {
 	}()
 
 	d := NewStaticDiscovery([]NodeConfig{{NodeID: 2, Addr: ln.Addr().String()}})
-	tr := NewTransport(1, d, 2)
+	tr := NewTransport(1, d, 2, defaultDialTimeout, defaultForwardTimeout)
 	f := NewForwarder(1, tr, 100*time.Millisecond)
 	defer f.Stop()
 

@@ -13,7 +13,7 @@ func TestTransport_StartStop(t *testing.T) {
 	d := NewStaticDiscovery([]NodeConfig{
 		{NodeID: 1, Addr: "127.0.0.1:0"},
 	})
-	tr := NewTransport(1, d, 4)
+	tr := NewTransport(1, d, 4, defaultDialTimeout, defaultForwardTimeout)
 	if err := tr.Start("127.0.0.1:0"); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -23,7 +23,7 @@ func TestTransport_StartStop(t *testing.T) {
 func TestTransport_SendReceiveRaft(t *testing.T) {
 	// Start receiver
 	recvDiscovery := NewStaticDiscovery(nil)
-	recv := NewTransport(2, recvDiscovery, 4)
+	recv := NewTransport(2, recvDiscovery, 4, defaultDialTimeout, defaultForwardTimeout)
 	if err := recv.Start("127.0.0.1:0"); err != nil {
 		t.Fatalf("Start recv: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestTransport_SendReceiveRaft(t *testing.T) {
 	sendDiscovery := NewStaticDiscovery([]NodeConfig{
 		{NodeID: 2, Addr: recvAddr},
 	})
-	sender := NewTransport(1, sendDiscovery, 4)
+	sender := NewTransport(1, sendDiscovery, 4, defaultDialTimeout, defaultForwardTimeout)
 	if err := sender.Start("127.0.0.1:0"); err != nil {
 		t.Fatalf("Start sender: %v", err)
 	}

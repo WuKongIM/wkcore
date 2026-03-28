@@ -36,9 +36,3 @@ func TestStaticDiscovery_GetNodes(t *testing.T) {
 	}
 }
 
-func TestStaticDiscovery_WatchReturnsNil(t *testing.T) {
-	d := NewStaticDiscovery(nil)
-	if d.Watch() != nil {
-		t.Fatal("expected nil channel")
-	}
-}

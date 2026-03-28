@@ -59,6 +59,62 @@ func TestConfigApplyDefaults(t *testing.T) {
 	if cfg.RaftDataDir == "" {
 		t.Fatalf("expected RaftDataDir to be set")
 	}
+	if cfg.TickInterval != defaultTickInterval {
+		t.Fatalf("expected default TickInterval")
+	}
+	if cfg.RaftWorkers != defaultRaftWorkers {
+		t.Fatalf("expected default RaftWorkers")
+	}
+	if cfg.ElectionTick != defaultElectionTick {
+		t.Fatalf("expected default ElectionTick")
+	}
+	if cfg.HeartbeatTick != defaultHeartbeatTick {
+		t.Fatalf("expected default HeartbeatTick")
+	}
+	if cfg.DialTimeout != defaultDialTimeout {
+		t.Fatalf("expected default DialTimeout")
+	}
+}
+
+func TestConfigValidate_NodeIDZero(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.NodeID = 0
+	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
+}
+
+func TestConfigValidate_ListenAddrEmpty(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.ListenAddr = ""
+	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
+}
+
+func TestConfigValidate_DataDirEmpty(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.DataDir = ""
+	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
+}
+
+func TestConfigValidate_DuplicateNodeID(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.Nodes = append(cfg.Nodes, NodeConfig{NodeID: 1, Addr: "127.0.0.1:9004"})
+	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
+}
+
+func TestConfigValidate_DuplicateGroupID(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.GroupCount = 2
+	cfg.Groups = append(cfg.Groups, GroupConfig{GroupID: 1, Peers: []multiraft.NodeID{1, 2, 3}})
+	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
 }
 
 func validTestConfig() Config {

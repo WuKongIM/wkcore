@@ -2,7 +2,6 @@ package wkcluster
 
 import (
 	"context"
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -11,35 +10,38 @@ import (
 	"go.etcd.io/raft/v3/raftpb"
 )
 
+const tcpKeepAlivePeriod = 30 * time.Second
+
 type connPool struct {
-	addr  string
-	size  int
-	conns []net.Conn
-	mu    []sync.Mutex
+	addr        string
+	size        int
+	dialTimeout time.Duration
+	conns       []net.Conn
+	mu          []sync.Mutex
 }
 
-func newConnPool(addr string, size int) *connPool {
+func newConnPool(addr string, size int, dialTimeout time.Duration) *connPool {
 	return &connPool{
-		addr:  addr,
-		size:  size,
-		conns: make([]net.Conn, size),
-		mu:    make([]sync.Mutex, size),
+		addr:        addr,
+		size:        size,
+		dialTimeout: dialTimeout,
+		conns:       make([]net.Conn, size),
+		mu:          make([]sync.Mutex, size),
 	}
 }
 
+// getByGroup returns a connection for the given group, creating one if needed.
+// The caller MUST call release(idx) after use, even when subsequent I/O fails.
 func (p *connPool) getByGroup(groupID multiraft.GroupID) (net.Conn, int, error) {
 	idx := int(uint64(groupID) % uint64(p.size))
 	p.mu[idx].Lock()
 	if p.conns[idx] == nil {
-		conn, err := net.DialTimeout("tcp", p.addr, 5*time.Second)
+		conn, err := net.DialTimeout("tcp", p.addr, p.dialTimeout)
 		if err != nil {
 			p.mu[idx].Unlock()
 			return nil, idx, err
 		}
-		if tc, ok := conn.(*net.TCPConn); ok {
-			_ = tc.SetKeepAlive(true)
-			_ = tc.SetKeepAlivePeriod(30 * time.Second)
-		}
+		setTCPKeepAlive(conn)
 		p.conns[idx] = conn
 	}
 	return p.conns[idx], idx, nil
@@ -64,36 +66,49 @@ func (p *connPool) closeAll() {
 	}
 }
 
+// setTCPKeepAlive enables TCP keep-alive on the connection if it is a TCP connection.
+func setTCPKeepAlive(conn net.Conn) {
+	if tc, ok := conn.(*net.TCPConn); ok {
+		_ = tc.SetKeepAlive(true)
+		_ = tc.SetKeepAlivePeriod(tcpKeepAlivePeriod)
+	}
+}
+
 // forwardHandler processes incoming forward requests on the leader side.
 type forwardHandler interface {
 	handleForward(ctx context.Context, groupID multiraft.GroupID, cmd []byte) ([]byte, uint8)
 }
 
 type Transport struct {
-	nodeID    multiraft.NodeID
-	discovery Discovery
-	poolSize  int
-	pools     map[multiraft.NodeID]*connPool
-	mu        sync.RWMutex
-	runtime   *multiraft.Runtime
-	listener  net.Listener
-	handler   forwardHandler
-	stopCh    chan struct{}
-	wg        sync.WaitGroup
+	nodeID         multiraft.NodeID
+	discovery      Discovery
+	poolSize       int
+	dialTimeout    time.Duration
+	forwardTimeout time.Duration
+	pools          map[multiraft.NodeID]*connPool
+	mu             sync.RWMutex
+	runtime        *multiraft.Runtime
+	listener       net.Listener
+	handler        forwardHandler
+	stopCh         chan struct{}
+	wg             sync.WaitGroup
 
 	// accepted tracks incoming connections so Stop() can close them,
 	// unblocking handleConn goroutines stuck in readMessage.
-	accepted   []net.Conn
+	accepted   map[net.Conn]struct{}
 	acceptedMu sync.Mutex
 }
 
-func NewTransport(nodeID multiraft.NodeID, discovery Discovery, poolSize int) *Transport {
+func NewTransport(nodeID multiraft.NodeID, discovery Discovery, poolSize int, dialTimeout, forwardTimeout time.Duration) *Transport {
 	return &Transport{
-		nodeID:    nodeID,
-		discovery: discovery,
-		poolSize:  poolSize,
-		pools:     make(map[multiraft.NodeID]*connPool),
-		stopCh:    make(chan struct{}),
+		nodeID:         nodeID,
+		discovery:      discovery,
+		poolSize:       poolSize,
+		dialTimeout:    dialTimeout,
+		forwardTimeout: forwardTimeout,
+		pools:          make(map[multiraft.NodeID]*connPool),
+		accepted:       make(map[net.Conn]struct{}),
+		stopCh:         make(chan struct{}),
 	}
 }
 
@@ -119,10 +134,9 @@ func (t *Transport) Stop() {
 	// Close all accepted (incoming) connections to unblock handleConn
 	// goroutines stuck in readMessage.
 	t.acceptedMu.Lock()
-	for _, c := range t.accepted {
+	for c := range t.accepted {
 		_ = c.Close()
 	}
-	t.accepted = nil
 	t.acceptedMu.Unlock()
 	// Close outgoing connection pools.
 	t.mu.RLock()
@@ -133,7 +147,9 @@ func (t *Transport) Stop() {
 	t.wg.Wait()
 }
 
-// Send implements multiraft.Transport.
+// Send implements multiraft.Transport. Individual message delivery failures are
+// silently skipped because the raft layer handles retransmission; only context
+// cancellation is propagated to the caller.
 func (t *Transport) Send(ctx context.Context, batch []multiraft.Envelope) error {
 	for _, env := range batch {
 		if ctx.Err() != nil {
@@ -181,7 +197,7 @@ func (t *Transport) getOrCreatePool(nodeID multiraft.NodeID) *connPool {
 	if p, ok = t.pools[nodeID]; ok {
 		return p
 	}
-	p = newConnPool(addr, t.poolSize)
+	p = newConnPool(addr, t.poolSize, t.dialTimeout)
 	t.pools[nodeID] = p
 	return p
 }
@@ -198,10 +214,7 @@ func (t *Transport) acceptLoop() {
 				continue
 			}
 		}
-		if tc, ok := conn.(*net.TCPConn); ok {
-			_ = tc.SetKeepAlive(true)
-			_ = tc.SetKeepAlivePeriod(30 * time.Second)
-		}
+		setTCPKeepAlive(conn)
 		t.wg.Add(1)
 		go t.handleConn(conn)
 	}
@@ -209,11 +222,17 @@ func (t *Transport) acceptLoop() {
 
 func (t *Transport) handleConn(conn net.Conn) {
 	defer t.wg.Done()
-	defer conn.Close()
 
 	t.acceptedMu.Lock()
-	t.accepted = append(t.accepted, conn)
+	t.accepted[conn] = struct{}{}
 	t.acceptedMu.Unlock()
+
+	defer func() {
+		conn.Close()
+		t.acceptedMu.Lock()
+		delete(t.accepted, conn)
+		t.acceptedMu.Unlock()
+	}()
 
 	var writeMu sync.Mutex
 
@@ -226,9 +245,6 @@ func (t *Transport) handleConn(conn net.Conn) {
 
 		msgType, body, err := readMessage(conn)
 		if err != nil {
-			if err == io.EOF {
-				return
-			}
 			return
 		}
 
@@ -279,7 +295,7 @@ func (t *Transport) handleForwardAsync(conn net.Conn, writeMu *sync.Mutex, body 
 		if t.handler == nil {
 			errCode = errCodeNoGroup
 		} else {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), t.forwardTimeout)
 			data, errCode = t.handler.handleForward(ctx, multiraft.GroupID(groupID), cmd)
 			cancel()
 		}

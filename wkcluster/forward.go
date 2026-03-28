@@ -3,7 +3,6 @@ package wkcluster
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -125,18 +124,32 @@ func (f *Forwarder) handleResp(resp forwardResp) ([]byte, error) {
 
 func (f *Forwarder) ensureReadLoop(nodeID multiraft.NodeID, idx int, conn net.Conn) {
 	key := readLoopKey(nodeID, idx)
-	if _, loaded := f.readLoops.LoadOrStore(key, conn); loaded {
-		return
+	for {
+		existing, loaded := f.readLoops.LoadOrStore(key, conn)
+		if !loaded {
+			// New entry — start a readLoop for this connection.
+			f.wg.Add(1)
+			go f.readLoop(key, conn)
+			return
+		}
+		if existing.(net.Conn) == conn {
+			// Same connection, readLoop already running.
+			return
+		}
+		// Connection was reset; replace the stale entry and start a new readLoop.
+		if f.readLoops.CompareAndSwap(key, existing, conn) {
+			f.wg.Add(1)
+			go f.readLoop(key, conn)
+			return
+		}
+		// CAS failed (concurrent update), retry.
 	}
-	f.wg.Add(1)
-	go f.readLoop(key, conn)
 }
 
 func (f *Forwarder) readLoop(key uint64, conn net.Conn) {
 	defer f.wg.Done()
 	defer f.readLoops.Delete(key)
 
-	r := io.Reader(conn)
 	for {
 		select {
 		case <-f.stopCh:
@@ -144,7 +157,7 @@ func (f *Forwarder) readLoop(key uint64, conn net.Conn) {
 		default:
 		}
 
-		msgType, body, err := readMessage(r)
+		msgType, body, err := readMessage(conn)
 		if err != nil {
 			return
 		}
