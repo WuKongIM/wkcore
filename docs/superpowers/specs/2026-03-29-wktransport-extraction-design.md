@@ -76,6 +76,7 @@ func ReadMessage(r io.Reader) (msgType uint8, body []byte, err error)
 
 | Range | Owner | Usage |
 |-------|-------|-------|
+| 0 | Reserved | Invalid. Server drops frames with `msgType=0` (likely corruption or uninitialized memory). `ReadMessage` returns `ErrInvalidMsgType`. |
 | 1-253 | Consumer-defined | wkcluster uses 1 (raft), business layer starts from 10 |
 | 0xFE | wktransport internal | RPC request |
 | 0xFF | wktransport internal | RPC response |
@@ -86,13 +87,15 @@ Moved from `wkcluster/codec.go`. `sync.Pool` of byte slices, capped at 64KB to p
 
 ```go
 const MaxMessageSize = 64 << 20 // 64 MB upper bound
+
+var ErrInvalidMsgType = errors.New("wktransport: invalid message type 0")
 ```
 
 ## Connection Pool (pool.go)
 
 ### Design
 
-Each `Pool` instance maintains a completely independent set of TCP connections. Raft and business each create their own Pool — physically separate sockets, no data mixing.
+Each `Pool` instance maintains a completely independent set of TCP connections. Raft and business each create their own Pool — physically separate sockets, no data mixing between raft and business traffic. (Note: `fwdClient` shares the raft Pool because leader forwarding is raft-layer traffic, not business traffic.)
 
 ```
 Node A → Node B:
@@ -130,13 +133,17 @@ type nodeConns struct {
 ```go
 func NewPool(discovery Discovery, size int, dialTimeout time.Duration) *Pool
 
-// Get selects a connection by shardKey % size. Caller MUST call Release after use.
+// Get selects a connection by shardKey % size.
+// On success, caller MUST call Release(nodeID, idx) after use.
+// On error (err != nil), caller MUST NOT call Release — the lock is not held.
 func (p *Pool) Get(nodeID NodeID, shardKey uint64) (conn net.Conn, idx int, err error)
 
 // Release unlocks the connection slot.
 func (p *Pool) Release(nodeID NodeID, idx int)
 
 // Reset closes and clears a connection (call on I/O error).
+// Caller MUST hold the connection lock (i.e., call Reset between Get and Release).
+// Reset does not release the lock — caller must still call Release after Reset.
 func (p *Pool) Reset(nodeID NodeID, idx int)
 
 // Close closes all connections.
@@ -146,6 +153,22 @@ func (p *Pool) Close()
 - TCP keepalive enabled automatically on new connections
 - Lazy connection establishment (dial on first Get)
 - Broken connections rebuilt in the same slot on next Get
+
+### Locking Contract
+
+```
+conn, idx, err := pool.Get(nodeID, shardKey)
+if err != nil {
+    // Lock NOT held — do NOT call Release
+    return err
+}
+// Lock IS held for this slot
+err = WriteMessage(conn, ...)
+if err != nil {
+    pool.Reset(nodeID, idx)  // close broken conn, lock still held
+}
+pool.Release(nodeID, idx)    // always release after successful Get
+```
 
 ## Server (server.go)
 
@@ -172,7 +195,10 @@ func NewServer() *Server
 // Handle registers a handler for a message type. 0xFE/0xFF are reserved.
 func (s *Server) Handle(msgType uint8, h MessageHandler)
 
-// HandleRPC registers the RPC request handler. Only one allowed.
+// HandleRPC registers the RPC request handler (0xFE/0xFF). Only one allowed.
+// The single handler must demux by inspecting the payload if needed.
+// Business layer should prefer custom msgType handlers with Send() for simple cases,
+// and only use RPC (0xFE/0xFF) when request/response semantics are truly needed.
 func (s *Server) HandleRPC(h RPCHandler)
 
 // Start begins listening on addr.
@@ -200,8 +226,10 @@ handleConn(conn):
 
         switch {
         case msgType == 0xFE:
-            // RPC request: decode requestID, call rpcHandler, write 0xFF response
-            go handleRPCRequest(conn, body)
+            // RPC request: decode requestID, call rpcHandler, write 0xFF response.
+            // writeMu serializes response writes from concurrent RPC goroutines
+            // on the same connection (prevents interleaved frame bytes).
+            go handleRPCRequest(conn, &writeMu, body)
         case msgType == 0xFF:
             // RPC response: should not arrive on server-accepted connections
             // (responses go to client-initiated connections)
@@ -217,6 +245,7 @@ handleConn(conn):
 - Evolved from current `Transport.acceptLoop` + `Transport.handleConn`
 - Hard-coded `switch` replaced with handler map lookup
 - RPC requests handled in separate goroutine to avoid blocking the read loop (same pattern as current `handleForwardAsync`)
+- Each `handleConn` owns a `var writeMu sync.Mutex` to serialize RPC response writes from concurrent handler goroutines on the same connection (same pattern as current transport.go:237)
 - Stop closes all accepted connections to unblock goroutines stuck in ReadMessage
 
 ## Client (client.go)
@@ -300,7 +329,34 @@ Application-level error codes (e.g., notLeader, groupNotFound) are encoded withi
 
 ### readLoop
 
-Evolved from current `Forwarder.readLoop`. Per-connection goroutine that reads 0xFF responses and dispatches to pending channels by requestID. Uses `ensureReadLoop` with `sync.Map` + `CompareAndSwap` for safe concurrent startup (same pattern as existing code).
+Evolved from current `Forwarder.readLoop`. Per-connection goroutine that reads 0xFF responses and dispatches to pending channels by requestID.
+
+**ensureReadLoop** uses `sync.Map` keyed by `(nodeID<<32 | idx)` + `CompareAndSwap` for safe concurrent startup (same pattern as existing `forward.go:125-147`):
+
+1. `LoadOrStore(key, conn)` — if new entry, start readLoop
+2. If existing entry has the same `net.Conn` pointer, readLoop already running, return
+3. If existing entry has a different `net.Conn` (connection was reset and replaced), `CompareAndSwap` the old entry with the new conn and start a new readLoop. The old readLoop will exit on its next read error (the old conn was closed by `Pool.Reset`)
+4. If CAS fails (concurrent update), retry from step 1
+
+**readLoop cleanup**: When readLoop exits (read error or stopCh), it deletes its `readLoops` map entry. The next `ensureReadLoop` call for that slot will start a fresh reader.
+
+### Client.Stop
+
+```
+Stop():
+    close(stopCh)
+    // Close all connections tracked in readLoops to unblock ReadMessage
+    readLoops.Range(func(key, value) {
+        value.(net.Conn).Close()
+    })
+    // Cancel all pending RPCs
+    pending.Range(func(key, value) {
+        value.(chan rpcResponse) <- rpcResponse{err: ErrStopped}
+    })
+    wg.Wait()
+```
+
+`Client.Stop()` explicitly closes connections tracked in `readLoops` (same pattern as current `Forwarder.Stop`). This is necessary to unblock readLoop goroutines stuck in `ReadMessage`. Note: these connections belong to the Pool but closing them here is safe — the Pool will lazily reconnect on the next `Get`.
 
 ## Errors (errors.go)
 
@@ -362,7 +418,7 @@ type Cluster struct {
     server     *wktransport.Server
     raftPool   *wktransport.Pool
     raftClient *wktransport.Client
-    fwdClient  *wktransport.Client    // reuses raftPool
+    fwdClient  *wktransport.Client    // reuses raftPool (forwarding is raft traffic, not business)
     runtime    *multiraft.Runtime
     router     *Router
     db         *wkdb.DB
@@ -380,8 +436,16 @@ type raftTransport struct {
 
 func (t *raftTransport) Send(ctx context.Context, batch []multiraft.Envelope) error {
     for _, env := range batch {
-        data, _ := env.Message.Marshal()
+        if ctx.Err() != nil {
+            return ctx.Err()
+        }
+        data, err := env.Message.Marshal()
+        if err != nil {
+            return err
+        }
         body := encodeRaftBody(uint64(env.GroupID), data)
+        // Individual send failures are silently skipped — the raft layer
+        // handles retransmission. Only context cancellation is propagated.
         _ = t.client.Send(uint64(env.Message.To), uint64(env.GroupID), msgTypeRaft, body)
     }
     return nil
@@ -414,6 +478,46 @@ The `Forwarder` struct is eliminated entirely.
 | wkcluster/cluster.go | ~170 lines | ~150 lines |
 
 Net: +400 new, -500 removed from wkcluster. Overall code slightly decreases.
+
+### Discovery Adapter
+
+`StaticDiscovery` already has a `Resolve(NodeID) (string, error)` method. Since `wktransport.NodeID` is a type alias for `uint64` (same as `multiraft.NodeID`), `StaticDiscovery` can directly implement `wktransport.Discovery` without a wrapper.
+
+The `wkcluster.Discovery` interface (with `GetNodes()` and `Stop()`) is retained as a superset for cluster-level concerns. `StaticDiscovery` implements both:
+
+```go
+// StaticDiscovery implements both wktransport.Discovery and wkcluster.Discovery
+type StaticDiscovery struct { ... }
+
+func (d *StaticDiscovery) Resolve(nodeID uint64) (string, error)  // satisfies wktransport.Discovery
+func (d *StaticDiscovery) GetNodes() []NodeInfo                    // wkcluster-only
+func (d *StaticDiscovery) Stop()                                   // wkcluster-only
+```
+
+The `discovery.go` file in wkcluster retains the broader `Discovery` interface definition. No wrapper needed.
+
+### Shutdown Ordering
+
+Components must be stopped in this order:
+
+```
+1. fwdClient.Stop()    — cancel pending forward RPCs, close readLoop connections
+2. raftClient.Stop()   — cancel pending sends, close readLoop connections
+3. bizClient.Stop()    — (business layer) cancel pending RPCs
+4. runtime.Close()     — stop raft processing
+5. server.Stop()       — close listener + all inbound connections, wait for handlers
+6. raftPool.Close()    — close all outbound raft connections
+7. bizPool.Close()     — close all outbound business connections
+8. databases close     — raftDB, wkdb
+```
+
+Rationale:
+- Clients stop first to cancel in-flight requests and stop spawning new readLoops
+- Runtime stops next so no new proposals are submitted
+- Server stops after runtime so in-progress RPC handlers can finish
+- Pools close last since Clients may still be draining (wg.Wait)
+
+This matches the existing pattern (forwarder → runtime → transport → databases) with Clients replacing the forwarder and Server/Pools replacing the monolithic transport.
 
 ## Dependency Graph
 
