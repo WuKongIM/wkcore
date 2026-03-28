@@ -22,7 +22,12 @@ type Cluster struct {
 	forwarder *Forwarder
 	db        *wkdb.DB
 	raftDB    *raftstore.DB
-	stopped   atomic.Bool
+	// stopped is checked at the start of write operations to reject new work
+	// during shutdown. There is an inherent TOCTOU gap between the check and
+	// the actual proposal, but this is acceptable: the raft layer will reject
+	// proposals on a stopped runtime, so at worst we do slightly more work
+	// before returning an error.
+	stopped atomic.Bool
 }
 
 func NewCluster(cfg Config) (*Cluster, error) {

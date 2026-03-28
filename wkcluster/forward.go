@@ -12,6 +12,12 @@ import (
 	"github.com/WuKongIM/wraft/multiraft"
 )
 
+// readLoopKey produces a compact numeric key for the readLoops sync.Map,
+// avoiding fmt.Sprintf string allocation on the hot path.
+func readLoopKey(nodeID multiraft.NodeID, idx int) uint64 {
+	return uint64(nodeID)<<32 | uint64(idx)
+}
+
 type forwardResp struct {
 	errCode uint8
 	data    []byte
@@ -25,7 +31,7 @@ type Forwarder struct {
 	pending   sync.Map // requestID → chan forwardResp
 
 	// readLoops tracks which connections have a reader goroutine
-	readLoops sync.Map // "nodeID-connIdx" → net.Conn
+	readLoops sync.Map // readLoopKey(nodeID, idx) → net.Conn
 	wg        sync.WaitGroup
 	stopCh    chan struct{}
 }
@@ -79,9 +85,7 @@ func (f *Forwarder) Forward(ctx context.Context, targetNode multiraft.NodeID, gr
 	// Ensure a read loop for this connection
 	f.ensureReadLoop(targetNode, idx, conn)
 
-	body := encodeForwardBody(requestID, uint64(groupID), cmdBytes)
-	msg := encodeMessage(msgTypeForward, body)
-	_, err = conn.Write(msg)
+	err = writeForwardMessage(conn, requestID, uint64(groupID), cmdBytes)
 	pool.release(idx)
 	if err != nil {
 		pool.mu[idx].Lock()
@@ -120,7 +124,7 @@ func (f *Forwarder) handleResp(resp forwardResp) ([]byte, error) {
 }
 
 func (f *Forwarder) ensureReadLoop(nodeID multiraft.NodeID, idx int, conn net.Conn) {
-	key := fmt.Sprintf("%d-%d", nodeID, idx)
+	key := readLoopKey(nodeID, idx)
 	if _, loaded := f.readLoops.LoadOrStore(key, conn); loaded {
 		return
 	}
@@ -128,7 +132,7 @@ func (f *Forwarder) ensureReadLoop(nodeID multiraft.NodeID, idx int, conn net.Co
 	go f.readLoop(key, conn)
 }
 
-func (f *Forwarder) readLoop(key string, conn net.Conn) {
+func (f *Forwarder) readLoop(key uint64, conn net.Conn) {
 	defer f.wg.Done()
 	defer f.readLoops.Delete(key)
 

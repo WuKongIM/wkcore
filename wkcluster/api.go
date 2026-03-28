@@ -3,6 +3,7 @@ package wkcluster
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/WuKongIM/wraft/multiraft"
 	"github.com/WuKongIM/wraft/wkdb"
@@ -44,7 +45,17 @@ func (c *Cluster) proposeOrForward(ctx context.Context, groupID multiraft.GroupI
 	if c.stopped.Load() {
 		return ErrStopped
 	}
-	for attempt := 0; attempt < 3; attempt++ {
+	const maxRetries = 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 50ms, 100ms
+			backoff := time.Duration(attempt) * 50 * time.Millisecond
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 		leaderID, err := c.router.LeaderOf(groupID)
 		if err != nil {
 			return err

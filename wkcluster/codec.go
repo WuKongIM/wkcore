@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"sync"
 )
 
 const (
@@ -21,6 +22,80 @@ const (
 	errCodeTimeout   uint8 = 2
 	errCodeNoGroup   uint8 = 3
 )
+
+// bufPool reuses byte slices for encoding, eliminating per-message allocations
+// on the hot path. Callers must return buffers via putBuf after use.
+var bufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 512)
+		return b
+	},
+}
+
+func getBuf(n int) []byte {
+	buf := bufPool.Get().([]byte)
+	if cap(buf) >= n {
+		return buf[:n]
+	}
+	return make([]byte, n)
+}
+
+func putBuf(buf []byte) {
+	if cap(buf) <= 64*1024 { // don't pool huge buffers
+		//nolint:staticcheck // SA6002: slice header is fine here
+		bufPool.Put(buf[:0])
+	}
+}
+
+// writeRaftMessage encodes a raft message into a pooled buffer and writes it
+// in a single call, avoiding intermediate allocations.
+// Wire format: [msgType:1][bodyLen:4][groupID:8][data:N]
+func writeRaftMessage(w io.Writer, groupID uint64, data []byte) error {
+	bodySize := 8 + len(data)
+	totalSize := msgHeaderSize + bodySize
+	buf := getBuf(totalSize)
+	buf[0] = msgTypeRaft
+	binary.BigEndian.PutUint32(buf[1:5], uint32(bodySize))
+	binary.BigEndian.PutUint64(buf[5:13], groupID)
+	copy(buf[13:], data)
+	_, err := w.Write(buf)
+	putBuf(buf)
+	return err
+}
+
+// writeForwardMessage encodes a forward request into a pooled buffer and
+// writes it in a single call.
+// Wire format: [msgType:1][bodyLen:4][requestID:8][groupID:8][cmd:N]
+func writeForwardMessage(w io.Writer, requestID, groupID uint64, cmd []byte) error {
+	bodySize := 16 + len(cmd)
+	totalSize := msgHeaderSize + bodySize
+	buf := getBuf(totalSize)
+	buf[0] = msgTypeForward
+	binary.BigEndian.PutUint32(buf[1:5], uint32(bodySize))
+	binary.BigEndian.PutUint64(buf[5:13], requestID)
+	binary.BigEndian.PutUint64(buf[13:21], groupID)
+	copy(buf[21:], cmd)
+	_, err := w.Write(buf)
+	putBuf(buf)
+	return err
+}
+
+// writeRespMessage encodes a response into a pooled buffer and writes it
+// in a single call.
+// Wire format: [msgType:1][bodyLen:4][requestID:8][errCode:1][data:N]
+func writeRespMessage(w io.Writer, requestID uint64, errCode uint8, data []byte) error {
+	bodySize := 9 + len(data)
+	totalSize := msgHeaderSize + bodySize
+	buf := getBuf(totalSize)
+	buf[0] = msgTypeResp
+	binary.BigEndian.PutUint32(buf[1:5], uint32(bodySize))
+	binary.BigEndian.PutUint64(buf[5:13], requestID)
+	buf[13] = errCode
+	copy(buf[14:], data)
+	_, err := w.Write(buf)
+	putBuf(buf)
+	return err
+}
 
 func encodeMessage(msgType uint8, body []byte) []byte {
 	buf := make([]byte, msgHeaderSize+len(body))

@@ -122,12 +122,14 @@ func (t *Transport) Stop() {
 // Send implements multiraft.Transport.
 func (t *Transport) Send(ctx context.Context, batch []multiraft.Envelope) error {
 	for _, env := range batch {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		data, err := env.Message.Marshal()
 		if err != nil {
 			return err
 		}
-		body := encodeRaftBody(uint64(env.GroupID), data)
-		msg := encodeMessage(msgTypeRaft, body)
 
 		target := multiraft.NodeID(env.Message.To)
 		pool := t.getOrCreatePool(target)
@@ -138,7 +140,7 @@ func (t *Transport) Send(ctx context.Context, batch []multiraft.Envelope) error 
 		if err != nil {
 			continue
 		}
-		_, err = conn.Write(msg)
+		err = writeRaftMessage(conn, uint64(env.GroupID), data)
 		if err != nil {
 			pool.resetConn(idx)
 		}
@@ -195,6 +197,8 @@ func (t *Transport) handleConn(conn net.Conn) {
 	defer t.wg.Done()
 	defer conn.Close()
 
+	var writeMu sync.Mutex
+
 	for {
 		select {
 		case <-t.stopCh:
@@ -214,7 +218,7 @@ func (t *Transport) handleConn(conn net.Conn) {
 		case msgTypeRaft:
 			t.handleRaftMessage(body)
 		case msgTypeForward:
-			t.handleForwardMessage(conn, body)
+			t.handleForwardAsync(conn, &writeMu, body)
 		case msgTypeResp:
 			// Responses are handled by the Forwarder on outgoing connections
 		}
@@ -239,19 +243,30 @@ func (t *Transport) handleRaftMessage(body []byte) {
 	})
 }
 
-func (t *Transport) handleForwardMessage(conn net.Conn, body []byte) {
+// handleForwardAsync processes a forwarded request in a separate goroutine
+// so the connection read loop is not blocked during raft proposal execution.
+// The writeMu serializes response writes on the same connection.
+func (t *Transport) handleForwardAsync(conn net.Conn, writeMu *sync.Mutex, body []byte) {
 	requestID, groupID, cmd, err := decodeForwardBody(body)
 	if err != nil {
 		return
 	}
-	if t.handler == nil {
-		resp := encodeRespBody(requestID, errCodeNoGroup, nil)
-		_, _ = conn.Write(encodeMessage(msgTypeResp, resp))
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	data, errCode := t.handler.handleForward(ctx, multiraft.GroupID(groupID), cmd)
-	resp := encodeRespBody(requestID, errCode, data)
-	_, _ = conn.Write(encodeMessage(msgTypeResp, resp))
+	t.wg.Add(1)
+	go func() {
+		defer t.wg.Done()
+		var (
+			errCode uint8
+			data    []byte
+		)
+		if t.handler == nil {
+			errCode = errCodeNoGroup
+		} else {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			data, errCode = t.handler.handleForward(ctx, multiraft.GroupID(groupID), cmd)
+			cancel()
+		}
+		writeMu.Lock()
+		_ = writeRespMessage(conn, requestID, errCode, data)
+		writeMu.Unlock()
+	}()
 }

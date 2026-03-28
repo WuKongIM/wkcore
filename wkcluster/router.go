@@ -20,6 +20,10 @@ func NewRouter(groupCount uint32, localNode multiraft.NodeID, runtime *multiraft
 	}
 }
 
+// SlotForChannel maps a channel to a raft group via CRC32 hashing.
+// NOTE: The mapping is deterministic for a given groupCount but will change
+// if groupCount changes (no consistent hashing). All nodes must use the same
+// groupCount for correct routing.
 func (r *Router) SlotForChannel(channelID string) multiraft.GroupID {
 	return multiraft.GroupID(crc32.ChecksumIEEE([]byte(channelID))%r.groupCount + 1)
 }
