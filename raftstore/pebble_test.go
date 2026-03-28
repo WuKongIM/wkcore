@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/WuKongIM/wraft/multiraft"
+	"github.com/cockroachdb/pebble/v2"
 	"go.etcd.io/raft/v3/raftpb"
 )
 
@@ -865,6 +866,52 @@ func TestPebbleReturnsClonedData(t *testing.T) {
 	}
 	if reloadedSnap.Metadata.ConfState.Voters[0] != 1 {
 		t.Fatalf("reloaded conf state voters = %#v, want %#v", reloadedSnap.Metadata.ConfState.Voters, []uint64{1, 2})
+	}
+}
+
+func TestGroupMetaUnmarshalRejectsTruncatedData(t *testing.T) {
+	var meta groupMeta
+
+	if err := meta.Unmarshal(nil); err == nil {
+		t.Fatal("Unmarshal(nil) error = nil, want error")
+	}
+	if err := meta.Unmarshal(make([]byte, groupMetaHeaderSize-1)); err == nil {
+		t.Fatal("Unmarshal(short) error = nil, want error")
+	}
+
+	// Build a valid header but with confState length exceeding remaining data.
+	buf := make([]byte, groupMetaHeaderSize+2)
+	// Set confState size to 10 but only provide 2 bytes after header.
+	buf[40] = 0
+	buf[41] = 0
+	buf[42] = 0
+	buf[43] = 10
+	if err := meta.Unmarshal(buf); err == nil {
+		t.Fatal("Unmarshal(bad confState size) error = nil, want error")
+	}
+}
+
+func TestLoadAppliedIndexRejectsInvalidEncoding(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "raft"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	store := db.ForGroup(99).(*pebbleStore)
+
+	// Write a 3-byte value to the applied index key (should be 8).
+	if err := db.db.Set(encodeAppliedIndexKey(99), []byte{0x01, 0x02, 0x03}, pebble.Sync); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	_, err = store.loadAppliedIndex()
+	if err == nil {
+		t.Fatal("loadAppliedIndex() error = nil, want invalid encoding error")
 	}
 }
 

@@ -4,12 +4,25 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"math"
 	"sync"
 
 	"github.com/WuKongIM/wraft/multiraft"
-	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/v2"
 	raft "go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
+)
+
+const (
+	// groupMetaHeaderSize is the fixed-size header of the serialised groupMeta:
+	// 5 uint64 fields (8 bytes each) + 1 uint32 confState length = 44 bytes.
+	groupMetaHeaderSize = 5*8 + 4
+
+	// appliedIndexSize is the byte length of the persisted applied index value.
+	appliedIndexSize = 8
+
+	// defaultWriteChSize is the channel buffer size for batched write requests.
+	defaultWriteChSize = 1024
 )
 
 type DB struct {
@@ -60,7 +73,7 @@ func Open(path string) (*DB, error) {
 
 	db := &DB{
 		db:         pdb,
-		writeCh:    make(chan *writeRequest, 1024),
+		writeCh:    make(chan *writeRequest, defaultWriteChSize),
 		stateCache: make(map[uint64]groupWriteState),
 	}
 	db.workerWG.Add(1)
@@ -99,7 +112,7 @@ func (db *DB) ForGroup(group uint64) multiraft.Storage {
 func (s *pebbleStore) InitialState(ctx context.Context) (multiraft.BootstrapState, error) {
 	_ = ctx
 
-	meta, ok, err := s.loadOrBackfillGroupMeta()
+	meta, ok, err := s.ensureGroupMeta()
 	if err != nil {
 		return multiraft.BootstrapState{}, err
 	}
@@ -188,7 +201,7 @@ func (s *pebbleStore) Term(ctx context.Context, index uint64) (uint64, error) {
 func (s *pebbleStore) FirstIndex(ctx context.Context) (uint64, error) {
 	_ = ctx
 
-	meta, ok, err := s.loadOrBackfillGroupMeta()
+	meta, ok, err := s.ensureGroupMeta()
 	if err != nil {
 		return 0, err
 	}
@@ -226,7 +239,7 @@ func (s *pebbleStore) FirstIndex(ctx context.Context) (uint64, error) {
 func (s *pebbleStore) LastIndex(ctx context.Context) (uint64, error) {
 	_ = ctx
 
-	meta, ok, err := s.loadOrBackfillGroupMeta()
+	meta, ok, err := s.ensureGroupMeta()
 	if err != nil {
 		return 0, err
 	}
@@ -309,7 +322,7 @@ func (s *pebbleStore) loadAppliedIndex() (uint64, error) {
 		}
 		return 0, err
 	}
-	if len(value) != 8 {
+	if len(value) != appliedIndexSize {
 		return 0, errors.New("raftstore: invalid applied index encoding")
 	}
 	return binary.BigEndian.Uint64(value), nil
@@ -321,7 +334,7 @@ func (m groupMeta) Marshal() ([]byte, error) {
 		return nil, err
 	}
 
-	data := make([]byte, 0, 44+len(confState))
+	data := make([]byte, 0, groupMetaHeaderSize+len(confState))
 	data = binary.BigEndian.AppendUint64(data, m.FirstIndex)
 	data = binary.BigEndian.AppendUint64(data, m.LastIndex)
 	data = binary.BigEndian.AppendUint64(data, m.AppliedIndex)
@@ -333,7 +346,7 @@ func (m groupMeta) Marshal() ([]byte, error) {
 }
 
 func (m *groupMeta) Unmarshal(data []byte) error {
-	if len(data) < 44 {
+	if len(data) < groupMetaHeaderSize {
 		return errors.New("raftstore: invalid group metadata encoding")
 	}
 
@@ -398,7 +411,10 @@ func (s *pebbleStore) loadGroupMeta() (groupMeta, bool, error) {
 	return meta, true, nil
 }
 
-func (s *pebbleStore) currentGroupMeta() (groupMeta, bool, error) {
+// currentGroupMeta returns the group metadata. If persisted metadata exists on
+// disk it is returned with fromDisk=true. Otherwise the metadata is derived
+// from the raw snapshot, entries and applied index (fromDisk=false).
+func (s *pebbleStore) currentGroupMeta() (meta groupMeta, fromDisk bool, err error) {
 	meta, ok, err := s.loadGroupMeta()
 	if err != nil {
 		return groupMeta{}, false, err
@@ -431,18 +447,16 @@ func (s *pebbleStore) currentGroupMeta() (groupMeta, bool, error) {
 	return meta, false, nil
 }
 
-func (s *pebbleStore) loadOrBackfillGroupMeta() (groupMeta, bool, error) {
-	meta, ok, err := s.loadGroupMeta()
+// ensureGroupMeta returns the group metadata, persisting it if it was derived
+// rather than loaded from disk. This guarantees that subsequent reads hit the
+// fast path.
+func (s *pebbleStore) ensureGroupMeta() (groupMeta, bool, error) {
+	meta, fromDisk, err := s.currentGroupMeta()
 	if err != nil {
 		return groupMeta{}, false, err
 	}
-	if ok {
+	if fromDisk {
 		return meta, true, nil
-	}
-
-	meta, _, err = s.currentGroupMeta()
-	if err != nil {
-		return groupMeta{}, false, err
 	}
 	if err := s.persistGroupMeta(meta); err != nil {
 		return groupMeta{}, false, err
@@ -601,7 +615,7 @@ func (db *DB) applySaveToBatch(batch *pebble.Batch, group uint64, state *groupWr
 		if err := batch.Set(encodeSnapshotKey(group), data, nil); err != nil {
 			return err
 		}
-		if st.Snapshot.Metadata.Index < ^uint64(0) {
+		if st.Snapshot.Metadata.Index < math.MaxUint64 {
 			if err := batch.DeleteRange(
 				encodeEntryPrefix(group),
 				encodeEntryKey(group, st.Snapshot.Metadata.Index+1),
@@ -664,7 +678,7 @@ func (db *DB) applySaveToBatch(batch *pebble.Batch, group uint64, state *groupWr
 }
 
 func (db *DB) applyMarkAppliedToBatch(batch *pebble.Batch, group uint64, state *groupWriteState, index uint64) error {
-	value := make([]byte, 8)
+	value := make([]byte, appliedIndexSize)
 	binary.BigEndian.PutUint64(value, index)
 	if err := batch.Set(encodeAppliedIndexKey(group), value, nil); err != nil {
 		return err
