@@ -1580,7 +1580,7 @@ Fix each reference:
 - `forward.go` uses `ErrNodeNotFound`, `ErrTimeout`, `ErrStopped` → update to `wktransport.*`
 - `cluster.go` uses `ErrStopped` → update to `wktransport.ErrStopped`
 
-Add `"github.com/WuKongIM/wraft/wktransport"` import where needed.
+Add `"github.com/WuKongIM/WuKongIM/pkg/wktransport"` import where needed.
 
 - [ ] **Step 3: Verify compilation and tests**
 
@@ -1748,8 +1748,8 @@ package wkcluster
 import (
 	"context"
 
-	"github.com/WuKongIM/wraft/multiraft"
-	"github.com/WuKongIM/wraft/wktransport"
+	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/wktransport"
 )
 
 // raftTransport adapts wktransport.Client to multiraft.Transport.
@@ -1786,8 +1786,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/wraft/multiraft"
-	"github.com/WuKongIM/wraft/wktransport"
+	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/wktransport"
 	"go.etcd.io/raft/v3/raftpb"
 )
 
@@ -1874,8 +1874,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/WuKongIM/wraft/multiraft"
-	"github.com/WuKongIM/wraft/wktransport"
+	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/wktransport"
 )
 
 func (c *Cluster) forwardToLeader(ctx context.Context, leaderID multiraft.NodeID, groupID multiraft.GroupID, cmd []byte) error {
@@ -1940,7 +1940,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/wraft/wktransport"
+	"github.com/WuKongIM/WuKongIM/pkg/wktransport"
 )
 
 func TestForwardToLeader_RoundTrip(t *testing.T) {
@@ -2040,11 +2040,11 @@ import (
 	"net"
 	"sync/atomic"
 
-	"github.com/WuKongIM/wraft/multiraft"
-	"github.com/WuKongIM/wraft/raftstore"
-	"github.com/WuKongIM/wraft/wkdb"
-	"github.com/WuKongIM/wraft/wkfsm"
-	"github.com/WuKongIM/wraft/wktransport"
+	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/raftstore"
+	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/wkfsm"
+	"github.com/WuKongIM/WuKongIM/pkg/wktransport"
 	raft "go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 )
@@ -2261,7 +2261,7 @@ func (c *Cluster) proposeOrForward(ctx context.Context, groupID multiraft.GroupI
 }
 ```
 
-Add imports: `"errors"`, `"time"`, `"github.com/WuKongIM/wraft/wktransport"`.
+Add imports: `"errors"`, `"time"`, `"github.com/WuKongIM/WuKongIM/pkg/wktransport"`.
 
 - [ ] **Step 3: Verify compilation**
 

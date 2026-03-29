@@ -220,7 +220,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/WuKongIM/wraft/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
 )
 
 const (
@@ -405,7 +405,7 @@ git commit -m "feat(wkcluster): add config types and validation"
 ```go
 package wkcluster
 
-import "github.com/WuKongIM/wraft/multiraft"
+import "github.com/WuKongIM/WuKongIM/pkg/multiraft"
 
 type NodeInfo struct {
 	NodeID multiraft.NodeID
@@ -430,7 +430,7 @@ type Discovery interface {
 ```go
 package wkcluster
 
-import "github.com/WuKongIM/wraft/multiraft"
+import "github.com/WuKongIM/WuKongIM/pkg/multiraft"
 
 type StaticDiscovery struct {
 	nodes map[multiraft.NodeID]NodeInfo
@@ -757,7 +757,7 @@ package wkcluster
 import (
 	"hash/crc32"
 
-	"github.com/WuKongIM/wraft/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
 )
 
 type Router struct {
@@ -883,7 +883,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/WuKongIM/wraft/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
 	"go.etcd.io/raft/v3/raftpb"
 )
 
@@ -1141,7 +1141,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/wraft/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
 )
 
 func TestTransport_StartStop(t *testing.T) {
@@ -1230,7 +1230,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/WuKongIM/wraft/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
 )
 
 type forwardResp struct {
@@ -1544,10 +1544,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/WuKongIM/wraft/multiraft"
-	"github.com/WuKongIM/wraft/raftstore"
-	"github.com/WuKongIM/wraft/wkdb"
-	"github.com/WuKongIM/wraft/wkfsm"
+	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/raftstore"
+	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/wkfsm"
 	"go.etcd.io/raft/v3"
 )
 
@@ -1709,8 +1709,8 @@ package wkcluster
 import (
 	"context"
 
-	"github.com/WuKongIM/wraft/wkdb"
-	"github.com/WuKongIM/wraft/wkfsm"
+	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/wkfsm"
 )
 
 func (c *Cluster) CreateChannel(ctx context.Context, channelID string, channelType int64) error {
@@ -1897,7 +1897,7 @@ func waitForLeader(t testing.TB, c *Cluster, groupID uint64) {
 }
 ```
 
-Note: imports needed: `"context"`, `"testing"`, `"time"`, `"github.com/WuKongIM/wraft/multiraft"`. For multi-node test (Task 10): also `"fmt"`, `"net"`, `"path/filepath"`.
+Note: imports needed: `"context"`, `"testing"`, `"time"`, `"github.com/WuKongIM/WuKongIM/pkg/multiraft"`. For multi-node test (Task 10): also `"fmt"`, `"net"`, `"path/filepath"`.
 
 - [ ] **Step 2: Run integration test**
 

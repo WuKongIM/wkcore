@@ -1,4 +1,4 @@
-module github.com/WuKongIM/wraft
+module github.com/WuKongIM/WuKongIM
 
 go 1.23
 
