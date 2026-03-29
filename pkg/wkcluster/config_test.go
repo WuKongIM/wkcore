@@ -56,9 +56,6 @@ func TestConfigApplyDefaults(t *testing.T) {
 	if cfg.PoolSize != defaultPoolSize {
 		t.Fatalf("expected default PoolSize")
 	}
-	if cfg.RaftDataDir == "" {
-		t.Fatalf("expected RaftDataDir to be set")
-	}
 	if cfg.TickInterval != defaultTickInterval {
 		t.Fatalf("expected default TickInterval")
 	}
@@ -92,9 +89,17 @@ func TestConfigValidate_ListenAddrEmpty(t *testing.T) {
 	}
 }
 
-func TestConfigValidate_DataDirEmpty(t *testing.T) {
+func TestConfigValidate_NewStorageNil(t *testing.T) {
 	cfg := validTestConfig()
-	cfg.DataDir = ""
+	cfg.NewStorage = nil
+	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
+}
+
+func TestConfigValidate_NewStateMachineNil(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.NewStateMachine = nil
 	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
 	}
@@ -122,7 +127,12 @@ func validTestConfig() Config {
 		NodeID:     1,
 		ListenAddr: ":9001",
 		GroupCount: 1,
-		DataDir:    "/tmp/test",
+		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
+			return nil, nil
+		},
+		NewStateMachine: func(groupID multiraft.GroupID) (multiraft.StateMachine, error) {
+			return nil, nil
+		},
 		Nodes: []NodeConfig{
 			{NodeID: 1, Addr: "127.0.0.1:9001"},
 			{NodeID: 2, Addr: "127.0.0.1:9002"},

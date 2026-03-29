@@ -2,14 +2,13 @@ package wkcluster
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync/atomic"
+	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
-	"github.com/WuKongIM/WuKongIM/pkg/raftstore"
-	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
-	"github.com/WuKongIM/WuKongIM/pkg/wkfsm"
 	"github.com/WuKongIM/WuKongIM/pkg/wktransport"
 	raft "go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
@@ -24,8 +23,6 @@ type Cluster struct {
 	runtime    *multiraft.Runtime
 	router     *Router
 	discovery  *StaticDiscovery
-	db         *wkdb.DB
-	raftDB     *raftstore.DB
 	stopped    atomic.Bool
 }
 
@@ -38,37 +35,24 @@ func NewCluster(cfg Config) (*Cluster, error) {
 }
 
 func (c *Cluster) Start() error {
-	// 1. Open databases
-	var err error
-	c.db, err = wkdb.Open(c.cfg.dataDir())
-	if err != nil {
-		return fmt.Errorf("open wkdb: %w", err)
-	}
-	c.raftDB, err = raftstore.Open(c.cfg.RaftDataDir)
-	if err != nil {
-		_ = c.db.Close()
-		return fmt.Errorf("open raftstore: %w", err)
-	}
-
-	// 2. Discovery
+	// 1. Discovery
 	c.discovery = NewStaticDiscovery(c.cfg.Nodes)
 
-	// 3. Server
+	// 2. Server
 	c.server = wktransport.NewServer()
 	c.server.Handle(msgTypeRaft, c.handleRaftMessage)
 	c.server.HandleRPC(c.handleForwardRPC)
 	if err := c.server.Start(c.cfg.ListenAddr); err != nil {
-		_ = c.raftDB.Close()
-		_ = c.db.Close()
 		return fmt.Errorf("start server: %w", err)
 	}
 
-	// 4. Pools + Clients
+	// 3. Pools + Clients
 	c.raftPool = wktransport.NewPool(c.discovery, c.cfg.PoolSize, c.cfg.DialTimeout)
 	c.raftClient = wktransport.NewClient(c.raftPool)
 	c.fwdClient = wktransport.NewClient(c.raftPool)
 
-	// 5. Runtime
+	// 4. Runtime
+	var err error
 	c.runtime, err = multiraft.New(multiraft.Options{
 		NodeID:       c.cfg.NodeID,
 		TickInterval: c.cfg.TickInterval,
@@ -84,15 +68,13 @@ func (c *Cluster) Start() error {
 		c.raftClient.Stop()
 		c.raftPool.Close()
 		c.server.Stop()
-		_ = c.raftDB.Close()
-		_ = c.db.Close()
 		return fmt.Errorf("create runtime: %w", err)
 	}
 
-	// 6. Router
+	// 5. Router
 	c.router = NewRouter(c.cfg.GroupCount, c.cfg.NodeID, c.runtime)
 
-	// 7. Open groups
+	// 6. Open groups
 	ctx := context.Background()
 	for _, g := range c.cfg.Groups {
 		if err := c.openOrBootstrapGroup(ctx, g); err != nil {
@@ -105,10 +87,13 @@ func (c *Cluster) Start() error {
 }
 
 func (c *Cluster) openOrBootstrapGroup(ctx context.Context, g GroupConfig) error {
-	storage := c.raftDB.ForGroup(uint64(g.GroupID))
-	sm, err := wkfsm.NewStateMachine(c.db, uint64(g.GroupID))
+	storage, err := c.cfg.NewStorage(g.GroupID)
 	if err != nil {
-		return err
+		return fmt.Errorf("create storage for group %d: %w", g.GroupID, err)
+	}
+	sm, err := c.cfg.NewStateMachine(g.GroupID)
+	if err != nil {
+		return fmt.Errorf("create state machine for group %d: %w", g.GroupID, err)
 	}
 	opts := multiraft.GroupOptions{
 		ID:           g.GroupID,
@@ -147,12 +132,6 @@ func (c *Cluster) Stop() {
 	if c.raftPool != nil {
 		c.raftPool.Close()
 	}
-	if c.raftDB != nil {
-		_ = c.raftDB.Close()
-	}
-	if c.db != nil {
-		_ = c.db.Close()
-	}
 }
 
 // handleRaftMessage is the server handler for msgTypeRaft.
@@ -172,6 +151,58 @@ func (c *Cluster) handleRaftMessage(_ net.Conn, body []byte) {
 		GroupID: multiraft.GroupID(groupID),
 		Message: msg,
 	})
+}
+
+// Propose submits a command to the specified group, automatically handling leader forwarding.
+func (c *Cluster) Propose(ctx context.Context, groupID multiraft.GroupID, cmd []byte) error {
+	if c.stopped.Load() {
+		return wktransport.ErrStopped
+	}
+	const maxRetries = 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 50ms, 100ms
+			backoff := time.Duration(attempt) * 50 * time.Millisecond
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		leaderID, err := c.router.LeaderOf(groupID)
+		if err != nil {
+			return err
+		}
+		if c.router.IsLocal(leaderID) {
+			future, err := c.runtime.Propose(ctx, groupID, cmd)
+			if err != nil {
+				return err
+			}
+			_, err = future.Wait(ctx)
+			return err
+		}
+		err = c.forwardToLeader(ctx, leaderID, groupID, cmd)
+		if errors.Is(err, ErrNotLeader) {
+			continue
+		}
+		return err
+	}
+	return ErrLeaderNotStable
+}
+
+// SlotForKey maps a key to a raft group via CRC32 hashing.
+func (c *Cluster) SlotForKey(key string) multiraft.GroupID {
+	return c.router.SlotForKey(key)
+}
+
+// LeaderOf returns the current leader of the specified group.
+func (c *Cluster) LeaderOf(groupID multiraft.GroupID) (multiraft.NodeID, error) {
+	return c.router.LeaderOf(groupID)
+}
+
+// IsLocal reports whether the given node is the local node.
+func (c *Cluster) IsLocal(nodeID multiraft.NodeID) bool {
+	return c.router.IsLocal(nodeID)
 }
 
 // Server returns the underlying wktransport.Server, allowing business layer

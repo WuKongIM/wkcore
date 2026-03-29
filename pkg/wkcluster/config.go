@@ -2,7 +2,6 @@ package wkcluster
 
 import (
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
@@ -19,20 +18,20 @@ const (
 )
 
 type Config struct {
-	NodeID         multiraft.NodeID
-	ListenAddr     string
-	GroupCount     uint32
-	DataDir        string
-	RaftDataDir    string
-	Nodes          []NodeConfig
-	Groups         []GroupConfig
-	ForwardTimeout time.Duration
-	PoolSize       int
-	TickInterval   time.Duration
-	RaftWorkers    int
-	ElectionTick   int
-	HeartbeatTick  int
-	DialTimeout    time.Duration
+	NodeID          multiraft.NodeID
+	ListenAddr      string
+	GroupCount      uint32
+	NewStorage      func(groupID multiraft.GroupID) (multiraft.Storage, error)
+	NewStateMachine func(groupID multiraft.GroupID) (multiraft.StateMachine, error)
+	Nodes           []NodeConfig
+	Groups          []GroupConfig
+	ForwardTimeout  time.Duration
+	PoolSize        int
+	TickInterval    time.Duration
+	RaftWorkers     int
+	ElectionTick    int
+	HeartbeatTick   int
+	DialTimeout     time.Duration
 }
 
 type NodeConfig struct {
@@ -52,8 +51,11 @@ func (c *Config) validate() error {
 	if c.ListenAddr == "" {
 		return fmt.Errorf("%w: ListenAddr must be set", ErrInvalidConfig)
 	}
-	if c.DataDir == "" {
-		return fmt.Errorf("%w: DataDir must be set", ErrInvalidConfig)
+	if c.NewStorage == nil {
+		return fmt.Errorf("%w: NewStorage must be set", ErrInvalidConfig)
+	}
+	if c.NewStateMachine == nil {
+		return fmt.Errorf("%w: NewStateMachine must be set", ErrInvalidConfig)
 	}
 	if c.GroupCount == 0 {
 		return fmt.Errorf("%w: GroupCount must be > 0", ErrInvalidConfig)
@@ -99,9 +101,6 @@ func (c *Config) applyDefaults() {
 	if c.PoolSize == 0 {
 		c.PoolSize = defaultPoolSize
 	}
-	if c.RaftDataDir == "" {
-		c.RaftDataDir = filepath.Join(c.DataDir, "raft")
-	}
 	if c.TickInterval == 0 {
 		c.TickInterval = defaultTickInterval
 	}
@@ -117,8 +116,4 @@ func (c *Config) applyDefaults() {
 	if c.DialTimeout == 0 {
 		c.DialTimeout = defaultDialTimeout
 	}
-}
-
-func (c *Config) dataDir() string {
-	return filepath.Join(c.DataDir, "data")
 }
