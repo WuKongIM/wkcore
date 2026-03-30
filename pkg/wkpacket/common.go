@@ -15,32 +15,6 @@ type Framer struct {
 	FrameSize        int64
 }
 
-// ToFixHeaderUint8 ToFixHeaderUint8
-func ToFixHeaderUint8(f Frame) uint8 {
-	typeAndFlags := encodeBool(f.GetDUP())<<3 | encodeBool(f.GetsyncOnce())<<2 | encodeBool(f.GetRedDot())<<1 | encodeBool(f.GetNoPersist())
-	if f.GetFrameType() == CONNACK {
-		typeAndFlags = encodeBool(f.GetHasServerVersion())
-	}
-	return uint8(int(f.GetFrameType()<<4) | int(typeAndFlags))
-}
-
-// FramerFromUint8 FramerFromUint8
-func FramerFromUint8(v uint8) Framer {
-	p := Framer{}
-	p.NoPersist = (v & 0x01) > 0
-	p.RedDot = (v >> 1 & 0x01) > 0
-	p.SyncOnce = (v >> 2 & 0x01) > 0
-	p.DUP = (v >> 3 & 0x01) > 0
-	p.FrameType = FrameType(v >> 4)
-
-	switch p.FrameType {
-	case CONNACK:
-		p.HasServerVersion = (v & 0x01) > 0
-	}
-
-	return p
-}
-
 // GetFrameType GetFrameType
 func (f Framer) GetFrameType() FrameType {
 	return f.FrameType
