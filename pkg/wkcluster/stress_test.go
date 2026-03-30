@@ -1,12 +1,10 @@
-package wkcluster
+package wkcluster_test
 
 import (
 	"context"
 	"fmt"
 	"math/rand"
-	"net"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -14,8 +12,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
 )
 
 const (
@@ -132,114 +128,6 @@ func fmtPct(n, total uint64) string {
 	return fmt.Sprintf("%.1f%%", float64(n)*100/float64(total))
 }
 
-// ── cluster helpers ─────────────────────────────────────────────────
-
-// waitForAllStableLeaders waits for all groups to elect stable leaders
-// concurrently, reducing multi-group election wait from O(N*20s) to O(20s).
-func waitForAllStableLeaders(t testing.TB, clusters []*Cluster, groupCount int) map[uint64]multiraft.NodeID {
-	t.Helper()
-	type result struct {
-		groupID  uint64
-		leaderID multiraft.NodeID
-	}
-	results := make(chan result, groupCount)
-	for g := 1; g <= groupCount; g++ {
-		go func(gid uint64) {
-			lid := waitForStableLeader(t, clusters, gid)
-			results <- result{gid, lid}
-		}(uint64(g))
-	}
-	leaders := make(map[uint64]multiraft.NodeID, groupCount)
-	for range groupCount {
-		r := <-results
-		leaders[r.groupID] = r.leaderID
-	}
-	return leaders
-}
-
-func startSingleNodeForStress(t testing.TB, groupCount int) *Cluster {
-	t.Helper()
-	dir := t.TempDir()
-
-	groups := make([]GroupConfig, groupCount)
-	for i := range groupCount {
-		groups[i] = GroupConfig{
-			GroupID: multiraft.GroupID(i + 1),
-			Peers:   []multiraft.NodeID{1},
-		}
-	}
-
-	cfg := Config{
-		NodeID:     1,
-		ListenAddr: "127.0.0.1:0",
-		GroupCount: uint32(groupCount),
-		DataDir:    dir,
-		Nodes:      []NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
-		Groups:     groups,
-	}
-
-	c, err := NewCluster(cfg)
-	if err != nil {
-		t.Fatalf("NewCluster: %v", err)
-	}
-	if err := c.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	return c
-}
-
-func startThreeNodeForStress(t testing.TB, groupCount int) []*Cluster {
-	t.Helper()
-
-	listeners := make([]net.Listener, 3)
-	for i := range 3 {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatalf("listen %d: %v", i, err)
-		}
-		listeners[i] = ln
-	}
-
-	nodes := make([]NodeConfig, 3)
-	for i := range 3 {
-		nodes[i] = NodeConfig{
-			NodeID: multiraft.NodeID(i + 1),
-			Addr:   listeners[i].Addr().String(),
-		}
-		listeners[i].Close()
-	}
-
-	groups := make([]GroupConfig, groupCount)
-	for i := range groupCount {
-		groups[i] = GroupConfig{
-			GroupID: multiraft.GroupID(i + 1),
-			Peers:   []multiraft.NodeID{1, 2, 3},
-		}
-	}
-
-	clusters := make([]*Cluster, 3)
-	for i := range 3 {
-		cfg := Config{
-			NodeID:     multiraft.NodeID(i + 1),
-			ListenAddr: nodes[i].Addr,
-			GroupCount: uint32(groupCount),
-			DataDir:    filepath.Join(t.TempDir(), fmt.Sprintf("n%d", i+1)),
-			Nodes:      nodes,
-			Groups:     groups,
-		}
-		c, err := NewCluster(cfg)
-		if err != nil {
-			t.Fatalf("NewCluster node %d: %v", i+1, err)
-		}
-		if err := c.Start(); err != nil {
-			t.Fatalf("Start node %d: %v", i+1, err)
-		}
-		clusters[i] = c
-	}
-
-	return clusters
-}
-
 // ── stress tests ────────────────────────────────────────────────────
 
 // TestStressSingleNodeThroughput hammers a single-node cluster with
@@ -250,11 +138,11 @@ func TestStressSingleNodeThroughput(t *testing.T) {
 	requireStressEnabled(t, cfg)
 
 	const groupCount = 4
-	c := startSingleNodeForStress(t, groupCount)
-	defer c.Stop()
+	n := startSingleNode(t, groupCount)
+	defer n.stop()
 
 	for g := 1; g <= groupCount; g++ {
-		waitForLeader(t, c, uint64(g))
+		waitForLeader(t, n.cluster, uint64(g))
 	}
 
 	start := time.Now()
@@ -287,7 +175,7 @@ func TestStressSingleNodeThroughput(t *testing.T) {
 				op := rng.Intn(100)
 				switch {
 				case op < 50:
-					if err := c.CreateChannel(ctx, channelID, channelType); err != nil {
+					if err := n.store.CreateChannel(ctx, channelID, channelType); err != nil {
 						if ctx.Err() != nil {
 							return
 						}
@@ -301,12 +189,12 @@ func TestStressSingleNodeThroughput(t *testing.T) {
 					creates.Add(1)
 
 				case op < 75:
-					_, _ = c.GetChannel(ctx, channelID, channelType)
+					_, _ = n.store.GetChannel(ctx, channelID, channelType)
 					reads.Add(1)
 
 				case op < 90:
 					ban := int64(rng.Intn(2))
-					if err := c.UpdateChannel(ctx, channelID, channelType, ban); err != nil {
+					if err := n.store.UpdateChannel(ctx, channelID, channelType, ban); err != nil {
 						if ctx.Err() != nil {
 							return
 						}
@@ -320,7 +208,7 @@ func TestStressSingleNodeThroughput(t *testing.T) {
 					updates.Add(1)
 
 				default:
-					if err := c.DeleteChannel(ctx, channelID, channelType); err != nil {
+					if err := n.store.DeleteChannel(ctx, channelID, channelType); err != nil {
 						if ctx.Err() != nil {
 							return
 						}
@@ -384,14 +272,14 @@ func TestStressThreeNodeMixedWorkload(t *testing.T) {
 	requireStressEnabled(t, cfg)
 
 	const groupCount = 3
-	clusters := startThreeNodeForStress(t, groupCount)
+	testNodes := startThreeNodes(t, groupCount)
 	defer func() {
-		for _, c := range clusters {
-			c.Stop()
+		for _, n := range testNodes {
+			n.stop()
 		}
 	}()
 
-	waitForAllStableLeaders(t, clusters, groupCount)
+	waitForAllStableLeaders(t, testNodes, groupCount)
 
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration)
@@ -423,14 +311,14 @@ func TestStressThreeNodeMixedWorkload(t *testing.T) {
 					break
 				}
 
-				node := clusters[rng.Intn(len(clusters))]
+				node := testNodes[rng.Intn(len(testNodes))]
 				channelID := fmt.Sprintf("mn-ch-%d-%d", worker, rng.Intn(32))
 				channelType := int64(rng.Intn(3) + 1)
 
 				op := rng.Intn(100)
 				switch {
 				case op < 60:
-					if err := node.CreateChannel(ctx, channelID, channelType); err != nil {
+					if err := node.store.CreateChannel(ctx, channelID, channelType); err != nil {
 						if ctx.Err() != nil {
 							break
 						}
@@ -444,12 +332,12 @@ func TestStressThreeNodeMixedWorkload(t *testing.T) {
 					}{channelID, channelType})
 
 				case op < 80:
-					_, _ = node.GetChannel(ctx, channelID, channelType)
+					_, _ = node.store.GetChannel(ctx, channelID, channelType)
 					reads.Add(1)
 
 				default:
 					ban := int64(rng.Intn(2))
-					if err := node.UpdateChannel(ctx, channelID, channelType, ban); err != nil {
+					if err := node.store.UpdateChannel(ctx, channelID, channelType, ban); err != nil {
 						if ctx.Err() != nil {
 							break
 						}
@@ -480,8 +368,8 @@ func TestStressThreeNodeMixedWorkload(t *testing.T) {
 	verified := 0
 	for channelID, channelType := range written {
 		found := false
-		for _, c := range clusters {
-			ch, err := c.GetChannel(verifyCtx, channelID, channelType)
+		for _, n := range testNodes {
+			ch, err := n.store.GetChannel(verifyCtx, channelID, channelType)
 			if err == nil && ch.ChannelID == channelID {
 				found = true
 				break
@@ -534,19 +422,19 @@ func TestStressForwardingContention(t *testing.T) {
 	requireStressEnabled(t, cfg)
 
 	const groupCount = 2
-	clusters := startThreeNodeForStress(t, groupCount)
+	testNodes := startThreeNodes(t, groupCount)
 	defer func() {
-		for _, c := range clusters {
-			c.Stop()
+		for _, n := range testNodes {
+			n.stop()
 		}
 	}()
 
-	leaders := waitForAllStableLeaders(t, clusters, groupCount)
+	leaders := waitForAllStableLeaders(t, testNodes, groupCount)
 
-	var followers []*Cluster
-	for _, c := range clusters {
-		if c.cfg.NodeID != leaders[1] {
-			followers = append(followers, c)
+	var followers []*testNode
+	for _, n := range testNodes {
+		if n.nodeID != leaders[1] {
+			followers = append(followers, n)
 		}
 	}
 	if len(followers) == 0 {
@@ -584,7 +472,7 @@ func TestStressForwardingContention(t *testing.T) {
 				channelID := fmt.Sprintf("fwd-ch-%d-%d", worker, rng.Intn(32))
 				channelType := int64(rng.Intn(3) + 1)
 
-				err := follower.CreateChannel(ctx, channelID, channelType)
+				err := follower.store.CreateChannel(ctx, channelID, channelType)
 				if err != nil {
 					if ctx.Err() != nil {
 						return
@@ -644,11 +532,11 @@ func TestStressConcurrentCreateReadVerify(t *testing.T) {
 	requireStressEnabled(t, cfg)
 
 	const groupCount = 4
-	c := startSingleNodeForStress(t, groupCount)
-	defer c.Stop()
+	n := startSingleNode(t, groupCount)
+	defer n.stop()
 
 	for g := 1; g <= groupCount; g++ {
-		waitForLeader(t, c, uint64(g))
+		waitForLeader(t, n.cluster, uint64(g))
 	}
 
 	start := time.Now()
@@ -682,7 +570,7 @@ func TestStressConcurrentCreateReadVerify(t *testing.T) {
 				channelID := fmt.Sprintf("verify-w%d-i%d", worker, idx)
 				channelType := int64((worker+idx)%4 + 1)
 
-				if err := c.CreateChannel(ctx, channelID, channelType); err != nil {
+				if err := n.store.CreateChannel(ctx, channelID, channelType); err != nil {
 					if ctx.Err() != nil {
 						break
 					}
@@ -720,7 +608,7 @@ func TestStressConcurrentCreateReadVerify(t *testing.T) {
 	verifyCtx := context.Background()
 	missing := 0
 	for channelID, channelType := range created {
-		ch, err := c.GetChannel(verifyCtx, channelID, channelType)
+		ch, err := n.store.GetChannel(verifyCtx, channelID, channelType)
 		if err != nil {
 			missing++
 			if missing <= 5 {
