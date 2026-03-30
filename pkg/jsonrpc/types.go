@@ -8,7 +8,6 @@ import (
 	"strconv" // Added for MessageID parsing
 
 	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
-	"github.com/WuKongIM/WuKongIM/pkg/wkutil"
 )
 
 // Constants based on the schema enums
@@ -373,18 +372,13 @@ func FromProtoConnectAck(ack *wkpacket.ConnackPacket) *ConnectResult {
 
 // ToProto converts JSON-RPC SendParams to wkpacket.SendPacket.
 func (p SendParams) ToProto() *wkpacket.SendPacket {
-	payloadBytes := p.Payload
-	clientMsgNo := p.ClientMsgNo
-	if clientMsgNo == "" {
-		clientMsgNo = wkutil.GenUUID()
-	}
 	req := &wkpacket.SendPacket{
 		Framer:      headerToFramer(p.Header),
 		Setting:     p.Setting.ToProto(),
-		ClientMsgNo: clientMsgNo,
+		ClientMsgNo: p.ClientMsgNo,
 		ChannelID:   p.ChannelID,
 		ChannelType: uint8(p.ChannelType),
-		Payload:     payloadBytes,
+		Payload:     p.Payload,
 		MsgKey:      p.MsgKey,
 		Expire:      p.Expire,
 		StreamNo:    p.StreamNo,
@@ -431,7 +425,7 @@ func FromProtoRecvPacket(pkt *wkpacket.RecvPacket) RecvNotificationParams {
 		MessageSeq:  pkt.MessageSeq,
 		ClientMsgNo: pkt.ClientMsgNo,
 		StreamNo:    pkt.StreamNo,
-		StreamID:    pkt.StreamNo,
+		StreamID:    strconv.FormatUint(pkt.StreamId, 10),
 		StreamFlag:  StreamFlagEnum(pkt.StreamFlag),
 		Timestamp:   pkt.Timestamp,
 		ChannelID:   pkt.ChannelID,

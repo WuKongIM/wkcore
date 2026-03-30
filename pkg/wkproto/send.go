@@ -109,7 +109,7 @@ func encodeSendSize(sendPacket *wkpacket.SendPacket, version uint8) int {
 	size += wkpacket.SettingByteSize
 	size += wkpacket.ClientSeqByteSize
 	size += len(sendPacket.ClientMsgNo) + wkpacket.StringFixLenByteSize
-	if version >= 2 && sendPacket.Setting.IsSet(wkpacket.SettingStream) {
+	if version < 5 && version >= 2 && sendPacket.Setting.IsSet(wkpacket.SettingStream) {
 		size += len(sendPacket.StreamNo) + wkpacket.StringFixLenByteSize
 	}
 	size += len(sendPacket.ChannelID) + wkpacket.StringFixLenByteSize

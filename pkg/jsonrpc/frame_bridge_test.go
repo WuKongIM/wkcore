@@ -86,6 +86,17 @@ func TestSendRequestToProtoPreservesEmptyClientMsgNo(t *testing.T) {
 	assert.Empty(t, packet.ClientMsgNo)
 }
 
+func TestSendParamsToProtoPreservesEmptyClientMsgNo(t *testing.T) {
+	packet := SendParams{
+		ChannelID:   "channel-1",
+		ChannelType: 2,
+		Payload:     []byte("payload"),
+	}.ToProto()
+
+	require.NotNil(t, packet)
+	assert.Empty(t, packet.ClientMsgNo)
+}
+
 func TestFromFrameAcceptsWKPacketConnackPacket(t *testing.T) {
 	msg, err := FromFrame("req-connect-1", &wkpacket.ConnackPacket{
 		Framer: wkpacket.Framer{
@@ -108,4 +119,14 @@ func TestFromFrameAcceptsWKPacketConnackPacket(t *testing.T) {
 	assert.Equal(t, 4, resp.Result.ServerVersion)
 	assert.Equal(t, ReasonCodeEnum(wkpacket.ReasonSuccess), resp.Result.ReasonCode)
 	assert.Equal(t, uint64(99), resp.Result.NodeID)
+}
+
+func TestFromProtoRecvPacketMapsStreamIDFromStreamId(t *testing.T) {
+	params := FromProtoRecvPacket(&wkpacket.RecvPacket{
+		StreamNo: "stream-no",
+		StreamId: 42,
+	})
+
+	assert.Equal(t, "stream-no", params.StreamNo)
+	assert.Equal(t, "42", params.StreamID)
 }

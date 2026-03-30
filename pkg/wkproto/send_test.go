@@ -5,6 +5,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSendEncodeAndDecode(t *testing.T) {
@@ -42,4 +43,39 @@ func TestSendEncodeAndDecode(t *testing.T) {
 	assert.Equal(t, packet.RedDot, resultSendPacket.RedDot)
 	assert.Equal(t, packet.Payload, resultSendPacket.Payload)
 	assert.Equal(t, packet.Setting, resultSendPacket.Setting)
+}
+
+func TestSendEncodeAndDecodeV5WithStreamDoesNotMiscalculateRemainingLength(t *testing.T) {
+	packet := &wkpacket.SendPacket{
+		Framer: wkpacket.Framer{
+			RedDot: true,
+		},
+		Setting:     wkpacket.SettingStream,
+		ClientSeq:   7,
+		ClientMsgNo: "client-msg-no",
+		StreamNo:    "stream-no",
+		ChannelID:   "channel-1",
+		ChannelType: 2,
+		MsgKey:      "msg-key",
+		Payload:     []byte("payload"),
+	}
+
+	codec := New()
+	packetBytes, err := codec.EncodeFrame(packet, wkpacket.LatestVersion)
+	assert.NoError(t, err)
+
+	resultPacket, consumed, err := codec.DecodeFrame(packetBytes, wkpacket.LatestVersion)
+	assert.NoError(t, err)
+	assert.Equal(t, len(packetBytes), consumed)
+
+	resultSendPacket, ok := resultPacket.(*wkpacket.SendPacket)
+	require.True(t, ok, "expected *wkpacket.SendPacket, got %T", resultPacket)
+	require.NotNil(t, resultSendPacket)
+	assert.Equal(t, packet.ClientSeq, resultSendPacket.ClientSeq)
+	assert.Equal(t, packet.ClientMsgNo, resultSendPacket.ClientMsgNo)
+	assert.Empty(t, resultSendPacket.StreamNo)
+	assert.Equal(t, packet.ChannelID, resultSendPacket.ChannelID)
+	assert.Equal(t, packet.ChannelType, resultSendPacket.ChannelType)
+	assert.Equal(t, packet.MsgKey, resultSendPacket.MsgKey)
+	assert.Equal(t, packet.Payload, resultSendPacket.Payload)
 }
