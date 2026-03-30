@@ -357,10 +357,3 @@ const (
 	// PayloadMaxSize 最大负载大小
 	PayloadMaxSize = 1<<15 - 1
 )
-
-func encodeBool(v bool) uint8 {
-	if v {
-		return 1
-	}
-	return 0
-}
