@@ -3,11 +3,12 @@ package wkproto
 import (
 	"testing"
 
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestEventEncodeAndDecode(t *testing.T) {
-	packet := &EventPacket{
+	packet := &wkpacket.EventPacket{
 		Id:        "123456",
 		Type:      "test",
 		Timestamp: 1234567890,
@@ -21,7 +22,7 @@ func TestEventEncodeAndDecode(t *testing.T) {
 	// 解码
 	resultPacket, _, err := codec.DecodeFrame(packetBytes, 1)
 	assert.NoError(t, err)
-	resultEventPacket, ok := resultPacket.(*EventPacket)
+	resultEventPacket, ok := resultPacket.(*wkpacket.EventPacket)
 	assert.Equal(t, true, ok)
 
 	// 比较

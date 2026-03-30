@@ -3,14 +3,15 @@ package wkproto
 import (
 	"testing"
 
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestSendEncodeAndDecode(t *testing.T) {
-	var setting Setting
-	setting.Set(SettingNoEncrypt)
-	packet := &SendPacket{
-		Framer: Framer{
+	var setting wkpacket.Setting
+	setting.Set(wkpacket.SettingNoEncrypt)
+	packet := &wkpacket.SendPacket{
+		Framer: wkpacket.Framer{
 			RedDot: true,
 		},
 		Expire:      100,
@@ -24,13 +25,13 @@ func TestSendEncodeAndDecode(t *testing.T) {
 
 	codec := New()
 	// 编码
-	packetBytes, err := codec.EncodeFrame(packet, LatestVersion)
+	packetBytes, err := codec.EncodeFrame(packet, wkpacket.LatestVersion)
 	assert.NoError(t, err)
 
 	// 解码
-	resultPacket, _, err := codec.DecodeFrame(packetBytes, LatestVersion)
+	resultPacket, _, err := codec.DecodeFrame(packetBytes, wkpacket.LatestVersion)
 	assert.NoError(t, err)
-	resultSendPacket, ok := resultPacket.(*SendPacket)
+	resultSendPacket, ok := resultPacket.(*wkpacket.SendPacket)
 	assert.Equal(t, true, ok)
 
 	// 比较

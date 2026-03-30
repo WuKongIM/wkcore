@@ -1,36 +1,16 @@
 package wkproto
 
 import (
-	"fmt"
-
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/pkg/errors"
 )
 
-// ConnectPacket 连接包
-type ConnectPacket struct {
-	Framer
-	Version         uint8      // 协议版本
-	ClientKey       string     // 客户端公钥
-	DeviceID        string     // 设备ID
-	DeviceFlag      DeviceFlag // 设备标示(同标示同账号互踢)
-	ClientTimestamp int64      // 客户端当前时间戳(13位时间戳,到毫秒)
-	UID             string     // 用户ID
-	Token           string     // token
-}
-
-// GetFrameType 包类型
-func (c ConnectPacket) GetFrameType() FrameType {
-	return CONNECT
-}
-
-func (c ConnectPacket) String() string {
-	return fmt.Sprintf(" UID:%s DeviceFlag:%d DeviceId:%s ClientTimestamp:%d  Token:%s Version:%d", c.UID, c.DeviceFlag, c.DeviceID, c.ClientTimestamp, c.Token, c.Version)
-}
+type ConnectPacket = wkpacket.ConnectPacket
 
 func decodeConnect(frame Frame, data []byte, version uint8) (Frame, error) {
 	dec := NewDecoder(data)
-	connectPacket := &ConnectPacket{}
-	connectPacket.Framer = frame.(Framer)
+	connectPacket := &wkpacket.ConnectPacket{}
+	connectPacket.Framer = frame.(wkpacket.Framer)
 	var err error
 	if connectPacket.Version, err = dec.Uint8(); err != nil {
 		return nil, errors.Wrap(err, "解码version失败！")
@@ -39,7 +19,7 @@ func decodeConnect(frame Frame, data []byte, version uint8) (Frame, error) {
 	if deviceFlag, err = dec.Uint8(); err != nil {
 		return nil, errors.Wrap(err, "解码DeviceFlag失败！")
 	}
-	connectPacket.DeviceFlag = DeviceFlag(deviceFlag)
+	connectPacket.DeviceFlag = wkpacket.DeviceFlag(deviceFlag)
 	// DeviceId
 	if connectPacket.DeviceID, err = dec.String(); err != nil {
 		return nil, errors.Wrap(err, "解码DeviceId失败！")
@@ -60,7 +40,7 @@ func decodeConnect(frame Frame, data []byte, version uint8) (Frame, error) {
 	return connectPacket, err
 }
 
-func encodeConnect(connectPacket *ConnectPacket, enc *Encoder, _ uint8) error {
+func encodeConnect(connectPacket *wkpacket.ConnectPacket, enc *Encoder, _ uint8) error {
 	// 协议版本
 	enc.WriteUint8(connectPacket.Version)
 	// 设备标示
@@ -79,7 +59,7 @@ func encodeConnect(connectPacket *ConnectPacket, enc *Encoder, _ uint8) error {
 	return nil
 }
 
-func encodeConnectSize(connectPacket *ConnectPacket, _ uint8) int {
+func encodeConnectSize(connectPacket *wkpacket.ConnectPacket, _ uint8) int {
 
 	var size = 0
 

@@ -1,30 +1,14 @@
 package wkproto
 
-type Setting uint8
+import "github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+
+type Setting = wkpacket.Setting
 
 const (
-	SettingUnknown        Setting = 0
-	SettingReceiptEnabled Setting = 1 << 7 // 是否开启回执
-	SettingSignal         Setting = 1 << 5 // 是否开启signal加密
-	SettingNoEncrypt      Setting = 1 << 4 // 是否不加密
-	SettingTopic          Setting = 1 << 3 // 是否有topic
-	SettingStream         Setting = 1 << 1 // 是否开启流
-
+	SettingUnknown        Setting = wkpacket.SettingUnknown
+	SettingReceiptEnabled Setting = wkpacket.SettingReceiptEnabled
+	SettingSignal         Setting = wkpacket.SettingSignal
+	SettingNoEncrypt      Setting = wkpacket.SettingNoEncrypt
+	SettingTopic          Setting = wkpacket.SettingTopic
+	SettingStream         Setting = wkpacket.SettingStream
 )
-
-func (s Setting) IsSet(v Setting) bool {
-	return s&v != 0
-}
-
-func (s *Setting) Clear(v Setting) {
-	*s &= ^v
-}
-
-func (s *Setting) Set(v Setting) Setting {
-	*s |= v
-	return *s
-}
-
-func (s Setting) Uint8() uint8 {
-	return uint8(s)
-}

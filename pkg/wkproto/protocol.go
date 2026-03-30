@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"math"
 	"sync"
 
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/pkg/errors"
 )
 
@@ -18,12 +18,12 @@ var (
 // Protocol Protocol
 type Protocol interface {
 	// DecodeFrame 解码消息 返回frame 和 数据大小 和 error
-	DecodeFrame(data []byte, version uint8) (Frame, int, error)
+	DecodeFrame(data []byte, version uint8) (wkpacket.Frame, int, error)
 	// EncodeFrame 编码消息
-	EncodeFrame(packet Frame, version uint8) ([]byte, error)
+	EncodeFrame(packet wkpacket.Frame, version uint8) ([]byte, error)
 
 	// WriteFrame 编码报文，并写入writer
-	WriteFrame(w Writer, packet Frame, version uint8) error
+	WriteFrame(w Writer, packet wkpacket.Frame, version uint8) error
 }
 
 // WKroto 悟空IM协议对象
@@ -31,25 +31,16 @@ type WKProto struct {
 	sync.RWMutex
 }
 
-// LatestVersion 最新版本
-const LatestVersion = 5
-
-// MaxRemaingLength 最大剩余长度 // 1<<28 - 1
-const MaxRemaingLength uint32 = 1024 * 1024
-
-// PayloadMaxSize 最大负载大小
-const PayloadMaxSize = math.MaxInt16
-
 // New 创建wukong协议对象
 func New() *WKProto {
 	return &WKProto{}
 }
 
 // PacketDecodeFunc 包解码函数
-type PacketDecodeFunc func(frame Frame, remainingBytes []byte, version uint8) (Frame, error)
+type PacketDecodeFunc func(frame wkpacket.Frame, remainingBytes []byte, version uint8) (wkpacket.Frame, error)
 
 // PacketEncodeFunc 包编码函数
-type PacketEncodeFunc func(frame Frame, version uint8) ([]byte, error)
+type PacketEncodeFunc func(frame wkpacket.Frame, version uint8) ([]byte, error)
 
 var packetDecodeMap = map[FrameType]PacketDecodeFunc{
 	CONNECT:    decodeConnect,
@@ -75,17 +66,17 @@ var packetDecodeMap = map[FrameType]PacketDecodeFunc{
 // }
 
 // DecodePacketWithConn 解码包
-func (l *WKProto) DecodePacketWithConn(conn io.Reader, version uint8) (Frame, error) {
+func (l *WKProto) DecodePacketWithConn(conn io.Reader, version uint8) (wkpacket.Frame, error) {
 	framer, err := l.decodeFramerWithConn(conn)
 	if err != nil {
 		return nil, err
 	}
 	// l.Debug("解码消息！", zap.String("framer", framer.String()))
 	if framer.GetFrameType() == PING {
-		return &PingPacket{}, nil
+		return &wkpacket.PingPacket{}, nil
 	}
 	if framer.GetFrameType() == PONG {
-		return &PongPacket{}, nil
+		return &wkpacket.PongPacket{}, nil
 	}
 
 	if framer.RemainingLength > MaxRemaingLength {
@@ -111,7 +102,7 @@ func (l *WKProto) DecodePacketWithConn(conn io.Reader, version uint8) (Frame, er
 }
 
 // DecodePacket 解码包
-func (l *WKProto) DecodeFrame(data []byte, version uint8) (Frame, int, error) {
+func (l *WKProto) DecodeFrame(data []byte, version uint8) (wkpacket.Frame, int, error) {
 	framer, remainingLengthLength, err := l.decodeFramer(data)
 	if err != nil {
 		return nil, 0, nil
@@ -121,12 +112,12 @@ func (l *WKProto) DecodeFrame(data []byte, version uint8) (Frame, int, error) {
 		return nil, 0, nil
 	}
 	if frameType == PING {
-		return &PingPacket{
+		return &wkpacket.PingPacket{
 			Framer: framer,
 		}, 1, nil
 	}
 	if frameType == PONG {
-		return &PongPacket{
+		return &wkpacket.PongPacket{
 			Framer: framer,
 		}, 1, nil
 	}
@@ -152,7 +143,7 @@ func (l *WKProto) DecodeFrame(data []byte, version uint8) (Frame, int, error) {
 }
 
 // EncodePacket 编码包
-func (l *WKProto) EncodeFrame(frame Frame, version uint8) ([]byte, error) {
+func (l *WKProto) EncodeFrame(frame wkpacket.Frame, version uint8) ([]byte, error) {
 	buffer := bytes.NewBuffer([]byte{})
 	err := l.encodeFrameWithWriter(buffer, frame, version)
 	if err != nil {
@@ -162,7 +153,7 @@ func (l *WKProto) EncodeFrame(frame Frame, version uint8) ([]byte, error) {
 }
 
 // encodeFrameWithWriter 编码包
-func (l *WKProto) encodeFrameWithWriter(w Writer, frame Frame, version uint8) error {
+func (l *WKProto) encodeFrameWithWriter(w Writer, frame wkpacket.Frame, version uint8) error {
 	frameType := frame.GetFrameType()
 
 	enc := NewEncoderBuffer(w)
@@ -176,46 +167,46 @@ func (l *WKProto) encodeFrameWithWriter(w Writer, frame Frame, version uint8) er
 	var err error
 	switch frameType {
 	case CONNECT:
-		packet := frame.(*ConnectPacket)
+		packet := frame.(*wkpacket.ConnectPacket)
 		l.encodeFrame(packet, enc, uint32(encodeConnectSize(packet, version)))
 		err = encodeConnect(packet, enc, version)
 	case CONNACK:
-		packet := frame.(*ConnackPacket)
+		packet := frame.(*wkpacket.ConnackPacket)
 		l.encodeFrame(packet, enc, uint32(encodeConnackSize(packet, version)))
 		err = encodeConnack(packet, enc, version)
 	case SEND:
-		packet := frame.(*SendPacket)
+		packet := frame.(*wkpacket.SendPacket)
 		if len(packet.Payload) > PayloadMaxSize {
 			return errors.New(fmt.Sprintf("消息负载超出最大限制[%d]！", PayloadMaxSize))
 		}
 		l.encodeFrame(packet, enc, uint32(encodeSendSize(packet, version)))
 		err = encodeSend(packet, enc, version)
 	case SENDACK:
-		packet := frame.(*SendackPacket)
+		packet := frame.(*wkpacket.SendackPacket)
 		l.encodeFrame(packet, enc, uint32(encodeSendackSize(packet, version)))
 		err = encodeSendack(packet, enc, version)
 	case RECV:
-		packet := frame.(*RecvPacket)
+		packet := frame.(*wkpacket.RecvPacket)
 		l.encodeFrame(packet, enc, uint32(encodeRecvSize(packet, version)))
 		err = encodeRecv(packet, enc, version)
 	case RECVACK:
-		packet := frame.(*RecvackPacket)
+		packet := frame.(*wkpacket.RecvackPacket)
 		l.encodeFrame(packet, enc, uint32(encodeRecvackSize(packet, version)))
 		err = encodeRecvack(packet, enc, version)
 	case DISCONNECT:
-		packet := frame.(*DisconnectPacket)
+		packet := frame.(*wkpacket.DisconnectPacket)
 		l.encodeFrame(packet, enc, uint32(encodeDisConnectSize(packet, version)))
 		err = encodeDisConnect(packet, enc, version)
 	case SUB:
-		packet := frame.(*SubPacket)
+		packet := frame.(*wkpacket.SubPacket)
 		l.encodeFrame(packet, enc, uint32(encodeSubSize(packet, version)))
 		err = encodeSub(packet, enc, version)
 	case SUBACK:
-		packet := frame.(*SubackPacket)
+		packet := frame.(*wkpacket.SubackPacket)
 		l.encodeFrame(packet, enc, uint32(encodeSubackSize(packet, version)))
 		err = encodeSuback(packet, enc, version)
 	case EVENT:
-		packet := frame.(*EventPacket)
+		packet := frame.(*wkpacket.EventPacket)
 		l.encodeFrame(packet, enc, uint32(encodeEventSize(packet, version)))
 		err = encodeEvent(packet, enc, version)
 	}
@@ -225,12 +216,12 @@ func (l *WKProto) encodeFrameWithWriter(w Writer, frame Frame, version uint8) er
 	return nil
 }
 
-func (l *WKProto) WriteFrame(w Writer, packet Frame, version uint8) error {
+func (l *WKProto) WriteFrame(w Writer, packet wkpacket.Frame, version uint8) error {
 
 	return l.encodeFrameWithWriter(w, packet, version)
 }
 
-func (l *WKProto) encodeFrame(f Frame, enc *Encoder, remainingLength uint32) {
+func (l *WKProto) encodeFrame(f wkpacket.Frame, enc *Encoder, remainingLength uint32) {
 
 	_ = enc.WriteByte(ToFixHeaderUint8(f))
 

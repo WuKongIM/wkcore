@@ -1,31 +1,16 @@
 package wkproto
 
 import (
-	"fmt"
-
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/pkg/errors"
 )
 
-// RecvackPacket 对收取包回执
-type RecvackPacket struct {
-	Framer
-	MessageID  int64  // 服务端的消息ID(全局唯一)
-	MessageSeq uint32 // 消息序列号
-}
-
-// GetPacketType 包类型
-func (s *RecvackPacket) GetFrameType() FrameType {
-	return RECVACK
-}
-
-func (s *RecvackPacket) String() string {
-	return fmt.Sprintf("Framer:%s MessageId:%d MessageSeq:%d", s.Framer.String(), s.MessageID, s.MessageSeq)
-}
+type RecvackPacket = wkpacket.RecvackPacket
 
 func decodeRecvack(frame Frame, data []byte, _ uint8) (Frame, error) {
 	dec := NewDecoder(data)
-	recvackPacket := &RecvackPacket{}
-	recvackPacket.Framer = frame.(Framer)
+	recvackPacket := &wkpacket.RecvackPacket{}
+	recvackPacket.Framer = frame.(wkpacket.Framer)
 	var err error
 	// 消息唯一ID
 	if recvackPacket.MessageID, err = dec.Int64(); err != nil {
@@ -38,13 +23,13 @@ func decodeRecvack(frame Frame, data []byte, _ uint8) (Frame, error) {
 	return recvackPacket, err
 }
 
-func encodeRecvack(recvackPacket *RecvackPacket, enc *Encoder, _ uint8) error {
+func encodeRecvack(recvackPacket *wkpacket.RecvackPacket, enc *Encoder, _ uint8) error {
 	enc.WriteInt64(recvackPacket.MessageID)
 	enc.WriteUint32(recvackPacket.MessageSeq)
 	return nil
 }
 
-func encodeRecvackSize(_ *RecvackPacket, _ uint8) int {
+func encodeRecvackSize(_ *wkpacket.RecvackPacket, _ uint8) int {
 
 	return MessageIDByteSize + MessageSeqByteSize
 }

@@ -3,16 +3,17 @@ package wkproto
 import (
 	"testing"
 
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestSendackEncodeAndDecode(t *testing.T) {
 
-	packet := &SendackPacket{
+	packet := &wkpacket.SendackPacket{
 		ClientSeq:  234,
 		MessageSeq: 2,
 		MessageID:  1234,
-		ReasonCode: ReasonSuccess,
+		ReasonCode: wkpacket.ReasonSuccess,
 	}
 
 	codec := New()
@@ -22,7 +23,7 @@ func TestSendackEncodeAndDecode(t *testing.T) {
 	// 解码
 	resultPacket, _, err := codec.DecodeFrame(packetBytes, 1)
 	assert.NoError(t, err)
-	resultSendackPacket, ok := resultPacket.(*SendackPacket)
+	resultSendackPacket, ok := resultPacket.(*wkpacket.SendackPacket)
 	assert.Equal(t, true, ok)
 
 	// 比较

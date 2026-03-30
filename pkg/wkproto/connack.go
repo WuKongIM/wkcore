@@ -1,31 +1,13 @@
 package wkproto
 
 import (
-	"fmt"
-
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/pkg/errors"
 )
 
-// ConnackPacket 连接回执包
-type ConnackPacket struct {
-	Framer
-	ServerVersion uint8      // 服务端版本
-	ServerKey     string     // 服务端的DH公钥
-	Salt          string     // salt
-	TimeDiff      int64      // 客户端时间与服务器的差值，单位毫秒。
-	ReasonCode    ReasonCode // 原因码
-	NodeId        uint64     // 节点Id
-}
+type ConnackPacket = wkpacket.ConnackPacket
 
-// GetFrameType 获取包类型
-func (c ConnackPacket) GetFrameType() FrameType {
-	return CONNACK
-}
-func (c ConnackPacket) String() string {
-	return fmt.Sprintf("TimeDiff: %d ReasonCode:%s", c.TimeDiff, c.ReasonCode.String())
-}
-
-func encodeConnack(connack *ConnackPacket, enc *Encoder, version uint8) error {
+func encodeConnack(connack *wkpacket.ConnackPacket, enc *Encoder, version uint8) error {
 	if connack.GetHasServerVersion() {
 		enc.WriteUint8(connack.ServerVersion)
 	}
@@ -39,7 +21,7 @@ func encodeConnack(connack *ConnackPacket, enc *Encoder, version uint8) error {
 	return nil
 }
 
-func encodeConnackSize(packet *ConnackPacket, version uint8) int {
+func encodeConnackSize(packet *wkpacket.ConnackPacket, version uint8) int {
 	size := 0
 	if packet.GetHasServerVersion() {
 		size += VersionByteSize
@@ -56,8 +38,8 @@ func encodeConnackSize(packet *ConnackPacket, version uint8) int {
 
 func decodeConnack(frame Frame, data []byte, version uint8) (Frame, error) {
 	dec := NewDecoder(data)
-	connackPacket := &ConnackPacket{}
-	connackPacket.Framer = frame.(Framer)
+	connackPacket := &wkpacket.ConnackPacket{}
+	connackPacket.Framer = frame.(wkpacket.Framer)
 
 	var err error
 
@@ -74,7 +56,7 @@ func decodeConnack(frame Frame, data []byte, version uint8) (Frame, error) {
 	if reasonCode, err = dec.Uint8(); err != nil {
 		return nil, errors.Wrap(err, "解码ReasonCode失败！")
 	}
-	connackPacket.ReasonCode = ReasonCode(reasonCode)
+	connackPacket.ReasonCode = wkpacket.ReasonCode(reasonCode)
 
 	if connackPacket.ServerKey, err = dec.String(); err != nil {
 		return nil, errors.Wrap(err, "解码ServerKey失败！")

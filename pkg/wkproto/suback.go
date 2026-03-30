@@ -1,37 +1,24 @@
 package wkproto
 
-import "github.com/pkg/errors"
-
-type Action uint8
-
-const (
-	Subscribe   Action = iota // 订阅
-	UnSubscribe               // 取消订阅
+import (
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/pkg/errors"
 )
 
-func (a Action) Uint8() uint8 {
-	return uint8(a)
-}
+type Action = wkpacket.Action
 
-type SubackPacket struct {
-	Framer
-	SubNo       string     // 订阅编号
-	ChannelID   string     // 频道ID（如果是个人频道ChannelId为个人的UID）
-	ChannelType uint8      // 频道类型
-	Action      Action     // 动作
-	ReasonCode  ReasonCode // 原因码
-}
+const (
+	Subscribe   Action = wkpacket.Subscribe
+	UnSubscribe Action = wkpacket.UnSubscribe
+)
 
-// GetPacketType 包类型
-func (s *SubackPacket) GetFrameType() FrameType {
-	return SUBACK
-}
+type SubackPacket = wkpacket.SubackPacket
 
 func decodeSuback(frame Frame, data []byte, version uint8) (Frame, error) {
 	dec := NewDecoder(data)
 
-	subackPacket := &SubackPacket{}
-	subackPacket.Framer = frame.(Framer)
+	subackPacket := &wkpacket.SubackPacket{}
+	subackPacket.Framer = frame.(wkpacket.Framer)
 
 	var err error
 	// 客户端消息编号
@@ -51,20 +38,20 @@ func decodeSuback(frame Frame, data []byte, version uint8) (Frame, error) {
 	if action, err = dec.Uint8(); err != nil {
 		return nil, errors.Wrap(err, "解码Action失败！")
 	}
-	subackPacket.Action = Action(action)
+	subackPacket.Action = wkpacket.Action(action)
 	// 原因码
 	var reasonCode byte
 	if reasonCode, err = dec.Uint8(); err != nil {
 
 		return nil, errors.Wrap(err, "解码ReasonCode失败！")
 	}
-	subackPacket.ReasonCode = ReasonCode(reasonCode)
+	subackPacket.ReasonCode = wkpacket.ReasonCode(reasonCode)
 
 	return subackPacket, nil
 }
 
 func encodeSuback(frame Frame, enc *Encoder, _ uint8) error {
-	subackPacket := frame.(*SubackPacket)
+	subackPacket := frame.(*wkpacket.SubackPacket)
 	// 客户端消息编号
 	enc.WriteString(subackPacket.SubNo)
 	// 频道ID
@@ -79,7 +66,7 @@ func encodeSuback(frame Frame, enc *Encoder, _ uint8) error {
 }
 
 func encodeSubackSize(frame Frame, _ uint8) int {
-	subPacket := frame.(*SubackPacket)
+	subPacket := frame.(*wkpacket.SubackPacket)
 	var size = 0
 	size += (len(subPacket.SubNo) + StringFixLenByteSize)
 	size += (len(subPacket.ChannelID) + StringFixLenByteSize)

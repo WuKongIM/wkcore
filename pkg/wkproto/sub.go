@@ -1,34 +1,23 @@
 package wkproto
 
-import "github.com/pkg/errors"
+import (
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/pkg/errors"
+)
 
-type SubPacket struct {
-	Framer
-	Setting     Setting
-	SubNo       string
-	ChannelID   string // 频道ID（如果是个人频道ChannelId为个人的UID）
-	ChannelType uint8  // 频道类型
-	Action      Action // 动作
-	Param       string // 参数
-}
-
-// GetPacketType 包类型
-func (s *SubPacket) GetFrameType() FrameType {
-	return SUB
-}
+type SubPacket = wkpacket.SubPacket
 
 func decodeSub(frame Frame, data []byte, version uint8) (Frame, error) {
-
 	dec := NewDecoder(data)
 
-	subPacket := &SubPacket{}
-	subPacket.Framer = frame.(Framer)
+	subPacket := &wkpacket.SubPacket{}
+	subPacket.Framer = frame.(wkpacket.Framer)
 	var err error
 	setting, err := dec.Uint8()
 	if err != nil {
 		return nil, errors.Wrap(err, "解码消息设置失败！")
 	}
-	subPacket.Setting = Setting(setting)
+	subPacket.Setting = wkpacket.Setting(setting)
 	// 客户端消息编号
 	if subPacket.SubNo, err = dec.String(); err != nil {
 		return nil, errors.Wrap(err, "解码SubNo失败！")
@@ -47,7 +36,7 @@ func decodeSub(frame Frame, data []byte, version uint8) (Frame, error) {
 	if action, err = dec.Uint8(); err != nil {
 		return nil, errors.Wrap(err, "解码Action失败！")
 	}
-	subPacket.Action = Action(action)
+	subPacket.Action = wkpacket.Action(action)
 
 	// 参数
 	if subPacket.Param, err = dec.String(); err != nil {
@@ -58,7 +47,7 @@ func decodeSub(frame Frame, data []byte, version uint8) (Frame, error) {
 }
 
 func encodeSub(frame Frame, enc *Encoder, _ uint8) error {
-	subPacket := frame.(*SubPacket)
+	subPacket := frame.(*wkpacket.SubPacket)
 	_ = enc.WriteByte(subPacket.Setting.Uint8())
 	// 客户端消息编号
 	enc.WriteString(subPacket.SubNo)
@@ -74,7 +63,7 @@ func encodeSub(frame Frame, enc *Encoder, _ uint8) error {
 }
 
 func encodeSubSize(frame Frame, _ uint8) int {
-	subPacket := frame.(*SubPacket)
+	subPacket := frame.(*wkpacket.SubPacket)
 	var size = 0
 	size += SettingByteSize
 	size += (len(subPacket.SubNo) + StringFixLenByteSize)

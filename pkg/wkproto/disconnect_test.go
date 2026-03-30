@@ -3,13 +3,14 @@ package wkproto
 import (
 	"testing"
 
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestDisConnectEncodeAndDecode(t *testing.T) {
 
 	//clientTimestamp :=time.Now().UnixNano()/1000/1000
-	packet := &DisconnectPacket{
+	packet := &wkpacket.DisconnectPacket{
 		ReasonCode: 1,
 		Reason:     "其他地方登录了！",
 	}
@@ -22,7 +23,7 @@ func TestDisConnectEncodeAndDecode(t *testing.T) {
 	// 解码
 	resultPacket, _, err := codec.DecodeFrame(packetBytes, 1)
 	assert.NoError(t, err)
-	resultConnectPacket, ok := resultPacket.(*DisconnectPacket)
+	resultConnectPacket, ok := resultPacket.(*wkpacket.DisconnectPacket)
 	assert.Equal(t, true, ok)
 
 	assert.Equal(t, packet.ReasonCode, resultConnectPacket.ReasonCode)
