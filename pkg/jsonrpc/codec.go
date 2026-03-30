@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	wkproto "github.com/WuKongIM/WuKongIMGoProto"
+	"github.com/WuKongIM/WuKongIM/pkg/wkproto"
 	// Ensure io is imported
 )
 

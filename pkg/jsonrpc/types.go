@@ -7,8 +7,8 @@ import (
 	// Import the WuKongIMGoProto package
 	"strconv" // Added for MessageID parsing
 
+	"github.com/WuKongIM/WuKongIM/pkg/wkproto"
 	"github.com/WuKongIM/WuKongIM/pkg/wkutil"
-	wkproto "github.com/WuKongIM/WuKongIMGoProto"
 )
 
 // Constants based on the schema enums
