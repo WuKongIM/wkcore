@@ -144,6 +144,19 @@ func TestEncodeDecode_Connect(t *testing.T) {
 func TestEncodeDecode_SendRecv(t *testing.T) {
 	// --- Test Send Request ---
 	sendParams := SendParams{
+		Header: Header{
+			NoPersist: true,
+			RedDot:    true,
+			SyncOnce:  true,
+			Dup:       true,
+			End:       true,
+		},
+		Setting: SettingFlags{
+			Receipt: true,
+			Signal:  true,
+			Stream:  true,
+			Topic:   true,
+		},
 		ChannelID:   "user123",
 		ChannelType: 1,
 		Payload:     samplePayload("Hello"),
@@ -157,10 +170,8 @@ func TestEncodeDecode_SendRecv(t *testing.T) {
 	decodedSendMsg := testDecode(t, sendReqBytes)
 	decodedSendReq := assertDecodedAs[SendRequest](t, decodedSendMsg)
 
-	// TODO: Restore these checks if Header/Setting decoding is fixed in Decode function
-	// assert.Equal(t, sendReq.Header, decodedSendReq.Header)
-	// assert.Equal(t, sendReq.Setting, decodedSendReq.Setting)
-	// Compare relevant Params fields (excluding RawMessage)
+	assert.Equal(t, sendReq.Params.Header, decodedSendReq.Params.Header)
+	assert.Equal(t, sendReq.Params.Setting, decodedSendReq.Params.Setting)
 	assert.Equal(t, sendReq.ID, decodedSendReq.ID)
 	assert.Equal(t, sendReq.Params.ChannelID, decodedSendReq.Params.ChannelID)
 	assert.Equal(t, sendReq.Params.ChannelType, decodedSendReq.Params.ChannelType)
