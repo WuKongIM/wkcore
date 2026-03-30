@@ -45,6 +45,25 @@ func TestToFrameReturnsWKPacketFrame(t *testing.T) {
 	assert.Equal(t, wkpacket.SEND, sendFrame.GetFrameType())
 }
 
+func TestSendRequestToProtoPreservesEmptyClientMsgNo(t *testing.T) {
+	packet, err := (SendRequest{
+		BaseRequest: BaseRequest{
+			Jsonrpc: jsonRPCVersion,
+			Method:  MethodSend,
+			ID:      "req-send-2",
+		},
+		Params: SendParams{
+			ChannelID:   "channel-1",
+			ChannelType: 2,
+			Payload:     []byte("payload"),
+		},
+	}).ToProto()
+
+	require.NoError(t, err)
+	require.NotNil(t, packet)
+	assert.Empty(t, packet.ClientMsgNo)
+}
+
 func TestFromFrameAcceptsWKPacketConnackPacket(t *testing.T) {
 	msg, err := FromFrame("req-connect-1", &wkpacket.ConnackPacket{
 		Framer: wkpacket.Framer{

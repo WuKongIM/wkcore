@@ -608,7 +608,20 @@ func (r ConnectRequest) ToProto() *wkpacket.ConnectPacket {
 
 // ToProto converts the full SendRequest to its proto representation
 func (r SendRequest) ToProto() (*wkpacket.SendPacket, error) {
-	return r.Params.ToProto(), nil
+	payloadBytes := r.Params.Payload
+	pkt := &wkpacket.SendPacket{
+		Framer:      headerToFramer(r.Params.Header),
+		Setting:     r.Params.Setting.ToProto(),
+		ClientMsgNo: r.Params.ClientMsgNo,
+		ChannelID:   r.Params.ChannelID,
+		ChannelType: uint8(r.Params.ChannelType),
+		Payload:     payloadBytes,
+		MsgKey:      r.Params.MsgKey,
+		Expire:      r.Params.Expire,
+		StreamNo:    r.Params.StreamNo,
+		Topic:       r.Params.Topic,
+	}
+	return pkt, nil
 }
 
 // Example: FromProto... for full response
