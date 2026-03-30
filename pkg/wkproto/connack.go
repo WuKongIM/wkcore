@@ -5,8 +5,6 @@ import (
 	"github.com/pkg/errors"
 )
 
-type ConnackPacket = wkpacket.ConnackPacket
-
 func encodeConnack(connack *wkpacket.ConnackPacket, enc *Encoder, version uint8) error {
 	if connack.GetHasServerVersion() {
 		enc.WriteUint8(connack.ServerVersion)
@@ -24,19 +22,19 @@ func encodeConnack(connack *wkpacket.ConnackPacket, enc *Encoder, version uint8)
 func encodeConnackSize(packet *wkpacket.ConnackPacket, version uint8) int {
 	size := 0
 	if packet.GetHasServerVersion() {
-		size += VersionByteSize
+		size += wkpacket.VersionByteSize
 	}
-	size += TimeDiffByteSize
-	size += ReasonCodeByteSize
-	size += (len(packet.ServerKey) + StringFixLenByteSize)
-	size += (len(packet.Salt) + StringFixLenByteSize)
+	size += wkpacket.TimeDiffByteSize
+	size += wkpacket.ReasonCodeByteSize
+	size += len(packet.ServerKey) + wkpacket.StringFixLenByteSize
+	size += len(packet.Salt) + wkpacket.StringFixLenByteSize
 	if version >= 4 {
-		size += NodeIdByteSize
+		size += wkpacket.NodeIdByteSize
 	}
 	return size
 }
 
-func decodeConnack(frame Frame, data []byte, version uint8) (Frame, error) {
+func decodeConnack(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Frame, error) {
 	dec := NewDecoder(data)
 	connackPacket := &wkpacket.ConnackPacket{}
 	connackPacket.Framer = frame.(wkpacket.Framer)

@@ -2,9 +2,7 @@ package wkproto
 
 import "github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 
-type EventPacket = wkpacket.EventPacket
-
-func decodeEvent(frame Frame, data []byte, _ uint8) (Frame, error) {
+func decodeEvent(frame wkpacket.Frame, data []byte, _ uint8) (wkpacket.Frame, error) {
 	dec := NewDecoder(data)
 	eventPacket := &wkpacket.EventPacket{}
 	eventPacket.Framer = frame.(wkpacket.Framer)
@@ -34,12 +32,11 @@ func encodeEvent(eventPacket *wkpacket.EventPacket, enc *Encoder, _ uint8) error
 	return nil
 }
 
-func encodeEventSize(frame Frame, _ uint8) int {
-	eventPacket := frame.(*wkpacket.EventPacket)
+func encodeEventSize(eventPacket *wkpacket.EventPacket, _ uint8) int {
 	size := 0
-	size += (len(eventPacket.Id) + StringFixLenByteSize)
-	size += (len(eventPacket.Type) + StringFixLenByteSize)
-	size += BigTimestampByteSize
+	size += len(eventPacket.Id) + wkpacket.StringFixLenByteSize
+	size += len(eventPacket.Type) + wkpacket.StringFixLenByteSize
+	size += wkpacket.BigTimestampByteSize
 	size += len(eventPacket.Data)
 	return size
 }

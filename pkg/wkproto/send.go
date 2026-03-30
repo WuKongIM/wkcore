@@ -5,9 +5,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-type SendPacket = wkpacket.SendPacket
-
-func decodeSend(frame Frame, data []byte, version uint8) (Frame, error) {
+func decodeSend(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Frame, error) {
 	dec := NewDecoder(data)
 	sendPacket := &wkpacket.SendPacket{}
 	sendPacket.Framer = frame.(wkpacket.Framer)
@@ -32,7 +30,7 @@ func decodeSend(frame Frame, data []byte, version uint8) (Frame, error) {
 
 	// 是否开启了stream
 	if version < 5 { // 5版本后不再支持send里不再需要streamNo
-		if version >= 2 && sendPacket.Setting.IsSet(SettingStream) {
+		if version >= 2 && sendPacket.Setting.IsSet(wkpacket.SettingStream) {
 			// 流式编号
 			if sendPacket.StreamNo, err = dec.String(); err != nil {
 				return nil, errors.Wrap(err, "解码StreamNo失败！")
@@ -60,7 +58,7 @@ func decodeSend(frame Frame, data []byte, version uint8) (Frame, error) {
 	if sendPacket.MsgKey, err = dec.String(); err != nil {
 		return nil, errors.Wrap(err, "解码MsgKey失败！")
 	}
-	if sendPacket.Setting.IsSet(SettingTopic) {
+	if sendPacket.Setting.IsSet(wkpacket.SettingTopic) {
 		// topic
 		if sendPacket.Topic, err = dec.String(); err != nil {
 			return nil, errors.Wrap(err, "解密topic消息失败！")
@@ -72,9 +70,7 @@ func decodeSend(frame Frame, data []byte, version uint8) (Frame, error) {
 	return sendPacket, err
 }
 
-func encodeSend(frame Frame, enc *Encoder, version uint8) error {
-	sendPacket := frame.(*wkpacket.SendPacket)
-
+func encodeSend(sendPacket *wkpacket.SendPacket, enc *Encoder, version uint8) error {
 	_ = enc.WriteByte(sendPacket.Setting.Uint8())
 	// 消息序列号(客户端维护)
 	enc.WriteUint32(uint32(sendPacket.ClientSeq))
@@ -82,7 +78,7 @@ func encodeSend(frame Frame, enc *Encoder, version uint8) error {
 	enc.WriteString(sendPacket.ClientMsgNo)
 	// 是否开启了stream
 	if version < 5 { // 5版本后不再支持send里不再需要streamNo
-		if version >= 2 && sendPacket.Setting.IsSet(SettingStream) {
+		if version >= 2 && sendPacket.Setting.IsSet(wkpacket.SettingStream) {
 			// 流式编号
 			enc.WriteString(sendPacket.StreamNo)
 		}
@@ -99,7 +95,7 @@ func encodeSend(frame Frame, enc *Encoder, version uint8) error {
 	// msgKey
 	enc.WriteString(sendPacket.MsgKey)
 
-	if sendPacket.Setting.IsSet(SettingTopic) {
+	if sendPacket.Setting.IsSet(wkpacket.SettingTopic) {
 		enc.WriteString(sendPacket.Topic)
 	}
 	// 消息内容
@@ -108,25 +104,23 @@ func encodeSend(frame Frame, enc *Encoder, version uint8) error {
 	return nil
 }
 
-func encodeSendSize(frame Frame, version uint8) int {
-	sendPacket := frame.(*wkpacket.SendPacket)
+func encodeSendSize(sendPacket *wkpacket.SendPacket, version uint8) int {
 	size := 0
-	size += SettingByteSize
-	size += ClientSeqByteSize
-	size += (len(sendPacket.ClientMsgNo) + StringFixLenByteSize)
-	if version >= 2 && sendPacket.Setting.IsSet(SettingStream) {
-		size += (len(sendPacket.StreamNo) + StringFixLenByteSize)
+	size += wkpacket.SettingByteSize
+	size += wkpacket.ClientSeqByteSize
+	size += len(sendPacket.ClientMsgNo) + wkpacket.StringFixLenByteSize
+	if version >= 2 && sendPacket.Setting.IsSet(wkpacket.SettingStream) {
+		size += len(sendPacket.StreamNo) + wkpacket.StringFixLenByteSize
 	}
-	size += (len(sendPacket.ChannelID) + StringFixLenByteSize)
-	size += ChannelTypeByteSize
+	size += len(sendPacket.ChannelID) + wkpacket.StringFixLenByteSize
+	size += wkpacket.ChannelTypeByteSize
 	if version >= 3 {
-		size += ExpireByteSize
+		size += wkpacket.ExpireByteSize
 	}
-	size += (len(sendPacket.MsgKey) + StringFixLenByteSize)
-	if sendPacket.Setting.IsSet(SettingTopic) {
-		size += (len(sendPacket.Topic) + StringFixLenByteSize)
+	size += len(sendPacket.MsgKey) + wkpacket.StringFixLenByteSize
+	if sendPacket.Setting.IsSet(wkpacket.SettingTopic) {
+		size += len(sendPacket.Topic) + wkpacket.StringFixLenByteSize
 	}
 	size += len(sendPacket.Payload)
-
 	return size
 }

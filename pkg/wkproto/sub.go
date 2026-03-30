@@ -5,9 +5,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-type SubPacket = wkpacket.SubPacket
-
-func decodeSub(frame Frame, data []byte, version uint8) (Frame, error) {
+func decodeSub(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Frame, error) {
 	dec := NewDecoder(data)
 
 	subPacket := &wkpacket.SubPacket{}
@@ -46,8 +44,7 @@ func decodeSub(frame Frame, data []byte, version uint8) (Frame, error) {
 	return subPacket, nil
 }
 
-func encodeSub(frame Frame, enc *Encoder, _ uint8) error {
-	subPacket := frame.(*wkpacket.SubPacket)
+func encodeSub(subPacket *wkpacket.SubPacket, enc *Encoder, _ uint8) error {
 	_ = enc.WriteByte(subPacket.Setting.Uint8())
 	// 客户端消息编号
 	enc.WriteString(subPacket.SubNo)
@@ -62,14 +59,13 @@ func encodeSub(frame Frame, enc *Encoder, _ uint8) error {
 	return nil
 }
 
-func encodeSubSize(frame Frame, _ uint8) int {
-	subPacket := frame.(*wkpacket.SubPacket)
+func encodeSubSize(subPacket *wkpacket.SubPacket, _ uint8) int {
 	var size = 0
-	size += SettingByteSize
-	size += (len(subPacket.SubNo) + StringFixLenByteSize)
-	size += (len(subPacket.ChannelID) + StringFixLenByteSize)
-	size += ChannelTypeByteSize
-	size += ActionByteSize
-	size += (len(subPacket.Param) + StringFixLenByteSize)
+	size += wkpacket.SettingByteSize
+	size += len(subPacket.SubNo) + wkpacket.StringFixLenByteSize
+	size += len(subPacket.ChannelID) + wkpacket.StringFixLenByteSize
+	size += wkpacket.ChannelTypeByteSize
+	size += wkpacket.ActionByteSize
+	size += len(subPacket.Param) + wkpacket.StringFixLenByteSize
 	return size
 }

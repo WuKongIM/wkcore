@@ -5,9 +5,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-type RecvackPacket = wkpacket.RecvackPacket
-
-func decodeRecvack(frame Frame, data []byte, _ uint8) (Frame, error) {
+func decodeRecvack(frame wkpacket.Frame, data []byte, _ uint8) (wkpacket.Frame, error) {
 	dec := NewDecoder(data)
 	recvackPacket := &wkpacket.RecvackPacket{}
 	recvackPacket.Framer = frame.(wkpacket.Framer)
@@ -30,6 +28,5 @@ func encodeRecvack(recvackPacket *wkpacket.RecvackPacket, enc *Encoder, _ uint8)
 }
 
 func encodeRecvackSize(_ *wkpacket.RecvackPacket, _ uint8) int {
-
-	return MessageIDByteSize + MessageSeqByteSize
+	return wkpacket.MessageIDByteSize + wkpacket.MessageSeqByteSize
 }

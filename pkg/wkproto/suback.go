@@ -5,16 +5,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-type Action = wkpacket.Action
-
-const (
-	Subscribe   Action = wkpacket.Subscribe
-	UnSubscribe Action = wkpacket.UnSubscribe
-)
-
-type SubackPacket = wkpacket.SubackPacket
-
-func decodeSuback(frame Frame, data []byte, version uint8) (Frame, error) {
+func decodeSuback(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Frame, error) {
 	dec := NewDecoder(data)
 
 	subackPacket := &wkpacket.SubackPacket{}
@@ -50,8 +41,7 @@ func decodeSuback(frame Frame, data []byte, version uint8) (Frame, error) {
 	return subackPacket, nil
 }
 
-func encodeSuback(frame Frame, enc *Encoder, _ uint8) error {
-	subackPacket := frame.(*wkpacket.SubackPacket)
+func encodeSuback(subackPacket *wkpacket.SubackPacket, enc *Encoder, _ uint8) error {
 	// 客户端消息编号
 	enc.WriteString(subackPacket.SubNo)
 	// 频道ID
@@ -65,13 +55,12 @@ func encodeSuback(frame Frame, enc *Encoder, _ uint8) error {
 	return nil
 }
 
-func encodeSubackSize(frame Frame, _ uint8) int {
-	subPacket := frame.(*wkpacket.SubackPacket)
+func encodeSubackSize(subPacket *wkpacket.SubackPacket, _ uint8) int {
 	var size = 0
-	size += (len(subPacket.SubNo) + StringFixLenByteSize)
-	size += (len(subPacket.ChannelID) + StringFixLenByteSize)
-	size += ChannelTypeByteSize
-	size += ActionByteSize
-	size += ReasonCodeByteSize
+	size += len(subPacket.SubNo) + wkpacket.StringFixLenByteSize
+	size += len(subPacket.ChannelID) + wkpacket.StringFixLenByteSize
+	size += wkpacket.ChannelTypeByteSize
+	size += wkpacket.ActionByteSize
+	size += wkpacket.ReasonCodeByteSize
 	return size
 }

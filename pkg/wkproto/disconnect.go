@@ -5,9 +5,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-type DisconnectPacket = wkpacket.DisconnectPacket
-
-func decodeDisConnect(frame Frame, data []byte, version uint8) (Frame, error) {
+func decodeDisConnect(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Frame, error) {
 	dec := NewDecoder(data)
 	disConnectPacket := &wkpacket.DisconnectPacket{}
 	disConnectPacket.Framer = frame.(wkpacket.Framer)
@@ -34,6 +32,5 @@ func encodeDisConnect(disConnectPacket *wkpacket.DisconnectPacket, enc *Encoder,
 }
 
 func encodeDisConnectSize(packet *wkpacket.DisconnectPacket, _ uint8) int {
-
-	return ReasonCodeByteSize + len(packet.Reason) + StringFixLenByteSize
+	return wkpacket.ReasonCodeByteSize + len(packet.Reason) + wkpacket.StringFixLenByteSize
 }

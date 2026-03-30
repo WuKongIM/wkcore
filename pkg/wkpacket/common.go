@@ -352,8 +352,4 @@ const (
 const (
 	// LatestVersion 最新版本
 	LatestVersion = 5
-	// MaxRemaingLength 最大剩余长度 // 1<<28 - 1
-	MaxRemaingLength uint32 = 1024 * 1024
-	// PayloadMaxSize 最大负载大小
-	PayloadMaxSize = 1<<15 - 1
 )

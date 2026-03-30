@@ -5,9 +5,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-type SendackPacket = wkpacket.SendackPacket
-
-func decodeSendack(frame Frame, data []byte, version uint8) (Frame, error) {
+func decodeSendack(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Frame, error) {
 	dec := NewDecoder(data)
 	sendackPacket := &wkpacket.SendackPacket{}
 	sendackPacket.Framer = frame.(wkpacket.Framer)
@@ -52,6 +50,5 @@ func encodeSendack(sendackPacket *wkpacket.SendackPacket, enc *Encoder, _ uint8)
 }
 
 func encodeSendackSize(_ *wkpacket.SendackPacket, _ uint8) int {
-
-	return MessageIDByteSize + ClientSeqByteSize + MessageSeqByteSize + ReasonCodeByteSize
+	return wkpacket.MessageIDByteSize + wkpacket.ClientSeqByteSize + wkpacket.MessageSeqByteSize + wkpacket.ReasonCodeByteSize
 }

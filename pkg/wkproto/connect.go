@@ -5,9 +5,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-type ConnectPacket = wkpacket.ConnectPacket
-
-func decodeConnect(frame Frame, data []byte, version uint8) (Frame, error) {
+func decodeConnect(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Frame, error) {
 	dec := NewDecoder(data)
 	connectPacket := &wkpacket.ConnectPacket{}
 	connectPacket.Framer = frame.(wkpacket.Framer)
@@ -60,22 +58,13 @@ func encodeConnect(connectPacket *wkpacket.ConnectPacket, enc *Encoder, _ uint8)
 }
 
 func encodeConnectSize(connectPacket *wkpacket.ConnectPacket, _ uint8) int {
-
 	var size = 0
-
-	size += VersionByteSize
-
-	size += DeviceFlagByteSize
-
-	size += (len(connectPacket.DeviceID) + StringFixLenByteSize)
-
-	size += (len(connectPacket.UID) + StringFixLenByteSize)
-
-	size += (len(connectPacket.Token) + StringFixLenByteSize)
-
-	size += ClientTimestampByteSize
-
-	size += (len(connectPacket.ClientKey) + StringFixLenByteSize)
-
+	size += wkpacket.VersionByteSize
+	size += wkpacket.DeviceFlagByteSize
+	size += len(connectPacket.DeviceID) + wkpacket.StringFixLenByteSize
+	size += len(connectPacket.UID) + wkpacket.StringFixLenByteSize
+	size += len(connectPacket.Token) + wkpacket.StringFixLenByteSize
+	size += wkpacket.ClientTimestampByteSize
+	size += len(connectPacket.ClientKey) + wkpacket.StringFixLenByteSize
 	return size
 }
