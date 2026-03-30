@@ -1,4 +1,4 @@
-package wkfsm
+package wkstore
 
 import (
 	"context"
@@ -20,11 +20,11 @@ import (
 )
 
 const (
-	stressEnvKey      = "WKFSM_STRESS"
-	stressDurationEnv = "WKFSM_STRESS_DURATION"
-	stressWorkersEnv  = "WKFSM_STRESS_WORKERS"
-	stressSlotsEnv    = "WKFSM_STRESS_SLOTS"
-	stressSeedEnv     = "WKFSM_STRESS_SEED"
+	fsmStressEnvKey      = "WKFSM_STRESS"
+	fsmStressDurationEnv = "WKFSM_STRESS_DURATION"
+	fsmStressWorkersEnv  = "WKFSM_STRESS_WORKERS"
+	fsmStressSlotsEnv    = "WKFSM_STRESS_SLOTS"
+	fsmStressSeedEnv     = "WKFSM_STRESS_SEED"
 )
 
 type fsmStressConfig struct {
@@ -59,20 +59,20 @@ func loadFSMStressConfig(t *testing.T) fsmStressConfig {
 	t.Helper()
 
 	cfg := fsmStressConfig{
-		Enabled:  fsmEnvBool(stressEnvKey, false),
-		Duration: fsmEnvDuration(t, stressDurationEnv, 2*time.Second),
-		Workers:  fsmEnvInt(t, stressWorkersEnv, max(4, runtime.GOMAXPROCS(0))),
-		Slots:    fsmEnvInt(t, stressSlotsEnv, 4),
-		Seed:     fsmEnvInt64(t, stressSeedEnv, 20260328),
+		Enabled:  fsmEnvBool(fsmStressEnvKey, false),
+		Duration: fsmEnvDuration(t, fsmStressDurationEnv, 2*time.Second),
+		Workers:  fsmEnvInt(t, fsmStressWorkersEnv, max(4, runtime.GOMAXPROCS(0))),
+		Slots:    fsmEnvInt(t, fsmStressSlotsEnv, 4),
+		Seed:     fsmEnvInt64(t, fsmStressSeedEnv, 20260328),
 	}
 	if cfg.Workers <= 0 {
-		t.Fatalf("%s must be > 0, got %d", stressWorkersEnv, cfg.Workers)
+		t.Fatalf("%s must be > 0, got %d", fsmStressWorkersEnv, cfg.Workers)
 	}
 	if cfg.Slots <= 0 {
-		t.Fatalf("%s must be > 0, got %d", stressSlotsEnv, cfg.Slots)
+		t.Fatalf("%s must be > 0, got %d", fsmStressSlotsEnv, cfg.Slots)
 	}
 	if cfg.Duration <= 0 {
-		t.Fatalf("%s must be > 0, got %s", stressDurationEnv, cfg.Duration)
+		t.Fatalf("%s must be > 0, got %s", fsmStressDurationEnv, cfg.Duration)
 	}
 	return cfg
 }
@@ -85,11 +85,11 @@ func requireFSMStressEnabled(t *testing.T, cfg fsmStressConfig) {
 	}
 }
 
-// TestStressConcurrentApply hammers Apply from multiple goroutines, each
+// TestFSMStressConcurrentApply hammers Apply from multiple goroutines, each
 // sending a mix of user and channel upserts to different slots. After the
 // workload completes, it verifies that every record written through Apply
 // can be read back from the database.
-func TestStressConcurrentApply(t *testing.T) {
+func TestFSMStressConcurrentApply(t *testing.T) {
 	cfg := loadFSMStressConfig(t)
 	requireFSMStressEnabled(t, cfg)
 
@@ -259,11 +259,11 @@ func TestStressConcurrentApply(t *testing.T) {
 		stats.UserApplies, stats.ChannelApplies)
 }
 
-// TestStressSnapshotRestoreUnderConcurrentApply runs Apply and
+// TestFSMStressSnapshotRestoreUnderConcurrentApply runs Apply and
 // Snapshot/Restore cycles concurrently. Snapshot captures a point-in-time
 // view and Restore recreates it on a fresh DB; we verify the restored DB
 // contains a valid subset of what was written.
-func TestStressSnapshotRestoreUnderConcurrentApply(t *testing.T) {
+func TestFSMStressSnapshotRestoreUnderConcurrentApply(t *testing.T) {
 	cfg := loadFSMStressConfig(t)
 	requireFSMStressEnabled(t, cfg)
 
@@ -415,9 +415,9 @@ func TestStressSnapshotRestoreUnderConcurrentApply(t *testing.T) {
 		cfg.Seed, cfg.Workers, cfg.Slots, cfg.Duration, applyCnt.Load(), snapCnt.Load())
 }
 
-// TestStressMultiSlotIsolation verifies that concurrent Apply operations on
+// TestFSMStressMultiSlotIsolation verifies that concurrent Apply operations on
 // different slots never leak data across slot boundaries.
-func TestStressMultiSlotIsolation(t *testing.T) {
+func TestFSMStressMultiSlotIsolation(t *testing.T) {
 	cfg := loadFSMStressConfig(t)
 	requireFSMStressEnabled(t, cfg)
 
@@ -537,10 +537,10 @@ func TestStressMultiSlotIsolation(t *testing.T) {
 		cfg.Seed, cfg.Workers, cfg.Slots, cfg.Duration, totalUIDs)
 }
 
-// TestStressRaftIntegrationApply runs Apply through the full Raft pipeline
+// TestFSMStressRaftIntegrationApply runs Apply through the full Raft pipeline
 // (Propose → commit → Apply) from multiple goroutines using in-memory
 // Raft storage.
-func TestStressRaftIntegrationApply(t *testing.T) {
+func TestFSMStressRaftIntegrationApply(t *testing.T) {
 	cfg := loadFSMStressConfig(t)
 	requireFSMStressEnabled(t, cfg)
 
@@ -649,10 +649,10 @@ func TestStressRaftIntegrationApply(t *testing.T) {
 		cfg.Seed, cfg.Workers, cfg.Slots, cfg.Duration, applyCnt.Load())
 }
 
-// TestStressPebbleBackedRaftIntegration runs Apply through the full Raft
+// TestFSMStressPebbleBackedRaftIntegration runs Apply through the full Raft
 // pipeline using Pebble-backed Raft storage, exercising the real on-disk
 // persistence path.
-func TestStressPebbleBackedRaftIntegration(t *testing.T) {
+func TestFSMStressPebbleBackedRaftIntegration(t *testing.T) {
 	cfg := loadFSMStressConfig(t)
 	requireFSMStressEnabled(t, cfg)
 
