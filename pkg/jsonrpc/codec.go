@@ -390,7 +390,11 @@ func ToFrame(packet interface{}) (wkpacket.Frame, string, error) {
 	case ConnectRequest:
 		return p.Params.ToProto(), p.ID, nil
 	case SendRequest:
-		return p.Params.ToProto(), p.ID, nil
+		frame, err := p.ToProto()
+		if err != nil {
+			return nil, "", err
+		}
+		return frame, p.ID, nil
 	case PingRequest:
 		return &wkpacket.PingPacket{}, p.ID, nil
 	case DisconnectRequest:
