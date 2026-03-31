@@ -11,7 +11,14 @@ type Handler interface {
 }
 
 type Session interface {
+	ID() uint64
+	Listener() string
+	RemoteAddr() string
+	LocalAddr() string
 	WriteFrame(frame wkpacket.Frame, opts ...WriteOption) error
+	Close() error
+	SetValue(key string, value any)
+	Value(key string) any
 }
 
 type Context struct {

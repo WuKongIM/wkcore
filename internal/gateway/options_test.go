@@ -71,3 +71,38 @@ func TestOptionsValidateNormalizesPartialSessionOverrides(t *testing.T) {
 		t.Fatalf("expected CloseOnHandlerError to remain true after normalization, got %+v", opts.DefaultSession)
 	}
 }
+
+func TestOptionsValidateRequiresWebsocketPath(t *testing.T) {
+	opts := gateway.Options{
+		Handler: noopHandler{},
+		Listeners: []gateway.ListenerOptions{
+			{Name: "ws", Network: "websocket", Address: ":5200", Transport: "stdnet", Protocol: "jsonrpc"},
+		},
+	}
+	if err := opts.Validate(); err == nil {
+		t.Fatal("expected websocket listener path validation error")
+	}
+}
+
+func TestOptionsValidateTrimsListenerFieldsInPlace(t *testing.T) {
+	opts := gateway.Options{
+		Handler: noopHandler{},
+		Listeners: []gateway.ListenerOptions{
+			{
+				Name:      "  ws-jsonrpc  ",
+				Network:   "  websocket  ",
+				Address:   "  :5200  ",
+				Path:      "  /ws  ",
+				Transport: "  stdnet  ",
+				Protocol:  "  jsonrpc  ",
+			},
+		},
+	}
+	if err := opts.Validate(); err != nil {
+		t.Fatalf("validate failed: %v", err)
+	}
+	got := opts.Listeners[0]
+	if got.Name != "ws-jsonrpc" || got.Network != "websocket" || got.Address != ":5200" || got.Path != "/ws" || got.Transport != "stdnet" || got.Protocol != "jsonrpc" {
+		t.Fatalf("expected listener fields to be trimmed in place, got %+v", got)
+	}
+}
