@@ -1,10 +1,12 @@
 package gateway_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
+	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
 	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 )
 
@@ -29,14 +31,28 @@ func TestOptionsValidateRejectsDuplicateListenerNames(t *testing.T) {
 	}
 }
 
+func TestOptionsValidateRejectsDuplicateListenerAddresses(t *testing.T) {
+	opts := gateway.Options{
+		Handler: noopHandler{},
+		Listeners: []gateway.ListenerOptions{
+			{Name: "tcp-a", Network: "tcp", Address: ":5100", Transport: "stdnet", Protocol: "wkproto"},
+			{Name: "ws-b", Network: "websocket", Address: ":5100", Transport: "stdnet", Protocol: "jsonrpc"},
+		},
+	}
+	err := opts.Validate()
+	if !errors.Is(err, gatewaytypes.ErrListenerAddressDuplicate) {
+		t.Fatalf("expected ErrListenerAddressDuplicate, got %v", err)
+	}
+}
+
 func TestBuiltinPresetsPopulateCanonicalFields(t *testing.T) {
 	tcp := binding.TCPWKProto("tcp-wkproto", ":5100")
-	if tcp.Network != "tcp" || tcp.Transport != "stdnet" || tcp.Protocol != "wkproto" {
+	if tcp.Network != "tcp" || tcp.Transport != "gnet" || tcp.Protocol != "wkproto" {
 		t.Fatalf("unexpected tcp preset: %+v", tcp)
 	}
 
 	ws := binding.WSJSONRPC("ws-jsonrpc", ":5200")
-	if ws.Network != "websocket" || ws.Transport != "stdnet" || ws.Protocol != "jsonrpc" || ws.Path != binding.DefaultWSPath {
+	if ws.Network != "websocket" || ws.Transport != "gnet" || ws.Protocol != "jsonrpc" || ws.Path != binding.DefaultWSPath {
 		t.Fatalf("unexpected ws preset: %+v", ws)
 	}
 }
@@ -91,6 +107,19 @@ func TestOptionsValidateRequiresWebsocketPath(t *testing.T) {
 	}
 	if err := opts.Validate(); err == nil {
 		t.Fatal("expected websocket listener path validation error")
+	}
+}
+
+func TestOptionsValidateAcceptsExplicitStdnetListeners(t *testing.T) {
+	opts := gateway.Options{
+		Handler: noopHandler{},
+		Listeners: []gateway.ListenerOptions{
+			{Name: "tcp", Network: "tcp", Address: ":5100", Transport: "stdnet", Protocol: "wkproto"},
+			{Name: "ws", Network: "websocket", Address: ":5200", Path: binding.DefaultWSPath, Transport: "stdnet", Protocol: "jsonrpc"},
+		},
+	}
+	if err := opts.Validate(); err != nil {
+		t.Fatalf("expected explicit stdnet listeners to remain valid, got %v", err)
 	}
 }
 

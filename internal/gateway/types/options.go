@@ -48,7 +48,8 @@ func (o *Options) Validate() error {
 		return fmt.Errorf("gateway: nil options")
 	}
 	o.DefaultSession = normalizeSessionOptions(o.DefaultSession)
-	seen := make(map[string]struct{}, len(o.Listeners))
+	seenNames := make(map[string]struct{}, len(o.Listeners))
+	seenAddresses := make(map[string]struct{}, len(o.Listeners))
 	for i := range o.Listeners {
 		o.Listeners[i].Name = strings.TrimSpace(o.Listeners[i].Name)
 		o.Listeners[i].Network = strings.TrimSpace(o.Listeners[i].Network)
@@ -66,13 +67,17 @@ func (o *Options) Validate() error {
 		if name == "" {
 			return ErrListenerNameEmpty
 		}
-		if _, ok := seen[name]; ok {
+		if _, ok := seenNames[name]; ok {
 			return ErrListenerNameDuplicate
 		}
-		seen[name] = struct{}{}
+		seenNames[name] = struct{}{}
 		if address == "" {
 			return ErrListenerAddressEmpty
 		}
+		if _, ok := seenAddresses[address]; ok {
+			return ErrListenerAddressDuplicate
+		}
+		seenAddresses[address] = struct{}{}
 		if network == "" {
 			return ErrListenerNetworkEmpty
 		}
