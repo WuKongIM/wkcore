@@ -23,6 +23,7 @@ type listenerRuntime struct {
 	mu        sync.RWMutex
 	boundAddr string
 	active    bool
+	conns     map[*connState]struct{}
 }
 
 func (r *listenerRuntime) addr() string {
@@ -35,6 +36,52 @@ func (r *listenerRuntime) setAddr(addr string) {
 	r.mu.Lock()
 	r.boundAddr = addr
 	r.mu.Unlock()
+}
+
+func (r *listenerRuntime) isActive() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.active
+}
+
+func (r *listenerRuntime) setActive(active bool) {
+	r.mu.Lock()
+	r.active = active
+	r.mu.Unlock()
+}
+
+func (r *listenerRuntime) trackConn(state *connState) {
+	if r == nil || state == nil {
+		return
+	}
+
+	r.mu.Lock()
+	if r.conns == nil {
+		r.conns = make(map[*connState]struct{})
+	}
+	r.conns[state] = struct{}{}
+	r.mu.Unlock()
+}
+
+func (r *listenerRuntime) untrackConn(state *connState) {
+	if r == nil || state == nil {
+		return
+	}
+
+	r.mu.Lock()
+	delete(r.conns, state)
+	r.mu.Unlock()
+}
+
+func (r *listenerRuntime) snapshotConns() []*connState {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	conns := make([]*connState, 0, len(r.conns))
+	for state := range r.conns {
+		conns = append(conns, state)
+	}
+	return conns
 }
 
 type engineCycle struct {
@@ -60,31 +107,39 @@ func (c *engineCycle) signalBoot(err error) {
 type engineGroup struct {
 	gnetv2.BuiltinEventEngine
 
-	mu               sync.Mutex
-	runtimes         []*listenerRuntime
-	routes           map[string]*listenerRuntime
-	engine           gnetv2.Engine
-	cycle            *engineCycle
-	running          bool
-	reconciling      bool
-	reconcileCh      chan struct{}
-	startingRuntimes []*listenerRuntime
+	mu            sync.Mutex
+	runtimes      []*listenerRuntime
+	tcpRuntimes   []*listenerRuntime
+	routes        map[string]*listenerRuntime
+	engine        gnetv2.Engine
+	cycle         *engineCycle
+	running       bool
+	transitioning bool
+	transitionCh  chan struct{}
+	bootRuntimes  []*listenerRuntime
 
 	nextConnID atomic.Uint64
 }
 
 func newEngineGroup(specs []transport.ListenerSpec) *engineGroup {
 	runtimes := make([]*listenerRuntime, 0, len(specs))
+	tcpRuntimes := make([]*listenerRuntime, 0, len(specs))
 	for _, spec := range specs {
-		runtimes = append(runtimes, &listenerRuntime{
+		runtime := &listenerRuntime{
 			opts:    spec.Options,
 			handler: spec.Handler,
-		})
+			conns:   make(map[*connState]struct{}),
+		}
+		runtimes = append(runtimes, runtime)
+		if spec.Options.Network == "tcp" {
+			tcpRuntimes = append(tcpRuntimes, runtime)
+		}
 	}
 
 	return &engineGroup{
-		runtimes: runtimes,
-		routes:   make(map[string]*listenerRuntime, len(runtimes)),
+		runtimes:    runtimes,
+		tcpRuntimes: tcpRuntimes,
+		routes:      make(map[string]*listenerRuntime, len(tcpRuntimes)),
 	}
 }
 
@@ -96,75 +151,96 @@ func (g *engineGroup) start(runtime *listenerRuntime) error {
 		return errWebSocketNotImplemented
 	}
 
-	return g.setRuntimeActive(runtime, true)
+	runtime.setActive(true)
+
+	for {
+		g.mu.Lock()
+		if g.transitioning {
+			wait := g.transitionCh
+			g.mu.Unlock()
+			<-wait
+			continue
+		}
+		if g.running {
+			g.mu.Unlock()
+			return nil
+		}
+
+		g.transitioning = true
+		g.transitionCh = make(chan struct{})
+		bootRuntimes := append([]*listenerRuntime(nil), g.tcpRuntimes...)
+		g.mu.Unlock()
+
+		err := g.startEngine(bootRuntimes)
+
+		g.mu.Lock()
+		if err == nil {
+			g.running = true
+		}
+		close(g.transitionCh)
+		g.transitioning = false
+		g.mu.Unlock()
+
+		if err != nil {
+			runtime.setActive(false)
+			return err
+		}
+		return nil
+	}
 }
 
 func (g *engineGroup) stop(runtime *listenerRuntime) error {
 	if runtime == nil {
 		return nil
 	}
+	if runtime.opts.Network == "websocket" {
+		runtime.setActive(false)
+		return nil
+	}
 
-	return g.setRuntimeActive(runtime, false)
-}
+	runtime.setActive(false)
+	for _, state := range runtime.snapshotConns() {
+		_ = state.raw.Close()
+	}
 
-func (g *engineGroup) setRuntimeActive(runtime *listenerRuntime, active bool) error {
 	for {
 		g.mu.Lock()
-		if g.reconciling {
-			wait := g.reconcileCh
+		if g.transitioning {
+			wait := g.transitionCh
 			g.mu.Unlock()
 			<-wait
 			continue
 		}
-		if runtime.active == active {
+		if g.hasActiveTCPLocked() {
+			g.mu.Unlock()
+			return nil
+		}
+		if !g.running {
 			g.mu.Unlock()
 			return nil
 		}
 
-		previous := g.activeRuntimesLocked()
-		runtime.active = active
-		desired := g.activeRuntimesLocked()
-		if sameRuntimes(previous, desired) {
-			g.mu.Unlock()
-			return nil
-		}
-
-		g.reconciling = true
-		g.reconcileCh = make(chan struct{})
+		g.transitioning = true
+		g.transitionCh = make(chan struct{})
+		engine := g.engine
+		cycle := g.cycle
 		g.mu.Unlock()
 
-		err := g.reconcileActiveRuntimes(desired)
-		if err != nil {
-			rollbackErr := g.reconcileActiveRuntimes(previous)
-
-			g.mu.Lock()
-			g.setActiveRuntimesLocked(previous)
-			close(g.reconcileCh)
-			g.reconciling = false
-			g.mu.Unlock()
-
-			if rollbackErr != nil {
-				return fmt.Errorf("gateway/transport/gnet: reconcile failed: %w (rollback failed: %v)", err, rollbackErr)
-			}
-			return err
-		}
+		err := g.stopEngine(engine, cycle)
 
 		g.mu.Lock()
-		close(g.reconcileCh)
-		g.reconciling = false
+		if g.engine == engine && g.cycle == cycle {
+			g.engine = gnetv2.Engine{}
+			g.cycle = nil
+			g.routes = make(map[string]*listenerRuntime, len(g.tcpRuntimes))
+			g.bootRuntimes = nil
+			g.running = false
+		}
+		close(g.transitionCh)
+		g.transitioning = false
 		g.mu.Unlock()
-		return nil
-	}
-}
-
-func (g *engineGroup) reconcileActiveRuntimes(desired []*listenerRuntime) error {
-	if err := g.stopEngine(); err != nil {
 		return err
 	}
-	if len(desired) == 0 {
-		return nil
-	}
-	return g.startEngine(desired)
 }
 
 func (g *engineGroup) startEngine(runtimes []*listenerRuntime) error {
@@ -172,8 +248,8 @@ func (g *engineGroup) startEngine(runtimes []*listenerRuntime) error {
 
 	g.mu.Lock()
 	g.cycle = cycle
+	g.bootRuntimes = append([]*listenerRuntime(nil), runtimes...)
 	g.routes = make(map[string]*listenerRuntime, len(runtimes))
-	g.startingRuntimes = append([]*listenerRuntime(nil), runtimes...)
 	g.mu.Unlock()
 
 	addrs := make([]string, 0, len(runtimes))
@@ -192,8 +268,8 @@ func (g *engineGroup) startEngine(runtimes []*listenerRuntime) error {
 		g.mu.Lock()
 		if g.cycle == cycle {
 			g.cycle = nil
-			g.startingRuntimes = nil
-			g.routes = make(map[string]*listenerRuntime)
+			g.bootRuntimes = nil
+			g.routes = make(map[string]*listenerRuntime, len(g.tcpRuntimes))
 			g.engine = gnetv2.Engine{}
 			g.running = false
 		}
@@ -203,18 +279,30 @@ func (g *engineGroup) startEngine(runtimes []*listenerRuntime) error {
 
 	g.mu.Lock()
 	if g.cycle == cycle {
-		g.running = true
-		g.startingRuntimes = nil
+		g.bootRuntimes = nil
 	}
 	g.mu.Unlock()
 	return nil
+}
+
+func (g *engineGroup) stopEngine(engine gnetv2.Engine, cycle *engineCycle) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err := engine.Stop(ctx)
+	cancel()
+
+	if cycle != nil {
+		if runErr, ok := <-cycle.doneCh; ok && err == nil {
+			err = runErr
+		}
+	}
+	return err
 }
 
 func (g *engineGroup) OnBoot(engine gnetv2.Engine) (action gnetv2.Action) {
 	g.mu.Lock()
 	g.engine = engine
 	cycle := g.cycle
-	runtimes := append([]*listenerRuntime(nil), g.startingRuntimes...)
+	runtimes := append([]*listenerRuntime(nil), g.bootRuntimes...)
 	g.mu.Unlock()
 
 	routes, err := g.resolveRoutes(engine, runtimes)
@@ -238,11 +326,12 @@ func (g *engineGroup) OnBoot(engine gnetv2.Engine) (action gnetv2.Action) {
 
 func (g *engineGroup) OnOpen(c gnetv2.Conn) (out []byte, action gnetv2.Action) {
 	runtime := g.runtimeByAddr(c.LocalAddr().String())
-	if runtime == nil {
+	if runtime == nil || !runtime.isActive() {
 		return nil, gnetv2.Close
 	}
 
 	state := newConnState(g.nextConnID.Add(1), c, runtime)
+	runtime.trackConn(state)
 	c.SetContext(state)
 	state.enqueueOpen()
 	return nil, gnetv2.None
@@ -252,6 +341,10 @@ func (g *engineGroup) OnTraffic(c gnetv2.Conn) (action gnetv2.Action) {
 	state, ok := c.Context().(*connState)
 	if !ok || state == nil {
 		return gnetv2.Close
+	}
+	if !state.runtime.isActive() {
+		_ = c.Close()
+		return gnetv2.None
 	}
 
 	buf, err := c.Next(-1)
@@ -272,6 +365,7 @@ func (g *engineGroup) OnTraffic(c gnetv2.Conn) (action gnetv2.Action) {
 func (g *engineGroup) OnClose(c gnetv2.Conn, err error) (action gnetv2.Action) {
 	state, _ := c.Context().(*connState)
 	if state != nil {
+		state.runtime.untrackConn(state)
 		state.enqueueClose(err)
 	}
 	return gnetv2.None
@@ -332,73 +426,11 @@ func (g *engineGroup) reportGroupError(runtimes []*listenerRuntime, err error) {
 	}
 }
 
-func (g *engineGroup) stopEngine() error {
-	g.mu.Lock()
-	if !g.running {
-		g.cycle = nil
-		g.engine = gnetv2.Engine{}
-		g.routes = make(map[string]*listenerRuntime)
-		g.startingRuntimes = nil
-		g.mu.Unlock()
-		return nil
-	}
-
-	engine := g.engine
-	cycle := g.cycle
-	g.mu.Unlock()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	err := engine.Stop(ctx)
-	cancel()
-
-	if cycle != nil {
-		if runErr, ok := <-cycle.doneCh; ok && err == nil {
-			err = runErr
+func (g *engineGroup) hasActiveTCPLocked() bool {
+	for _, runtime := range g.tcpRuntimes {
+		if runtime.isActive() {
+			return true
 		}
 	}
-
-	g.mu.Lock()
-	if g.cycle == cycle {
-		g.cycle = nil
-		g.engine = gnetv2.Engine{}
-		g.routes = make(map[string]*listenerRuntime)
-		g.startingRuntimes = nil
-		g.running = false
-	}
-	g.mu.Unlock()
-
-	return err
-}
-
-func (g *engineGroup) activeRuntimesLocked() []*listenerRuntime {
-	active := make([]*listenerRuntime, 0, len(g.runtimes))
-	for _, runtime := range g.runtimes {
-		if runtime.active {
-			active = append(active, runtime)
-		}
-	}
-	return active
-}
-
-func (g *engineGroup) setActiveRuntimesLocked(active []*listenerRuntime) {
-	activeSet := make(map[*listenerRuntime]struct{}, len(active))
-	for _, runtime := range active {
-		activeSet[runtime] = struct{}{}
-	}
-	for _, runtime := range g.runtimes {
-		_, ok := activeSet[runtime]
-		runtime.active = ok
-	}
-}
-
-func sameRuntimes(left, right []*listenerRuntime) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
+	return false
 }

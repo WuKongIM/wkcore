@@ -106,9 +106,13 @@ func TestTCPListenersShareOneEngineAndRemainIndependentlyAddressable(t *testing.
 	}
 }
 
-func TestTCPStopOneLogicalListenerKeepsSharedGroupRunning(t *testing.T) {
-	firstHandler := newTCPRecordingHandler(nil)
-	secondHandler := newTCPRecordingHandler(nil)
+func TestTCPStopOneLogicalListenerKeepsOtherConnectionsAlive(t *testing.T) {
+	firstHandler := newTCPRecordingHandler(func(conn transport.Conn, data []byte) error {
+		return conn.Write([]byte("first:" + string(data)))
+	})
+	secondHandler := newTCPRecordingHandler(func(conn transport.Conn, data []byte) error {
+		return conn.Write([]byte("second:" + string(data)))
+	})
 
 	first, second := buildTCPListeners(t,
 		namedTCPListenerSpecWithAddress("tcp-a", firstHandler, freeTCPAddress(t)),
@@ -124,18 +128,24 @@ func TestTCPStopOneLogicalListenerKeepsSharedGroupRunning(t *testing.T) {
 		t.Fatalf("second Start: %v", err)
 	}
 
-	firstAddr := first.Addr()
-	secondAddr := second.Addr()
+	firstConn := mustDialTCP(t, first.Addr())
+	defer func() { _ = firstConn.Close() }()
+	secondConn := mustDialTCP(t, second.Addr())
+	defer func() { _ = secondConn.Close() }()
+
+	waitUntil(t, time.Second, func() bool {
+		return firstHandler.OpenCount() == 1 && secondHandler.OpenCount() == 1
+	})
 
 	if err := first.Stop(); err != nil {
 		t.Fatalf("first Stop: %v", err)
 	}
 
 	waitUntil(t, time.Second, func() bool {
-		return !canDial(firstAddr) && canDial(secondAddr)
+		return firstHandler.CloseCount() == 1
 	})
 
-	sendTCPPayload(t, secondAddr, "still-running")
+	writeAndReadExact(t, secondConn, []byte("still-running"), "second:still-running")
 	waitUntil(t, time.Second, func() bool { return secondHandler.DataCount() == 1 })
 
 	if got, want := secondHandler.DataPayload(0), "still-running"; got != want {
@@ -143,6 +153,23 @@ func TestTCPStopOneLogicalListenerKeepsSharedGroupRunning(t *testing.T) {
 	}
 	if got := firstHandler.DataCount(); got != 0 {
 		t.Fatalf("stopped listener received %d payloads, want 0", got)
+	}
+
+	expectReadFailure(t, firstConn)
+
+	postStopConn, err := net.DialTimeout("tcp", first.Addr(), 200*time.Millisecond)
+	if err == nil {
+		defer func() { _ = postStopConn.Close() }()
+		_ = postStopConn.SetWriteDeadline(time.Now().Add(200 * time.Millisecond))
+		_, _ = postStopConn.Write([]byte("blocked"))
+		expectReadFailure(t, postStopConn)
+	}
+
+	if got := firstHandler.OpenCount(); got != 1 {
+		t.Fatalf("stopped listener open count = %d, want 1", got)
+	}
+	if got := firstHandler.DataCount(); got != 0 {
+		t.Fatalf("stopped listener data count = %d, want 0", got)
 	}
 }
 
@@ -341,14 +368,50 @@ func namedTCPListenerSpecWithAddress(name string, handler transport.ConnHandler,
 func sendTCPPayload(t *testing.T, addr string, payload string) {
 	t.Helper()
 
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		t.Fatalf("Dial(%q): %v", addr, err)
-	}
+	conn := mustDialTCP(t, addr)
 	defer func() { _ = conn.Close() }()
 
 	if _, err := conn.Write([]byte(payload)); err != nil {
 		t.Fatalf("Write(%q): %v", addr, err)
+	}
+}
+
+func mustDialTCP(t *testing.T, addr string) net.Conn {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q): %v", addr, err)
+	}
+	return conn
+}
+
+func writeAndReadExact(t *testing.T, conn net.Conn, payload []byte, want string) {
+	t.Helper()
+
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	reply := make([]byte, len(want))
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("ReadFull: %v", err)
+	}
+	if got := string(reply); got != want {
+		t.Fatalf("reply = %q, want %q", got, want)
+	}
+}
+
+func expectReadFailure(t *testing.T, conn net.Conn) {
+	t.Helper()
+
+	if err := conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
+
+	buf := make([]byte, 1)
+	if _, err := conn.Read(buf); err == nil {
+		t.Fatal("Read succeeded, want connection to be closed")
 	}
 }
 
