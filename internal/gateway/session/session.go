@@ -27,6 +27,11 @@ type Session interface {
 	Value(key string) any
 }
 
+type EncodedQueue interface {
+	EnqueueEncoded(payload []byte) error
+	DequeueEncoded() ([]byte, bool)
+}
+
 type WriteOption interface {
 	apply(*OutboundMeta)
 }
@@ -234,4 +239,12 @@ func (s *session) dequeueEncoded() ([]byte, bool) {
 	s.queueMu.Unlock()
 
 	return payload, true
+}
+
+func (s *session) EnqueueEncoded(payload []byte) error {
+	return s.enqueueEncoded(payload)
+}
+
+func (s *session) DequeueEncoded() ([]byte, bool) {
+	return s.dequeueEncoded()
 }
