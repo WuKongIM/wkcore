@@ -57,7 +57,7 @@ The design must preserve the ability to add:
 internal/gateway/
   gateway.go            // Public entrypoint: New/Start/Stop
   options.go            // Top-level gateway and listener options
-  event.go              // Upstream handler and event context
+  event.go              // Upstream handler, event context, and outbound metadata
   errors.go             // Shared gateway errors and close reasons
 
   core/
@@ -115,6 +115,32 @@ Design notes:
 - Returning an error from `OnFrame` or `OnSessionOpen` is treated as a handler error
 - `OnSessionError` is notification-only and does not return an error
 
+### Event Context
+
+The gateway passes a single immutable context object to every upstream callback.
+
+```go
+package gateway
+
+type Context struct {
+    Session     session.Session
+    Listener    string
+    Network     string
+    Transport   string
+    Protocol    string
+    CloseReason CloseReason
+    ReplyToken  string
+}
+```
+
+Design notes:
+
+- `Context` is the carrier for session identity and listener metadata
+- `CloseReason` is empty for open and frame callbacks and set only for close/error paths that terminate the session
+- `ReplyToken` is empty for events that are not associated with a request/response protocol interaction
+- For JSON-RPC request handling, `ReplyToken` is the inbound request ID
+- `Context` must be safe to retain for asynchronous response flows, as long as the session remains open
+
 ### Session Abstraction
 
 The session is the only connection handle visible to the upstream layer.
@@ -128,7 +154,7 @@ type Session interface {
     RemoteAddr() string
     LocalAddr() string
 
-    WriteFrame(frame wkpacket.Frame) error
+    WriteFrame(frame wkpacket.Frame, opts ...WriteOption) error
     Close() error
 
     SetValue(key string, value any)
@@ -141,6 +167,30 @@ Design notes:
 - Upstream logic writes `wkpacket.Frame` values and never deals with raw bytes
 - The session hides transport-specific connection types such as `net.Conn` or `gnet.Conn`
 - The session key/value store is intentionally small and only meant for connection-local metadata
+- `WriteOption` is the only way to attach outbound protocol metadata without leaking protocol-specific payload shapes into business logic
+
+### Outbound Metadata
+
+The gateway keeps `wkpacket.Frame` as the unified payload model, but outbound writes may need protocol metadata.
+
+```go
+package session
+
+type WriteOption interface {
+    apply(*OutboundMeta)
+}
+
+type OutboundMeta struct {
+    ReplyToken string
+}
+```
+
+Design notes:
+
+- `ReplyToken` is an opaque protocol correlation token
+- Most protocols and push-style writes do not use it
+- JSON-RPC responses use it to carry the request ID that the adapter must echo in the encoded response
+- The gateway should provide a helper such as `WithReplyToken(token string)` and a convenience helper on `Context` so the common reply path is explicit and easy to test
 
 ### Protocol Adapter
 
@@ -153,7 +203,7 @@ type Adapter interface {
     Name() string
 
     Decode(session session.Session, in []byte) (frames []wkpacket.Frame, consumed int, err error)
-    Encode(session session.Session, frame wkpacket.Frame) ([]byte, error)
+    Encode(session session.Session, frame wkpacket.Frame, meta session.OutboundMeta) ([]byte, error)
 
     OnOpen(session session.Session) error
     OnClose(session session.Session) error
@@ -166,6 +216,7 @@ Design notes:
 - `Decode` returns `consumed` bytes so the core can maintain a persistent per-session read buffer
 - `OnOpen` and `OnClose` are optional protocol lifecycle hooks for protocol-level policy
 - Protocol adapters do not know or depend on the underlying network framework
+- `Encode` receives outbound metadata so protocols such as JSON-RPC can safely correlate responses under concurrency
 
 ### Transport Abstraction
 
@@ -262,7 +313,7 @@ This supports:
 
 ### Outbound Data
 
-1. Upstream code calls `session.WriteFrame(frame)`
+1. Upstream code calls `session.WriteFrame(frame, opts...)`
 2. The session asks the protocol adapter to encode the frame
 3. The encoded payload is pushed to the session's write queue
 4. A dedicated writer loop serializes payload writes through `transport.Conn.Write`
@@ -272,6 +323,22 @@ This ensures:
 - no concurrent writes against the underlying connection
 - transport-specific write behavior remains isolated from the core
 - backpressure can be enforced consistently
+- request/response protocols can attach correlation metadata without changing the unified `wkpacket.Frame` model
+
+### JSON-RPC Correlation Rule
+
+JSON-RPC requires the gateway to preserve request IDs on responses.
+
+Rules:
+
+- When `protocol/jsonrpc` decodes an inbound request, it must attach the request ID to the callback `Context.ReplyToken`
+- When upstream code wants to reply to that request, it must write through either:
+  - `ctx.Session.WriteFrame(frame, session.WithReplyToken(ctx.ReplyToken))`, or
+  - an equivalent `ctx.WriteFrame(frame)` convenience helper that copies the same token into outbound metadata
+- When `protocol/jsonrpc` encodes an outbound frame with a non-empty `ReplyToken`, it must treat the output as a response and echo that token as the JSON-RPC `id`
+- When `ReplyToken` is empty, the adapter must encode an outbound notification form where the protocol supports it
+
+This rule keeps response correlation explicit, works with concurrent in-flight requests, and does not require gateway core logic to understand JSON-RPC payload structure.
 
 ### Connection Close
 
@@ -319,7 +386,10 @@ const (
     CloseReasonServerStop     CloseReason = "server_stop"
     CloseReasonPeerClosed     CloseReason = "peer_closed"
     CloseReasonProtocolError  CloseReason = "protocol_error"
+    CloseReasonPolicyViolation CloseReason = "policy_violation"
+    CloseReasonPolicyTimeout  CloseReason = "policy_timeout"
     CloseReasonWriteQueueFull CloseReason = "write_queue_full"
+    CloseReasonOutboundOverflow CloseReason = "outbound_overflow"
     CloseReasonIdleTimeout    CloseReason = "idle_timeout"
     CloseReasonHandlerError   CloseReason = "handler_error"
 )
@@ -353,6 +423,16 @@ First-version backpressure policy:
 - Report the error through `OnSessionError`
 - Close the session with `CloseReasonWriteQueueFull`
 
+`MaxOutboundBytes` is the maximum total number of encoded bytes buffered in the per-session write queue but not yet written to the transport. It is enforced when enqueueing outbound payloads, not as a per-frame encoding limit.
+
+Overflow behavior:
+
+- If `queuedBytes + len(encodedPayload) > MaxOutboundBytes`, return `ErrOutboundOverflow`
+- Report the error through `OnSessionError`
+- Close the session with `CloseReasonOutboundOverflow`
+
+This prevents one slow client from accumulating unbounded pending output even if the write queue still has free item slots.
+
 This keeps the behavior deterministic and avoids hidden drop policies.
 
 ## Protocol Policy Hooks
@@ -373,6 +453,11 @@ Protocol adapters may optionally own protocol policy hooks such as:
 - `jsonrpc` connect must arrive within two seconds
 
 These hooks remain protocol-level concerns because they validate stream shape, not business meaning.
+
+Policy close mapping:
+
+- invalid protocol sequencing closes with `CloseReasonPolicyViolation`
+- protocol-level connect timeout closes with `CloseReasonPolicyTimeout`
 
 ## Transport Responsibilities
 
