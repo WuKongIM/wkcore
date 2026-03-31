@@ -13,7 +13,7 @@ type FakeTransportFactory struct {
 
 	mu        sync.Mutex
 	listeners map[string]*FakeListener
-	NewErr    error
+	BuildErr  error
 }
 
 func NewFakeTransportFactory(name string) *FakeTransportFactory {
@@ -30,25 +30,29 @@ func (f *FakeTransportFactory) Name() string {
 	return f.name
 }
 
-func (f *FakeTransportFactory) New(opts transport.ListenerOptions, handler transport.ConnHandler) (transport.Listener, error) {
+func (f *FakeTransportFactory) Build(specs []transport.ListenerSpec) ([]transport.Listener, error) {
 	if f == nil {
 		return nil, nil
 	}
-	if f.NewErr != nil {
-		return nil, f.NewErr
-	}
-
-	listener := &FakeListener{
-		opts:    opts,
-		handler: handler,
-		addr:    opts.Address,
-		conns:   make(map[uint64]*FakeConn),
+	if f.BuildErr != nil {
+		return nil, f.BuildErr
 	}
 
 	f.mu.Lock()
-	f.listeners[opts.Name] = listener
-	f.mu.Unlock()
-	return listener, nil
+	defer f.mu.Unlock()
+
+	listeners := make([]transport.Listener, 0, len(specs))
+	for _, spec := range specs {
+		listener := &FakeListener{
+			opts:    spec.Options,
+			handler: spec.Handler,
+			addr:    spec.Options.Address,
+			conns:   make(map[uint64]*FakeConn),
+		}
+		f.listeners[spec.Options.Name] = listener
+		listeners = append(listeners, listener)
+	}
+	return listeners, nil
 }
 
 func (f *FakeTransportFactory) Listener(name string) *FakeListener {

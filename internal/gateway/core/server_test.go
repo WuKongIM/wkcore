@@ -11,6 +11,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/core"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
+	"github.com/WuKongIM/WuKongIM/internal/gateway/transport"
 	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 )
 
@@ -343,6 +344,152 @@ func TestServer(t *testing.T) {
 	})
 }
 
+func TestServerStart(t *testing.T) {
+	t.Run("groups listener construction by transport and assigns listeners in input order", func(t *testing.T) {
+		handler := newTestHandler()
+		proto := newScriptedProtocol("fake-proto")
+		factory := &buildSpyFactory{
+			name: "grouped-transport",
+			buildFn: func(specs []transport.ListenerSpec) ([]transport.Listener, error) {
+				listeners := make([]transport.Listener, 0, len(specs))
+				for _, spec := range specs {
+					listeners = append(listeners, &spyListener{
+						addr: "logical://" + spec.Options.Name,
+					})
+				}
+				return listeners, nil
+			},
+		}
+
+		srv := newServerWithListeners(t, handler, proto, factory, gateway.SessionOptions{}, []gateway.ListenerOptions{
+			{
+				Name:      "listener-a",
+				Network:   "tcp",
+				Address:   "127.0.0.1:9000",
+				Transport: factory.Name(),
+				Protocol:  proto.Name(),
+			},
+			{
+				Name:      "listener-b",
+				Network:   "websocket",
+				Address:   "127.0.0.1:9001",
+				Path:      "/ws",
+				Transport: factory.Name(),
+				Protocol:  proto.Name(),
+			},
+		})
+
+		if err := srv.Start(); err != nil {
+			t.Fatalf("start failed: %v", err)
+		}
+		t.Cleanup(func() { _ = srv.Stop() })
+
+		if got := factory.BuildCallCount(); got != 1 {
+			t.Fatalf("expected one Build call, got %d", got)
+		}
+		specs := factory.BuildSpecs(0)
+		if got := len(specs); got != 2 {
+			t.Fatalf("expected two listener specs, got %d", got)
+		}
+		if specs[0].Options.Name != "listener-a" || specs[1].Options.Name != "listener-b" {
+			t.Fatalf("unexpected listener build order: %q, %q", specs[0].Options.Name, specs[1].Options.Name)
+		}
+		if specs[0].Handler == nil || specs[1].Handler == nil {
+			t.Fatal("expected grouped Build handlers to be populated")
+		}
+		if got := srv.ListenerAddr("listener-a"); got != "logical://listener-a" {
+			t.Fatalf("expected listener-a logical addr, got %q", got)
+		}
+		if got := srv.ListenerAddr("listener-b"); got != "logical://listener-b" {
+			t.Fatalf("expected listener-b logical addr, got %q", got)
+		}
+	})
+
+	t.Run("rolls back started listeners when a later listener start fails", func(t *testing.T) {
+		handler := newTestHandler()
+		proto := newScriptedProtocol("fake-proto")
+
+		first := &spyListener{addr: "logical://listener-a"}
+		second := &spyListener{addr: "logical://listener-b", startErr: errors.New("start boom")}
+		factory := &buildSpyFactory{
+			name: "grouped-transport",
+			buildFn: func(specs []transport.ListenerSpec) ([]transport.Listener, error) {
+				return []transport.Listener{first, second}, nil
+			},
+		}
+
+		srv := newServerWithListeners(t, handler, proto, factory, gateway.SessionOptions{}, []gateway.ListenerOptions{
+			{
+				Name:      "listener-a",
+				Network:   "tcp",
+				Address:   "127.0.0.1:9000",
+				Transport: factory.Name(),
+				Protocol:  proto.Name(),
+			},
+			{
+				Name:      "listener-b",
+				Network:   "tcp",
+				Address:   "127.0.0.1:9001",
+				Transport: factory.Name(),
+				Protocol:  proto.Name(),
+			},
+		})
+
+		err := srv.Start()
+		if err == nil || err.Error() != "start boom" {
+			t.Fatalf("expected start boom, got %v", err)
+		}
+		if !first.Started() {
+			t.Fatal("expected first listener to start before rollback")
+		}
+		if !first.Stopped() {
+			t.Fatal("expected first listener to be stopped during rollback")
+		}
+		if !second.Started() {
+			t.Fatal("expected second listener start to be attempted")
+		}
+		if !second.Stopped() {
+			t.Fatal("expected failing listener to be stopped")
+		}
+	})
+}
+
+func TestServerStop(t *testing.T) {
+	t.Run("fake transport still drives callbacks through grouped listeners", func(t *testing.T) {
+		handler := newTestHandler()
+		proto := newScriptedProtocol("fake-proto")
+		proto.pushDecode(decodeResult{
+			frames:   []wkpacket.Frame{&wkpacket.PingPacket{}},
+			consumed: 1,
+		})
+
+		srv, transportFactory := newTestServer(t, handler, proto, gateway.SessionOptions{})
+		if err := srv.Start(); err != nil {
+			t.Fatalf("start failed: %v", err)
+		}
+
+		transportFactory.MustOpen("listener-a", 1)
+		transportFactory.MustData("listener-a", 1, []byte("x"))
+		listenerErr := errors.New("listener boom")
+		transportFactory.MustError("listener-a", listenerErr)
+		transportFactory.MustClose("listener-a", 1, nil)
+
+		waitFor(t, func() bool {
+			return handler.frameCount() == 1 && handler.closeCount() == 1 && len(handler.listenerErrors()) == 1
+		})
+		if err := srv.Stop(); err != nil {
+			t.Fatalf("stop failed: %v", err)
+		}
+		reasons := handler.closeReasons()
+		if got := reasons[len(reasons)-1]; got != gateway.CloseReasonPeerClosed {
+			t.Fatalf("expected %q, got %q", gateway.CloseReasonPeerClosed, got)
+		}
+		if got := handler.listenerErrors()[0]; got.Listener != "listener-a" || !errors.Is(got.Err, listenerErr) {
+			t.Fatalf("unexpected listener error: %+v", got)
+		}
+	})
+}
+
 func TestIdleTimeout(t *testing.T) {
 	handler := newTestHandler()
 	proto := newScriptedProtocol("fake-proto")
@@ -408,8 +555,23 @@ func TestWriteTimeout(t *testing.T) {
 func newTestServer(t *testing.T, handler *testHandler, proto *scriptedProtocol, sessOpts gateway.SessionOptions) (*core.Server, *testkit.FakeTransportFactory) {
 	t.Helper()
 
-	registry := core.NewRegistry()
 	transportFactory := testkit.NewFakeTransportFactory("fake-transport")
+	srv := newServerWithListeners(t, handler, proto, transportFactory, sessOpts, []gateway.ListenerOptions{
+		{
+			Name:      "listener-a",
+			Network:   "tcp",
+			Address:   "127.0.0.1:9000",
+			Transport: transportFactory.Name(),
+			Protocol:  proto.Name(),
+		},
+	})
+	return srv, transportFactory
+}
+
+func newServerWithListeners(t *testing.T, handler *testHandler, proto *scriptedProtocol, transportFactory transport.Factory, sessOpts gateway.SessionOptions, listeners []gateway.ListenerOptions) *core.Server {
+	t.Helper()
+
+	registry := core.NewRegistry()
 	if err := registry.RegisterTransport(transportFactory); err != nil {
 		t.Fatalf("register transport failed: %v", err)
 	}
@@ -420,20 +582,12 @@ func newTestServer(t *testing.T, handler *testHandler, proto *scriptedProtocol, 
 	srv, err := core.NewServer(registry, &gateway.Options{
 		Handler:        handler,
 		DefaultSession: sessOpts,
-		Listeners: []gateway.ListenerOptions{
-			{
-				Name:      "listener-a",
-				Network:   "tcp",
-				Address:   "127.0.0.1:9000",
-				Transport: transportFactory.Name(),
-				Protocol:  proto.Name(),
-			},
-		},
+		Listeners:      append([]gateway.ListenerOptions(nil), listeners...),
 	})
 	if err != nil {
 		t.Fatalf("new server failed: %v", err)
 	}
-	return srv, transportFactory
+	return srv
 }
 
 type decodeResult struct {
@@ -662,4 +816,94 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("condition not satisfied before timeout")
+}
+
+type buildSpyFactory struct {
+	name    string
+	buildFn func([]transport.ListenerSpec) ([]transport.Listener, error)
+
+	mu         sync.Mutex
+	buildCalls [][]transport.ListenerSpec
+}
+
+func (f *buildSpyFactory) Name() string {
+	if f == nil {
+		return ""
+	}
+	return f.name
+}
+
+func (f *buildSpyFactory) Build(specs []transport.ListenerSpec) ([]transport.Listener, error) {
+	if f == nil {
+		return nil, nil
+	}
+
+	f.mu.Lock()
+	copied := append([]transport.ListenerSpec(nil), specs...)
+	f.buildCalls = append(f.buildCalls, copied)
+	fn := f.buildFn
+	f.mu.Unlock()
+
+	if fn == nil {
+		return nil, nil
+	}
+	return fn(specs)
+}
+
+func (f *buildSpyFactory) BuildCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.buildCalls)
+}
+
+func (f *buildSpyFactory) BuildSpecs(idx int) []transport.ListenerSpec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if idx < 0 || idx >= len(f.buildCalls) {
+		return nil
+	}
+	return append([]transport.ListenerSpec(nil), f.buildCalls[idx]...)
+}
+
+type spyListener struct {
+	addr     string
+	startErr error
+	stopErr  error
+
+	mu      sync.Mutex
+	started bool
+	stopped bool
+}
+
+func (l *spyListener) Start() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.started = true
+	return l.startErr
+}
+
+func (l *spyListener) Stop() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.stopped = true
+	return l.stopErr
+}
+
+func (l *spyListener) Addr() string {
+	if l == nil {
+		return ""
+	}
+	return l.addr
+}
+
+func (l *spyListener) Started() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.started
+}
+
+func (l *spyListener) Stopped() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.stopped
 }

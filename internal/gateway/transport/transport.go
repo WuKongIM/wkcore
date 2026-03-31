@@ -2,7 +2,7 @@ package transport
 
 type Factory interface {
 	Name() string
-	New(opts ListenerOptions, handler ConnHandler) (Listener, error)
+	Build(specs []ListenerSpec) ([]Listener, error)
 }
 
 type Listener interface {
@@ -23,4 +23,9 @@ type ConnHandler interface {
 	OnOpen(conn Conn) error
 	OnData(conn Conn, data []byte) error
 	OnClose(conn Conn, err error)
+}
+
+type ListenerSpec struct {
+	Options ListenerOptions
+	Handler ConnHandler
 }

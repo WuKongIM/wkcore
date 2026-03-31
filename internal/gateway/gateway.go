@@ -71,6 +71,6 @@ func (f gnetTransportAlias) Name() string {
 	return gnetTransportName
 }
 
-func (f gnetTransportAlias) New(opts transport.ListenerOptions, handler transport.ConnHandler) (transport.Listener, error) {
-	return f.factory.New(opts, handler)
+func (f gnetTransportAlias) Build(specs []transport.ListenerSpec) ([]transport.Listener, error) {
+	return f.factory.Build(specs)
 }

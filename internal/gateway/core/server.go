@@ -134,37 +134,77 @@ func (s *Server) Start() error {
 	runtimes := append([]*listenerRuntime(nil), s.listeners...)
 	s.mu.Unlock()
 
+	if err := s.buildListeners(runtimes); err != nil {
+		s.mu.Lock()
+		s.started = false
+		s.mu.Unlock()
+		return err
+	}
+
 	started := make([]transport.Listener, 0, len(runtimes))
 	for _, runtime := range runtimes {
-		runtime := runtime
-		listener, err := runtime.factory.New(transport.ListenerOptions{
-			Name:    runtime.options.Name,
-			Network: runtime.options.Network,
-			Address: runtime.options.Address,
-			Path:    runtime.options.Path,
-			OnError: func(err error) {
-				s.dispatcher.listenerError(runtime.options.Name, err)
-			},
-		}, &connHandler{server: s, listener: runtime})
-		if err != nil {
+		if err := runtime.listener.Start(); err != nil {
+			s.dispatcher.listenerError(runtime.options.Name, err)
+			_ = runtime.listener.Stop()
 			s.rollbackStart(started)
 			s.mu.Lock()
 			s.started = false
 			s.mu.Unlock()
 			return err
+		}
+		started = append(started, runtime.listener)
+	}
+
+	return nil
+}
+
+func (s *Server) buildListeners(runtimes []*listenerRuntime) error {
+	type listenerGroup struct {
+		factory  transport.Factory
+		runtimes []*listenerRuntime
+	}
+
+	groups := make([]listenerGroup, 0, len(runtimes))
+	groupIndex := make(map[string]int, len(runtimes))
+	for _, runtime := range runtimes {
+		name := runtime.factory.Name()
+		idx, ok := groupIndex[name]
+		if !ok {
+			idx = len(groups)
+			groupIndex[name] = idx
+			groups = append(groups, listenerGroup{factory: runtime.factory})
+		}
+		groups[idx].runtimes = append(groups[idx].runtimes, runtime)
+	}
+
+	for _, group := range groups {
+		specs := make([]transport.ListenerSpec, 0, len(group.runtimes))
+		for _, runtime := range group.runtimes {
+			runtime := runtime
+			specs = append(specs, transport.ListenerSpec{
+				Options: transport.ListenerOptions{
+					Name:    runtime.options.Name,
+					Network: runtime.options.Network,
+					Address: runtime.options.Address,
+					Path:    runtime.options.Path,
+					OnError: func(err error) {
+						s.dispatcher.listenerError(runtime.options.Name, err)
+					},
+				},
+				Handler: &connHandler{server: s, listener: runtime},
+			})
 		}
 
-		runtime.listener = listener
-		if err := listener.Start(); err != nil {
-			s.dispatcher.listenerError(runtime.options.Name, err)
-			_ = listener.Stop()
-			s.rollbackStart(started)
-			s.mu.Lock()
-			s.started = false
-			s.mu.Unlock()
+		listeners, err := group.factory.Build(specs)
+		if err != nil {
 			return err
 		}
-		started = append(started, listener)
+		if len(listeners) != len(group.runtimes) {
+			return fmt.Errorf("gateway/core: transport %q built %d listeners for %d specs", group.factory.Name(), len(listeners), len(group.runtimes))
+		}
+		for i, runtime := range group.runtimes {
+			runtime.listener = listeners[i]
+		}
 	}
 
 	return nil
