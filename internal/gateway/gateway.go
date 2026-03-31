@@ -6,8 +6,11 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/core"
 	protojsonrpc "github.com/WuKongIM/WuKongIM/internal/gateway/protocol/jsonrpc"
 	protowkproto "github.com/WuKongIM/WuKongIM/internal/gateway/protocol/wkproto"
+	"github.com/WuKongIM/WuKongIM/internal/gateway/transport"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/transport/stdnet"
 )
+
+const gnetTransportName = "gnet"
 
 type Gateway struct {
 	server *core.Server
@@ -16,6 +19,9 @@ type Gateway struct {
 func New(opts Options) (*Gateway, error) {
 	registry := core.NewRegistry()
 	if err := registry.RegisterTransport(stdnet.NewFactory()); err != nil {
+		return nil, err
+	}
+	if err := registry.RegisterTransport(gnetTransportAlias{factory: stdnet.NewFactory()}); err != nil {
 		return nil, err
 	}
 	if err := registry.RegisterProtocol(protowkproto.New()); err != nil {
@@ -55,4 +61,16 @@ func (g *Gateway) ListenerAddr(name string) string {
 	addr = strings.TrimPrefix(addr, "http://")
 	addr = strings.TrimPrefix(addr, "https://")
 	return addr
+}
+
+type gnetTransportAlias struct {
+	factory *stdnet.Factory
+}
+
+func (f gnetTransportAlias) Name() string {
+	return gnetTransportName
+}
+
+func (f gnetTransportAlias) New(opts transport.ListenerOptions, handler transport.ConnHandler) (transport.Listener, error) {
+	return f.factory.New(opts, handler)
 }
