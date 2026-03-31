@@ -1,17 +1,24 @@
 package session
 
-import "testing"
+import (
+	"errors"
+	"runtime"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+)
 
 func newTestSession(id uint64) Session {
-	return newSession(
-		id,
-		"listener-a",
-		"remote-a",
-		"local-a",
-		1,
-		1,
-		nil,
-	)
+	return New(Config{
+		ID:               id,
+		Listener:         "listener-a",
+		RemoteAddr:       "remote-a",
+		LocalAddr:        "local-a",
+		WriteQueueSize:   1,
+		MaxOutboundBytes: 1,
+	})
 }
 
 func TestManagerAddGetRemove(t *testing.T) {
@@ -50,5 +57,120 @@ func TestSessionCloseIsIdempotent(t *testing.T) {
 	}
 	if err := sess.Close(); err != nil {
 		t.Fatalf("second close failed: %v", err)
+	}
+}
+
+func TestManagerRangeVisitsSessions(t *testing.T) {
+	mgr := NewManager()
+	mgr.Add(newTestSession(1))
+	mgr.Add(newTestSession(2))
+
+	visited := make(map[uint64]struct{}, 2)
+	mgr.Range(func(sess Session) bool {
+		visited[sess.ID()] = struct{}{}
+		return true
+	})
+
+	if len(visited) != 2 {
+		t.Fatalf("expected 2 sessions to be visited, got %d", len(visited))
+	}
+	if _, ok := visited[1]; !ok {
+		t.Fatal("expected session 1 to be visited")
+	}
+	if _, ok := visited[2]; !ok {
+		t.Fatal("expected session 2 to be visited")
+	}
+}
+
+func TestSessionEnqueueEncodedReturnsWriteQueueFull(t *testing.T) {
+	sess := newSession(11, "listener-a", "remote-a", "local-a", 1, 10, nil)
+
+	if err := sess.enqueueEncoded([]byte("a")); err != nil {
+		t.Fatalf("first enqueue failed: %v", err)
+	}
+	if err := sess.enqueueEncoded([]byte("b")); !errors.Is(err, ErrWriteQueueFull) {
+		t.Fatalf("expected write queue full error, got %v", err)
+	}
+}
+
+func TestSessionEnqueueEncodedReturnsOutboundOverflow(t *testing.T) {
+	sess := newSession(12, "listener-a", "remote-a", "local-a", 2, 3, nil)
+
+	if err := sess.enqueueEncoded([]byte("abc")); err != nil {
+		t.Fatalf("first enqueue failed: %v", err)
+	}
+	if err := sess.enqueueEncoded([]byte("d")); !errors.Is(err, ErrOutboundOverflow) {
+		t.Fatalf("expected outbound overflow error, got %v", err)
+	}
+}
+
+func TestSessionCloseBlocksConcurrentWriteUntilClosed(t *testing.T) {
+	sess := newSession(13, "listener-a", "remote-a", "local-a", 2, 10, nil)
+
+	var writeCalls atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	sess.writeFrameFn = func(frame wkpacket.Frame, meta OutboundMeta) error {
+		writeCalls.Add(1)
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-release
+		return sess.enqueueEncoded([]byte("x"))
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- sess.WriteFrame(&wkpacket.PingPacket{})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("write did not start")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- sess.Close()
+	}()
+
+	deadline := time.After(time.Second)
+	for !sess.closing.Load() {
+		select {
+		case <-deadline:
+			t.Fatal("close did not begin")
+		default:
+			runtime.Gosched()
+		}
+	}
+
+	secondWriteDone := make(chan error, 1)
+	go func() {
+		secondWriteDone <- sess.WriteFrame(&wkpacket.PingPacket{})
+	}()
+
+	select {
+	case err := <-secondWriteDone:
+		if !errors.Is(err, ErrSessionClosed) {
+			t.Fatalf("expected second write to fail after close began, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second write did not complete")
+	}
+
+	close(release)
+
+	if err := <-writeDone; err != nil {
+		t.Fatalf("first write failed: %v", err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+
+	if calls := writeCalls.Load(); calls != 1 {
+		t.Fatalf("expected exactly one writeFrameFn call, got %d", calls)
 	}
 }

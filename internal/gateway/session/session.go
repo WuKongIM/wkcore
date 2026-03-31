@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 
 	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 )
@@ -30,6 +31,8 @@ type WriteOption interface {
 	apply(*OutboundMeta)
 }
 
+type WriteFrameFn func(frame wkpacket.Frame, meta OutboundMeta) error
+
 type OutboundMeta struct {
 	ReplyToken string
 }
@@ -44,7 +47,27 @@ func WithReplyToken(token string) WriteOption {
 	return replyTokenOption(token)
 }
 
-type writeFrameFn func(frame wkpacket.Frame, meta OutboundMeta) error
+type Config struct {
+	ID               uint64
+	Listener         string
+	RemoteAddr       string
+	LocalAddr        string
+	WriteQueueSize   int
+	MaxOutboundBytes int64
+	WriteFrameFn     WriteFrameFn
+}
+
+func New(cfg Config) Session {
+	return newSession(
+		cfg.ID,
+		cfg.Listener,
+		cfg.RemoteAddr,
+		cfg.LocalAddr,
+		cfg.WriteQueueSize,
+		cfg.MaxOutboundBytes,
+		cfg.WriteFrameFn,
+	)
+}
 
 type session struct {
 	id         uint64
@@ -54,16 +77,17 @@ type session struct {
 
 	values sync.Map
 
-	mu               sync.Mutex
-	closed           bool
+	writeMu          sync.Mutex
+	closing          atomic.Bool
+	closed           atomic.Bool
+	queueMu          sync.Mutex
 	writeCh          chan []byte
 	outboundBytes    int64
 	maxOutboundBytes int64
-	writeFrameFn     writeFrameFn
-	closeOnce        sync.Once
+	writeFrameFn     WriteFrameFn
 }
 
-func newSession(id uint64, listener, remoteAddr, localAddr string, writeQueueSize int, maxOutboundBytes int64, writeFrameFn writeFrameFn) *session {
+func newSession(id uint64, listener, remoteAddr, localAddr string, writeQueueSize int, maxOutboundBytes int64, writeFrameFn WriteFrameFn) *session {
 	if writeQueueSize <= 0 {
 		writeQueueSize = 1
 	}
@@ -113,12 +137,14 @@ func (s *session) WriteFrame(frame wkpacket.Frame, opts ...WriteOption) error {
 	if s == nil {
 		return ErrSessionClosed
 	}
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
+	if s.closing.Load() || s.closed.Load() {
 		return ErrSessionClosed
 	}
-	s.mu.Unlock()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if s.closing.Load() || s.closed.Load() {
+		return ErrSessionClosed
+	}
 
 	meta := OutboundMeta{}
 	for _, opt := range opts {
@@ -136,12 +162,16 @@ func (s *session) Close() error {
 	if s == nil {
 		return nil
 	}
-	s.closeOnce.Do(func() {
-		s.mu.Lock()
-		s.closed = true
-		close(s.writeCh)
-		s.mu.Unlock()
-	})
+	s.closing.Store(true)
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if s.closed.Load() {
+		return nil
+	}
+	s.closed.Store(true)
+	s.queueMu.Lock()
+	close(s.writeCh)
+	s.queueMu.Unlock()
 	return nil
 }
 
@@ -167,10 +197,13 @@ func (s *session) enqueueEncoded(payload []byte) error {
 	queued := append([]byte(nil), payload...)
 	size := int64(len(queued))
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if s.closed.Load() {
+		return ErrSessionClosed
+	}
+	s.queueMu.Lock()
+	defer s.queueMu.Unlock()
 
-	if s.closed {
+	if s.closed.Load() {
 		return ErrSessionClosed
 	}
 	if s.maxOutboundBytes > 0 && s.outboundBytes+size > s.maxOutboundBytes {
@@ -196,9 +229,9 @@ func (s *session) dequeueEncoded() ([]byte, bool) {
 		return nil, false
 	}
 
-	s.mu.Lock()
+	s.queueMu.Lock()
 	s.outboundBytes -= int64(len(payload))
-	s.mu.Unlock()
+	s.queueMu.Unlock()
 
 	return payload, true
 }

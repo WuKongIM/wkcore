@@ -25,7 +25,7 @@ type Context struct {
 
 func (ctx *Context) WriteFrame(frame wkpacket.Frame) error {
 	if ctx == nil || ctx.Session == nil {
-		return ErrSessionClosed
+		return session.ErrSessionClosed
 	}
 	return ctx.Session.WriteFrame(frame, session.WithReplyToken(ctx.ReplyToken))
 }
