@@ -177,6 +177,7 @@ func (s *Server) buildListeners(runtimes []*listenerRuntime) error {
 		groups[idx].runtimes = append(groups[idx].runtimes, runtime)
 	}
 
+	built := make([]transport.Listener, 0, len(runtimes))
 	for _, group := range groups {
 		specs := make([]transport.ListenerSpec, 0, len(group.runtimes))
 		for _, runtime := range group.runtimes {
@@ -197,14 +198,17 @@ func (s *Server) buildListeners(runtimes []*listenerRuntime) error {
 
 		listeners, err := group.factory.Build(specs)
 		if err != nil {
+			s.rollbackStart(built)
 			return err
 		}
 		if len(listeners) != len(group.runtimes) {
+			s.rollbackStart(built)
 			return fmt.Errorf("gateway/core: transport %q built %d listeners for %d specs", group.factory.Name(), len(listeners), len(group.runtimes))
 		}
 		for i, runtime := range group.runtimes {
 			runtime.listener = listeners[i]
 		}
+		built = append(built, listeners...)
 	}
 
 	return nil

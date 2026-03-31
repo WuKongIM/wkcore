@@ -452,6 +452,67 @@ func TestServerStart(t *testing.T) {
 			t.Fatal("expected failing listener to be stopped")
 		}
 	})
+
+	t.Run("stops already built listeners when a later transport build fails", func(t *testing.T) {
+		handler := newTestHandler()
+		proto := newScriptedProtocol("fake-proto")
+
+		firstBuilt := &spyListener{addr: "logical://listener-a"}
+		firstFactory := &buildSpyFactory{
+			name: "transport-a",
+			buildFn: func(specs []transport.ListenerSpec) ([]transport.Listener, error) {
+				return []transport.Listener{firstBuilt}, nil
+			},
+		}
+		secondFactory := &buildSpyFactory{
+			name: "transport-b",
+			buildFn: func(specs []transport.ListenerSpec) ([]transport.Listener, error) {
+				return nil, errors.New("build boom")
+			},
+		}
+
+		registry := core.NewRegistry()
+		if err := registry.RegisterTransport(firstFactory); err != nil {
+			t.Fatalf("register first transport failed: %v", err)
+		}
+		if err := registry.RegisterTransport(secondFactory); err != nil {
+			t.Fatalf("register second transport failed: %v", err)
+		}
+		if err := registry.RegisterProtocol(proto); err != nil {
+			t.Fatalf("register protocol failed: %v", err)
+		}
+
+		srv, err := core.NewServer(registry, &gateway.Options{
+			Handler: handler,
+			Listeners: []gateway.ListenerOptions{
+				{
+					Name:      "listener-a",
+					Network:   "tcp",
+					Address:   "127.0.0.1:9000",
+					Transport: firstFactory.Name(),
+					Protocol:  proto.Name(),
+				},
+				{
+					Name:      "listener-b",
+					Network:   "tcp",
+					Address:   "127.0.0.1:9001",
+					Transport: secondFactory.Name(),
+					Protocol:  proto.Name(),
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("new server failed: %v", err)
+		}
+
+		err = srv.Start()
+		if err == nil || err.Error() != "build boom" {
+			t.Fatalf("expected build boom, got %v", err)
+		}
+		if !firstBuilt.Stopped() {
+			t.Fatal("expected already built listener to be stopped after later build failure")
+		}
+	})
 }
 
 func TestServerStop(t *testing.T) {

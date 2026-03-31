@@ -2,6 +2,7 @@ package transport
 
 type Factory interface {
 	Name() string
+	// Build must return one listener per input spec, preserving spec order in the returned slice.
 	Build(specs []ListenerSpec) ([]Listener, error)
 }
 
