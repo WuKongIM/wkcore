@@ -44,6 +44,25 @@ The current gateway startup flow assumes a transport factory creates one listene
 
 That model is sufficient for `stdnet`, but it is awkward for shared `gnet` engines because one real engine may back multiple logical listeners. The transport factory contract must therefore change to support grouped construction while preserving listener-level control in the core.
 
+The current option validation also rejects duplicate listener names but does not reject duplicate addresses. Shared `gnet` routing requires one logical listener per bound address, so validation must be tightened in this work.
+
+## Listener Address Policy
+
+In the first version, no two gateway listeners may share the same bound address.
+
+Validation rule:
+
+- reject configurations where two listeners have the same normalized `Address`, regardless of `Network`, `Transport`, `Protocol`, or `Path`
+
+Rationale:
+
+- the gateway transport model routes one accepted connection to exactly one logical listener
+- the shared `gnet` routing table is keyed by bound local address
+- same-address multiplexing between raw TCP and WebSocket is explicitly out of scope
+- same-address multiple-WebSocket-listener routing by path would require a different transport model and is not needed here
+
+This rule should be enforced in gateway option validation before any transport factory is called.
+
 ## Architecture
 
 The transport layer is split into three levels:
@@ -148,6 +167,8 @@ Modified files:
 
 - `internal/gateway/transport/transport.go`
 - `internal/gateway/core/server.go`
+- `internal/gateway/types/options.go`
+- `internal/gateway/types/errors.go`
 - `internal/gateway/transport/stdnet/factory.go`
 - `internal/gateway/testkit/fake_transport.go`
 - `internal/gateway/gateway.go`
@@ -349,6 +370,7 @@ to:
 
 - add tests for grouped `Factory.Build(...)` behavior
 - update core server tests to cover grouped transport creation and startup rollback
+- add option-validation tests for duplicate listener addresses
 - adapt `internal/gateway/testkit/fake_transport.go` to the grouped factory API used by core tests
 - ensure current `stdnet` tests still pass through the adapted factory API
 
