@@ -49,12 +49,19 @@ func (o *Options) Validate() error {
 	}
 	o.DefaultSession = normalizeSessionOptions(o.DefaultSession)
 	seen := make(map[string]struct{}, len(o.Listeners))
-	for _, listener := range o.Listeners {
-		name := strings.TrimSpace(listener.Name)
-		network := strings.TrimSpace(listener.Network)
-		address := strings.TrimSpace(listener.Address)
-		transport := strings.TrimSpace(listener.Transport)
-		protocol := strings.TrimSpace(listener.Protocol)
+	for i := range o.Listeners {
+		o.Listeners[i].Name = strings.TrimSpace(o.Listeners[i].Name)
+		o.Listeners[i].Network = strings.TrimSpace(o.Listeners[i].Network)
+		o.Listeners[i].Address = strings.TrimSpace(o.Listeners[i].Address)
+		o.Listeners[i].Path = strings.TrimSpace(o.Listeners[i].Path)
+		o.Listeners[i].Transport = strings.TrimSpace(o.Listeners[i].Transport)
+		o.Listeners[i].Protocol = strings.TrimSpace(o.Listeners[i].Protocol)
+
+		name := o.Listeners[i].Name
+		network := o.Listeners[i].Network
+		address := o.Listeners[i].Address
+		transport := o.Listeners[i].Transport
+		protocol := o.Listeners[i].Protocol
 
 		if name == "" {
 			return ErrListenerNameEmpty
@@ -75,7 +82,7 @@ func (o *Options) Validate() error {
 		if protocol == "" {
 			return ErrListenerProtocolEmpty
 		}
-		if strings.EqualFold(network, "websocket") && strings.TrimSpace(listener.Path) == "" {
+		if strings.EqualFold(network, "websocket") && o.Listeners[i].Path == "" {
 			return ErrListenerWebsocketPath
 		}
 	}
