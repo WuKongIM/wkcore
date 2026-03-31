@@ -16,6 +16,126 @@ import (
 )
 
 func TestServer(t *testing.T) {
+	t.Run("unauthenticated wkproto frames are rejected before reaching the handler", func(t *testing.T) {
+		handler := newTestHandler()
+		proto := newScriptedProtocol("wkproto")
+		proto.pushDecode(decodeResult{
+			frames:   []wkpacket.Frame{&wkpacket.PingPacket{}},
+			consumed: 1,
+		})
+
+		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(*gateway.Context, *wkpacket.ConnectPacket) (*gateway.AuthResult, error) {
+			return &gateway.AuthResult{
+				Connack: &wkpacket.ConnackPacket{ReasonCode: wkpacket.ReasonSuccess},
+			}, nil
+		}))
+		if err := srv.Start(); err != nil {
+			t.Fatalf("start failed: %v", err)
+		}
+		t.Cleanup(func() { _ = srv.Stop() })
+
+		conn := transportFactory.MustOpen("listener-a", 1)
+		transportFactory.MustData("listener-a", 1, []byte("x"))
+
+		waitFor(t, func() bool { return connClosed(conn) })
+		if got := handler.frameCount(); got != 0 {
+			t.Fatalf("expected no frames to reach handler, got %d", got)
+		}
+		if got := len(handler.callOrder()); got != 0 {
+			t.Fatalf("expected handler not to observe rejected session, got calls %v", handler.callOrder())
+		}
+		if got := len(conn.Writes()); got != 0 {
+			t.Fatalf("expected no writes for rejected unauthenticated frame, got %d", got)
+		}
+		if got := connClosed(conn); !got {
+			t.Fatal("expected connection to close after policy violation")
+		}
+	})
+
+	t.Run("failed wkproto authentication replies with connack and closes", func(t *testing.T) {
+		handler := newTestHandler()
+		proto := newScriptedProtocol("wkproto")
+		proto.encodedBytes = []byte("connack-auth-fail")
+		proto.pushDecode(decodeResult{
+			frames: []wkpacket.Frame{&wkpacket.ConnectPacket{
+				UID:   "u1",
+				Token: "bad-token",
+			}},
+			consumed: 1,
+		})
+
+		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(*gateway.Context, *wkpacket.ConnectPacket) (*gateway.AuthResult, error) {
+			return &gateway.AuthResult{
+				Connack: &wkpacket.ConnackPacket{ReasonCode: wkpacket.ReasonAuthFail},
+			}, nil
+		}))
+		if err := srv.Start(); err != nil {
+			t.Fatalf("start failed: %v", err)
+		}
+		t.Cleanup(func() { _ = srv.Stop() })
+
+		conn := transportFactory.MustOpen("listener-a", 1)
+		transportFactory.MustData("listener-a", 1, []byte("x"))
+
+		waitFor(t, func() bool { return connClosed(conn) && len(conn.Writes()) == 1 })
+		if got := handler.frameCount(); got != 0 {
+			t.Fatalf("expected connect not to reach handler, got %d", got)
+		}
+		if got := len(handler.callOrder()); got != 0 {
+			t.Fatalf("expected handler not to observe failed auth session, got calls %v", handler.callOrder())
+		}
+		if !reflect.DeepEqual(conn.Writes()[0], []byte("connack-auth-fail")) {
+			t.Fatalf("unexpected connack payload: %q", conn.Writes()[0])
+		}
+	})
+
+	t.Run("successful wkproto authentication replies with connack and allows later frames", func(t *testing.T) {
+		handler := newTestHandler()
+		proto := newScriptedProtocol("wkproto")
+		proto.encodedBytes = []byte("connack-success")
+		proto.pushDecode(decodeResult{
+			frames: []wkpacket.Frame{&wkpacket.ConnectPacket{
+				UID:   "u1",
+				Token: "good-token",
+			}},
+			consumed: 1,
+		})
+
+		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(ctx *gateway.Context, connect *wkpacket.ConnectPacket) (*gateway.AuthResult, error) {
+			if connect.UID != "u1" {
+				t.Fatalf("unexpected uid: %q", connect.UID)
+			}
+			return &gateway.AuthResult{
+				Connack: &wkpacket.ConnackPacket{ReasonCode: wkpacket.ReasonSuccess},
+				SessionValues: map[string]any{
+					"uid": connect.UID,
+				},
+			}, nil
+		}))
+		if err := srv.Start(); err != nil {
+			t.Fatalf("start failed: %v", err)
+		}
+		t.Cleanup(func() { _ = srv.Stop() })
+
+		conn := transportFactory.MustOpen("listener-a", 1)
+		transportFactory.MustData("listener-a", 1, []byte("c"))
+		waitFor(t, func() bool { return len(conn.Writes()) == 1 })
+
+		proto.pushDecode(decodeResult{
+			frames:   []wkpacket.Frame{&wkpacket.PingPacket{}},
+			consumed: 1,
+		})
+		transportFactory.MustData("listener-a", 1, []byte("p"))
+		waitFor(t, func() bool { return handler.frameCount() == 1 })
+
+		if got := conn.Writes()[0]; !reflect.DeepEqual(got, []byte("connack-success")) {
+			t.Fatalf("unexpected connack payload: %q", got)
+		}
+		if got := handler.contexts()[0].Session.Value("uid"); got != "u1" {
+			t.Fatalf("expected session uid to be stored, got %#v", got)
+		}
+	})
+
 	t.Run("decoded frames are delivered to the handler", func(t *testing.T) {
 		handler := newTestHandler()
 		proto := newScriptedProtocol("fake-proto")
@@ -361,7 +481,7 @@ func TestServerStart(t *testing.T) {
 			},
 		}
 
-		srv := newServerWithListeners(t, handler, proto, factory, gateway.SessionOptions{}, []gateway.ListenerOptions{
+		srv := newServerWithListeners(t, handler, proto, factory, gateway.SessionOptions{}, nil, []gateway.ListenerOptions{
 			{
 				Name:      "listener-a",
 				Network:   "tcp",
@@ -418,7 +538,7 @@ func TestServerStart(t *testing.T) {
 			},
 		}
 
-		srv := newServerWithListeners(t, handler, proto, factory, gateway.SessionOptions{}, []gateway.ListenerOptions{
+		srv := newServerWithListeners(t, handler, proto, factory, gateway.SessionOptions{}, nil, []gateway.ListenerOptions{
 			{
 				Name:      "listener-a",
 				Network:   "tcp",
@@ -615,9 +735,14 @@ func TestWriteTimeout(t *testing.T) {
 
 func newTestServer(t *testing.T, handler *testHandler, proto *scriptedProtocol, sessOpts gateway.SessionOptions) (*core.Server, *testkit.FakeTransportFactory) {
 	t.Helper()
+	return newTestServerWithAuthenticator(t, handler, proto, sessOpts, nil)
+}
+
+func newTestServerWithAuthenticator(t *testing.T, handler *testHandler, proto *scriptedProtocol, sessOpts gateway.SessionOptions, authenticator gateway.Authenticator) (*core.Server, *testkit.FakeTransportFactory) {
+	t.Helper()
 
 	transportFactory := testkit.NewFakeTransportFactory("fake-transport")
-	srv := newServerWithListeners(t, handler, proto, transportFactory, sessOpts, []gateway.ListenerOptions{
+	srv := newServerWithListeners(t, handler, proto, transportFactory, sessOpts, authenticator, []gateway.ListenerOptions{
 		{
 			Name:      "listener-a",
 			Network:   "tcp",
@@ -629,7 +754,7 @@ func newTestServer(t *testing.T, handler *testHandler, proto *scriptedProtocol, 
 	return srv, transportFactory
 }
 
-func newServerWithListeners(t *testing.T, handler *testHandler, proto *scriptedProtocol, transportFactory transport.Factory, sessOpts gateway.SessionOptions, listeners []gateway.ListenerOptions) *core.Server {
+func newServerWithListeners(t *testing.T, handler *testHandler, proto *scriptedProtocol, transportFactory transport.Factory, sessOpts gateway.SessionOptions, authenticator gateway.Authenticator, listeners []gateway.ListenerOptions) *core.Server {
 	t.Helper()
 
 	registry := core.NewRegistry()
@@ -642,6 +767,7 @@ func newServerWithListeners(t *testing.T, handler *testHandler, proto *scriptedP
 
 	srv, err := core.NewServer(registry, &gateway.Options{
 		Handler:        handler,
+		Authenticator:  authenticator,
 		DefaultSession: sessOpts,
 		Listeners:      append([]gateway.ListenerOptions(nil), listeners...),
 	})
@@ -877,6 +1003,19 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("condition not satisfied before timeout")
+}
+
+func connClosed(conn *testkit.FakeConn) bool {
+	if conn == nil {
+		return false
+	}
+
+	select {
+	case <-conn.CloseCh():
+		return true
+	default:
+		return false
+	}
 }
 
 type buildSpyFactory struct {

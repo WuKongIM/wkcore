@@ -110,6 +110,20 @@ func TestOptionsValidateRequiresWebsocketPath(t *testing.T) {
 	}
 }
 
+func TestOptionsValidateAcceptsAuthenticator(t *testing.T) {
+	opts := gateway.Options{
+		Handler: noopHandler{},
+		Authenticator: gateway.AuthenticatorFunc(func(*gateway.Context, *wkpacket.ConnectPacket) (*gateway.AuthResult, error) {
+			return &gateway.AuthResult{
+				Connack: &wkpacket.ConnackPacket{ReasonCode: wkpacket.ReasonSuccess},
+			}, nil
+		}),
+	}
+	if err := opts.Validate(); err != nil {
+		t.Fatalf("expected authenticator to be accepted, got %v", err)
+	}
+}
+
 func TestOptionsValidateAcceptsExplicitStdnetListeners(t *testing.T) {
 	opts := gateway.Options{
 		Handler: noopHandler{},

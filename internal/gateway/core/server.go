@@ -64,6 +64,9 @@ type sessionState struct {
 
 	metaMu           sync.RWMutex
 	closeReasonValue gatewaytypes.CloseReason
+	authenticated    bool
+	authRequired     bool
+	openDispatched   bool
 
 	closeOnce sync.Once
 	closedCh  chan struct{}
@@ -81,6 +84,7 @@ func NewServer(registry *Registry, opts *gatewaytypes.Options) (*Server, error) 
 
 	cfg := gatewaytypes.Options{
 		Handler:        opts.Handler,
+		Authenticator:  opts.Authenticator,
 		DefaultSession: opts.DefaultSession,
 		Listeners:      append([]gatewaytypes.ListenerOptions(nil), opts.Listeners...),
 	}
@@ -291,6 +295,10 @@ func (s *Server) onOpen(listener *listenerRuntime, conn transport.Conn) error {
 		},
 		closedCh: make(chan struct{}),
 	}
+	state.setAuthRequired(listener.options.Protocol == "wkproto" && s.options.Authenticator != nil)
+	if !state.requiresAuth() {
+		state.setAuthenticated(true)
+	}
 	state.touchActivity()
 
 	var sess session.Session
@@ -320,11 +328,13 @@ func (s *Server) onOpen(listener *listenerRuntime, conn transport.Conn) error {
 		return nil
 	}
 
-	if err := s.dispatcher.sessionOpen(state); err != nil {
-		s.handleHandlerError(state, err)
-	}
-	if state.isClosed() {
-		return nil
+	if !state.requiresAuth() {
+		if err := s.dispatchSessionOpen(state); err != nil {
+			s.handleHandlerError(state, err)
+		}
+		if state.isClosed() {
+			return nil
+		}
 	}
 
 	s.startWriter(state)
@@ -381,6 +391,20 @@ func (s *Server) onData(listener *listenerRuntime, conn transport.Conn, data []b
 			if i < len(tokens) {
 				replyToken = tokens[i]
 			}
+			handled, err := s.handleAuthFrame(state, replyToken, frame)
+			if err != nil {
+				s.handleHandlerError(state, err)
+				if state.isClosed() {
+					return nil
+				}
+				continue
+			}
+			if handled {
+				if state.isClosed() {
+					return nil
+				}
+				continue
+			}
 			if err := s.dispatcher.frame(state, replyToken, frame); err != nil {
 				s.handleHandlerError(state, err)
 				if state.isClosed() {
@@ -391,6 +415,61 @@ func (s *Server) onData(listener *listenerRuntime, conn transport.Conn, data []b
 	}
 
 	return nil
+}
+
+func (s *Server) handleAuthFrame(state *sessionState, replyToken string, frame wkpacket.Frame) (bool, error) {
+	if state == nil || !state.requiresAuth() || state.isAuthenticated() {
+		return false, nil
+	}
+
+	connect, ok := frame.(*wkpacket.ConnectPacket)
+	if !ok {
+		state.close(gatewaytypes.CloseReasonPolicyViolation, nil)
+		return true, nil
+	}
+
+	ctx := s.dispatcher.context(state, replyToken, state.closeReason())
+	result, err := s.options.Authenticator.Authenticate(ctx, connect)
+	if err != nil {
+		if writeErr := s.writeImmediateFrame(state, &wkpacket.ConnackPacket{ReasonCode: wkpacket.ReasonSystemError}); writeErr != nil {
+			state.close(closeReasonForError(writeErr, gatewaytypes.CloseReasonPolicyViolation), writeErr)
+			return true, nil
+		}
+		state.close(gatewaytypes.CloseReasonPolicyViolation, err)
+		return true, nil
+	}
+	if result == nil {
+		result = &gatewaytypes.AuthResult{}
+	}
+
+	connack := result.Connack
+	if connack == nil {
+		connack = &wkpacket.ConnackPacket{ReasonCode: wkpacket.ReasonSuccess}
+	}
+	connack.FrameType = wkpacket.CONNACK
+	if connack.ReasonCode == 0 {
+		connack.ReasonCode = wkpacket.ReasonSuccess
+	}
+
+	if writeErr := s.writeImmediateFrame(state, connack); writeErr != nil {
+		state.close(closeReasonForError(writeErr, gatewaytypes.CloseReasonPeerClosed), writeErr)
+		return true, nil
+	}
+	if connack.ReasonCode != wkpacket.ReasonSuccess {
+		state.close(gatewaytypes.CloseReasonPolicyViolation, nil)
+		return true, nil
+	}
+
+	for key, value := range result.SessionValues {
+		state.session.SetValue(key, value)
+	}
+	state.setAuthenticated(true)
+	if !state.openWasDispatched() {
+		if err := s.dispatchSessionOpen(state); err != nil {
+			return true, err
+		}
+	}
+	return true, nil
 }
 
 func (s *Server) onClose(listener *listenerRuntime, conn transport.Conn, err error) {
@@ -420,6 +499,30 @@ func (s *Server) encodeAndQueue(state *sessionState, frame wkpacket.Frame, meta 
 		return err
 	}
 	return state.queue.EnqueueEncoded(encoded)
+}
+
+func (s *Server) writeImmediateFrame(state *sessionState, frame wkpacket.Frame) error {
+	if state == nil || state.listener == nil {
+		return session.ErrSessionClosed
+	}
+
+	encoded, err := state.listener.adapter.Encode(state.session, frame, session.OutboundMeta{})
+	if err != nil {
+		return err
+	}
+	return s.writePayload(state, encoded)
+}
+
+func (s *Server) dispatchSessionOpen(state *sessionState) error {
+	if state == nil {
+		return nil
+	}
+
+	state.markOpenDispatched()
+	if err := s.dispatcher.sessionOpen(state); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Server) startWriter(state *sessionState) {
@@ -636,7 +739,7 @@ func (st *sessionState) close(reason gatewaytypes.CloseReason, err error) {
 	st.closeOnce.Do(func() {
 		st.setCloseReason(reason)
 		st.server.unregisterState(st)
-		if err != nil {
+		if err != nil && st.openWasDispatched() {
 			st.server.dispatcher.sessionError(st, reason, err)
 		}
 		if st.session != nil {
@@ -652,7 +755,9 @@ func (st *sessionState) close(reason gatewaytypes.CloseReason, err error) {
 				st.server.dispatcher.sessionError(st, reason, closeErr)
 			}
 		}
-		_ = st.server.dispatcher.sessionClose(st)
+		if st.openWasDispatched() {
+			_ = st.server.dispatcher.sessionClose(st)
+		}
 		close(st.closedCh)
 	})
 }
@@ -707,4 +812,64 @@ func (st *sessionState) lastSeenActivity() time.Time {
 		return time.Time{}
 	}
 	return time.Unix(0, last)
+}
+
+func (st *sessionState) setAuthenticated(authenticated bool) {
+	if st == nil {
+		return
+	}
+
+	st.metaMu.Lock()
+	st.authenticated = authenticated
+	st.metaMu.Unlock()
+}
+
+func (st *sessionState) isAuthenticated() bool {
+	if st == nil {
+		return false
+	}
+
+	st.metaMu.RLock()
+	defer st.metaMu.RUnlock()
+	return st.authenticated
+}
+
+func (st *sessionState) setAuthRequired(required bool) {
+	if st == nil {
+		return
+	}
+
+	st.metaMu.Lock()
+	st.authRequired = required
+	st.metaMu.Unlock()
+}
+
+func (st *sessionState) requiresAuth() bool {
+	if st == nil {
+		return false
+	}
+
+	st.metaMu.RLock()
+	defer st.metaMu.RUnlock()
+	return st.authRequired
+}
+
+func (st *sessionState) markOpenDispatched() {
+	if st == nil {
+		return
+	}
+
+	st.metaMu.Lock()
+	st.openDispatched = true
+	st.metaMu.Unlock()
+}
+
+func (st *sessionState) openWasDispatched() bool {
+	if st == nil {
+		return false
+	}
+
+	st.metaMu.RLock()
+	defer st.metaMu.RUnlock()
+	return st.openDispatched
 }

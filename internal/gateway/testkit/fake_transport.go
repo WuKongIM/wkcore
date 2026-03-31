@@ -346,6 +346,16 @@ func (c *FakeConn) Writes() [][]byte {
 	return out
 }
 
+func (c *FakeConn) CloseCh() <-chan struct{} {
+	if c == nil {
+		return nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closeCh
+}
+
 func (c *FakeConn) SetWriteErr(err error) {
 	if c == nil {
 		return
