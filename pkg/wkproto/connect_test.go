@@ -3,13 +3,14 @@ package wkproto
 import (
 	"testing"
 
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestConnectEncodeAndDecode(t *testing.T) {
 
 	//clientTimestamp :=time.Now().UnixNano()/1000/1000
-	packet := &ConnectPacket{
+	packet := &wkpacket.ConnectPacket{
 		Version:         1,
 		DeviceFlag:      1,
 		DeviceID:        "deviceID",
@@ -25,7 +26,7 @@ func TestConnectEncodeAndDecode(t *testing.T) {
 	// 解码
 	resultPacket, _, err := codec.DecodeFrame(packetBytes, 1)
 	assert.NoError(t, err)
-	resultConnectPacket, ok := resultPacket.(*ConnectPacket)
+	resultConnectPacket, ok := resultPacket.(*wkpacket.ConnectPacket)
 	assert.Equal(t, true, ok)
 
 	assert.Equal(t, packet.Version, resultConnectPacket.Version)

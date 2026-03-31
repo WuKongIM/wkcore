@@ -3,11 +3,12 @@ package wkproto
 import (
 	"testing"
 
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestPingEncodeAndDecode(t *testing.T) {
-	packet := &PingPacket{}
+	packet := &wkpacket.PingPacket{}
 
 	codec := New()
 	// 编码
@@ -17,6 +18,6 @@ func TestPingEncodeAndDecode(t *testing.T) {
 	// 解码
 	resultPacket, _, err := codec.DecodeFrame(packetBytes, 1)
 	assert.NoError(t, err)
-	_, ok := resultPacket.(*PingPacket)
+	_, ok := resultPacket.(*wkpacket.PingPacket)
 	assert.Equal(t, true, ok)
 }

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/WuKongIM/WuKongIM/pkg/wkproto"
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	// Ensure io is imported
 )
 
@@ -384,15 +384,19 @@ func Decode(decoder *json.Decoder) (interface{}, Probe, error) {
 	}
 }
 
-func ToFrame(packet interface{}) (wkproto.Frame, string, error) {
+func ToFrame(packet interface{}) (wkpacket.Frame, string, error) {
 
 	switch p := packet.(type) {
 	case ConnectRequest:
 		return p.Params.ToProto(), p.ID, nil
 	case SendRequest:
-		return p.Params.ToProto(), p.ID, nil
+		frame, err := p.ToProto()
+		if err != nil {
+			return nil, "", err
+		}
+		return frame, p.ID, nil
 	case PingRequest:
-		return &wkproto.PingPacket{}, p.ID, nil
+		return &wkpacket.PingPacket{}, p.ID, nil
 	case DisconnectRequest:
 		return p.Params.ToProto(), p.ID, nil
 	case RecvAckNotification:
@@ -401,10 +405,10 @@ func ToFrame(packet interface{}) (wkproto.Frame, string, error) {
 	return nil, "", fmt.Errorf("unknown packet type: %T", packet)
 }
 
-func FromFrame(reqId string, frame wkproto.Frame) (interface{}, error) {
+func FromFrame(reqId string, frame wkpacket.Frame) (interface{}, error) {
 	switch frame.GetFrameType() {
-	case wkproto.CONNACK:
-		connack := frame.(*wkproto.ConnackPacket)
+	case wkpacket.CONNACK:
+		connack := frame.(*wkpacket.ConnackPacket)
 		params := FromProtoConnectAck(connack)
 		return ConnectResponse{
 			BaseResponse: BaseResponse{
@@ -413,8 +417,8 @@ func FromFrame(reqId string, frame wkproto.Frame) (interface{}, error) {
 			},
 			Result: params,
 		}, nil
-	case wkproto.SENDACK:
-		sendack := frame.(*wkproto.SendackPacket)
+	case wkpacket.SENDACK:
+		sendack := frame.(*wkpacket.SendackPacket)
 		result := FromProtoSendAck(sendack)
 		return SendResponse{
 			BaseResponse: BaseResponse{
@@ -423,16 +427,16 @@ func FromFrame(reqId string, frame wkproto.Frame) (interface{}, error) {
 			},
 			Result: result,
 		}, nil
-	case wkproto.RECV:
-		recv := frame.(*wkproto.RecvPacket)
+	case wkpacket.RECV:
+		recv := frame.(*wkpacket.RecvPacket)
 		result := FromProtoRecvNotification(recv)
 		return result, nil
-	case wkproto.EVENT:
-		event := frame.(*wkproto.EventPacket)
+	case wkpacket.EVENT:
+		event := frame.(*wkpacket.EventPacket)
 		result := FromProtoEventNotification(event)
 		return result, nil
-	case wkproto.DISCONNECT:
-		disconnect := frame.(*wkproto.DisconnectPacket)
+	case wkpacket.DISCONNECT:
+		disconnect := frame.(*wkpacket.DisconnectPacket)
 		params := FromProtoDisconnectPacket(disconnect)
 		return DisconnectNotification{
 			BaseNotification: BaseNotification{
@@ -441,7 +445,7 @@ func FromFrame(reqId string, frame wkproto.Frame) (interface{}, error) {
 			},
 			Params: params,
 		}, nil
-	case wkproto.PONG:
+	case wkpacket.PONG:
 		return PongResponse{
 			BaseResponse: BaseResponse{
 				Jsonrpc: jsonRPCVersion,

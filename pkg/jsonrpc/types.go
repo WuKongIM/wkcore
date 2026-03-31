@@ -7,8 +7,7 @@ import (
 	// Import the WuKongIMGoProto package
 	"strconv" // Added for MessageID parsing
 
-	"github.com/WuKongIM/WuKongIM/pkg/wkproto"
-	"github.com/WuKongIM/WuKongIM/pkg/wkutil"
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 )
 
 // Constants based on the schema enums
@@ -23,7 +22,7 @@ const (
 
 type ReasonCodeEnum int
 
-// Add specific ReasonCode values if available in wkproto.ReasonCode
+// Add specific ReasonCode values if available in wkpacket.ReasonCode
 // Example:
 // const (
 //    ReasonCodeSuccess ReasonCodeEnum = 0
@@ -296,9 +295,9 @@ type EventNotification struct {
 
 // --- Conversion Methods ---
 
-// toProtoInternal converts JSON-RPC Header to wkproto.Header (internal helper)
-func (h Header) toProtoInternal() *wkproto.Framer {
-	protoHeader := &wkproto.Framer{}
+// toProtoInternal converts JSON-RPC Header to wkpacket.Framer (internal helper)
+func (h Header) toProtoInternal() *wkpacket.Framer {
+	protoHeader := &wkpacket.Framer{}
 	// Assuming direct mapping for boolean flags.
 	protoHeader.NoPersist = h.NoPersist
 	protoHeader.RedDot = h.RedDot
@@ -308,45 +307,45 @@ func (h Header) toProtoInternal() *wkproto.Framer {
 	return protoHeader
 }
 
-// ToProto converts JSON-RPC SettingFlags to wkproto.Setting
-func (sf SettingFlags) ToProto() wkproto.Setting {
-	var setting wkproto.Setting = 0
+// ToProto converts JSON-RPC SettingFlags to wkpacket.Setting
+func (sf SettingFlags) ToProto() wkpacket.Setting {
+	var setting wkpacket.Setting = 0
 	if sf.Receipt {
-		setting |= wkproto.SettingReceiptEnabled
+		setting |= wkpacket.SettingReceiptEnabled
 	}
 	if sf.Signal {
-		setting |= wkproto.SettingSignal
+		setting |= wkpacket.SettingSignal
 	}
 	if sf.Stream {
-		setting |= wkproto.SettingStream
+		setting |= wkpacket.SettingStream
 	}
 	if sf.Topic {
-		setting |= wkproto.SettingTopic
+		setting |= wkpacket.SettingTopic
 	}
 	return setting
 }
 
 // ToProto converts the Header value to its proto representation.
-func (h Header) ToProto() *wkproto.Framer {
+func (h Header) ToProto() *wkpacket.Framer {
 	return h.toProtoInternal()
 }
 
 // --- Specific Payload Conversions ---
 
-// ToProto converts JSON-RPC ConnectParams to wkproto.ConnectReq
-func (p ConnectParams) ToProto() *wkproto.ConnectPacket {
+// ToProto converts JSON-RPC ConnectParams to wkpacket.ConnectPacket.
+func (p ConnectParams) ToProto() *wkpacket.ConnectPacket {
 
 	var version uint8 = uint8(p.Version)
 	if p.Version == 0 {
-		version = wkproto.LatestVersion
+		version = wkpacket.LatestVersion
 	}
 
-	req := &wkproto.ConnectPacket{
+	req := &wkpacket.ConnectPacket{
 		Framer:          headerToFramer(p.Header),
 		Version:         version,
 		ClientKey:       p.ClientKey,
 		DeviceID:        p.DeviceID,
-		DeviceFlag:      wkproto.DeviceFlag(p.DeviceFlag),
+		DeviceFlag:      wkpacket.DeviceFlag(p.DeviceFlag),
 		ClientTimestamp: p.ClientTimestamp,
 		UID:             p.UID,
 		Token:           p.Token,
@@ -354,8 +353,8 @@ func (p ConnectParams) ToProto() *wkproto.ConnectPacket {
 	return req
 }
 
-// FromProtoConnectAck converts wkproto.ConnectAck to JSON-RPC ConnectResult
-func FromProtoConnectAck(ack *wkproto.ConnackPacket) *ConnectResult {
+// FromProtoConnectAck converts wkpacket.ConnackPacket to JSON-RPC ConnectResult
+func FromProtoConnectAck(ack *wkpacket.ConnackPacket) *ConnectResult {
 	if ack == nil {
 		return nil
 	}
@@ -371,20 +370,15 @@ func FromProtoConnectAck(ack *wkproto.ConnackPacket) *ConnectResult {
 	return res
 }
 
-// ToProto converts JSON-RPC SendParams to wkproto.SendReq
-func (p SendParams) ToProto() *wkproto.SendPacket {
-	payloadBytes := p.Payload
-	clientMsgNo := p.ClientMsgNo
-	if clientMsgNo == "" {
-		clientMsgNo = wkutil.GenUUID()
-	}
-	req := &wkproto.SendPacket{
+// ToProto converts JSON-RPC SendParams to wkpacket.SendPacket.
+func (p SendParams) ToProto() *wkpacket.SendPacket {
+	req := &wkpacket.SendPacket{
 		Framer:      headerToFramer(p.Header),
 		Setting:     p.Setting.ToProto(),
-		ClientMsgNo: clientMsgNo,
+		ClientMsgNo: p.ClientMsgNo,
 		ChannelID:   p.ChannelID,
 		ChannelType: uint8(p.ChannelType),
-		Payload:     payloadBytes,
+		Payload:     p.Payload,
 		MsgKey:      p.MsgKey,
 		Expire:      p.Expire,
 		StreamNo:    p.StreamNo,
@@ -393,8 +387,8 @@ func (p SendParams) ToProto() *wkproto.SendPacket {
 	return req
 }
 
-// FromProtoSendAck converts wkproto.SendAck to JSON-RPC SendResult
-func FromProtoSendAck(ack *wkproto.SendackPacket) *SendResult {
+// FromProtoSendAck converts wkpacket.SendackPacket to JSON-RPC SendResult
+func FromProtoSendAck(ack *wkpacket.SendackPacket) *SendResult {
 	if ack == nil {
 		return nil
 	}
@@ -408,10 +402,10 @@ func FromProtoSendAck(ack *wkproto.SendackPacket) *SendResult {
 	return res
 }
 
-// ToProto converts JSON-RPC RecvAckParams to wkproto.RecvAckReq
-func (p RecvAckParams) ToProto() *wkproto.RecvackPacket {
+// ToProto converts JSON-RPC RecvAckParams to wkpacket.RecvackPacket.
+func (p RecvAckParams) ToProto() *wkpacket.RecvackPacket {
 	msgID, _ := strconv.ParseInt(p.MessageID, 10, 64)
-	req := &wkproto.RecvackPacket{
+	req := &wkpacket.RecvackPacket{
 		Framer:     headerToFramer(p.Header),
 		MessageID:  msgID,
 		MessageSeq: p.MessageSeq,
@@ -419,8 +413,8 @@ func (p RecvAckParams) ToProto() *wkproto.RecvackPacket {
 	return req
 }
 
-// FromProtoRecvPacket converts wkproto.RecvPacket to JSON-RPC RecvNotificationParams
-func FromProtoRecvPacket(pkt *wkproto.RecvPacket) RecvNotificationParams {
+// FromProtoRecvPacket converts wkpacket.RecvPacket to JSON-RPC RecvNotificationParams
+func FromProtoRecvPacket(pkt *wkpacket.RecvPacket) RecvNotificationParams {
 
 	params := RecvNotificationParams{
 		Header:      fromProtoHeader(pkt.Framer),
@@ -431,7 +425,7 @@ func FromProtoRecvPacket(pkt *wkproto.RecvPacket) RecvNotificationParams {
 		MessageSeq:  pkt.MessageSeq,
 		ClientMsgNo: pkt.ClientMsgNo,
 		StreamNo:    pkt.StreamNo,
-		StreamID:    pkt.StreamNo,
+		StreamID:    strconv.FormatUint(pkt.StreamId, 10),
 		StreamFlag:  StreamFlagEnum(pkt.StreamFlag),
 		Timestamp:   pkt.Timestamp,
 		ChannelID:   pkt.ChannelID,
@@ -443,9 +437,9 @@ func FromProtoRecvPacket(pkt *wkproto.RecvPacket) RecvNotificationParams {
 	return params
 }
 
-// ToProto converts JSON-RPC SubscribeParams to wkproto.SubscribeReq
-func (p SubscribeParams) ToProto() *wkproto.SubPacket {
-	req := &wkproto.SubPacket{
+// ToProto converts JSON-RPC SubscribeParams to wkpacket.SubPacket.
+func (p SubscribeParams) ToProto() *wkpacket.SubPacket {
+	req := &wkpacket.SubPacket{
 		SubNo:       p.SubNo,
 		ChannelID:   p.ChannelID,
 		ChannelType: uint8(p.ChannelType),
@@ -454,17 +448,17 @@ func (p SubscribeParams) ToProto() *wkproto.SubPacket {
 	return req
 }
 
-// ToProto converts JSON-RPC DisconnectParams to wkproto.DisconnectPacket
-func (p DisconnectParams) ToProto() *wkproto.DisconnectPacket {
-	pkt := &wkproto.DisconnectPacket{
-		ReasonCode: wkproto.ReasonCode(p.ReasonCode),
+// ToProto converts JSON-RPC DisconnectParams to wkpacket.DisconnectPacket.
+func (p DisconnectParams) ToProto() *wkpacket.DisconnectPacket {
+	pkt := &wkpacket.DisconnectPacket{
+		ReasonCode: wkpacket.ReasonCode(p.ReasonCode),
 		Reason:     p.Reason,
 	}
 	return pkt
 }
 
-// FromProtoDisconnectPacket converts wkproto.DisconnectPacket to JSON-RPC DisconnectNotificationParams
-func FromProtoDisconnectPacket(pkt *wkproto.DisconnectPacket) DisconnectNotificationParams {
+// FromProtoDisconnectPacket converts wkpacket.DisconnectPacket to JSON-RPC DisconnectNotificationParams
+func FromProtoDisconnectPacket(pkt *wkpacket.DisconnectPacket) DisconnectNotificationParams {
 	if pkt == nil {
 		return DisconnectNotificationParams{}
 	}
@@ -475,14 +469,14 @@ func FromProtoDisconnectPacket(pkt *wkproto.DisconnectPacket) DisconnectNotifica
 	return params
 }
 
-// ToProto converts PingParams to wkproto.PingPacket
-func (p PingParams) ToProto() *wkproto.PingPacket {
-	return &wkproto.PingPacket{}
+// ToProto converts PingParams to wkpacket.PingPacket.
+func (p PingParams) ToProto() *wkpacket.PingPacket {
+	return &wkpacket.PingPacket{}
 }
 
-// FromProtoPongPacket converts wkproto.PongPacket to PongResponse fields (mostly base)
+// FromProtoPongPacket converts wkpacket.PongPacket to PongResponse fields (mostly base)
 // Pong response usually just confirms the ID, result is often null.
-func FromProtoPongPacket(pkt *wkproto.PongPacket) {
+func FromProtoPongPacket(pkt *wkpacket.PongPacket) {
 	if pkt == nil {
 		// return appropriate representation of error or empty/null result
 	}
@@ -493,8 +487,8 @@ func FromProtoPongPacket(pkt *wkproto.PongPacket) {
 
 // --- Reverse Helper Functions (Proto -> JSON-RPC) ---
 
-// fromProtoHeader converts wkproto.Header to JSON-RPC Header
-func fromProtoHeader(protoHeader wkproto.Framer) *Header {
+// fromProtoHeader converts wkpacket.Framer to JSON-RPC Header
+func fromProtoHeader(protoHeader wkpacket.Framer) *Header {
 	if !protoHeader.NoPersist && !protoHeader.RedDot && !protoHeader.SyncOnce && !protoHeader.DUP && !protoHeader.End {
 		return nil
 	}
@@ -507,8 +501,8 @@ func fromProtoHeader(protoHeader wkproto.Framer) *Header {
 	}
 }
 
-func headerToFramer(header Header) wkproto.Framer {
-	return wkproto.Framer{
+func headerToFramer(header Header) wkpacket.Framer {
+	return wkpacket.Framer{
 		NoPersist: header.NoPersist,
 		RedDot:    header.RedDot,
 		SyncOnce:  header.SyncOnce,
@@ -517,23 +511,23 @@ func headerToFramer(header Header) wkproto.Framer {
 	}
 }
 
-// fromProtoSetting converts wkproto.Setting to JSON-RPC SettingFlags
-func fromProtoSetting(setting wkproto.Setting) *SettingFlags {
+// fromProtoSetting converts wkpacket.Setting to JSON-RPC SettingFlags
+func fromProtoSetting(setting wkpacket.Setting) *SettingFlags {
 
 	if setting == 0 {
 		return nil
 	}
 
 	flags := &SettingFlags{}
-	flags.Receipt = (setting & wkproto.SettingReceiptEnabled) != 0
-	flags.Signal = (setting & wkproto.SettingSignal) != 0
-	flags.Stream = (setting & wkproto.SettingStream) != 0
-	flags.Topic = (setting & wkproto.SettingTopic) != 0
+	flags.Receipt = (setting & wkpacket.SettingReceiptEnabled) != 0
+	flags.Signal = (setting & wkpacket.SettingSignal) != 0
+	flags.Stream = (setting & wkpacket.SettingStream) != 0
+	flags.Topic = (setting & wkpacket.SettingTopic) != 0
 	return flags
 }
 
 // --- Helper function to create standard requests easily ---
-// Might need adjustments if wkproto types are used directly or interfaces change
+// Might need adjustments if wkpacket types are used directly or interfaces change
 func NewRequest(method string, id string, params interface{}) interface{} {
 	req := BaseRequest{
 		Jsonrpc: "2.0",
@@ -602,23 +596,14 @@ func NewGenericResponseWithErr(id string, err *ErrorObject) GenericResponse {
 // Add conversions for full Request/Response types if needed, e.g.:
 
 // ToProto converts the full ConnectRequest to its proto representation
-func (r ConnectRequest) ToProto() *wkproto.ConnectPacket {
-	pkt := &wkproto.ConnectPacket{
-		Version:         uint8(r.Params.Version),
-		ClientKey:       r.Params.ClientKey,
-		DeviceID:        r.Params.DeviceID,
-		DeviceFlag:      wkproto.DeviceFlag(r.Params.DeviceFlag),
-		ClientTimestamp: r.Params.ClientTimestamp,
-		UID:             r.Params.UID,
-		Token:           r.Params.Token,
-	}
-	return pkt
+func (r ConnectRequest) ToProto() *wkpacket.ConnectPacket {
+	return r.Params.ToProto()
 }
 
 // ToProto converts the full SendRequest to its proto representation
-func (r SendRequest) ToProto() (*wkproto.SendPacket, error) {
+func (r SendRequest) ToProto() (*wkpacket.SendPacket, error) {
 	payloadBytes := r.Params.Payload
-	pkt := &wkproto.SendPacket{
+	pkt := &wkpacket.SendPacket{
 		Framer:      headerToFramer(r.Params.Header),
 		Setting:     r.Params.Setting.ToProto(),
 		ClientMsgNo: r.Params.ClientMsgNo,
@@ -634,26 +619,26 @@ func (r SendRequest) ToProto() (*wkproto.SendPacket, error) {
 }
 
 // Example: FromProto... for full response
-func FromProtoConnackNotification(id string, ack *wkproto.ConnackPacket) *ConnectResponse {
+func FromProtoConnackNotification(id string, ack *wkpacket.ConnackPacket) *ConnectResponse {
 	resp := &ConnectResponse{
 		BaseResponse: BaseResponse{
 			Jsonrpc: jsonRPCVersion,
 			ID:      id,
 		},
 	}
-	if ack.ReasonCode == wkproto.ReasonSuccess {
+	if ack.ReasonCode == wkpacket.ReasonSuccess {
 		resp.Result = FromProtoConnectAck(ack)
 	} else {
 		resp.Error = &ErrorObject{
 			Code:    int(ack.ReasonCode),
-			Message: wkproto.ReasonCode(ack.ReasonCode).String(),
+			Message: wkpacket.ReasonCode(ack.ReasonCode).String(),
 		}
 	}
 	return resp
 }
 
 // Example: FromProto... for full notification
-func FromProtoRecvNotification(pkt *wkproto.RecvPacket) RecvNotification {
+func FromProtoRecvNotification(pkt *wkpacket.RecvPacket) RecvNotification {
 
 	return RecvNotification{
 		BaseNotification: BaseNotification{
@@ -681,7 +666,7 @@ func NewEventNotification(id string, eventType string, timestamp int64, data str
 	}
 }
 
-func FromProtoEventNotification(eventPacket *wkproto.EventPacket) EventNotification {
+func FromProtoEventNotification(eventPacket *wkpacket.EventPacket) EventNotification {
 	return EventNotification{
 		BaseNotification: BaseNotification{
 			Jsonrpc: "2.0",

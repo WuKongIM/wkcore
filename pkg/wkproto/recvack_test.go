@@ -3,13 +3,14 @@ package wkproto
 import (
 	"testing"
 
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestRecvackEncodeAndDecode(t *testing.T) {
 
-	packet := &RecvackPacket{
-		Framer: Framer{
+	packet := &wkpacket.RecvackPacket{
+		Framer: wkpacket.Framer{
 			RedDot: true,
 		},
 		MessageID:  1234,
@@ -24,7 +25,7 @@ func TestRecvackEncodeAndDecode(t *testing.T) {
 	// 解码
 	resultPacket, _, err := codec.DecodeFrame(packetBytes, 1)
 	assert.NoError(t, err)
-	resultRecvackPacket, ok := resultPacket.(*RecvackPacket)
+	resultRecvackPacket, ok := resultPacket.(*wkpacket.RecvackPacket)
 	assert.Equal(t, true, ok)
 
 	// 比较

@@ -1,4 +1,4 @@
-package wkproto
+package wkpacket
 
 // PingPacket ping包
 type PingPacket struct {

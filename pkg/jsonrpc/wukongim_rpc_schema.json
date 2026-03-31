@@ -81,7 +81,7 @@
       },
       "ReasonCodeEnum": {
           "type": "integer",
-          "description": "原因码，具体值参考 wkproto.ReasonCode"
+          "description": "原因码，具体值参考 wkpacket.ReasonCode"
       },
        "SettingFlags": {
         "type": "object",

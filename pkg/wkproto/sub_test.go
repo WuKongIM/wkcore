@@ -3,15 +3,16 @@ package wkproto
 import (
 	"testing"
 
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestSbuEncodeAndDecode(t *testing.T) {
-	packet := &SubPacket{
-		Setting:     Setting(1),
+	packet := &wkpacket.SubPacket{
+		Setting:     wkpacket.Setting(1),
 		ChannelID:   "123456",
 		ChannelType: 1,
-		Action:      Subscribe,
+		Action:      wkpacket.Subscribe,
 	}
 
 	codec := New()
@@ -22,7 +23,7 @@ func TestSbuEncodeAndDecode(t *testing.T) {
 	// 解码
 	resultPacket, _, err := codec.DecodeFrame(packetBytes, 1)
 	assert.NoError(t, err)
-	resultSubPacket, ok := resultPacket.(*SubPacket)
+	resultSubPacket, ok := resultPacket.(*wkpacket.SubPacket)
 	assert.Equal(t, true, ok)
 
 	// 比较

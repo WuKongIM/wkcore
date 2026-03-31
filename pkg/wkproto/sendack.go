@@ -1,33 +1,14 @@
 package wkproto
 
 import (
-	"fmt"
-
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/pkg/errors"
 )
 
-// SendackPacket 发送回执包
-type SendackPacket struct {
-	Framer
-	MessageID   int64      // 消息ID（全局唯一）
-	MessageSeq  uint32     // 消息序列号（用户唯一，有序）
-	ClientSeq   uint64     // 客户端序列号 (客户端提供，服务端原样返回)
-	ClientMsgNo string     // 客户端消息编号(目前只有mos协议有效)
-	ReasonCode  ReasonCode // 原因代码
-}
-
-// GetPacketType 包类型
-func (s *SendackPacket) GetFrameType() FrameType {
-	return SENDACK
-}
-func (s *SendackPacket) String() string {
-	return fmt.Sprintf("MessageSeq:%d MessageId:%d ReasonCode:%s", s.MessageSeq, s.MessageID, s.ReasonCode)
-}
-
-func decodeSendack(frame Frame, data []byte, version uint8) (Frame, error) {
+func decodeSendack(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Frame, error) {
 	dec := NewDecoder(data)
-	sendackPacket := &SendackPacket{}
-	sendackPacket.Framer = frame.(Framer)
+	sendackPacket := &wkpacket.SendackPacket{}
+	sendackPacket.Framer = frame.(wkpacket.Framer)
 	var err error
 
 	// messageID
@@ -51,12 +32,12 @@ func decodeSendack(frame Frame, data []byte, version uint8) (Frame, error) {
 	if reasonCode, err = dec.Uint8(); err != nil {
 		return nil, errors.Wrap(err, "解码ChannelType失败！")
 	}
-	sendackPacket.ReasonCode = ReasonCode(reasonCode)
+	sendackPacket.ReasonCode = wkpacket.ReasonCode(reasonCode)
 
 	return sendackPacket, err
 }
 
-func encodeSendack(sendackPacket *SendackPacket, enc *Encoder, _ uint8) error {
+func encodeSendack(sendackPacket *wkpacket.SendackPacket, enc *Encoder, _ uint8) error {
 	// 消息唯一ID
 	enc.WriteInt64(sendackPacket.MessageID)
 	// clientSeq
@@ -68,7 +49,6 @@ func encodeSendack(sendackPacket *SendackPacket, enc *Encoder, _ uint8) error {
 	return nil
 }
 
-func encodeSendackSize(_ *SendackPacket, _ uint8) int {
-
-	return MessageIDByteSize + ClientSeqByteSize + MessageSeqByteSize + ReasonCodeByteSize
+func encodeSendackSize(_ *wkpacket.SendackPacket, _ uint8) int {
+	return wkpacket.MessageIDByteSize + wkpacket.ClientSeqByteSize + wkpacket.MessageSeqByteSize + wkpacket.ReasonCodeByteSize
 }

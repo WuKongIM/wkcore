@@ -1,4 +1,4 @@
-package wkproto
+package wkpacket
 
 type Setting uint8
 
@@ -9,7 +9,6 @@ const (
 	SettingNoEncrypt      Setting = 1 << 4 // 是否不加密
 	SettingTopic          Setting = 1 << 3 // 是否有topic
 	SettingStream         Setting = 1 << 1 // 是否开启流
-
 )
 
 func (s Setting) IsSet(v Setting) bool {

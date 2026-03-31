@@ -4,12 +4,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestRecvEncodeAndDecode(t *testing.T) {
 
-	packet := &RecvPacket{
+	packet := &wkpacket.RecvPacket{
 		MessageID:   1223,
 		Expire:      10,
 		MessageSeq:  9238934,
@@ -19,7 +20,7 @@ func TestRecvEncodeAndDecode(t *testing.T) {
 		FromUID:     "123",
 		Payload:     []byte("中文测试"),
 	}
-	packet.Framer = Framer{
+	packet.Framer = wkpacket.Framer{
 		NoPersist: true,
 		SyncOnce:  true,
 	}
@@ -32,7 +33,7 @@ func TestRecvEncodeAndDecode(t *testing.T) {
 	// 解码
 	resultPacket, _, err := codec.DecodeFrame(packetBytes, 3)
 	assert.NoError(t, err)
-	resultRecvPacket, ok := resultPacket.(*RecvPacket)
+	resultRecvPacket, ok := resultPacket.(*wkpacket.RecvPacket)
 	assert.Equal(t, true, ok)
 
 	// 比较
