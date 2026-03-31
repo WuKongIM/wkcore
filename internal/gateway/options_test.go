@@ -54,6 +54,16 @@ func TestOptionsValidateNormalizesDefaultSession(t *testing.T) {
 	}
 }
 
+func TestDefaultSessionOptions(t *testing.T) {
+	opts := gateway.DefaultSessionOptions()
+	if !opts.CloseOnHandlerError {
+		t.Fatal("expected CloseOnHandlerError default to be true")
+	}
+	if opts.IdleTimeout <= 0 || opts.WriteTimeout <= 0 {
+		t.Fatalf("expected positive timeout defaults, got %+v", opts)
+	}
+}
+
 func TestOptionsValidateNormalizesPartialSessionOverrides(t *testing.T) {
 	opts := gateway.Options{
 		Handler: noopHandler{},
