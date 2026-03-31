@@ -117,7 +117,7 @@ Design notes:
 
 ### Event Context
 
-The gateway passes a single immutable context object to every upstream callback.
+The gateway passes an immutable per-callback context snapshot to every upstream callback.
 
 ```go
 package gateway
@@ -136,6 +136,7 @@ type Context struct {
 Design notes:
 
 - `Context` is the carrier for session identity and listener metadata
+- Each callback receives its own immutable context snapshot; the gateway does not mutate and reuse one shared instance across lifecycle events
 - `CloseReason` is empty for open and frame callbacks and set only for close/error paths that terminate the session
 - `ReplyToken` is empty for events that are not associated with a request/response protocol interaction
 - For JSON-RPC request handling, `ReplyToken` is the inbound request ID
@@ -271,6 +272,13 @@ type ListenerOptions struct {
 }
 ```
 
+Rules:
+
+- `Name` is the canonical listener identity inside the gateway
+- `Name` must be unique across all configured listeners
+- The core uses `Name` as the lookup key for the listener's transport/protocol binding
+- `Context.Listener` is always populated with this same `Name`
+
 Initial built-in bindings:
 
 - `tcp-wkproto`: `tcp + wkproto`
@@ -386,6 +394,7 @@ const (
     CloseReasonServerStop     CloseReason = "server_stop"
     CloseReasonPeerClosed     CloseReason = "peer_closed"
     CloseReasonProtocolError  CloseReason = "protocol_error"
+    CloseReasonInboundOverflow CloseReason = "inbound_overflow"
     CloseReasonPolicyViolation CloseReason = "policy_violation"
     CloseReasonPolicyTimeout  CloseReason = "policy_timeout"
     CloseReasonWriteQueueFull CloseReason = "write_queue_full"
@@ -434,6 +443,20 @@ Overflow behavior:
 This prevents one slow client from accumulating unbounded pending output even if the write queue still has free item slots.
 
 This keeps the behavior deterministic and avoids hidden drop policies.
+
+Inbound buffering policy:
+
+- `ReadBufferSize` is the initial allocation hint for each session's inbound buffer
+- `MaxInboundBytes` is the maximum number of undecoded bytes allowed in that buffer at any point in time
+- The limit is enforced immediately after appending newly received transport data and before protocol decode continues
+
+Inbound overflow behavior:
+
+- If `len(inboundBuffer) > MaxInboundBytes`, return `ErrInboundOverflow`
+- Report the error through `OnSessionError`
+- Close the session with `CloseReasonInboundOverflow`
+
+This prevents a client from forcing unbounded memory growth through partial frames or intentionally malformed streams.
 
 ## Protocol Policy Hooks
 
