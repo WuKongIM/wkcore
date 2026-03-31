@@ -26,6 +26,7 @@ type connState struct {
 	runtime    *listenerRuntime
 	transport  *stateConn
 	id         uint64
+	generation uint64
 	localAddr  string
 	remoteAddr string
 
@@ -52,8 +53,11 @@ func newConnState(id uint64, raw gnetv2.Conn, runtime *listenerRuntime) *connSta
 		wake:       make(chan struct{}, 1),
 	}
 	state.transport = &stateConn{state: state}
-	go state.run()
 	return state
+}
+
+func (s *connState) start() {
+	go s.run()
 }
 
 func (s *connState) enqueueOpen() {
@@ -137,7 +141,7 @@ func (s *connState) run() {
 
 		switch event.kind {
 		case connEventOpen:
-			if s.runtime.handler == nil {
+			if s.runtime.handler == nil || !s.runtime.shouldDispatch(s) {
 				continue
 			}
 			if err := s.runtime.handler.OnOpen(s.transport); err != nil {
@@ -145,7 +149,7 @@ func (s *connState) run() {
 				_ = s.raw.Close()
 			}
 		case connEventData:
-			if s.runtime.handler == nil {
+			if s.runtime.handler == nil || !s.runtime.shouldDispatch(s) {
 				continue
 			}
 			if err := s.runtime.handler.OnData(s.transport, event.data); err != nil {

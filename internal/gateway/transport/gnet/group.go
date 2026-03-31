@@ -20,10 +20,11 @@ type listenerRuntime struct {
 	opts    transport.ListenerOptions
 	handler transport.ConnHandler
 
-	mu        sync.RWMutex
-	boundAddr string
-	active    bool
-	conns     map[*connState]struct{}
+	mu         sync.RWMutex
+	boundAddr  string
+	active     bool
+	generation uint64
+	conns      map[*connState]struct{}
 }
 
 func (r *listenerRuntime) addr() string {
@@ -44,23 +45,39 @@ func (r *listenerRuntime) isActive() bool {
 	return r.active
 }
 
-func (r *listenerRuntime) setActive(active bool) {
+func (r *listenerRuntime) activate() {
 	r.mu.Lock()
-	r.active = active
+	r.active = true
 	r.mu.Unlock()
 }
 
-func (r *listenerRuntime) trackConn(state *connState) {
-	if r == nil || state == nil {
-		return
-	}
-
+func (r *listenerRuntime) deactivateAndSnapshot() []*connState {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.active = false
+	r.generation++
+
+	conns := make([]*connState, 0, len(r.conns))
+	for state := range r.conns {
+		conns = append(conns, state)
+	}
+	return conns
+}
+
+func (r *listenerRuntime) admitConn(state *connState) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.active {
+		return false
+	}
 	if r.conns == nil {
 		r.conns = make(map[*connState]struct{})
 	}
+	state.generation = r.generation
 	r.conns[state] = struct{}{}
-	r.mu.Unlock()
+	return true
 }
 
 func (r *listenerRuntime) untrackConn(state *connState) {
@@ -73,15 +90,10 @@ func (r *listenerRuntime) untrackConn(state *connState) {
 	r.mu.Unlock()
 }
 
-func (r *listenerRuntime) snapshotConns() []*connState {
+func (r *listenerRuntime) shouldDispatch(state *connState) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-
-	conns := make([]*connState, 0, len(r.conns))
-	for state := range r.conns {
-		conns = append(conns, state)
-	}
-	return conns
+	return r.active && r.generation == state.generation
 }
 
 type engineCycle struct {
@@ -109,7 +121,6 @@ type engineGroup struct {
 
 	mu            sync.Mutex
 	runtimes      []*listenerRuntime
-	tcpRuntimes   []*listenerRuntime
 	routes        map[string]*listenerRuntime
 	engine        gnetv2.Engine
 	cycle         *engineCycle
@@ -123,23 +134,17 @@ type engineGroup struct {
 
 func newEngineGroup(specs []transport.ListenerSpec) *engineGroup {
 	runtimes := make([]*listenerRuntime, 0, len(specs))
-	tcpRuntimes := make([]*listenerRuntime, 0, len(specs))
 	for _, spec := range specs {
-		runtime := &listenerRuntime{
+		runtimes = append(runtimes, &listenerRuntime{
 			opts:    spec.Options,
 			handler: spec.Handler,
 			conns:   make(map[*connState]struct{}),
-		}
-		runtimes = append(runtimes, runtime)
-		if spec.Options.Network == "tcp" {
-			tcpRuntimes = append(tcpRuntimes, runtime)
-		}
+		})
 	}
 
 	return &engineGroup{
-		runtimes:    runtimes,
-		tcpRuntimes: tcpRuntimes,
-		routes:      make(map[string]*listenerRuntime, len(tcpRuntimes)),
+		runtimes: runtimes,
+		routes:   make(map[string]*listenerRuntime, len(runtimes)),
 	}
 }
 
@@ -151,7 +156,7 @@ func (g *engineGroup) start(runtime *listenerRuntime) error {
 		return errWebSocketNotImplemented
 	}
 
-	runtime.setActive(true)
+	runtime.activate()
 
 	for {
 		g.mu.Lock()
@@ -161,17 +166,62 @@ func (g *engineGroup) start(runtime *listenerRuntime) error {
 			<-wait
 			continue
 		}
+
 		if g.running {
+			if g.isBoundLocked(runtime) {
+				g.mu.Unlock()
+				return nil
+			}
 			g.mu.Unlock()
-			return nil
+
+			if err := preflightListenTCP(runtime.opts.Address); err != nil {
+				runtime.deactivateAndSnapshot()
+				return err
+			}
+
+			g.mu.Lock()
+			if g.transitioning {
+				wait := g.transitionCh
+				g.mu.Unlock()
+				<-wait
+				continue
+			}
+			if g.isBoundLocked(runtime) {
+				g.mu.Unlock()
+				return nil
+			}
+
+			previous := g.boundRuntimesLocked()
+			desired := append([]*listenerRuntime(nil), previous...)
+			desired = append(desired, runtime)
+
+			g.transitioning = true
+			g.transitionCh = make(chan struct{})
+			engine := g.engine
+			cycle := g.cycle
+			g.mu.Unlock()
+
+			err := g.restartEngine(engine, cycle, desired, previous)
+			if err != nil {
+				runtime.deactivateAndSnapshot()
+			}
+
+			g.mu.Lock()
+			close(g.transitionCh)
+			g.transitioning = false
+			g.mu.Unlock()
+			return err
 		}
 
 		g.transitioning = true
 		g.transitionCh = make(chan struct{})
-		bootRuntimes := append([]*listenerRuntime(nil), g.tcpRuntimes...)
+		desired := g.activeRuntimesLocked()
 		g.mu.Unlock()
 
-		err := g.startEngine(bootRuntimes)
+		err := g.startEngine(desired)
+		if err != nil {
+			runtime.deactivateAndSnapshot()
+		}
 
 		g.mu.Lock()
 		if err == nil {
@@ -180,12 +230,7 @@ func (g *engineGroup) start(runtime *listenerRuntime) error {
 		close(g.transitionCh)
 		g.transitioning = false
 		g.mu.Unlock()
-
-		if err != nil {
-			runtime.setActive(false)
-			return err
-		}
-		return nil
+		return err
 	}
 }
 
@@ -194,12 +239,12 @@ func (g *engineGroup) stop(runtime *listenerRuntime) error {
 		return nil
 	}
 	if runtime.opts.Network == "websocket" {
-		runtime.setActive(false)
+		runtime.deactivateAndSnapshot()
 		return nil
 	}
 
-	runtime.setActive(false)
-	for _, state := range runtime.snapshotConns() {
+	conns := runtime.deactivateAndSnapshot()
+	for _, state := range conns {
 		_ = state.raw.Close()
 	}
 
@@ -211,7 +256,7 @@ func (g *engineGroup) stop(runtime *listenerRuntime) error {
 			<-wait
 			continue
 		}
-		if g.hasActiveTCPLocked() {
+		if g.hasActiveBoundRuntimeLocked() {
 			g.mu.Unlock()
 			return nil
 		}
@@ -232,7 +277,7 @@ func (g *engineGroup) stop(runtime *listenerRuntime) error {
 		if g.engine == engine && g.cycle == cycle {
 			g.engine = gnetv2.Engine{}
 			g.cycle = nil
-			g.routes = make(map[string]*listenerRuntime, len(g.tcpRuntimes))
+			g.routes = make(map[string]*listenerRuntime, len(g.runtimes))
 			g.bootRuntimes = nil
 			g.running = false
 		}
@@ -269,7 +314,7 @@ func (g *engineGroup) startEngine(runtimes []*listenerRuntime) error {
 		if g.cycle == cycle {
 			g.cycle = nil
 			g.bootRuntimes = nil
-			g.routes = make(map[string]*listenerRuntime, len(g.tcpRuntimes))
+			g.routes = make(map[string]*listenerRuntime, len(g.runtimes))
 			g.engine = gnetv2.Engine{}
 			g.running = false
 		}
@@ -281,6 +326,29 @@ func (g *engineGroup) startEngine(runtimes []*listenerRuntime) error {
 	if g.cycle == cycle {
 		g.bootRuntimes = nil
 	}
+	g.mu.Unlock()
+	return nil
+}
+
+func (g *engineGroup) restartEngine(engine gnetv2.Engine, cycle *engineCycle, desired []*listenerRuntime, rollback []*listenerRuntime) error {
+	if err := g.stopEngine(engine, cycle); err != nil {
+		return err
+	}
+	if err := g.startEngine(desired); err != nil {
+		if len(rollback) > 0 {
+			rollbackErr := g.startEngine(rollback)
+			if rollbackErr != nil {
+				return fmt.Errorf("gateway/transport/gnet: restart failed: %w (rollback failed: %v)", err, rollbackErr)
+			}
+			g.mu.Lock()
+			g.running = true
+			g.mu.Unlock()
+		}
+		return err
+	}
+
+	g.mu.Lock()
+	g.running = true
 	g.mu.Unlock()
 	return nil
 }
@@ -326,13 +394,17 @@ func (g *engineGroup) OnBoot(engine gnetv2.Engine) (action gnetv2.Action) {
 
 func (g *engineGroup) OnOpen(c gnetv2.Conn) (out []byte, action gnetv2.Action) {
 	runtime := g.runtimeByAddr(c.LocalAddr().String())
-	if runtime == nil || !runtime.isActive() {
+	if runtime == nil {
 		return nil, gnetv2.Close
 	}
 
 	state := newConnState(g.nextConnID.Add(1), c, runtime)
-	runtime.trackConn(state)
+	if !runtime.admitConn(state) {
+		return nil, gnetv2.Close
+	}
+
 	c.SetContext(state)
+	state.start()
 	state.enqueueOpen()
 	return nil, gnetv2.None
 }
@@ -342,7 +414,7 @@ func (g *engineGroup) OnTraffic(c gnetv2.Conn) (action gnetv2.Action) {
 	if !ok || state == nil {
 		return gnetv2.Close
 	}
-	if !state.runtime.isActive() {
+	if !state.runtime.shouldDispatch(state) {
 		_ = c.Close()
 		return gnetv2.None
 	}
@@ -426,11 +498,50 @@ func (g *engineGroup) reportGroupError(runtimes []*listenerRuntime, err error) {
 	}
 }
 
-func (g *engineGroup) hasActiveTCPLocked() bool {
-	for _, runtime := range g.tcpRuntimes {
+func (g *engineGroup) activeRuntimesLocked() []*listenerRuntime {
+	active := make([]*listenerRuntime, 0, len(g.runtimes))
+	for _, runtime := range g.runtimes {
+		if runtime.opts.Network == "tcp" && runtime.isActive() {
+			active = append(active, runtime)
+		}
+	}
+	return active
+}
+
+func (g *engineGroup) boundRuntimesLocked() []*listenerRuntime {
+	bound := make([]*listenerRuntime, 0, len(g.runtimes))
+	seen := make(map[*listenerRuntime]struct{}, len(g.runtimes))
+	for _, runtime := range g.routes {
+		if _, ok := seen[runtime]; ok {
+			continue
+		}
+		seen[runtime] = struct{}{}
+		bound = append(bound, runtime)
+	}
+	return bound
+}
+
+func (g *engineGroup) isBoundLocked(runtime *listenerRuntime) bool {
+	if runtime == nil {
+		return false
+	}
+	route, ok := g.routes[runtime.opts.Address]
+	return ok && route == runtime
+}
+
+func (g *engineGroup) hasActiveBoundRuntimeLocked() bool {
+	for _, runtime := range g.boundRuntimesLocked() {
 		if runtime.isActive() {
 			return true
 		}
 	}
 	return false
+}
+
+func preflightListenTCP(addr string) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return ln.Close()
 }

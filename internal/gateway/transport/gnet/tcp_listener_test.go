@@ -106,6 +106,68 @@ func TestTCPListenersShareOneEngineAndRemainIndependentlyAddressable(t *testing.
 	}
 }
 
+func TestTCPStartOneListenerDoesNotBindUnstartedSibling(t *testing.T) {
+	firstHandler := newTCPRecordingHandler(nil)
+	secondHandler := newTCPRecordingHandler(nil)
+
+	first, second := buildTCPListeners(t,
+		namedTCPListenerSpecWithAddress("tcp-a", firstHandler, freeTCPAddress(t)),
+		namedTCPListenerSpecWithAddress("tcp-b", secondHandler, freeTCPAddress(t)),
+	)
+	defer func() { _ = second.Stop() }()
+	defer func() { _ = first.Stop() }()
+
+	if err := first.Start(); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+
+	if !canDial(first.Addr()) {
+		t.Fatalf("started listener %q is not dialable", first.Addr())
+	}
+	if canDial(second.Addr()) {
+		t.Fatalf("unstarted sibling %q became dialable before Start", second.Addr())
+	}
+	if got := secondHandler.OpenCount(); got != 0 {
+		t.Fatalf("unstarted sibling open count = %d, want 0", got)
+	}
+}
+
+func TestTCPBadSiblingDoesNotBreakEarlierStart(t *testing.T) {
+	badAddr, hold := occupyTCPAddress(t)
+	defer func() { _ = hold.Close() }()
+
+	goodHandler := newTCPRecordingHandler(func(conn transport.Conn, data []byte) error {
+		return conn.Write([]byte("good:" + string(data)))
+	})
+	badHandler := newTCPRecordingHandler(nil)
+	good, bad := buildTCPListeners(t,
+		namedTCPListenerSpecWithAddress("tcp-a", goodHandler, freeTCPAddress(t)),
+		namedTCPListenerSpecWithAddress("tcp-b", badHandler, badAddr),
+	)
+	defer func() { _ = bad.Stop() }()
+	defer func() { _ = good.Stop() }()
+
+	if err := good.Start(); err != nil {
+		t.Fatalf("good Start: %v", err)
+	}
+	firstConn := mustDialTCP(t, good.Addr())
+	writeAndReadExact(t, firstConn, []byte("good"), "good:good")
+	_ = firstConn.Close()
+	waitUntil(t, time.Second, func() bool { return goodHandler.DataCount() == 1 })
+
+	if err := bad.Start(); err == nil {
+		t.Fatal("bad Start succeeded, want bind failure")
+	}
+
+	secondConn := mustDialTCP(t, good.Addr())
+	writeAndReadExact(t, secondConn, []byte("still-good"), "good:still-good")
+	_ = secondConn.Close()
+	waitUntil(t, time.Second, func() bool { return goodHandler.DataCount() == 2 })
+	if got := badHandler.OpenCount(); got != 0 {
+		t.Fatalf("bad sibling open count = %d, want 0", got)
+	}
+}
+
 func TestTCPStopOneLogicalListenerKeepsOtherConnectionsAlive(t *testing.T) {
 	firstHandler := newTCPRecordingHandler(func(conn transport.Conn, data []byte) error {
 		return conn.Write([]byte("first:" + string(data)))
@@ -137,12 +199,55 @@ func TestTCPStopOneLogicalListenerKeepsOtherConnectionsAlive(t *testing.T) {
 		return firstHandler.OpenCount() == 1 && secondHandler.OpenCount() == 1
 	})
 
+	stopDone := make(chan struct{})
+	var stopOnce sync.Once
+	firstHandler.onOpen = func(conn transport.Conn) error {
+		select {
+		case <-stopDone:
+			t.Errorf("OnOpen reached stopped listener for %s", conn.RemoteAddr())
+		default:
+		}
+		return nil
+	}
+	firstHandler.onData = func(conn transport.Conn, data []byte) error {
+		select {
+		case <-stopDone:
+			t.Errorf("OnData reached stopped listener after Stop for %s", conn.RemoteAddr())
+		default:
+		}
+		return conn.Write([]byte("first:" + string(data)))
+	}
+
+	raceDone := make(chan struct{})
+	go func() {
+		defer close(raceDone)
+		for {
+			select {
+			case <-stopDone:
+				return
+			default:
+			}
+
+			conn, err := net.DialTimeout("tcp", first.Addr(), 50*time.Millisecond)
+			if err != nil {
+				continue
+			}
+			_, _ = conn.Write([]byte("racing"))
+			_ = conn.Close()
+		}
+	}()
+
 	if err := first.Stop(); err != nil {
 		t.Fatalf("first Stop: %v", err)
 	}
+	stopOnce.Do(func() { close(stopDone) })
+	<-raceDone
+
+	openCountAfterStop := firstHandler.OpenCount()
+	dataCountAfterStop := firstHandler.DataCount()
 
 	waitUntil(t, time.Second, func() bool {
-		return firstHandler.CloseCount() == 1
+		return firstHandler.CloseCount() >= 1
 	})
 
 	writeAndReadExact(t, secondConn, []byte("still-running"), "second:still-running")
@@ -166,10 +271,10 @@ func TestTCPStopOneLogicalListenerKeepsOtherConnectionsAlive(t *testing.T) {
 	}
 
 	if got := firstHandler.OpenCount(); got != 1 {
-		t.Fatalf("stopped listener open count = %d, want 1", got)
+		t.Fatalf("stopped listener open count changed after Stop: got %d, want %d", got, openCountAfterStop)
 	}
-	if got := firstHandler.DataCount(); got != 0 {
-		t.Fatalf("stopped listener data count = %d, want 0", got)
+	if got := firstHandler.DataCount(); got != dataCountAfterStop {
+		t.Fatalf("stopped listener data count changed after Stop: got %d, want %d", got, dataCountAfterStop)
 	}
 }
 
@@ -237,6 +342,7 @@ type tcpOpenSnapshot struct {
 
 type tcpRecordingHandler struct {
 	mu       sync.Mutex
+	onOpen   func(conn transport.Conn) error
 	onData   func(conn transport.Conn, data []byte) error
 	opens    []tcpOpenSnapshot
 	payloads [][]byte
@@ -257,7 +363,11 @@ func (h *tcpRecordingHandler) OnOpen(conn transport.Conn) error {
 		remoteAddr: conn.RemoteAddr(),
 	})
 	h.events = append(h.events, "open")
+	onOpen := h.onOpen
 	h.mu.Unlock()
+	if onOpen != nil {
+		return onOpen(conn)
+	}
 	return nil
 }
 
@@ -389,6 +499,11 @@ func mustDialTCP(t *testing.T, addr string) net.Conn {
 func writeAndReadExact(t *testing.T, conn net.Conn, payload []byte, want string) {
 	t.Helper()
 
+	if err := conn.SetDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Fatalf("SetDeadline: %v", err)
+	}
+	defer func() { _ = conn.SetDeadline(time.Time{}) }()
+
 	if _, err := conn.Write(payload); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -436,6 +551,16 @@ func freeTCPAddress(t *testing.T) string {
 		t.Fatalf("Close: %v", err)
 	}
 	return addr
+}
+
+func occupyTCPAddress(t *testing.T) (string, net.Listener) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	return ln.Addr().String(), ln
 }
 
 func waitUntil(t *testing.T, timeout time.Duration, cond func() bool) {
