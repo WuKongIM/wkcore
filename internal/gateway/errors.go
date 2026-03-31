@@ -1,34 +1,34 @@
 package gateway
 
-import "errors"
+import gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
 
 var (
-	ErrNilHandler             = errors.New("gateway: nil handler")
-	ErrListenerNameEmpty      = errors.New("gateway: listener name is empty")
-	ErrListenerNameDuplicate  = errors.New("gateway: duplicate listener name")
-	ErrListenerAddressEmpty   = errors.New("gateway: listener address is empty")
-	ErrListenerNetworkEmpty   = errors.New("gateway: listener network is empty")
-	ErrListenerTransportEmpty = errors.New("gateway: listener transport is empty")
-	ErrListenerProtocolEmpty  = errors.New("gateway: listener protocol is empty")
-	ErrListenerWebsocketPath  = errors.New("gateway: websocket listener path is required")
-	ErrGatewayClosed          = errors.New("gateway: gateway is closed")
-	ErrSessionClosed          = errors.New("gateway: session is closed")
-	ErrInboundOverflow        = errors.New("gateway: inbound bytes limit exceeded")
-	ErrWriteTimeout           = errors.New("gateway: write timeout")
-	ErrIdleTimeout            = errors.New("gateway: idle timeout")
+	ErrNilHandler             = gatewaytypes.ErrNilHandler
+	ErrListenerNameEmpty      = gatewaytypes.ErrListenerNameEmpty
+	ErrListenerNameDuplicate  = gatewaytypes.ErrListenerNameDuplicate
+	ErrListenerAddressEmpty   = gatewaytypes.ErrListenerAddressEmpty
+	ErrListenerNetworkEmpty   = gatewaytypes.ErrListenerNetworkEmpty
+	ErrListenerTransportEmpty = gatewaytypes.ErrListenerTransportEmpty
+	ErrListenerProtocolEmpty  = gatewaytypes.ErrListenerProtocolEmpty
+	ErrListenerWebsocketPath  = gatewaytypes.ErrListenerWebsocketPath
+	ErrGatewayClosed          = gatewaytypes.ErrGatewayClosed
+	ErrSessionClosed          = gatewaytypes.ErrSessionClosed
+	ErrInboundOverflow        = gatewaytypes.ErrInboundOverflow
+	ErrWriteTimeout           = gatewaytypes.ErrWriteTimeout
+	ErrIdleTimeout            = gatewaytypes.ErrIdleTimeout
 )
 
-type CloseReason string
+type CloseReason = gatewaytypes.CloseReason
 
 const (
-	CloseReasonServerStop       CloseReason = "server_stop"
-	CloseReasonPeerClosed       CloseReason = "peer_closed"
-	CloseReasonProtocolError    CloseReason = "protocol_error"
-	CloseReasonInboundOverflow  CloseReason = "inbound_overflow"
-	CloseReasonPolicyViolation  CloseReason = "policy_violation"
-	CloseReasonPolicyTimeout    CloseReason = "policy_timeout"
-	CloseReasonWriteQueueFull   CloseReason = "write_queue_full"
-	CloseReasonOutboundOverflow CloseReason = "outbound_overflow"
-	CloseReasonIdleTimeout      CloseReason = "idle_timeout"
-	CloseReasonHandlerError     CloseReason = "handler_error"
+	CloseReasonServerStop       = gatewaytypes.CloseReasonServerStop
+	CloseReasonPeerClosed       = gatewaytypes.CloseReasonPeerClosed
+	CloseReasonProtocolError    = gatewaytypes.CloseReasonProtocolError
+	CloseReasonInboundOverflow  = gatewaytypes.CloseReasonInboundOverflow
+	CloseReasonPolicyViolation  = gatewaytypes.CloseReasonPolicyViolation
+	CloseReasonPolicyTimeout    = gatewaytypes.CloseReasonPolicyTimeout
+	CloseReasonWriteQueueFull   = gatewaytypes.CloseReasonWriteQueueFull
+	CloseReasonOutboundOverflow = gatewaytypes.CloseReasonOutboundOverflow
+	CloseReasonIdleTimeout      = gatewaytypes.CloseReasonIdleTimeout
+	CloseReasonHandlerError     = gatewaytypes.CloseReasonHandlerError
 )

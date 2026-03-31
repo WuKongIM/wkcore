@@ -1,15 +1,15 @@
 package core
 
 import (
-	"github.com/WuKongIM/WuKongIM/internal/gateway"
+	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
 	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 )
 
 type dispatcher struct {
-	handler gateway.Handler
+	handler gatewaytypes.Handler
 }
 
-func newDispatcher(handler gateway.Handler) dispatcher {
+func newDispatcher(handler gatewaytypes.Handler) dispatcher {
 	return dispatcher{handler: handler}
 }
 
@@ -34,7 +34,7 @@ func (d dispatcher) frame(state *sessionState, replyToken string, frame wkpacket
 	return d.handler.OnFrame(d.context(state, replyToken, state.closeReason()), frame)
 }
 
-func (d dispatcher) sessionError(state *sessionState, reason gateway.CloseReason, err error) {
+func (d dispatcher) sessionError(state *sessionState, reason gatewaytypes.CloseReason, err error) {
 	if d.handler == nil || err == nil {
 		return
 	}
@@ -48,12 +48,12 @@ func (d dispatcher) sessionClose(state *sessionState) error {
 	return d.handler.OnSessionClose(d.context(state, "", state.closeReason()))
 }
 
-func (d dispatcher) context(state *sessionState, replyToken string, reason gateway.CloseReason) *gateway.Context {
+func (d dispatcher) context(state *sessionState, replyToken string, reason gatewaytypes.CloseReason) *gatewaytypes.Context {
 	if state == nil || state.listener == nil {
-		return &gateway.Context{CloseReason: reason, ReplyToken: replyToken}
+		return &gatewaytypes.Context{CloseReason: reason, ReplyToken: replyToken}
 	}
 
-	return &gateway.Context{
+	return &gatewaytypes.Context{
 		Session:     state.session,
 		Listener:    state.listener.options.Name,
 		Network:     state.listener.options.Network,

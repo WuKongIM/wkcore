@@ -7,10 +7,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/protocol"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/transport"
+	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
 	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 )
 
@@ -23,7 +23,7 @@ var (
 
 type Server struct {
 	registry   *Registry
-	options    gateway.Options
+	options    gatewaytypes.Options
 	dispatcher dispatcher
 	sessions   *session.Manager
 
@@ -39,7 +39,7 @@ type Server struct {
 }
 
 type listenerRuntime struct {
-	options  gateway.ListenerOptions
+	options  gatewaytypes.ListenerOptions
 	factory  transport.Factory
 	adapter  protocol.Adapter
 	tracker  protocol.ReplyTokenTracker
@@ -63,7 +63,7 @@ type sessionState struct {
 	inbound   []byte
 
 	metaMu           sync.RWMutex
-	closeReasonValue gateway.CloseReason
+	closeReasonValue gatewaytypes.CloseReason
 
 	closeOnce sync.Once
 	closedCh  chan struct{}
@@ -71,7 +71,7 @@ type sessionState struct {
 	lastActivity atomic.Int64
 }
 
-func NewServer(registry *Registry, opts *gateway.Options) (*Server, error) {
+func NewServer(registry *Registry, opts *gatewaytypes.Options) (*Server, error) {
 	if registry == nil {
 		return nil, ErrNilRegistry
 	}
@@ -79,10 +79,10 @@ func NewServer(registry *Registry, opts *gateway.Options) (*Server, error) {
 		return nil, ErrNilOptions
 	}
 
-	cfg := gateway.Options{
+	cfg := gatewaytypes.Options{
 		Handler:        opts.Handler,
 		DefaultSession: opts.DefaultSession,
-		Listeners:      append([]gateway.ListenerOptions(nil), opts.Listeners...),
+		Listeners:      append([]gatewaytypes.ListenerOptions(nil), opts.Listeners...),
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -124,7 +124,7 @@ func (s *Server) Start() error {
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		return gateway.ErrGatewayClosed
+		return gatewaytypes.ErrGatewayClosed
 	}
 	if s.started {
 		s.mu.Unlock()
@@ -199,7 +199,7 @@ func (s *Server) Stop() error {
 	}
 
 	for _, state := range states {
-		state.close(gateway.CloseReasonServerStop, nil)
+		state.close(gatewaytypes.CloseReasonServerStop, nil)
 	}
 
 	s.workerWG.Wait()
@@ -272,7 +272,7 @@ func (s *Server) onOpen(listener *listenerRuntime, conn transport.Conn) error {
 	s.registerState(state)
 
 	if err := listener.adapter.OnOpen(sess); err != nil {
-		state.close(gateway.CloseReasonProtocolError, err)
+		state.close(gatewaytypes.CloseReasonProtocolError, err)
 		return nil
 	}
 
@@ -308,25 +308,25 @@ func (s *Server) onData(listener *listenerRuntime, conn transport.Conn, data []b
 	state.touchActivity()
 	state.inbound = append(state.inbound, data...)
 	if limit := s.options.DefaultSession.MaxInboundBytes; limit > 0 && len(state.inbound) > limit {
-		state.close(gateway.CloseReasonInboundOverflow, gateway.ErrInboundOverflow)
+		state.close(gatewaytypes.CloseReasonInboundOverflow, gatewaytypes.ErrInboundOverflow)
 		return nil
 	}
 
 	for !state.isClosed() {
 		frames, consumed, err := listener.adapter.Decode(state.session, state.inbound)
 		if err != nil {
-			state.close(gateway.CloseReasonProtocolError, err)
+			state.close(gatewaytypes.CloseReasonProtocolError, err)
 			return nil
 		}
 		if consumed < 0 || consumed > len(state.inbound) {
-			state.close(gateway.CloseReasonProtocolError, ErrInvalidDecodeStep)
+			state.close(gatewaytypes.CloseReasonProtocolError, ErrInvalidDecodeStep)
 			return nil
 		}
 		if consumed == 0 && len(frames) == 0 {
 			return nil
 		}
 		if consumed == 0 {
-			state.close(gateway.CloseReasonProtocolError, ErrDecodeNoProgress)
+			state.close(gatewaytypes.CloseReasonProtocolError, ErrDecodeNoProgress)
 			return nil
 		}
 
@@ -360,10 +360,10 @@ func (s *Server) onClose(listener *listenerRuntime, conn transport.Conn, err err
 	}
 
 	if err != nil {
-		state.close(gateway.CloseReasonPeerClosed, err)
+		state.close(gatewaytypes.CloseReasonPeerClosed, err)
 		return
 	}
-	state.close(gateway.CloseReasonPeerClosed, nil)
+	state.close(gatewaytypes.CloseReasonPeerClosed, nil)
 }
 
 func (s *Server) encodeAndQueue(state *sessionState, frame wkpacket.Frame, meta session.OutboundMeta) error {
@@ -392,11 +392,11 @@ func (s *Server) startWriter(state *sessionState) {
 				return
 			}
 			if err := s.writePayload(state, payload); err != nil {
-				reason := gateway.CloseReasonPeerClosed
+				reason := gatewaytypes.CloseReasonPeerClosed
 				reportErr := err
 				if isTimeoutError(err) {
-					reason = gateway.CloseReasonPolicyTimeout
-					reportErr = gateway.ErrWriteTimeout
+					reason = gatewaytypes.CloseReasonPolicyTimeout
+					reportErr = gatewaytypes.ErrWriteTimeout
 				}
 				state.close(reason, reportErr)
 				return
@@ -440,7 +440,7 @@ func (s *Server) startIdleMonitor(state *sessionState) {
 					return
 				}
 				if time.Since(state.lastSeenActivity()) >= timeout {
-					state.close(gateway.CloseReasonIdleTimeout, gateway.ErrIdleTimeout)
+					state.close(gatewaytypes.CloseReasonIdleTimeout, gatewaytypes.ErrIdleTimeout)
 					return
 				}
 			}
@@ -460,7 +460,7 @@ func (s *Server) handleHandlerError(state *sessionState, err error) {
 		return
 	}
 
-	reason := closeReasonForError(err, gateway.CloseReasonHandlerError)
+	reason := closeReasonForError(err, gatewaytypes.CloseReasonHandlerError)
 	if s.options.DefaultSession.CloseOnHandlerError {
 		state.close(reason, err)
 		return
@@ -504,7 +504,7 @@ func (s *Server) writePayload(state *sessionState, payload []byte) error {
 	case err := <-done:
 		return err
 	case <-timer.C:
-		return gateway.ErrWriteTimeout
+		return gatewaytypes.ErrWriteTimeout
 	}
 }
 
@@ -512,7 +512,7 @@ func isTimeoutError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, gateway.ErrWriteTimeout) {
+	if errors.Is(err, gatewaytypes.ErrWriteTimeout) {
 		return true
 	}
 
@@ -523,12 +523,12 @@ func isTimeoutError(err error) bool {
 	return errors.As(err, &te) && te.Timeout()
 }
 
-func closeReasonForError(err error, fallback gateway.CloseReason) gateway.CloseReason {
+func closeReasonForError(err error, fallback gatewaytypes.CloseReason) gatewaytypes.CloseReason {
 	switch {
 	case errors.Is(err, session.ErrWriteQueueFull):
-		return gateway.CloseReasonWriteQueueFull
+		return gatewaytypes.CloseReasonWriteQueueFull
 	case errors.Is(err, session.ErrOutboundOverflow):
-		return gateway.CloseReasonOutboundOverflow
+		return gatewaytypes.CloseReasonOutboundOverflow
 	default:
 		return fallback
 	}
@@ -568,7 +568,23 @@ func (s *Server) rollbackStart(listeners []transport.Listener) {
 	}
 }
 
-func (st *sessionState) close(reason gateway.CloseReason, err error) {
+func (s *Server) ListenerAddr(name string) string {
+	if s == nil || name == "" {
+		return ""
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, runtime := range s.listeners {
+		if runtime != nil && runtime.options.Name == name && runtime.listener != nil {
+			return runtime.listener.Addr()
+		}
+	}
+	return ""
+}
+
+func (st *sessionState) close(reason gatewaytypes.CloseReason, err error) {
 	if st == nil || st.server == nil {
 		return
 	}
@@ -610,7 +626,7 @@ func (st *sessionState) isClosed() bool {
 	}
 }
 
-func (st *sessionState) setCloseReason(reason gateway.CloseReason) {
+func (st *sessionState) setCloseReason(reason gatewaytypes.CloseReason) {
 	if st == nil {
 		return
 	}
@@ -620,7 +636,7 @@ func (st *sessionState) setCloseReason(reason gateway.CloseReason) {
 	st.metaMu.Unlock()
 }
 
-func (st *sessionState) closeReason() gateway.CloseReason {
+func (st *sessionState) closeReason() gatewaytypes.CloseReason {
 	if st == nil {
 		return ""
 	}
