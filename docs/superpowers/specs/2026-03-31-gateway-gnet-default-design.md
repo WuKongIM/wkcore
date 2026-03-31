@@ -53,6 +53,8 @@ In the first version, no two gateway listeners may share the same bound address.
 Validation rule:
 
 - reject configurations where two listeners have the same normalized `Address`, regardless of `Network`, `Transport`, `Protocol`, or `Path`
+- report this condition as a dedicated validation error, `ErrListenerAddressDuplicate`
+- perform this check in `Options.Validate()` before any transport factory build or bind attempt
 
 Rationale:
 
@@ -312,6 +314,8 @@ The first implementation exposes no `gnet` runtime tuning knobs through gateway 
 
 Therefore, in the first version, all `gnet` listeners in one gateway instance belong to one shared engine group.
 
+This grouping rule is applied only after option validation has already rejected duplicate addresses via `ErrListenerAddressDuplicate`. Engine-group construction never attempts to merge, prioritize, or disambiguate two logical listeners that claim the same address.
+
 If future gateway options introduce `gnet` runtime knobs that materially affect engine construction, those new transport-internal fields must be added to the engine key before grouped construction is expanded.
 
 The first version explicitly supports:
@@ -370,7 +374,7 @@ to:
 
 - add tests for grouped `Factory.Build(...)` behavior
 - update core server tests to cover grouped transport creation and startup rollback
-- add option-validation tests for duplicate listener addresses
+- add option-validation tests for duplicate listener addresses and `ErrListenerAddressDuplicate`
 - adapt `internal/gateway/testkit/fake_transport.go` to the grouped factory API used by core tests
 - ensure current `stdnet` tests still pass through the adapted factory API
 
