@@ -6,28 +6,17 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/core"
 	protojsonrpc "github.com/WuKongIM/WuKongIM/internal/gateway/protocol/jsonrpc"
 	protowkproto "github.com/WuKongIM/WuKongIM/internal/gateway/protocol/wkproto"
-	"github.com/WuKongIM/WuKongIM/internal/gateway/transport"
+	gnettransport "github.com/WuKongIM/WuKongIM/internal/gateway/transport/gnet"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/transport/stdnet"
 )
-
-const gnetTransportName = "gnet"
 
 type Gateway struct {
 	server *core.Server
 }
 
 func New(opts Options) (*Gateway, error) {
-	registry := core.NewRegistry()
-	if err := registry.RegisterTransport(stdnet.NewFactory()); err != nil {
-		return nil, err
-	}
-	if err := registry.RegisterTransport(gnetTransportAlias{factory: stdnet.NewFactory()}); err != nil {
-		return nil, err
-	}
-	if err := registry.RegisterProtocol(protowkproto.New()); err != nil {
-		return nil, err
-	}
-	if err := registry.RegisterProtocol(protojsonrpc.New()); err != nil {
+	registry, err := buildRegistry()
+	if err != nil {
 		return nil, err
 	}
 
@@ -63,14 +52,19 @@ func (g *Gateway) ListenerAddr(name string) string {
 	return addr
 }
 
-type gnetTransportAlias struct {
-	factory *stdnet.Factory
-}
-
-func (f gnetTransportAlias) Name() string {
-	return gnetTransportName
-}
-
-func (f gnetTransportAlias) Build(specs []transport.ListenerSpec) ([]transport.Listener, error) {
-	return f.factory.Build(specs)
+func buildRegistry() (*core.Registry, error) {
+	registry := core.NewRegistry()
+	if err := registry.RegisterTransport(stdnet.NewFactory()); err != nil {
+		return nil, err
+	}
+	if err := registry.RegisterTransport(gnettransport.NewFactory()); err != nil {
+		return nil, err
+	}
+	if err := registry.RegisterProtocol(protowkproto.New()); err != nil {
+		return nil, err
+	}
+	if err := registry.RegisterProtocol(protojsonrpc.New()); err != nil {
+		return nil, err
+	}
+	return registry, nil
 }
