@@ -13,6 +13,9 @@ var (
 	ErrListenerWebsocketPath  = errors.New("gateway: websocket listener path is required")
 	ErrGatewayClosed          = errors.New("gateway: gateway is closed")
 	ErrSessionClosed          = errors.New("gateway: session is closed")
+	ErrInboundOverflow        = errors.New("gateway: inbound bytes limit exceeded")
+	ErrWriteTimeout           = errors.New("gateway: write timeout")
+	ErrIdleTimeout            = errors.New("gateway: idle timeout")
 )
 
 type CloseReason string

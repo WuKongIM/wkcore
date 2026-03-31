@@ -3,6 +3,7 @@ package testkit
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/transport"
 )
@@ -154,6 +155,7 @@ func (l *FakeListener) MustOpen(connID uint64) *FakeConn {
 		listener:   l,
 		localAddr:  l.Addr(),
 		remoteAddr: fmt.Sprintf("fake-remote-%d", connID),
+		closeCh:    make(chan struct{}),
 	}
 
 	l.mu.Lock()
@@ -239,11 +241,15 @@ type FakeConn struct {
 	localAddr  string
 	remoteAddr string
 
-	mu       sync.Mutex
-	writes   [][]byte
-	writeErr error
-	closeErr error
-	closed   bool
+	mu            sync.Mutex
+	writes        [][]byte
+	writeErr      error
+	closeErr      error
+	closed        bool
+	closeCh       chan struct{}
+	blockWrites   bool
+	writeRelease  chan struct{}
+	writeDeadline time.Time
 }
 
 func (c *FakeConn) ID() uint64 {
@@ -259,11 +265,32 @@ func (c *FakeConn) Write(data []byte) error {
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	if c.closed {
+		err := c.closeErr
+		c.mu.Unlock()
+		return err
+	}
+	blockWrites := c.blockWrites
+	release := c.writeRelease
+	deadline := c.writeDeadline
+	writeErr := c.writeErr
+	closeCh := c.closeCh
+	c.mu.Unlock()
 
+	if blockWrites {
+		if err := waitWriteRelease(release, closeCh, deadline); err != nil {
+			return err
+		}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return c.closeErr
+	}
 	c.writes = append(c.writes, append([]byte(nil), data...))
-	if c.writeErr != nil {
-		return c.writeErr
+	if writeErr != nil {
+		return writeErr
 	}
 	return nil
 }
@@ -276,7 +303,13 @@ func (c *FakeConn) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.closed {
+		return c.closeErr
+	}
 	c.closed = true
+	if c.closeCh != nil {
+		close(c.closeCh)
+	}
 	return c.closeErr
 }
 
@@ -350,4 +383,77 @@ func (c *FakeConn) EmitError(err error) {
 		return
 	}
 	c.listener.EmitError(err)
+}
+
+func (c *FakeConn) BlockWrites() {
+	if c == nil {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.writeRelease == nil {
+		c.writeRelease = make(chan struct{})
+	}
+	c.blockWrites = true
+}
+
+func (c *FakeConn) UnblockWrites() {
+	if c == nil {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.writeRelease != nil {
+		close(c.writeRelease)
+		c.writeRelease = nil
+	}
+	c.blockWrites = false
+}
+
+func (c *FakeConn) SetWriteDeadline(deadline time.Time) error {
+	if c == nil {
+		return nil
+	}
+
+	c.mu.Lock()
+	c.writeDeadline = deadline
+	c.mu.Unlock()
+	return nil
+}
+
+type fakeTimeoutError struct{}
+
+func (fakeTimeoutError) Error() string   { return "i/o timeout" }
+func (fakeTimeoutError) Timeout() bool   { return true }
+func (fakeTimeoutError) Temporary() bool { return true }
+
+func waitWriteRelease(release <-chan struct{}, closeCh <-chan struct{}, deadline time.Time) error {
+	if release == nil {
+		return nil
+	}
+
+	if deadline.IsZero() {
+		select {
+		case <-release:
+			return nil
+		case <-closeCh:
+			return nil
+		}
+	}
+
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+
+	select {
+	case <-release:
+		return nil
+	case <-closeCh:
+		return nil
+	case <-timer.C:
+		return fakeTimeoutError{}
+	}
 }
