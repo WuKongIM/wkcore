@@ -2,7 +2,6 @@ package gnet
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -13,8 +12,6 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/transport"
 	gnetv2 "github.com/panjf2000/gnet/v2"
 )
-
-var errWebSocketNotImplemented = errors.New("websocket transport is not implemented yet")
 
 type listenerRuntime struct {
 	opts    transport.ListenerOptions
@@ -96,6 +93,13 @@ func (r *listenerRuntime) shouldDispatch(state *connState) bool {
 	return r.active && r.generation == state.generation
 }
 
+func (r *listenerRuntime) reportError(err error) {
+	if r == nil || err == nil || r.opts.OnError == nil {
+		return
+	}
+	r.opts.OnError(err)
+}
+
 type engineCycle struct {
 	bootOnce sync.Once
 	bootCh   chan error
@@ -152,9 +156,6 @@ func newEngineGroup(specs []transport.ListenerSpec) *engineGroup {
 func (g *engineGroup) start(runtime *listenerRuntime) error {
 	if runtime == nil {
 		return fmt.Errorf("gateway/transport/gnet: missing listener runtime")
-	}
-	if runtime.opts.Network == "websocket" {
-		return errWebSocketNotImplemented
 	}
 
 	runtime.activate()
@@ -240,10 +241,6 @@ func (g *engineGroup) start(runtime *listenerRuntime) error {
 
 func (g *engineGroup) stop(runtime *listenerRuntime) error {
 	if runtime == nil {
-		return nil
-	}
-	if runtime.opts.Network == "websocket" {
-		runtime.deactivateAndSnapshot()
 		return nil
 	}
 
@@ -413,7 +410,9 @@ func (g *engineGroup) OnOpen(c gnetv2.Conn) (out []byte, action gnetv2.Action) {
 
 	c.SetContext(state)
 	state.start()
-	state.enqueueOpen()
+	if runtime.opts.Network == "tcp" {
+		state.enqueueOpen()
+	}
 	return nil, gnetv2.None
 }
 
@@ -427,6 +426,26 @@ func (g *engineGroup) OnTraffic(c gnetv2.Conn) (action gnetv2.Action) {
 		return gnetv2.None
 	}
 
+	if state.currentMode() == connModeTCP {
+		buf, err := c.Next(-1)
+		if err != nil {
+			state.enqueueClose(err)
+			_ = c.Close()
+			return gnetv2.None
+		}
+		if len(buf) == 0 {
+			return gnetv2.None
+		}
+
+		payload := append([]byte(nil), buf...)
+		state.enqueueData(payload)
+		return gnetv2.None
+	}
+
+	return g.handleWSTraffic(c, state)
+}
+
+func (g *engineGroup) handleWSTraffic(c gnetv2.Conn, state *connState) gnetv2.Action {
 	buf, err := c.Next(-1)
 	if err != nil {
 		state.enqueueClose(err)
@@ -437,9 +456,68 @@ func (g *engineGroup) OnTraffic(c gnetv2.Conn) (action gnetv2.Action) {
 		return gnetv2.None
 	}
 
-	payload := append([]byte(nil), buf...)
-	state.enqueueData(payload)
-	return gnetv2.None
+	state.appendWSInbound(append([]byte(nil), buf...))
+
+	for {
+		switch state.currentMode() {
+		case connModeWSHandshake:
+			result, failure, complete := state.consumeWSHandshake()
+			if !complete {
+				return gnetv2.None
+			}
+			if failure != nil {
+				state.runtime.reportError(failure.err)
+				if len(failure.response) == 0 {
+					_ = c.Close()
+					return gnetv2.None
+				}
+				if err := c.AsyncWrite(failure.response, func(conn gnetv2.Conn, err error) error {
+					return conn.Close()
+				}); err != nil {
+					_ = c.Close()
+				}
+				return gnetv2.None
+			}
+			if err := c.AsyncWrite(result.response, nil); err != nil {
+				_ = c.Close()
+				return gnetv2.None
+			}
+			state.enqueueOpen()
+		case connModeWSFrames:
+			result, ok := state.nextWSResult()
+			if !ok {
+				return gnetv2.None
+			}
+
+			if len(result.write) > 0 {
+				if err := c.AsyncWrite(result.write, nil); err != nil {
+					state.enqueueClose(err)
+					_ = c.Close()
+					return gnetv2.None
+				}
+			}
+			if len(result.payload) > 0 {
+				state.enqueueDataWithOpcode(result.opcode, result.payload)
+			}
+			if len(result.closeWrite) > 0 {
+				if err := c.AsyncWrite(result.closeWrite, func(conn gnetv2.Conn, err error) error {
+					return conn.Close()
+				}); err != nil {
+					state.enqueueClose(result.closeErr)
+					_ = c.Close()
+				}
+				return gnetv2.None
+			}
+			if result.closeNow {
+				state.enqueueClose(result.closeErr)
+				_ = c.Close()
+				return gnetv2.None
+			}
+		default:
+			_ = c.Close()
+			return gnetv2.None
+		}
+	}
 }
 
 func (g *engineGroup) OnClose(c gnetv2.Conn, err error) (action gnetv2.Action) {
@@ -509,7 +587,7 @@ func (g *engineGroup) reportGroupError(runtimes []*listenerRuntime, err error) {
 func (g *engineGroup) activeRuntimesLocked() []*listenerRuntime {
 	active := make([]*listenerRuntime, 0, len(g.runtimes))
 	for _, runtime := range g.runtimes {
-		if runtime.opts.Network == "tcp" && runtime.isActive() {
+		if runtime.isActive() {
 			active = append(active, runtime)
 		}
 	}

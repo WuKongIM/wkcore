@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/transport"
+	"github.com/gorilla/websocket"
 	gnetv2 "github.com/panjf2000/gnet/v2"
 )
 
@@ -280,26 +281,61 @@ func TestTCPStopOneLogicalListenerKeepsOtherConnectionsAlive(t *testing.T) {
 	}
 }
 
-func TestTCPWebSocketListenerStartFailsExplicitly(t *testing.T) {
-	listeners, err := NewFactory().Build([]transport.ListenerSpec{{
-		Options: transport.ListenerOptions{
-			Name:    "ws-one",
-			Network: "websocket",
-			Address: freeTCPAddress(t),
-			Path:    "/ws",
-		},
-		Handler: newTCPRecordingHandler(nil),
-	}})
+func TestTCPAndWebSocketListenersShareOneEngineGroup(t *testing.T) {
+	tcpHandler := newTCPRecordingHandler(func(conn transport.Conn, data []byte) error {
+		return conn.Write([]byte("tcp:" + string(data)))
+	})
+	wsHandler := newTCPRecordingHandler(func(conn transport.Conn, data []byte) error {
+		return conn.Write([]byte("ws:" + string(data)))
+	})
+
+	listeners, err := NewFactory().Build([]transport.ListenerSpec{
+		namedTCPListenerSpecWithAddress("tcp-a", tcpHandler, freeTCPAddress(t)),
+		namedWSListenerSpecWithAddress("ws-b", wsHandler, freeTCPAddress(t), "/ws", nil),
+	})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 
-	listener := requireListenerHandle(t, listeners[0])
-	if err := listener.Start(); err == nil {
-		t.Fatal("Start succeeded, want explicit websocket-not-implemented error")
-	} else if got, want := err.Error(), "websocket transport is not implemented yet"; got != want {
-		t.Fatalf("Start error = %q, want %q", got, want)
+	tcpListener := requireListenerHandle(t, listeners[0])
+	wsListener := requireListenerHandle(t, listeners[1])
+	defer func() { _ = wsListener.Stop() }()
+	defer func() { _ = tcpListener.Stop() }()
+
+	if tcpListener.group != wsListener.group {
+		t.Fatal("expected tcp and websocket listeners to share one engine group")
 	}
+
+	if err := tcpListener.Start(); err != nil {
+		t.Fatalf("tcp Start: %v", err)
+	}
+	if err := wsListener.Start(); err != nil {
+		t.Fatalf("ws Start: %v", err)
+	}
+
+	tcpConn := mustDialTCP(t, tcpListener.Addr())
+	defer func() { _ = tcpConn.Close() }()
+	writeAndReadExact(t, tcpConn, []byte("ping"), "tcp:ping")
+
+	wsConn := mustDialWS(t, wsListener.Addr(), "/ws")
+	defer func() { _ = wsConn.Close() }()
+	if err := wsConn.WriteMessage(websocket.TextMessage, []byte("pong")); err != nil {
+		t.Fatalf("WriteMessage: %v", err)
+	}
+	messageType, payload, err := wsConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	if messageType != websocket.TextMessage {
+		t.Fatalf("message type = %d, want %d", messageType, websocket.TextMessage)
+	}
+	if got, want := string(payload), "ws:pong"; got != want {
+		t.Fatalf("payload = %q, want %q", got, want)
+	}
+
+	waitUntil(t, time.Second, func() bool {
+		return tcpHandler.DataCount() == 1 && wsHandler.DataCount() == 1
+	})
 }
 
 func TestTCPLastStopShutsSharedGroupDown(t *testing.T) {
