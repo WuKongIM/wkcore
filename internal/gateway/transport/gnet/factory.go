@@ -22,7 +22,7 @@ func (f *Factory) Build(specs []transport.ListenerSpec) ([]transport.Listener, e
 	group := newEngineGroup(specs)
 	listeners := make([]transport.Listener, 0, len(specs))
 
-	for _, spec := range specs {
+	for i, spec := range specs {
 		switch spec.Options.Network {
 		case "tcp", "websocket":
 		default:
@@ -30,8 +30,9 @@ func (f *Factory) Build(specs []transport.ListenerSpec) ([]transport.Listener, e
 		}
 
 		listeners = append(listeners, &listenerHandle{
-			opts:  spec.Options,
-			group: group,
+			opts:    spec.Options,
+			runtime: group.runtimes[i],
+			group:   group,
 		})
 	}
 
