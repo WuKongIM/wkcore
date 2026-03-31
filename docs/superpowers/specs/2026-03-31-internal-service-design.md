@@ -127,8 +127,11 @@ Initial handled frame families:
 
 - `SendPacket`
 - `RecvackPacket`
-- `SubPacket`
 - optionally `PingPacket` and other control frames if business handling is needed
+
+Deferred frame families:
+
+- `SubPacket`
 
 Anything unsupported should fail in one place with a clear error path rather than being silently ignored.
 
@@ -157,7 +160,6 @@ The initial layout should stay flat and explicit:
 - `internal/service/frame_router.go`
 - `internal/service/send.go`
 - `internal/service/recvack.go`
-- `internal/service/sub.go`
 - `internal/service/errors.go`
 - `internal/service/testkit/...` for fakes if test pressure grows
 
@@ -214,7 +216,7 @@ A simple dispatch helper rather than a separate package abstraction.
 Suggested behavior:
 
 - type-switch on `wkpacket.Frame`
-- call `handleSend`, `handleRecvack`, `handleSub`
+- call `handleSend`, `handleRecvack`
 - return `ErrUnsupportedFrame` for everything else
 
 Keeping the switch centralized avoids frame handling scattering across the adapter.
@@ -289,7 +291,7 @@ Required coverage:
 - register authenticated session on `OnSessionOpen`
 - ignore or reject open callbacks missing required auth-derived values
 - unregister session on `OnSessionClose`
-- route `SendPacket`, `RecvackPacket`, and `SubPacket` to the correct handler
+- route `SendPacket` and `RecvackPacket` to the correct handler
 - return a clear error for unsupported frame types
 - support multiple concurrent sessions for the same UID
 - local delivery fan-out writes to every matching live session exactly once
@@ -311,7 +313,9 @@ Build `internal/service` in three small steps:
    Add centralized type-switch routing and explicit unsupported-frame behavior.
 
 3. First Business Path
-   Add the narrow `SendPacket` path and delivery abstraction, with `Recvack` and `Sub` as lightweight stubs if deeper lower-layer support is not ready.
+   Add the narrow `SendPacket` path and delivery abstraction, with `Recvack` as a lightweight stub if deeper lower-layer support is not ready.
+
+`SubPacket` should remain explicitly out of scope for the first implementation pass. When channel membership and subscription semantics become concrete, add a dedicated follow-up design or extend this module then.
 
 This order gets a real business runtime into the tree quickly without pretending the message domain is already finished.
 
