@@ -53,3 +53,21 @@ func TestOptionsValidateNormalizesDefaultSession(t *testing.T) {
 		t.Fatalf("expected default session fields to be populated: %+v", opts.DefaultSession)
 	}
 }
+
+func TestOptionsValidateNormalizesPartialSessionOverrides(t *testing.T) {
+	opts := gateway.Options{
+		Handler: noopHandler{},
+		DefaultSession: gateway.SessionOptions{
+			ReadBufferSize: 8192,
+		},
+	}
+	if err := opts.Validate(); err != nil {
+		t.Fatalf("validate failed: %v", err)
+	}
+	if opts.DefaultSession.ReadBufferSize != 8192 {
+		t.Fatalf("expected custom read buffer size to be preserved, got %+v", opts.DefaultSession)
+	}
+	if !opts.DefaultSession.CloseOnHandlerError {
+		t.Fatalf("expected CloseOnHandlerError to remain true after normalization, got %+v", opts.DefaultSession)
+	}
+}

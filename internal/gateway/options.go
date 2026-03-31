@@ -87,8 +87,7 @@ func (o *Options) Validate() error {
 
 func normalizeSessionOptions(opt SessionOptions) SessionOptions {
 	def := DefaultSessionOptions()
-	zeroValue := opt == (SessionOptions{})
-	if zeroValue {
+	if opt == (SessionOptions{}) {
 		return def
 	}
 	if opt.ReadBufferSize == 0 {
@@ -109,7 +108,7 @@ func normalizeSessionOptions(opt SessionOptions) SessionOptions {
 	if opt.WriteTimeout == 0 {
 		opt.WriteTimeout = def.WriteTimeout
 	}
-	if zeroValue {
+	if !opt.CloseOnHandlerError {
 		opt.CloseOnHandlerError = def.CloseOnHandlerError
 	}
 	return opt
