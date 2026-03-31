@@ -149,6 +149,7 @@ Modified files:
 - `internal/gateway/transport/transport.go`
 - `internal/gateway/core/server.go`
 - `internal/gateway/transport/stdnet/factory.go`
+- `internal/gateway/testkit/fake_transport.go`
 - `internal/gateway/gateway.go`
 - `internal/gateway/binding/builtin.go`
 - `internal/gateway/options_test.go`
@@ -275,12 +276,22 @@ Outbound writes use `stateConn.Write()`:
 
 ## Engine Grouping Rules
 
-`gnet` listeners are grouped by a transport-internal engine key. The first implementation should keep this key intentionally small and only include values that materially affect engine construction. At minimum:
+`gnet` listeners are grouped by a transport-internal engine key.
 
-- transport name (`gnet`)
-- any future `gnet` runtime knobs introduced by this transport package
+The first implementation exposes no `gnet` runtime tuning knobs through gateway options, so the grouping rule is intentionally explicit:
 
-Do not group listeners that would require incompatible underlying engine configuration.
+| Field | Participates in engine compatibility? | Reason |
+|-------|--------------------------------------|--------|
+| `Transport` | Yes | Only `gnet` listeners are considered for grouped construction |
+| `Network` | No | TCP and WebSocket differ only in connection state, not engine construction |
+| `Address` | No | One `gnet` engine group may bind multiple addresses |
+| `Path` | No | WebSocket path is listener-local handshake policy, not engine configuration |
+| `Protocol` | No | Protocol adapters run above the transport layer |
+| Listener name | No | Identity only; does not affect engine construction |
+
+Therefore, in the first version, all `gnet` listeners in one gateway instance belong to one shared engine group.
+
+If future gateway options introduce `gnet` runtime knobs that materially affect engine construction, those new transport-internal fields must be added to the engine key before grouped construction is expanded.
 
 The first version explicitly supports:
 
@@ -301,6 +312,13 @@ Listener-scoped failures continue to report through `Handler.OnListenerError`, i
 - address binding failure
 - accept-time routing failure
 - WebSocket handshake failure before a session is opened
+
+For shared `gnet` engine groups, callback fanout is defined explicitly:
+
+- failures attributable to one logical listener or one bound address are reported once for that listener name
+- failures that prevent the entire engine group from starting or remaining operational are reported once per logical listener in that group
+
+This preserves the existing listener-scoped callback contract without inventing a new engine-scoped callback API.
 
 Connection-scoped failures continue to flow through the existing session lifecycle:
 
@@ -331,6 +349,7 @@ to:
 
 - add tests for grouped `Factory.Build(...)` behavior
 - update core server tests to cover grouped transport creation and startup rollback
+- adapt `internal/gateway/testkit/fake_transport.go` to the grouped factory API used by core tests
 - ensure current `stdnet` tests still pass through the adapted factory API
 
 ### `gnet` TCP
