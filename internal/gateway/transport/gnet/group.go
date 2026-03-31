@@ -128,6 +128,7 @@ type engineGroup struct {
 	transitioning bool
 	transitionCh  chan struct{}
 	bootRuntimes  []*listenerRuntime
+	stopEngineFn  func(engine gnetv2.Engine, cycle *engineCycle) error
 
 	nextConnID atomic.Uint64
 }
@@ -174,6 +175,9 @@ func (g *engineGroup) start(runtime *listenerRuntime) error {
 			}
 			g.mu.Unlock()
 
+			// Adding a listener after the shared engine is already serving may require
+			// reconciling the bound listener set. Gateway startup starts all configured
+			// listeners before serving traffic, so this path is a late-start edge case.
 			if err := preflightListenTCP(runtime.opts.Address); err != nil {
 				runtime.deactivateAndSnapshot()
 				return err
@@ -274,7 +278,7 @@ func (g *engineGroup) stop(runtime *listenerRuntime) error {
 		err := g.stopEngine(engine, cycle)
 
 		g.mu.Lock()
-		if g.engine == engine && g.cycle == cycle {
+		if err == nil && g.engine == engine && g.cycle == cycle {
 			g.engine = gnetv2.Engine{}
 			g.cycle = nil
 			g.routes = make(map[string]*listenerRuntime, len(g.runtimes))
@@ -354,6 +358,10 @@ func (g *engineGroup) restartEngine(engine gnetv2.Engine, cycle *engineCycle, de
 }
 
 func (g *engineGroup) stopEngine(engine gnetv2.Engine, cycle *engineCycle) error {
+	if g.stopEngineFn != nil {
+		return g.stopEngineFn(engine, cycle)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	err := engine.Stop(ctx)
 	cancel()
