@@ -124,15 +124,47 @@ func TestTCPStopOneLogicalListenerKeepsSharedGroupRunning(t *testing.T) {
 		t.Fatalf("second Start: %v", err)
 	}
 
+	firstAddr := first.Addr()
+	secondAddr := second.Addr()
+
 	if err := first.Stop(); err != nil {
 		t.Fatalf("first Stop: %v", err)
 	}
 
-	sendTCPPayload(t, second.Addr(), "still-running")
+	waitUntil(t, time.Second, func() bool {
+		return !canDial(firstAddr) && canDial(secondAddr)
+	})
+
+	sendTCPPayload(t, secondAddr, "still-running")
 	waitUntil(t, time.Second, func() bool { return secondHandler.DataCount() == 1 })
 
 	if got, want := secondHandler.DataPayload(0), "still-running"; got != want {
 		t.Fatalf("second handler payload = %q, want %q", got, want)
+	}
+	if got := firstHandler.DataCount(); got != 0 {
+		t.Fatalf("stopped listener received %d payloads, want 0", got)
+	}
+}
+
+func TestTCPWebSocketListenerStartFailsExplicitly(t *testing.T) {
+	listeners, err := NewFactory().Build([]transport.ListenerSpec{{
+		Options: transport.ListenerOptions{
+			Name:    "ws-one",
+			Network: "websocket",
+			Address: freeTCPAddress(t),
+			Path:    "/ws",
+		},
+		Handler: newTCPRecordingHandler(nil),
+	}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	listener := requireListenerHandle(t, listeners[0])
+	if err := listener.Start(); err == nil {
+		t.Fatal("Start succeeded, want explicit websocket-not-implemented error")
+	} else if got, want := err.Error(), "websocket transport is not implemented yet"; got != want {
+		t.Fatalf("Start error = %q, want %q", got, want)
 	}
 }
 

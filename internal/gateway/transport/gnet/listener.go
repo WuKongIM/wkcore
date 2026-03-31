@@ -21,7 +21,7 @@ func (h *listenerHandle) Start() error {
 	if h.started {
 		return nil
 	}
-	if err := h.group.start(); err != nil {
+	if err := h.group.start(h.runtime); err != nil {
 		return err
 	}
 	h.started = true
@@ -35,7 +35,7 @@ func (h *listenerHandle) Stop() error {
 	if !h.started {
 		return nil
 	}
-	if err := h.group.stop(); err != nil {
+	if err := h.group.stop(h.runtime); err != nil {
 		return err
 	}
 	h.started = false

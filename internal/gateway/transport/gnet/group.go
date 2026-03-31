@@ -2,6 +2,7 @@ package gnet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -13,12 +14,15 @@ import (
 	gnetv2 "github.com/panjf2000/gnet/v2"
 )
 
+var errWebSocketNotImplemented = errors.New("websocket transport is not implemented yet")
+
 type listenerRuntime struct {
 	opts    transport.ListenerOptions
 	handler transport.ConnHandler
 
 	mu        sync.RWMutex
 	boundAddr string
+	active    bool
 }
 
 func (r *listenerRuntime) addr() string {
@@ -56,16 +60,15 @@ func (c *engineCycle) signalBoot(err error) {
 type engineGroup struct {
 	gnetv2.BuiltinEventEngine
 
-	mu       sync.Mutex
-	runtimes []*listenerRuntime
-	routes   map[string]*listenerRuntime
-	engine   gnetv2.Engine
-	cycle    *engineCycle
-	refs     int
-	running  bool
-	starting bool
-	startErr error
-	startCh  chan struct{}
+	mu               sync.Mutex
+	runtimes         []*listenerRuntime
+	routes           map[string]*listenerRuntime
+	engine           gnetv2.Engine
+	cycle            *engineCycle
+	running          bool
+	reconciling      bool
+	reconcileCh      chan struct{}
+	startingRuntimes []*listenerRuntime
 
 	nextConnID atomic.Uint64
 }
@@ -85,102 +88,96 @@ func newEngineGroup(specs []transport.ListenerSpec) *engineGroup {
 	}
 }
 
-func (g *engineGroup) start() error {
+func (g *engineGroup) start(runtime *listenerRuntime) error {
+	if runtime == nil {
+		return fmt.Errorf("gateway/transport/gnet: missing listener runtime")
+	}
+	if runtime.opts.Network == "websocket" {
+		return errWebSocketNotImplemented
+	}
+
+	return g.setRuntimeActive(runtime, true)
+}
+
+func (g *engineGroup) stop(runtime *listenerRuntime) error {
+	if runtime == nil {
+		return nil
+	}
+
+	return g.setRuntimeActive(runtime, false)
+}
+
+func (g *engineGroup) setRuntimeActive(runtime *listenerRuntime, active bool) error {
 	for {
 		g.mu.Lock()
-		if g.running {
-			g.refs++
-			g.mu.Unlock()
-			return nil
-		}
-		if g.starting {
-			wait := g.startCh
+		if g.reconciling {
+			wait := g.reconcileCh
 			g.mu.Unlock()
 			<-wait
 			continue
 		}
+		if runtime.active == active {
+			g.mu.Unlock()
+			return nil
+		}
 
-		g.starting = true
-		g.startErr = nil
-		g.startCh = make(chan struct{})
+		previous := g.activeRuntimesLocked()
+		runtime.active = active
+		desired := g.activeRuntimesLocked()
+		if sameRuntimes(previous, desired) {
+			g.mu.Unlock()
+			return nil
+		}
+
+		g.reconciling = true
+		g.reconcileCh = make(chan struct{})
 		g.mu.Unlock()
 
-		err := g.startEngine()
+		err := g.reconcileActiveRuntimes(desired)
+		if err != nil {
+			rollbackErr := g.reconcileActiveRuntimes(previous)
+
+			g.mu.Lock()
+			g.setActiveRuntimesLocked(previous)
+			close(g.reconcileCh)
+			g.reconciling = false
+			g.mu.Unlock()
+
+			if rollbackErr != nil {
+				return fmt.Errorf("gateway/transport/gnet: reconcile failed: %w (rollback failed: %v)", err, rollbackErr)
+			}
+			return err
+		}
 
 		g.mu.Lock()
-		g.startErr = err
-		if err == nil {
-			g.running = true
-			g.refs = 1
-		}
-		g.starting = false
-		close(g.startCh)
+		close(g.reconcileCh)
+		g.reconciling = false
 		g.mu.Unlock()
-		return err
+		return nil
 	}
 }
 
-func (g *engineGroup) stop() error {
-	for {
-		g.mu.Lock()
-		if g.starting {
-			wait := g.startCh
-			g.mu.Unlock()
-			<-wait
-			continue
-		}
-		if g.refs == 0 {
-			g.mu.Unlock()
-			return nil
-		}
-
-		g.refs--
-		if g.refs > 0 {
-			g.mu.Unlock()
-			return nil
-		}
-		if !g.running {
-			g.mu.Unlock()
-			return nil
-		}
-
-		engine := g.engine
-		cycle := g.cycle
-		g.mu.Unlock()
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := engine.Stop(ctx)
-		cancel()
-
-		if cycle != nil {
-			if runErr, ok := <-cycle.doneCh; ok && err == nil {
-				err = runErr
-			}
-		}
-
-		g.mu.Lock()
-		if g.refs == 0 {
-			g.running = false
-			g.engine = gnetv2.Engine{}
-			if g.cycle == cycle {
-				g.cycle = nil
-			}
-		}
-		g.mu.Unlock()
-
+func (g *engineGroup) reconcileActiveRuntimes(desired []*listenerRuntime) error {
+	if err := g.stopEngine(); err != nil {
 		return err
 	}
+	if len(desired) == 0 {
+		return nil
+	}
+	return g.startEngine(desired)
 }
 
-func (g *engineGroup) startEngine() error {
+func (g *engineGroup) startEngine(runtimes []*listenerRuntime) error {
 	cycle := newEngineCycle()
 
 	g.mu.Lock()
 	g.cycle = cycle
+	g.routes = make(map[string]*listenerRuntime, len(runtimes))
+	g.startingRuntimes = append([]*listenerRuntime(nil), runtimes...)
 	g.mu.Unlock()
 
-	addrs := make([]string, 0, len(g.runtimes))
-	for _, runtime := range g.runtimes {
+	addrs := make([]string, 0, len(runtimes))
+	for _, runtime := range runtimes {
 		addrs = append(addrs, "tcp://"+runtime.opts.Address)
 	}
 
@@ -191,21 +188,41 @@ func (g *engineGroup) startEngine() error {
 		close(cycle.doneCh)
 	}()
 
-	return <-cycle.bootCh
+	if err := <-cycle.bootCh; err != nil {
+		g.mu.Lock()
+		if g.cycle == cycle {
+			g.cycle = nil
+			g.startingRuntimes = nil
+			g.routes = make(map[string]*listenerRuntime)
+			g.engine = gnetv2.Engine{}
+			g.running = false
+		}
+		g.mu.Unlock()
+		return err
+	}
+
+	g.mu.Lock()
+	if g.cycle == cycle {
+		g.running = true
+		g.startingRuntimes = nil
+	}
+	g.mu.Unlock()
+	return nil
 }
 
 func (g *engineGroup) OnBoot(engine gnetv2.Engine) (action gnetv2.Action) {
 	g.mu.Lock()
 	g.engine = engine
 	cycle := g.cycle
+	runtimes := append([]*listenerRuntime(nil), g.startingRuntimes...)
 	g.mu.Unlock()
 
-	routes, err := g.resolveRoutes(engine)
+	routes, err := g.resolveRoutes(engine, runtimes)
 	if err != nil {
 		if cycle != nil {
 			cycle.signalBoot(err)
 		}
-		g.reportGroupError(err)
+		g.reportGroupError(runtimes, err)
 		return gnetv2.Shutdown
 	}
 
@@ -260,9 +277,9 @@ func (g *engineGroup) OnClose(c gnetv2.Conn, err error) (action gnetv2.Action) {
 	return gnetv2.None
 }
 
-func (g *engineGroup) resolveRoutes(engine gnetv2.Engine) (map[string]*listenerRuntime, error) {
-	routes := make(map[string]*listenerRuntime, len(g.runtimes))
-	for _, runtime := range g.runtimes {
+func (g *engineGroup) resolveRoutes(engine gnetv2.Engine, runtimes []*listenerRuntime) (map[string]*listenerRuntime, error) {
+	routes := make(map[string]*listenerRuntime, len(runtimes))
+	for _, runtime := range runtimes {
 		addr, err := g.resolveRuntimeAddr(engine, runtime)
 		if err != nil {
 			return nil, err
@@ -304,13 +321,84 @@ func (g *engineGroup) runtimeByAddr(addr string) *listenerRuntime {
 	return g.routes[addr]
 }
 
-func (g *engineGroup) reportGroupError(err error) {
+func (g *engineGroup) reportGroupError(runtimes []*listenerRuntime, err error) {
 	if err == nil {
 		return
 	}
-	for _, runtime := range g.runtimes {
+	for _, runtime := range runtimes {
 		if runtime.opts.OnError != nil {
 			runtime.opts.OnError(err)
 		}
 	}
+}
+
+func (g *engineGroup) stopEngine() error {
+	g.mu.Lock()
+	if !g.running {
+		g.cycle = nil
+		g.engine = gnetv2.Engine{}
+		g.routes = make(map[string]*listenerRuntime)
+		g.startingRuntimes = nil
+		g.mu.Unlock()
+		return nil
+	}
+
+	engine := g.engine
+	cycle := g.cycle
+	g.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err := engine.Stop(ctx)
+	cancel()
+
+	if cycle != nil {
+		if runErr, ok := <-cycle.doneCh; ok && err == nil {
+			err = runErr
+		}
+	}
+
+	g.mu.Lock()
+	if g.cycle == cycle {
+		g.cycle = nil
+		g.engine = gnetv2.Engine{}
+		g.routes = make(map[string]*listenerRuntime)
+		g.startingRuntimes = nil
+		g.running = false
+	}
+	g.mu.Unlock()
+
+	return err
+}
+
+func (g *engineGroup) activeRuntimesLocked() []*listenerRuntime {
+	active := make([]*listenerRuntime, 0, len(g.runtimes))
+	for _, runtime := range g.runtimes {
+		if runtime.active {
+			active = append(active, runtime)
+		}
+	}
+	return active
+}
+
+func (g *engineGroup) setActiveRuntimesLocked(active []*listenerRuntime) {
+	activeSet := make(map[*listenerRuntime]struct{}, len(active))
+	for _, runtime := range active {
+		activeSet[runtime] = struct{}{}
+	}
+	for _, runtime := range g.runtimes {
+		_, ok := activeSet[runtime]
+		runtime.active = ok
+	}
+}
+
+func sameRuntimes(left, right []*listenerRuntime) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
