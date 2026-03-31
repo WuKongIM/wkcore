@@ -10,6 +10,29 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func TestFactoryBuildRejectsUnsupportedNetwork(t *testing.T) {
+	factory := stdnet.NewFactory()
+
+	_, err := factory.Build([]transport.ListenerSpec{
+		{
+			Options: transport.ListenerOptions{
+				Name:    "unsupported",
+				Network: "udp",
+				Address: "127.0.0.1:0",
+			},
+			Handler: newConnRecordingHandler(),
+		},
+	})
+	if err == nil {
+		t.Fatal("Build returned nil error for unsupported network")
+	}
+
+	const want = `gateway/transport/stdnet: unsupported network "udp"`
+	if got := err.Error(); got != want {
+		t.Fatalf("Build error = %q, want %q", got, want)
+	}
+}
+
 func TestWSListenerUpgradesAndDeliversMessages(t *testing.T) {
 	handler := newConnRecordingHandler()
 	listener, err := stdnet.NewWSListener(transport.ListenerOptions{
