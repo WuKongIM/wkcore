@@ -83,8 +83,8 @@ internal/gateway/
       adapter.go
 
   binding/
-    binding.go          // Listener-to-transport/protocol mapping
-    builtin.go          // First-class built-in bindings
+    binding.go          // Built-in listener presets and registration helpers
+    builtin.go          // First-version convenience presets
 
   testkit/
     fake_transport.go
@@ -102,6 +102,7 @@ The gateway exposes a thin callback interface to the layer above it.
 package gateway
 
 type Handler interface {
+    OnListenerError(listener string, err error)
     OnSessionOpen(ctx *Context) error
     OnFrame(ctx *Context, frame wkpacket.Frame) error
     OnSessionClose(ctx *Context) error
@@ -111,6 +112,7 @@ type Handler interface {
 
 Design notes:
 
+- `OnListenerError` handles failures that happen before a session exists, such as listener startup, accept, or WebSocket upgrade failures
 - Upstream code sees only lifecycle events and decoded `wkpacket.Frame` values
 - Returning an error from `OnFrame` or `OnSessionOpen` is treated as a handler error
 - `OnSessionError` is notification-only and does not return an error
@@ -258,9 +260,9 @@ Design notes:
 - `transport.Conn` exposes only the minimal write/close/address surface
 - `OnData` delivers raw bytes or whole transport messages, depending on the transport type
 
-## Configuration and Binding
+## Configuration and Built-In Presets
 
-Listener binding is explicit in configuration. The core does not infer protocol from data.
+Listener transport and protocol selection is explicit in configuration. The core does not infer protocol from data.
 
 ```go
 type ListenerOptions struct {
@@ -276,10 +278,12 @@ Rules:
 
 - `Name` is the canonical listener identity inside the gateway
 - `Name` must be unique across all configured listeners
-- The core uses `Name` as the lookup key for the listener's transport/protocol binding
+- `Network`, `Transport`, and `Protocol` in `ListenerOptions` are the single source of truth for listener behavior
 - `Context.Listener` is always populated with this same `Name`
 
-Initial built-in bindings:
+The optional `binding/` package does not introduce a second configuration model. It only provides convenience helpers for constructing `ListenerOptions` with known-good first-version combinations.
+
+Initial built-in presets:
 
 - `tcp-wkproto`: `tcp + wkproto`
 - `ws-jsonrpc`: `websocket + jsonrpc`
@@ -297,11 +301,21 @@ This keeps the first implementation simple while preserving the ability to suppo
 1. A transport listener accepts a new connection
 2. The transport invokes `ConnHandler.OnOpen`
 3. The gateway core creates a `session.Session`
-4. The core resolves the listener's bound protocol adapter
+4. The core resolves the protocol adapter named in that listener's `ListenerOptions`
 5. The protocol adapter's `OnOpen` hook runs
 6. The upstream handler's `OnSessionOpen` callback runs
 
 If any step fails, the session is closed and the error is reported through `OnSessionError`.
+
+### Listener-Scoped Failures
+
+Some failures happen before a session exists:
+
+- listener startup failure
+- accept loop failure
+- WebSocket upgrade failure
+
+These errors must be reported through `Handler.OnListenerError(listener, err)`, not `OnSessionError`.
 
 ### Inbound Data
 
@@ -379,7 +393,8 @@ Errors are grouped into four categories:
 
 Default behavior:
 
-- `transport`, `protocol`, and `policy` errors are reported through `OnSessionError`, then the session is closed
+- pre-session transport errors are reported through `OnListenerError`
+- session-scoped `transport`, `protocol`, and `policy` errors are reported through `OnSessionError`, then the session is closed
 - `handler` errors are reported through `OnSessionError`
 - `handler` errors close the session by default, behind a gateway option so that the behavior is explicit and testable
 
@@ -584,7 +599,7 @@ These tests verify transport behavior only and should not duplicate protocol ada
 5. Implement `transport/stdnet`
 6. Implement `protocol/wkproto`
 7. Implement `protocol/jsonrpc`
-8. Wire built-in bindings: `tcp -> wkproto`, `websocket -> jsonrpc`
+8. Wire built-in listener presets: `tcp -> wkproto`, `websocket -> jsonrpc`
 9. Add core and protocol tests
 10. Add `stdnet` integration tests
 11. Implement `transport/gnet` as a second phase after the baseline passes
@@ -596,7 +611,7 @@ These tests verify transport behavior only and should not duplicate protocol ada
 | Transport abstraction leaks framework details | Makes `gnet` replacement expensive and pollutes core logic | Keep `transport.Conn` intentionally minimal and ban `gnet` imports outside `transport/gnet` |
 | Protocol adapters absorb business logic | Blurs module responsibility and makes tests brittle | Limit protocol hooks to stream-shape and protocol policy only |
 | Write path races | Concurrent writes can corrupt outbound data or create transport-specific bugs | Single session writer loop and bounded write queue |
-| Over-design for future combinations | Slows delivery and complicates the first version | Use explicit bindings and defer auto-detection and middleware systems |
+| Over-design for future combinations | Slows delivery and complicates the first version | Use explicit listener configuration and defer auto-detection and middleware systems |
 | Too much reliance on integration tests | Makes failures slow and hard to localize | Push most logic into core and protocol unit tests using fakes |
 
 ## Recommended First Version Scope
@@ -608,7 +623,7 @@ Build exactly this first:
 - one `stdnet` transport implementation
 - one `wkproto` protocol adapter
 - one `jsonrpc` protocol adapter
-- explicit built-in bindings for `tcp -> wkproto` and `websocket -> jsonrpc`
+- explicit built-in listener presets for `tcp -> wkproto` and `websocket -> jsonrpc`
 - unit tests for core and protocol layers
 - transport integration tests for `stdnet`
 
