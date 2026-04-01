@@ -1,3 +1,7 @@
 package service
 
-type Options struct{}
+import "time"
+
+type Options struct {
+	Now func() time.Time
+}
