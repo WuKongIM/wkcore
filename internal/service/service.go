@@ -3,8 +3,10 @@ package service
 import "time"
 
 type Service struct {
-	registry *Registry
-	opts     Options
+	registry  *Registry
+	sequencer SequenceAllocator
+	delivery  DeliveryPort
+	opts      Options
 }
 
 func New(opts Options) *Service {
@@ -13,7 +15,9 @@ func New(opts Options) *Service {
 	}
 
 	return &Service{
-		registry: NewRegistry(),
-		opts:     opts,
+		registry:  NewRegistry(),
+		sequencer: opts.sequenceAllocator(),
+		delivery:  opts.deliveryPort(),
+		opts:      opts,
 	}
 }
