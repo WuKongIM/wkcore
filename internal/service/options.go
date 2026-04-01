@@ -2,11 +2,20 @@ package service
 
 import "time"
 
+type IdentityStore interface{}
+
+type ChannelStore interface{}
+
+type ClusterPort interface{}
+
 type Options struct {
 	Now               func() time.Time
 	Registry          SessionRegistry
 	SequenceAllocator SequenceAllocator
 	DeliveryPort      DeliveryPort
+	IdentityStore     IdentityStore
+	ChannelStore      ChannelStore
+	ClusterPort       ClusterPort
 }
 
 type SequenceAllocator interface {

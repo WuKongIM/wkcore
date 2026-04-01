@@ -117,6 +117,30 @@ func TestNewServiceUsesInjectedRegistry(t *testing.T) {
 	require.Equal(t, fixedNow, reg.registered[0].ConnectedAt)
 }
 
+func TestNewServicePreservesInjectedBusinessPorts(t *testing.T) {
+	users := &fakeIdentityStore{}
+	channels := &fakeChannelStore{}
+	cluster := &fakeClusterPort{}
+
+	svc := New(Options{
+		IdentityStore: users,
+		ChannelStore:  channels,
+		ClusterPort:   cluster,
+	})
+
+	require.Same(t, users, svc.users)
+	require.Same(t, channels, svc.channels)
+	require.Same(t, cluster, svc.cluster)
+}
+
+func TestNewServiceKeepsDefaultsWhenPortsUnset(t *testing.T) {
+	svc := New(Options{})
+
+	require.Nil(t, svc.users)
+	require.Nil(t, svc.channels)
+	require.Nil(t, svc.cluster)
+}
+
 func newAuthedContext(t *testing.T, sessionID uint64, uid string) *gateway.Context {
 	t.Helper()
 
@@ -167,3 +191,9 @@ func (r *capturingRegistry) Session(sessionID uint64) (SessionMeta, bool) {
 func (r *capturingRegistry) SessionsByUID(uid string) []SessionMeta {
 	return append([]SessionMeta(nil), r.byUID[uid]...)
 }
+
+type fakeIdentityStore struct{}
+
+type fakeChannelStore struct{}
+
+type fakeClusterPort struct{}
