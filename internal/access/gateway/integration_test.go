@@ -1,11 +1,11 @@
-package service
+package gateway
 
 import (
 	"net"
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/internal/gateway"
+	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
 	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	codec "github.com/WuKongIM/WuKongIM/pkg/wkproto"
@@ -13,68 +13,68 @@ import (
 )
 
 const (
-	serviceTestListenerName = "tcp-wkproto-service"
-	serviceTestSenderUID    = "u1"
-	serviceTestRecipientUID = "u2"
-	serviceTestClientMsgNo  = "m1"
-	serviceTestPayload      = "hi"
-	serviceReadTimeout      = 2 * time.Second
+	gatewayTestListenerName = "tcp-wkproto-access-gateway"
+	gatewayTestSenderUID    = "u1"
+	gatewayTestRecipientUID = "u2"
+	gatewayTestClientMsgNo  = "m1"
+	gatewayTestPayload      = "hi"
+	gatewayReadTimeout      = 2 * time.Second
 )
 
-func TestGatewayWKProtoServiceRoutesLocalPersonSend(t *testing.T) {
-	svc := New(Options{})
-	gw, err := gateway.New(gateway.Options{
-		Handler: svc,
-		Authenticator: gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{
+func TestGatewayWKProtoHandlerRoutesLocalPersonSend(t *testing.T) {
+	handler := New(Options{})
+	gw, err := coregateway.New(coregateway.Options{
+		Handler: handler,
+		Authenticator: coregateway.NewWKProtoAuthenticator(coregateway.WKProtoAuthOptions{
 			TokenAuthOn: false,
 		}),
-		Listeners: []gateway.ListenerOptions{
-			binding.TCPWKProto(serviceTestListenerName, "127.0.0.1:0"),
+		Listeners: []coregateway.ListenerOptions{
+			binding.TCPWKProto(gatewayTestListenerName, "127.0.0.1:0"),
 		},
 	})
 	require.NoError(t, err)
 	require.NoError(t, gw.Start())
 	t.Cleanup(func() { _ = gw.Stop() })
 
-	senderConn := dialServiceGateway(t, gw, serviceTestListenerName)
+	senderConn := dialGateway(t, gw, gatewayTestListenerName)
 	t.Cleanup(func() { _ = senderConn.Close() })
 
-	recipientConn := dialServiceGateway(t, gw, serviceTestListenerName)
+	recipientConn := dialGateway(t, gw, gatewayTestListenerName)
 	t.Cleanup(func() { _ = recipientConn.Close() })
 
-	senderConnack := connectWKProtoClient(t, senderConn, serviceTestSenderUID)
+	senderConnack := connectWKProtoClient(t, senderConn, gatewayTestSenderUID)
 	require.Equal(t, wkpacket.ReasonSuccess, senderConnack.ReasonCode)
 
-	recipientConnack := connectWKProtoClient(t, recipientConn, serviceTestRecipientUID)
+	recipientConnack := connectWKProtoClient(t, recipientConn, gatewayTestRecipientUID)
 	require.Equal(t, wkpacket.ReasonSuccess, recipientConnack.ReasonCode)
 
 	const clientSeq uint64 = 1
 	sendWKProtoFrame(t, senderConn, &wkpacket.SendPacket{
-		ChannelID:   serviceTestRecipientUID,
+		ChannelID:   gatewayTestRecipientUID,
 		ChannelType: wkpacket.ChannelTypePerson,
-		Payload:     []byte(serviceTestPayload),
+		Payload:     []byte(gatewayTestPayload),
 		ClientSeq:   clientSeq,
-		ClientMsgNo: serviceTestClientMsgNo,
+		ClientMsgNo: gatewayTestClientMsgNo,
 	})
 
 	ack := readSendackPacket(t, senderConn)
 	require.Equal(t, wkpacket.ReasonSuccess, ack.ReasonCode)
 	require.Equal(t, clientSeq, ack.ClientSeq)
-	require.Equal(t, serviceTestClientMsgNo, ack.ClientMsgNo)
+	require.Equal(t, gatewayTestClientMsgNo, ack.ClientMsgNo)
 	require.NotZero(t, ack.MessageID)
 	require.NotZero(t, ack.MessageSeq)
 
 	recv := readRecvPacket(t, recipientConn)
-	require.Equal(t, serviceTestSenderUID, recv.FromUID)
-	require.Equal(t, serviceTestSenderUID, recv.ChannelID)
+	require.Equal(t, gatewayTestSenderUID, recv.FromUID)
+	require.Equal(t, gatewayTestSenderUID, recv.ChannelID)
 	require.Equal(t, wkpacket.ChannelTypePerson, recv.ChannelType)
-	require.Equal(t, []byte(serviceTestPayload), recv.Payload)
-	require.Equal(t, serviceTestClientMsgNo, recv.ClientMsgNo)
+	require.Equal(t, []byte(gatewayTestPayload), recv.Payload)
+	require.Equal(t, gatewayTestClientMsgNo, recv.ClientMsgNo)
 	require.Equal(t, ack.MessageID, recv.MessageID)
 	require.Equal(t, ack.MessageSeq, recv.MessageSeq)
 }
 
-func dialServiceGateway(t *testing.T, gw *gateway.Gateway, listener string) net.Conn {
+func dialGateway(t *testing.T, gw *coregateway.Gateway, listener string) net.Conn {
 	t.Helper()
 
 	conn, err := net.Dial("tcp", gw.ListenerAddr(listener))
@@ -112,7 +112,7 @@ func sendWKProtoFrame(t *testing.T, conn net.Conn, frame wkpacket.Frame) {
 func readWKProtoFrame(t *testing.T, conn net.Conn) wkpacket.Frame {
 	t.Helper()
 
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(serviceReadTimeout)))
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(gatewayReadTimeout)))
 	defer func() {
 		_ = conn.SetReadDeadline(time.Time{})
 	}()

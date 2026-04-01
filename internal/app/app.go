@@ -4,8 +4,10 @@ import (
 	"sync"
 	"sync/atomic"
 
+	accessapi "github.com/WuKongIM/WuKongIM/internal/access/api"
+	accessgateway "github.com/WuKongIM/WuKongIM/internal/access/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
-	"github.com/WuKongIM/WuKongIM/internal/service"
+	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/pkg/raftstore"
 	"github.com/WuKongIM/WuKongIM/pkg/wkcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
@@ -15,22 +17,27 @@ import (
 type App struct {
 	cfg Config
 
-	db      *wkdb.DB
-	raftDB  *raftstore.DB
-	cluster *wkcluster.Cluster
-	store   *wkstore.Store
-	service *service.Service
-	gateway *gateway.Gateway
+	db             *wkdb.DB
+	raftDB         *raftstore.DB
+	cluster        *wkcluster.Cluster
+	store          *wkstore.Store
+	messageApp     *message.App
+	api            *accessapi.Server
+	gatewayHandler *accessgateway.Handler
+	gateway        *gateway.Gateway
 
 	stopOnce  sync.Once
 	lifecycle sync.Mutex
 	started   atomic.Bool
 	stopped   atomic.Bool
 	clusterOn atomic.Bool
+	apiOn     atomic.Bool
 	gatewayOn atomic.Bool
 
 	startClusterFn func() error
+	startAPIFn     func() error
 	startGatewayFn func() error
+	stopAPIFn      func() error
 	stopGatewayFn  func() error
 	stopClusterFn  func()
 	closeRaftDBFn  func() error
@@ -69,11 +76,25 @@ func (a *App) Store() *wkstore.Store {
 	return a.store
 }
 
-func (a *App) Service() *service.Service {
+func (a *App) Message() *message.App {
 	if a == nil {
 		return nil
 	}
-	return a.service
+	return a.messageApp
+}
+
+func (a *App) GatewayHandler() *accessgateway.Handler {
+	if a == nil {
+		return nil
+	}
+	return a.gatewayHandler
+}
+
+func (a *App) API() *accessapi.Server {
+	if a == nil {
+		return nil
+	}
+	return a.api
 }
 
 func (a *App) Gateway() *gateway.Gateway {

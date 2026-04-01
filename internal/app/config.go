@@ -12,6 +12,7 @@ type Config struct {
 	Node    NodeConfig
 	Storage StorageConfig
 	Cluster ClusterConfig
+	API     APIConfig
 	Gateway GatewayConfig
 }
 
@@ -54,6 +55,10 @@ type GatewayConfig struct {
 	TokenAuthOn    bool
 	DefaultSession gateway.SessionOptions
 	Listeners      []gateway.ListenerOptions
+}
+
+type APIConfig struct {
+	ListenAddr string
 }
 
 func (c *Config) ApplyDefaultsAndValidate() error {

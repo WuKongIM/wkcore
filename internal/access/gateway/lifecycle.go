@@ -1,48 +1,37 @@
-package service
+package gateway
 
 import (
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/internal/gateway"
-	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
+	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
+	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 )
 
-type SessionMeta struct {
-	SessionID   uint64
-	UID         string
-	DeviceFlag  wkpacket.DeviceFlag
-	DeviceLevel wkpacket.DeviceLevel
-	Listener    string
-	ConnectedAt time.Time
-	Session     session.Session
-}
-
-func sessionMetaFromContext(ctx *gateway.Context, now time.Time) (SessionMeta, error) {
+func onlineConnFromContext(ctx *coregateway.Context, now time.Time) (online.OnlineConn, error) {
 	if ctx == nil || ctx.Session == nil {
-		return SessionMeta{}, ErrUnauthenticatedSession
+		return online.OnlineConn{}, ErrUnauthenticatedSession
 	}
 
-	uid, _ := ctx.Session.Value(gateway.SessionValueUID).(string)
+	uid, _ := ctx.Session.Value(coregateway.SessionValueUID).(string)
 	if uid == "" {
-		return SessionMeta{}, ErrUnauthenticatedSession
+		return online.OnlineConn{}, ErrUnauthenticatedSession
 	}
 
-	meta := SessionMeta{
+	conn := online.OnlineConn{
 		SessionID:   ctx.Session.ID(),
 		UID:         uid,
-		DeviceFlag:  deviceFlagFromValue(ctx.Session.Value(gateway.SessionValueDeviceFlag)),
-		DeviceLevel: deviceLevelFromValue(ctx.Session.Value(gateway.SessionValueDeviceLevel)),
+		DeviceFlag:  deviceFlagFromValue(ctx.Session.Value(coregateway.SessionValueDeviceFlag)),
+		DeviceLevel: deviceLevelFromValue(ctx.Session.Value(coregateway.SessionValueDeviceLevel)),
 		Listener:    ctx.Listener,
 		ConnectedAt: now,
 		Session:     ctx.Session,
 	}
-
-	if meta.Listener == "" {
-		meta.Listener = ctx.Session.Listener()
+	if conn.Listener == "" {
+		conn.Listener = ctx.Session.Listener()
 	}
 
-	return meta, nil
+	return conn, nil
 }
 
 func deviceFlagFromValue(value any) wkpacket.DeviceFlag {

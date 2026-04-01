@@ -3,8 +3,12 @@ package app
 import (
 	"fmt"
 
+	accessapi "github.com/WuKongIM/WuKongIM/internal/access/api"
+	accessgateway "github.com/WuKongIM/WuKongIM/internal/access/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
-	"github.com/WuKongIM/WuKongIM/internal/service"
+	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
+	"github.com/WuKongIM/WuKongIM/internal/runtime/sequence"
+	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/raftstore"
 	"github.com/WuKongIM/WuKongIM/pkg/wkcluster"
@@ -48,14 +52,29 @@ func build(cfg Config) (_ *App, err error) {
 	}
 
 	app.store = wkstore.New(app.cluster, app.db)
-	app.service = service.New(service.Options{
+	onlineRegistry := online.NewRegistry()
+	sequenceAllocator := &sequence.MemoryAllocator{}
+	app.messageApp = message.New(message.Options{
 		IdentityStore: app.store,
 		ChannelStore:  app.store,
 		ClusterPort:   app.cluster,
+		Online:        onlineRegistry,
+		Delivery:      online.LocalDelivery{},
+		Sequence:      sequenceAllocator,
+	})
+	if cfg.API.ListenAddr != "" {
+		app.api = accessapi.New(accessapi.Options{
+			ListenAddr: cfg.API.ListenAddr,
+			Messages:   app.messageApp,
+		})
+	}
+	app.gatewayHandler = accessgateway.New(accessgateway.Options{
+		Online:   onlineRegistry,
+		Messages: app.messageApp,
 	})
 
 	app.gateway, err = gateway.New(gateway.Options{
-		Handler:        app.service,
+		Handler:        app.gatewayHandler,
 		Authenticator:  gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{TokenAuthOn: cfg.Gateway.TokenAuthOn, NodeID: cfg.Node.ID}),
 		DefaultSession: cfg.Gateway.DefaultSession,
 		Listeners:      cfg.Gateway.Listeners,

@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewBuildsDBClusterStoreServiceAndGateway(t *testing.T) {
+func TestNewBuildsDBClusterStoreMessageAndGatewayAdapter(t *testing.T) {
 	cfg := testConfig(t)
 
 	app, err := New(cfg)
@@ -29,8 +29,24 @@ func TestNewBuildsDBClusterStoreServiceAndGateway(t *testing.T) {
 	require.NotNil(t, app.RaftDB())
 	require.NotNil(t, app.Cluster())
 	require.NotNil(t, app.Store())
-	require.NotNil(t, app.Service())
+	require.NotNil(t, app.Message())
+	require.NotNil(t, app.GatewayHandler())
 	require.NotNil(t, app.Gateway())
+	require.Nil(t, app.API())
+}
+
+func TestNewBuildsOptionalAPIServerWhenConfigured(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.API.ListenAddr = "127.0.0.1:0"
+
+	app, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, app.RaftDB().Close())
+		require.NoError(t, app.DB().Close())
+	})
+
+	require.NotNil(t, app.API())
 }
 
 func TestNewReturnsConfigErrorsBeforeOpeningResources(t *testing.T) {
@@ -62,8 +78,10 @@ func TestAccessorsExposeBuiltRuntime(t *testing.T) {
 	require.Same(t, app.raftDB, app.RaftDB())
 	require.Same(t, app.cluster, app.Cluster())
 	require.Same(t, app.store, app.Store())
-	require.Same(t, app.service, app.Service())
+	require.Same(t, app.messageApp, app.Message())
+	require.Same(t, app.gatewayHandler, app.GatewayHandler())
 	require.Same(t, app.gateway, app.Gateway())
+	require.Same(t, app.api, app.API())
 }
 
 func TestNewClosesOpenedStoresWhenGatewayBuildFails(t *testing.T) {
@@ -104,6 +122,30 @@ func TestStartStartsClusterBeforeGateway(t *testing.T) {
 	require.NoError(t, app.Start())
 	require.Equal(t, []string{"cluster.start", "gateway.start"}, calls)
 	require.True(t, app.started.Load())
+}
+
+func TestStartStartsAPIAfterGatewayWhenEnabled(t *testing.T) {
+	var calls []string
+
+	app := &App{
+		cluster: &wkcluster.Cluster{},
+		gateway: &gateway.Gateway{},
+		startClusterFn: func() error {
+			calls = append(calls, "cluster.start")
+			return nil
+		},
+		startAPIFn: func() error {
+			calls = append(calls, "api.start")
+			return nil
+		},
+		startGatewayFn: func() error {
+			calls = append(calls, "gateway.start")
+			return nil
+		},
+	}
+
+	require.NoError(t, app.Start())
+	require.Equal(t, []string{"cluster.start", "gateway.start", "api.start"}, calls)
 }
 
 func TestStartRollsBackClusterWhenGatewayStartFails(t *testing.T) {
@@ -202,6 +244,39 @@ func TestStopStopsGatewayBeforeClosingStorage(t *testing.T) {
 	require.NoError(t, app.Stop())
 	require.Equal(t, []string{"gateway.stop", "cluster.stop", "raft.close", "wkdb.close"}, calls)
 	require.False(t, app.started.Load())
+}
+
+func TestStopStopsAPIBeforeGatewayAndClusterClose(t *testing.T) {
+	var calls []string
+
+	app := &App{
+		started:   atomicBool(true),
+		clusterOn: atomicBool(true),
+		apiOn:     atomicBool(true),
+		gatewayOn: atomicBool(true),
+		stopGatewayFn: func() error {
+			calls = append(calls, "gateway.stop")
+			return nil
+		},
+		stopAPIFn: func() error {
+			calls = append(calls, "api.stop")
+			return nil
+		},
+		stopClusterFn: func() {
+			calls = append(calls, "cluster.stop")
+		},
+		closeRaftDBFn: func() error {
+			calls = append(calls, "raft.close")
+			return nil
+		},
+		closeWKDBFn: func() error {
+			calls = append(calls, "wkdb.close")
+			return nil
+		},
+	}
+
+	require.NoError(t, app.Stop())
+	require.Equal(t, []string{"api.stop", "gateway.stop", "cluster.stop", "raft.close", "wkdb.close"}, calls)
 }
 
 func TestStopIsIdempotent(t *testing.T) {

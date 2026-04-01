@@ -1,0 +1,121 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"net"
+	"net/http"
+	"sync"
+
+	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
+	"github.com/gin-gonic/gin"
+)
+
+var ErrListenAddrRequired = errors.New("access/api: listen address required")
+
+type MessageUsecase interface {
+	Send(cmd message.SendCommand) (message.SendResult, error)
+}
+
+type Options struct {
+	ListenAddr string
+	Messages   MessageUsecase
+}
+
+type Server struct {
+	mu         sync.RWMutex
+	engine     *gin.Engine
+	httpServer *http.Server
+	listener   net.Listener
+	listenAddr string
+	addr       string
+	messages   MessageUsecase
+	started    bool
+}
+
+func New(opts Options) *Server {
+	if gin.Mode() != gin.ReleaseMode {
+		gin.SetMode(gin.ReleaseMode)
+	}
+	engine := gin.New()
+	srv := &Server{
+		engine:     engine,
+		listenAddr: opts.ListenAddr,
+		messages:   opts.Messages,
+	}
+	srv.registerRoutes()
+	return srv
+}
+
+func (s *Server) Engine() *gin.Engine {
+	if s == nil {
+		return nil
+	}
+	return s.engine
+}
+
+func (s *Server) Addr() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.addr
+}
+
+func (s *Server) Start() error {
+	if s == nil {
+		return nil
+	}
+
+	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		return nil
+	}
+	listenAddr := s.listenAddr
+	engine := s.engine
+	s.mu.Unlock()
+
+	if listenAddr == "" {
+		return ErrListenAddrRequired
+	}
+
+	ln, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return err
+	}
+
+	httpServer := &http.Server{Handler: engine}
+
+	s.mu.Lock()
+	s.listener = ln
+	s.httpServer = httpServer
+	s.addr = ln.Addr().String()
+	s.started = true
+	s.mu.Unlock()
+
+	go func() {
+		_ = httpServer.Serve(ln)
+	}()
+
+	return nil
+}
+
+func (s *Server) Stop(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+
+	s.mu.Lock()
+	httpServer := s.httpServer
+	s.httpServer = nil
+	s.listener = nil
+	s.started = false
+	s.mu.Unlock()
+
+	if httpServer == nil {
+		return nil
+	}
+	return httpServer.Shutdown(ctx)
+}

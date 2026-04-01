@@ -141,6 +141,14 @@ func TestConfigValidateRejectsTokenAuthWithoutHooks(t *testing.T) {
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
+func TestConfigAllowsDisabledAPIWhenListenAddrEmpty(t *testing.T) {
+	cfg := validConfig()
+	cfg.API = APIConfig{}
+
+	require.NoError(t, cfg.ApplyDefaultsAndValidate())
+	require.Equal(t, "", cfg.API.ListenAddr)
+}
+
 func validConfig() Config {
 	return Config{
 		Node: NodeConfig{
@@ -160,6 +168,7 @@ func validConfig() Config {
 			HeartbeatTick:  1,
 			DialTimeout:    5 * time.Second,
 		},
+		API: APIConfig{},
 		Gateway: GatewayConfig{
 			Listeners: []gateway.ListenerOptions{
 				binding.TCPWKProto("tcp-wkproto", "127.0.0.1:5100"),

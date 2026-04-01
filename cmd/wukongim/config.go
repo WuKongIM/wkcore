@@ -15,6 +15,7 @@ type wireConfig struct {
 	Node    wireNodeConfig    `json:"node"`
 	Storage wireStorageConfig `json:"storage"`
 	Cluster wireClusterConfig `json:"cluster"`
+	API     wireAPIConfig     `json:"api"`
 	Gateway wireGatewayConfig `json:"gateway"`
 }
 
@@ -57,6 +58,10 @@ type wireGatewayConfig struct {
 	TokenAuthOn    bool                      `json:"tokenAuthOn"`
 	DefaultSession wireSessionOptions        `json:"defaultSession"`
 	Listeners      []gateway.ListenerOptions `json:"listeners"`
+}
+
+type wireAPIConfig struct {
+	ListenAddr string `json:"listenAddr"`
 }
 
 type wireSessionOptions struct {
@@ -137,6 +142,9 @@ func (c wireConfig) toAppConfig() (app.Config, error) {
 			ElectionTick:   c.Cluster.ElectionTick,
 			HeartbeatTick:  c.Cluster.HeartbeatTick,
 			DialTimeout:    dialTimeout,
+		},
+		API: app.APIConfig{
+			ListenAddr: c.API.ListenAddr,
 		},
 		Gateway: app.GatewayConfig{
 			TokenAuthOn: c.Gateway.TokenAuthOn,

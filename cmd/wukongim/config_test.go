@@ -38,6 +38,9 @@ func TestLoadConfigParsesJSONFileIntoAppConfig(t *testing.T) {
 				},
 			},
 		},
+		"api": map[string]any{
+			"listenAddr": "127.0.0.1:8080",
+		},
 	}
 
 	body, err := json.Marshal(payload)
@@ -61,6 +64,7 @@ func TestLoadConfigParsesJSONFileIntoAppConfig(t *testing.T) {
 	require.Equal(t, "127.0.0.1:5100", cfg.Gateway.Listeners[0].Address)
 	require.Equal(t, "stdnet", cfg.Gateway.Listeners[0].Transport)
 	require.Equal(t, "wkproto", cfg.Gateway.Listeners[0].Protocol)
+	require.Equal(t, "127.0.0.1:8080", cfg.API.ListenAddr)
 }
 
 func TestLoadConfigRejectsMissingConfigPath(t *testing.T) {

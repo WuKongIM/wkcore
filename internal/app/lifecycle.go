@@ -1,6 +1,12 @@
 package app
 
-import "errors"
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+const apiStopTimeout = 5 * time.Second
 
 func (a *App) Start() error {
 	if a == nil || a.cluster == nil || a.gateway == nil {
@@ -25,6 +31,15 @@ func (a *App) Start() error {
 		return err
 	}
 	a.gatewayOn.Store(true)
+	if err := a.startAPI(); err != nil {
+		_ = a.stopGateway()
+		_ = a.stopClusterWithError()
+		a.started.Store(false)
+		return err
+	}
+	if a.api != nil || a.startAPIFn != nil {
+		a.apiOn.Store(true)
+	}
 	return nil
 }
 
@@ -40,6 +55,7 @@ func (a *App) Stop() error {
 	a.stopOnce.Do(func() {
 		a.started.Store(false)
 		err = errors.Join(
+			a.stopAPI(),
 			a.stopGateway(),
 			a.stopClusterWithError(),
 			a.closeRaftDB(),
@@ -69,6 +85,16 @@ func (a *App) startGateway() error {
 	return a.gateway.Start()
 }
 
+func (a *App) startAPI() error {
+	if a.startAPIFn != nil {
+		return a.startAPIFn()
+	}
+	if a.api == nil {
+		return nil
+	}
+	return a.api.Start()
+}
+
 func (a *App) stopGateway() error {
 	if !a.gatewayOn.Swap(false) {
 		return nil
@@ -80,6 +106,21 @@ func (a *App) stopGateway() error {
 		return nil
 	}
 	return a.gateway.Stop()
+}
+
+func (a *App) stopAPI() error {
+	if !a.apiOn.Swap(false) {
+		return nil
+	}
+	if a.stopAPIFn != nil {
+		return a.stopAPIFn()
+	}
+	if a.api == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), apiStopTimeout)
+	defer cancel()
+	return a.api.Stop(ctx)
 }
 
 func (a *App) stopCluster() {
