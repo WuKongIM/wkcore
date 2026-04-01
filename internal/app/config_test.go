@@ -70,6 +70,16 @@ func TestConfigValidateRejectsDuplicateGroupIDs(t *testing.T) {
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
+func TestConfigValidateRejectsNonContiguousGroupIDs(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cluster.Groups = []GroupConfig{
+		{ID: 100, Peers: []uint64{1}},
+	}
+	cfg.Cluster.GroupCount = 1
+
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
+}
+
 func TestConfigValidateRejectsNodeMissingFromClusterNodes(t *testing.T) {
 	cfg := validConfig()
 	cfg.Node.ID = 2
@@ -106,6 +116,13 @@ func TestConfigGatewayPreservesExplicitFalseCloseOnHandlerError(t *testing.T) {
 	require.NoError(t, cfg.ApplyDefaultsAndValidate())
 	require.NotNil(t, cfg.Gateway.DefaultSession.CloseOnHandlerError)
 	require.False(t, *cfg.Gateway.DefaultSession.CloseOnHandlerError)
+}
+
+func TestConfigValidateRejectsTokenAuthWithoutHooks(t *testing.T) {
+	cfg := validConfig()
+	cfg.Gateway.TokenAuthOn = true
+
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
 func validConfig() Config {

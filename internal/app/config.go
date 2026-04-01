@@ -81,6 +81,9 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	if len(c.Gateway.Listeners) == 0 {
 		return fmt.Errorf("%w: gateway listeners must be set", ErrInvalidConfig)
 	}
+	if c.Gateway.TokenAuthOn {
+		return fmt.Errorf("%w: gateway token auth requires verifier hooks", ErrInvalidConfig)
+	}
 
 	if c.Storage.DBPath == "" {
 		c.Storage.DBPath = filepath.Join(c.Node.DataDir, "data")
@@ -125,6 +128,9 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 		if group.ID == 0 {
 			return fmt.Errorf("%w: cluster group id must be set", ErrInvalidConfig)
 		}
+		if group.ID > c.Cluster.GroupCount {
+			return fmt.Errorf("%w: cluster group id %d exceeds group count %d", ErrInvalidConfig, group.ID, c.Cluster.GroupCount)
+		}
 		if _, ok := groupSet[group.ID]; ok {
 			return fmt.Errorf("%w: duplicate cluster group id %d", ErrInvalidConfig, group.ID)
 		}
@@ -139,6 +145,11 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 			if peerID == c.Node.ID {
 				selfPeerFound = true
 			}
+		}
+	}
+	for expectedID := uint32(1); expectedID <= c.Cluster.GroupCount; expectedID++ {
+		if _, ok := groupSet[expectedID]; !ok {
+			return fmt.Errorf("%w: cluster group id %d missing from configured groups", ErrInvalidConfig, expectedID)
 		}
 	}
 	if !selfNodeFound {

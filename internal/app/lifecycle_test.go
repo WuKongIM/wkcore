@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/WuKongIM/WuKongIM/pkg/raftstore"
+	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
 	"github.com/stretchr/testify/require"
 )
 
@@ -59,6 +61,22 @@ func TestAccessorsExposeBuiltRuntime(t *testing.T) {
 	require.Same(t, app.gateway, app.Gateway())
 }
 
+func TestNewClosesOpenedStoresWhenGatewayBuildFails(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Gateway.Listeners = append(cfg.Gateway.Listeners, cfg.Gateway.Listeners[0])
+
+	_, err := New(cfg)
+	require.Error(t, err)
+
+	reopenedDB, dbOpenErr := openWKDBForTest(cfg.Storage.DBPath)
+	require.NoError(t, dbOpenErr)
+	require.NoError(t, reopenedDB.Close())
+
+	reopenedRaft, raftOpenErr := openRaftDBForTest(cfg.Storage.RaftPath)
+	require.NoError(t, raftOpenErr)
+	require.NoError(t, reopenedRaft.Close())
+}
+
 func testConfig(t *testing.T) Config {
 	t.Helper()
 
@@ -70,4 +88,12 @@ func testConfig(t *testing.T) Config {
 	}
 	cfg.Gateway.Listeners[0].Address = "127.0.0.1:0"
 	return cfg
+}
+
+func openWKDBForTest(path string) (interface{ Close() error }, error) {
+	return wkdb.Open(path)
+}
+
+func openRaftDBForTest(path string) (interface{ Close() error }, error) {
+	return raftstore.Open(path)
 }
