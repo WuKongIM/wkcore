@@ -9,3 +9,7 @@ type SessionOptions = gatewaytypes.SessionOptions
 func DefaultSessionOptions() SessionOptions {
 	return gatewaytypes.DefaultSessionOptions()
 }
+
+func NormalizeSessionOptions(opt SessionOptions) SessionOptions {
+	return gatewaytypes.NormalizeSessionOptions(opt)
+}

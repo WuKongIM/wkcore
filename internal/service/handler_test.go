@@ -1,12 +1,15 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
+	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/wkstore"
 	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/stretchr/testify/require"
 )
@@ -117,6 +120,41 @@ func TestNewServiceUsesInjectedRegistry(t *testing.T) {
 	require.Equal(t, fixedNow, reg.registered[0].ConnectedAt)
 }
 
+func TestNewServicePreservesInjectedBusinessPorts(t *testing.T) {
+	users := &fakeIdentityStore{}
+	channels := &fakeChannelStore{}
+	cluster := &fakeClusterPort{}
+
+	svc := New(Options{
+		IdentityStore: users,
+		ChannelStore:  channels,
+		ClusterPort:   cluster,
+	})
+
+	var identityPort IdentityStore = users
+	_, _ = identityPort.GetUser(context.Background(), "u1")
+
+	var channelPort ChannelStore = channels
+	_, _ = channelPort.GetChannel(context.Background(), "c1", 1)
+
+	require.Same(t, users, svc.users)
+	require.Same(t, channels, svc.channels)
+	require.Same(t, cluster, svc.cluster)
+}
+
+func TestNewServiceKeepsDefaultsWhenPortsUnset(t *testing.T) {
+	svc := New(Options{})
+
+	require.Nil(t, svc.users)
+	require.Nil(t, svc.channels)
+	require.Nil(t, svc.cluster)
+}
+
+func TestWKStoreSatisfiesServiceBusinessPorts(t *testing.T) {
+	var _ IdentityStore = (*wkstore.Store)(nil)
+	var _ ChannelStore = (*wkstore.Store)(nil)
+}
+
 func newAuthedContext(t *testing.T, sessionID uint64, uid string) *gateway.Context {
 	t.Helper()
 
@@ -167,3 +205,17 @@ func (r *capturingRegistry) Session(sessionID uint64) (SessionMeta, bool) {
 func (r *capturingRegistry) SessionsByUID(uid string) []SessionMeta {
 	return append([]SessionMeta(nil), r.byUID[uid]...)
 }
+
+type fakeIdentityStore struct{}
+
+func (*fakeIdentityStore) GetUser(context.Context, string) (wkdb.User, error) {
+	return wkdb.User{}, nil
+}
+
+type fakeChannelStore struct{}
+
+func (*fakeChannelStore) GetChannel(context.Context, string, int64) (wkdb.Channel, error) {
+	return wkdb.Channel{}, nil
+}
+
+type fakeClusterPort struct{}

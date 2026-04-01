@@ -248,7 +248,7 @@ func TestServer(t *testing.T) {
 		})
 
 		srv, transportFactory := newTestServer(t, handler, proto, gateway.SessionOptions{
-			CloseOnHandlerError: true,
+			CloseOnHandlerError: boolPtr(true),
 		})
 		if err := srv.Start(); err != nil {
 			t.Fatalf("start failed: %v", err)
@@ -262,6 +262,40 @@ func TestServer(t *testing.T) {
 		reasons := handler.closeReasons()
 		if got := reasons[len(reasons)-1]; got != gateway.CloseReasonHandlerError {
 			t.Fatalf("expected %q, got %q", gateway.CloseReasonHandlerError, got)
+		}
+		if len(handler.sessionErrors()) != 1 || !errors.Is(handler.sessionErrors()[0], handlerErr) {
+			t.Fatalf("expected session error %v, got %v", handlerErr, handler.sessionErrors())
+		}
+	})
+
+	t.Run("handler error stays open when CloseOnHandlerError is explicitly false", func(t *testing.T) {
+		handlerErr := errors.New("handler boom")
+		handler := newTestHandler()
+		handler.onFrame = func(*gateway.Context, wkpacket.Frame) error { return handlerErr }
+
+		proto := newScriptedProtocol("fake-proto")
+		proto.pushDecode(decodeResult{
+			frames:   []wkpacket.Frame{&wkpacket.PingPacket{}},
+			consumed: 1,
+		})
+
+		srv, transportFactory := newTestServer(t, handler, proto, gateway.SessionOptions{
+			CloseOnHandlerError: boolPtr(false),
+		})
+		if err := srv.Start(); err != nil {
+			t.Fatalf("start failed: %v", err)
+		}
+		t.Cleanup(func() { _ = srv.Stop() })
+
+		conn := transportFactory.MustOpen("listener-a", 1)
+		transportFactory.MustData("listener-a", 1, []byte("x"))
+
+		waitFor(t, func() bool { return len(handler.sessionErrors()) == 1 })
+		if connClosed(conn) {
+			t.Fatal("expected connection to remain open when CloseOnHandlerError is false")
+		}
+		if handler.closeCount() != 0 {
+			t.Fatalf("expected no close callbacks, got %d", handler.closeCount())
 		}
 		if len(handler.sessionErrors()) != 1 || !errors.Is(handler.sessionErrors()[0], handlerErr) {
 			t.Fatalf("expected session error %v, got %v", handlerErr, handler.sessionErrors())
@@ -1017,6 +1051,8 @@ func connClosed(conn *testkit.FakeConn) bool {
 		return false
 	}
 }
+
+func boolPtr(v bool) *bool { return &v }
 
 type buildSpyFactory struct {
 	name    string

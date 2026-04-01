@@ -62,7 +62,10 @@ func TestOptionsValidateNormalizesDefaultSession(t *testing.T) {
 	if err := opts.Validate(); err != nil {
 		t.Fatalf("validate failed: %v", err)
 	}
-	if !opts.DefaultSession.CloseOnHandlerError {
+	if opts.DefaultSession.CloseOnHandlerError == nil {
+		t.Fatal("expected default CloseOnHandlerError to be populated")
+	}
+	if !*opts.DefaultSession.CloseOnHandlerError {
 		t.Fatal("expected default CloseOnHandlerError to be true")
 	}
 	if opts.DefaultSession.ReadBufferSize == 0 || opts.DefaultSession.WriteQueueSize == 0 || opts.DefaultSession.IdleTimeout == 0 {
@@ -72,7 +75,7 @@ func TestOptionsValidateNormalizesDefaultSession(t *testing.T) {
 
 func TestDefaultSessionOptions(t *testing.T) {
 	opts := gateway.DefaultSessionOptions()
-	if !opts.CloseOnHandlerError {
+	if opts.CloseOnHandlerError == nil || !*opts.CloseOnHandlerError {
 		t.Fatal("expected CloseOnHandlerError default to be true")
 	}
 	if opts.IdleTimeout <= 0 || opts.WriteTimeout <= 0 {
@@ -93,8 +96,26 @@ func TestOptionsValidateNormalizesPartialSessionOverrides(t *testing.T) {
 	if opts.DefaultSession.ReadBufferSize != 8192 {
 		t.Fatalf("expected custom read buffer size to be preserved, got %+v", opts.DefaultSession)
 	}
-	if !opts.DefaultSession.CloseOnHandlerError {
+	if opts.DefaultSession.CloseOnHandlerError == nil || !*opts.DefaultSession.CloseOnHandlerError {
 		t.Fatalf("expected CloseOnHandlerError to remain true after normalization, got %+v", opts.DefaultSession)
+	}
+}
+
+func TestOptionsValidatePreservesExplicitFalseCloseOnHandlerError(t *testing.T) {
+	opts := gateway.Options{
+		Handler: noopHandler{},
+		DefaultSession: gateway.SessionOptions{
+			CloseOnHandlerError: boolPtr(false),
+		},
+	}
+	if err := opts.Validate(); err != nil {
+		t.Fatalf("validate failed: %v", err)
+	}
+	if opts.DefaultSession.CloseOnHandlerError == nil {
+		t.Fatalf("expected explicit false CloseOnHandlerError to be preserved, got %+v", opts.DefaultSession)
+	}
+	if *opts.DefaultSession.CloseOnHandlerError {
+		t.Fatalf("expected explicit false CloseOnHandlerError to be preserved, got %+v", opts.DefaultSession)
 	}
 }
 
@@ -159,3 +180,5 @@ func TestOptionsValidateTrimsListenerFieldsInPlace(t *testing.T) {
 		t.Fatalf("expected listener fields to be trimmed in place, got %+v", got)
 	}
 }
+
+func boolPtr(v bool) *bool { return &v }

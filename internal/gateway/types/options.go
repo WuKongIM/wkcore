@@ -29,7 +29,7 @@ type SessionOptions struct {
 	MaxOutboundBytes    int
 	IdleTimeout         time.Duration
 	WriteTimeout        time.Duration
-	CloseOnHandlerError bool
+	CloseOnHandlerError *bool
 }
 
 func DefaultSessionOptions() SessionOptions {
@@ -40,7 +40,7 @@ func DefaultSessionOptions() SessionOptions {
 		MaxOutboundBytes:    1 << 20,
 		IdleTimeout:         30 * time.Second,
 		WriteTimeout:        10 * time.Second,
-		CloseOnHandlerError: true,
+		CloseOnHandlerError: boolPtr(true),
 	}
 }
 
@@ -48,7 +48,7 @@ func (o *Options) Validate() error {
 	if o == nil {
 		return fmt.Errorf("gateway: nil options")
 	}
-	o.DefaultSession = normalizeSessionOptions(o.DefaultSession)
+	o.DefaultSession = NormalizeSessionOptions(o.DefaultSession)
 	seenNames := make(map[string]struct{}, len(o.Listeners))
 	seenAddresses := make(map[string]struct{}, len(o.Listeners))
 	for i := range o.Listeners {
@@ -98,7 +98,7 @@ func (o *Options) Validate() error {
 	return nil
 }
 
-func normalizeSessionOptions(opt SessionOptions) SessionOptions {
+func NormalizeSessionOptions(opt SessionOptions) SessionOptions {
 	def := DefaultSessionOptions()
 	if opt == (SessionOptions{}) {
 		return def
@@ -121,8 +121,10 @@ func normalizeSessionOptions(opt SessionOptions) SessionOptions {
 	if opt.WriteTimeout == 0 {
 		opt.WriteTimeout = def.WriteTimeout
 	}
-	if !opt.CloseOnHandlerError {
+	if opt.CloseOnHandlerError == nil {
 		opt.CloseOnHandlerError = def.CloseOnHandlerError
 	}
 	return opt
 }
+
+func boolPtr(v bool) *bool { return &v }
