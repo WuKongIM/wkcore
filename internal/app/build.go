@@ -86,6 +86,32 @@ func (c ClusterConfig) runtimeConfig(db *wkdb.DB, raftDB *raftstore.DB, nodeID u
 	}
 }
 
+func (c ClusterConfig) runtimeNodes() []wkcluster.NodeConfig {
+	nodes := make([]wkcluster.NodeConfig, 0, len(c.Nodes))
+	for _, node := range c.Nodes {
+		nodes = append(nodes, wkcluster.NodeConfig{
+			NodeID: multiraft.NodeID(node.ID),
+			Addr:   node.Addr,
+		})
+	}
+	return nodes
+}
+
+func (c ClusterConfig) runtimeGroups() []wkcluster.GroupConfig {
+	groups := make([]wkcluster.GroupConfig, 0, len(c.Groups))
+	for _, group := range c.Groups {
+		peers := make([]multiraft.NodeID, 0, len(group.Peers))
+		for _, peerID := range group.Peers {
+			peers = append(peers, multiraft.NodeID(peerID))
+		}
+		groups = append(groups, wkcluster.GroupConfig{
+			GroupID: multiraft.GroupID(group.ID),
+			Peers:   peers,
+		})
+	}
+	return groups
+}
+
 func newStorageFactory(raftDB *raftstore.DB) func(groupID multiraft.GroupID) (multiraft.Storage, error) {
 	return func(groupID multiraft.GroupID) (multiraft.Storage, error) {
 		return raftDB.ForGroup(uint64(groupID)), nil

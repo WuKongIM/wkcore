@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
-	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
-	"github.com/WuKongIM/WuKongIM/pkg/wkcluster"
 )
 
 type Config struct {
@@ -91,6 +89,9 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	if c.Storage.RaftPath == "" {
 		c.Storage.RaftPath = filepath.Join(c.Node.DataDir, "raft")
 	}
+	if c.Storage.DBPath == c.Storage.RaftPath {
+		return fmt.Errorf("%w: storage db path and raft path must differ", ErrInvalidConfig)
+	}
 
 	if c.Cluster.GroupCount == 0 {
 		c.Cluster.GroupCount = uint32(len(c.Cluster.Groups))
@@ -160,30 +161,4 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	}
 
 	return nil
-}
-
-func (c ClusterConfig) runtimeNodes() []wkcluster.NodeConfig {
-	nodes := make([]wkcluster.NodeConfig, 0, len(c.Nodes))
-	for _, node := range c.Nodes {
-		nodes = append(nodes, wkcluster.NodeConfig{
-			NodeID: multiraft.NodeID(node.ID),
-			Addr:   node.Addr,
-		})
-	}
-	return nodes
-}
-
-func (c ClusterConfig) runtimeGroups() []wkcluster.GroupConfig {
-	groups := make([]wkcluster.GroupConfig, 0, len(c.Groups))
-	for _, group := range c.Groups {
-		peers := make([]multiraft.NodeID, 0, len(group.Peers))
-		for _, peerID := range group.Peers {
-			peers = append(peers, multiraft.NodeID(peerID))
-		}
-		groups = append(groups, wkcluster.GroupConfig{
-			GroupID: multiraft.GroupID(group.ID),
-			Peers:   peers,
-		})
-	}
-	return groups
 }

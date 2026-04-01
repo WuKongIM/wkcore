@@ -63,10 +63,13 @@ func TestAccessorsExposeBuiltRuntime(t *testing.T) {
 
 func TestNewClosesOpenedStoresWhenGatewayBuildFails(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.Gateway.Listeners = append(cfg.Gateway.Listeners, cfg.Gateway.Listeners[0])
+	dup := cfg.Gateway.Listeners[0]
+	dup.Name = dup.Name + "-dup"
+	cfg.Gateway.Listeners = append(cfg.Gateway.Listeners, dup)
 
 	_, err := New(cfg)
 	require.Error(t, err)
+	require.ErrorContains(t, err, "duplicate listener address")
 
 	reopenedDB, dbOpenErr := openWKDBForTest(cfg.Storage.DBPath)
 	require.NoError(t, dbOpenErr)
