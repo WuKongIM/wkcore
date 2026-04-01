@@ -25,6 +25,13 @@ type App struct {
 	startOnce sync.Once
 	stopOnce  sync.Once
 	started   atomic.Bool
+
+	startClusterFn func() error
+	startGatewayFn func() error
+	stopGatewayFn  func() error
+	stopClusterFn  func()
+	closeRaftDBFn  func() error
+	closeWKDBFn    func() error
 }
 
 func New(cfg Config) (*App, error) {
