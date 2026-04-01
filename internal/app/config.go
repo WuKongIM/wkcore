@@ -100,6 +100,7 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	c.Gateway.DefaultSession = normalizeSessionOptions(c.Gateway.DefaultSession)
 
 	nodeSet := make(map[uint64]struct{}, len(c.Cluster.Nodes))
+	selfNodeFound := false
 	for _, node := range c.Cluster.Nodes {
 		if node.ID == 0 {
 			return fmt.Errorf("%w: cluster node id must be set", ErrInvalidConfig)
@@ -107,13 +108,25 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 		if node.Addr == "" {
 			return fmt.Errorf("%w: cluster node addr must be set", ErrInvalidConfig)
 		}
+		if _, ok := nodeSet[node.ID]; ok {
+			return fmt.Errorf("%w: duplicate cluster node id %d", ErrInvalidConfig, node.ID)
+		}
 		nodeSet[node.ID] = struct{}{}
+		if node.ID == c.Node.ID {
+			selfNodeFound = true
+		}
 	}
 
+	groupSet := make(map[uint32]struct{}, len(c.Cluster.Groups))
+	selfPeerFound := false
 	for _, group := range c.Cluster.Groups {
 		if group.ID == 0 {
 			return fmt.Errorf("%w: cluster group id must be set", ErrInvalidConfig)
 		}
+		if _, ok := groupSet[group.ID]; ok {
+			return fmt.Errorf("%w: duplicate cluster group id %d", ErrInvalidConfig, group.ID)
+		}
+		groupSet[group.ID] = struct{}{}
 		if len(group.Peers) == 0 {
 			return fmt.Errorf("%w: cluster group peers must be set", ErrInvalidConfig)
 		}
@@ -121,7 +134,16 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 			if _, ok := nodeSet[peerID]; !ok {
 				return fmt.Errorf("%w: peer %d not found in cluster nodes", ErrInvalidConfig, peerID)
 			}
+			if peerID == c.Node.ID {
+				selfPeerFound = true
+			}
 		}
+	}
+	if !selfNodeFound {
+		return fmt.Errorf("%w: node id %d not found in cluster nodes", ErrInvalidConfig, c.Node.ID)
+	}
+	if !selfPeerFound {
+		return fmt.Errorf("%w: node id %d not present as a peer in any group", ErrInvalidConfig, c.Node.ID)
 	}
 
 	return nil
@@ -150,7 +172,7 @@ func normalizeSessionOptions(opt gateway.SessionOptions) gateway.SessionOptions 
 	if opt.WriteTimeout == 0 {
 		opt.WriteTimeout = def.WriteTimeout
 	}
-	if !opt.CloseOnHandlerError {
+	if !opt.CloseOnHandlerErrorSet {
 		opt.CloseOnHandlerError = def.CloseOnHandlerError
 	}
 	return opt

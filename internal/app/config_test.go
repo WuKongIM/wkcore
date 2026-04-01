@@ -49,12 +49,63 @@ func TestConfigValidateRejectsMismatchedGroupCount(t *testing.T) {
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
+func TestConfigValidateRejectsDuplicateClusterNodeIDs(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cluster.Nodes = []NodeConfigRef{
+		{ID: 1, Addr: "127.0.0.1:7000"},
+		{ID: 1, Addr: "127.0.0.1:7001"},
+	}
+
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
+}
+
+func TestConfigValidateRejectsDuplicateGroupIDs(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cluster.Groups = []GroupConfig{
+		{ID: 1, Peers: []uint64{1}},
+		{ID: 1, Peers: []uint64{1}},
+	}
+	cfg.Cluster.GroupCount = 2
+
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
+}
+
+func TestConfigValidateRejectsNodeMissingFromClusterNodes(t *testing.T) {
+	cfg := validConfig()
+	cfg.Node.ID = 2
+
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
+}
+
+func TestConfigValidateRejectsNodeMissingFromGroupPeers(t *testing.T) {
+	cfg := validConfig()
+	cfg.Node.ID = 2
+	cfg.Cluster.Nodes = []NodeConfigRef{
+		{ID: 1, Addr: "127.0.0.1:7000"},
+		{ID: 2, Addr: "127.0.0.1:7001"},
+	}
+
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
+}
+
 func TestConfigGatewayDefaultsSessionOptions(t *testing.T) {
 	cfg := validConfig()
 	cfg.Gateway.DefaultSession = gateway.SessionOptions{}
 
 	require.NoError(t, cfg.ApplyDefaultsAndValidate())
 	require.Equal(t, gateway.DefaultSessionOptions(), cfg.Gateway.DefaultSession)
+}
+
+func TestConfigGatewayPreservesExplicitFalseCloseOnHandlerError(t *testing.T) {
+	cfg := validConfig()
+	cfg.Gateway.DefaultSession = gateway.SessionOptions{
+		CloseOnHandlerErrorSet: true,
+		CloseOnHandlerError:    false,
+	}
+
+	require.NoError(t, cfg.ApplyDefaultsAndValidate())
+	require.False(t, cfg.Gateway.DefaultSession.CloseOnHandlerError)
+	require.True(t, cfg.Gateway.DefaultSession.CloseOnHandlerErrorSet)
 }
 
 func validConfig() Config {

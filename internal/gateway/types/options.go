@@ -23,13 +23,14 @@ type ListenerOptions struct {
 }
 
 type SessionOptions struct {
-	ReadBufferSize      int
-	WriteQueueSize      int
-	MaxInboundBytes     int
-	MaxOutboundBytes    int
-	IdleTimeout         time.Duration
-	WriteTimeout        time.Duration
-	CloseOnHandlerError bool
+	ReadBufferSize         int
+	WriteQueueSize         int
+	MaxInboundBytes        int
+	MaxOutboundBytes       int
+	IdleTimeout            time.Duration
+	WriteTimeout           time.Duration
+	CloseOnHandlerErrorSet bool
+	CloseOnHandlerError    bool
 }
 
 func DefaultSessionOptions() SessionOptions {
@@ -121,7 +122,7 @@ func normalizeSessionOptions(opt SessionOptions) SessionOptions {
 	if opt.WriteTimeout == 0 {
 		opt.WriteTimeout = def.WriteTimeout
 	}
-	if !opt.CloseOnHandlerError {
+	if !opt.CloseOnHandlerErrorSet {
 		opt.CloseOnHandlerError = def.CloseOnHandlerError
 	}
 	return opt

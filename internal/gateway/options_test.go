@@ -98,6 +98,25 @@ func TestOptionsValidateNormalizesPartialSessionOverrides(t *testing.T) {
 	}
 }
 
+func TestOptionsValidatePreservesExplicitFalseCloseOnHandlerError(t *testing.T) {
+	opts := gateway.Options{
+		Handler: noopHandler{},
+		DefaultSession: gateway.SessionOptions{
+			CloseOnHandlerErrorSet: true,
+			CloseOnHandlerError:    false,
+		},
+	}
+	if err := opts.Validate(); err != nil {
+		t.Fatalf("validate failed: %v", err)
+	}
+	if opts.DefaultSession.CloseOnHandlerError {
+		t.Fatalf("expected explicit false CloseOnHandlerError to be preserved, got %+v", opts.DefaultSession)
+	}
+	if !opts.DefaultSession.CloseOnHandlerErrorSet {
+		t.Fatalf("expected CloseOnHandlerErrorSet to remain true, got %+v", opts.DefaultSession)
+	}
+}
+
 func TestOptionsValidateRequiresWebsocketPath(t *testing.T) {
 	opts := gateway.Options{
 		Handler: noopHandler{},
