@@ -20,6 +20,9 @@ func TestAppStartAcceptsWKProtoConnectionAndStopsCleanly(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, app.Start())
+	t.Cleanup(func() {
+		require.NoError(t, app.Stop())
+	})
 
 	conn, err := net.Dial("tcp", app.Gateway().ListenerAddr("tcp-wkproto"))
 	require.NoError(t, err)
@@ -37,8 +40,6 @@ func TestAppStartAcceptsWKProtoConnectionAndStopsCleanly(t *testing.T) {
 	connack, ok := frame.(*wkpacket.ConnackPacket)
 	require.True(t, ok, "expected *wkpacket.ConnackPacket, got %T", frame)
 	require.Equal(t, wkpacket.ReasonSuccess, connack.ReasonCode)
-
-	require.NoError(t, app.Stop())
 }
 
 func sendAppWKProtoFrame(t *testing.T, conn net.Conn, frame wkpacket.Frame) {

@@ -22,9 +22,10 @@ type App struct {
 	service *service.Service
 	gateway *gateway.Gateway
 
-	startOnce sync.Once
 	stopOnce  sync.Once
 	started   atomic.Bool
+	clusterOn atomic.Bool
+	gatewayOn atomic.Bool
 
 	startClusterFn func() error
 	startGatewayFn func() error

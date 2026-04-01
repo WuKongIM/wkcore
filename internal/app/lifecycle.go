@@ -6,17 +6,20 @@ func (a *App) Start() error {
 	if a == nil || a.cluster == nil || a.gateway == nil {
 		return ErrNotBuilt
 	}
-	if a.started.Load() {
+	if !a.started.CompareAndSwap(false, true) {
 		return ErrAlreadyStarted
 	}
 	if err := a.startCluster(); err != nil {
+		a.started.Store(false)
 		return err
 	}
+	a.clusterOn.Store(true)
 	if err := a.startGateway(); err != nil {
-		a.stopCluster()
+		_ = a.stopClusterWithError()
+		a.started.Store(false)
 		return err
 	}
-	a.started.Store(true)
+	a.gatewayOn.Store(true)
 	return nil
 }
 
@@ -59,6 +62,9 @@ func (a *App) startGateway() error {
 }
 
 func (a *App) stopGateway() error {
+	if !a.gatewayOn.Swap(false) {
+		return nil
+	}
 	if a.stopGatewayFn != nil {
 		return a.stopGatewayFn()
 	}
@@ -69,6 +75,9 @@ func (a *App) stopGateway() error {
 }
 
 func (a *App) stopCluster() {
+	if !a.clusterOn.Swap(false) {
+		return
+	}
 	if a.stopClusterFn != nil {
 		a.stopClusterFn()
 		return

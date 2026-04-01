@@ -131,11 +131,56 @@ func TestStartRollsBackClusterWhenGatewayStartFails(t *testing.T) {
 	require.False(t, app.started.Load())
 }
 
+func TestStopIsSafeAfterFailedStartRollback(t *testing.T) {
+	var calls []string
+	startErr := errors.New("gateway start failed")
+
+	app := &App{
+		cluster: &wkcluster.Cluster{},
+		gateway: &gateway.Gateway{},
+		startClusterFn: func() error {
+			calls = append(calls, "cluster.start")
+			return nil
+		},
+		startGatewayFn: func() error {
+			calls = append(calls, "gateway.start")
+			return startErr
+		},
+		stopClusterFn: func() {
+			calls = append(calls, "cluster.stop")
+		},
+		stopGatewayFn: func() error {
+			calls = append(calls, "gateway.stop")
+			return nil
+		},
+		closeRaftDBFn: func() error {
+			calls = append(calls, "raft.close")
+			return nil
+		},
+		closeWKDBFn: func() error {
+			calls = append(calls, "wkdb.close")
+			return nil
+		},
+	}
+
+	require.ErrorIs(t, app.Start(), startErr)
+	require.NoError(t, app.Stop())
+	require.Equal(t, []string{
+		"cluster.start",
+		"gateway.start",
+		"cluster.stop",
+		"raft.close",
+		"wkdb.close",
+	}, calls)
+}
+
 func TestStopStopsGatewayBeforeClosingStorage(t *testing.T) {
 	var calls []string
 
 	app := &App{
-		started: atomicBool(true),
+		started:   atomicBool(true),
+		clusterOn: atomicBool(true),
+		gatewayOn: atomicBool(true),
 		stopGatewayFn: func() error {
 			calls = append(calls, "gateway.stop")
 			return nil
@@ -162,7 +207,9 @@ func TestStopIsIdempotent(t *testing.T) {
 	var calls []string
 
 	app := &App{
-		started: atomicBool(true),
+		started:   atomicBool(true),
+		clusterOn: atomicBool(true),
+		gatewayOn: atomicBool(true),
 		stopGatewayFn: func() error {
 			calls = append(calls, "gateway.stop")
 			return nil
@@ -184,6 +231,54 @@ func TestStopIsIdempotent(t *testing.T) {
 	require.NoError(t, app.Stop())
 	require.Equal(t, []string{"gateway.stop", "cluster.stop", "raft.close", "wkdb.close"}, calls)
 	require.False(t, app.started.Load())
+}
+
+func TestStartReturnsAlreadyStartedAfterSuccess(t *testing.T) {
+	var calls []string
+
+	app := &App{
+		cluster: &wkcluster.Cluster{},
+		gateway: &gateway.Gateway{},
+		startClusterFn: func() error {
+			calls = append(calls, "cluster.start")
+			return nil
+		},
+		startGatewayFn: func() error {
+			calls = append(calls, "gateway.start")
+			return nil
+		},
+	}
+
+	require.NoError(t, app.Start())
+	require.ErrorIs(t, app.Start(), ErrAlreadyStarted)
+	require.Equal(t, []string{"cluster.start", "gateway.start"}, calls)
+}
+
+func TestStopJoinsCleanupErrors(t *testing.T) {
+	errGateway := errors.New("gateway stop")
+	errRaft := errors.New("raft close")
+	errWKDB := errors.New("wkdb close")
+
+	app := &App{
+		started:   atomicBool(true),
+		clusterOn: atomicBool(true),
+		gatewayOn: atomicBool(true),
+		stopGatewayFn: func() error {
+			return errGateway
+		},
+		stopClusterFn: func() {},
+		closeRaftDBFn: func() error {
+			return errRaft
+		},
+		closeWKDBFn: func() error {
+			return errWKDB
+		},
+	}
+
+	joinedErr := app.Stop()
+	require.ErrorIs(t, joinedErr, errGateway)
+	require.ErrorIs(t, joinedErr, errRaft)
+	require.ErrorIs(t, joinedErr, errWKDB)
 }
 
 func testConfig(t *testing.T) Config {
