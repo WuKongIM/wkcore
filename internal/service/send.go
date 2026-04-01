@@ -6,5 +6,5 @@ import (
 )
 
 func (s *Service) handleSend(_ *gateway.Context, _ *wkpacket.SendPacket) error {
-	return ErrSendNotReady
+	return nil
 }

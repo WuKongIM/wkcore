@@ -11,6 +11,8 @@ func (s *Service) OnFrame(ctx *gateway.Context, frame wkpacket.Frame) error {
 		return s.handleSend(ctx, pkt)
 	case *wkpacket.RecvackPacket:
 		return s.handleRecvack(ctx, pkt)
+	case *wkpacket.PingPacket:
+		return nil
 	default:
 		return ErrUnsupportedFrame
 	}
