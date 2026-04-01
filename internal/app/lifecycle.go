@@ -6,6 +6,11 @@ func (a *App) Start() error {
 	if a == nil || a.cluster == nil || a.gateway == nil {
 		return ErrNotBuilt
 	}
+	a.lifecycle.Lock()
+	defer a.lifecycle.Unlock()
+	if a.stopped.Load() {
+		return ErrStopped
+	}
 	if !a.started.CompareAndSwap(false, true) {
 		return ErrAlreadyStarted
 	}
@@ -27,6 +32,9 @@ func (a *App) Stop() error {
 	if a == nil {
 		return nil
 	}
+	a.lifecycle.Lock()
+	defer a.lifecycle.Unlock()
+	a.stopped.Store(true)
 
 	var err error
 	a.stopOnce.Do(func() {

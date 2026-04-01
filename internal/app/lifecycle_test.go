@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/pkg/raftstore"
@@ -252,6 +253,76 @@ func TestStartReturnsAlreadyStartedAfterSuccess(t *testing.T) {
 	require.NoError(t, app.Start())
 	require.ErrorIs(t, app.Start(), ErrAlreadyStarted)
 	require.Equal(t, []string{"cluster.start", "gateway.start"}, calls)
+}
+
+func TestStartReturnsStoppedAfterStop(t *testing.T) {
+	app := &App{
+		cluster: &wkcluster.Cluster{},
+		gateway: &gateway.Gateway{},
+		closeRaftDBFn: func() error {
+			return nil
+		},
+		closeWKDBFn: func() error {
+			return nil
+		},
+	}
+
+	require.NoError(t, app.Stop())
+	require.ErrorIs(t, app.Start(), ErrStopped)
+}
+
+func TestStopWaitsForInFlightStart(t *testing.T) {
+	startGatewayEntered := make(chan struct{})
+	releaseGatewayStart := make(chan struct{})
+	startDone := make(chan error, 1)
+	stopDone := make(chan error, 1)
+	closeCalls := make(chan string, 2)
+
+	app := &App{
+		cluster: &wkcluster.Cluster{},
+		gateway: &gateway.Gateway{},
+		startClusterFn: func() error {
+			return nil
+		},
+		startGatewayFn: func() error {
+			close(startGatewayEntered)
+			<-releaseGatewayStart
+			return nil
+		},
+		stopGatewayFn: func() error {
+			return nil
+		},
+		stopClusterFn: func() {},
+		closeRaftDBFn: func() error {
+			closeCalls <- "raft.close"
+			return nil
+		},
+		closeWKDBFn: func() error {
+			closeCalls <- "wkdb.close"
+			return nil
+		},
+	}
+
+	go func() {
+		startDone <- app.Start()
+	}()
+
+	<-startGatewayEntered
+
+	go func() {
+		stopDone <- app.Stop()
+	}()
+
+	select {
+	case call := <-closeCalls:
+		t.Fatalf("cleanup ran before start finished: %s", call)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseGatewayStart)
+
+	require.NoError(t, <-startDone)
+	require.NoError(t, <-stopDone)
 }
 
 func TestStopJoinsCleanupErrors(t *testing.T) {

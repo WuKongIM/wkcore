@@ -23,7 +23,9 @@ type App struct {
 	gateway *gateway.Gateway
 
 	stopOnce  sync.Once
+	lifecycle sync.Mutex
 	started   atomic.Bool
+	stopped   atomic.Bool
 	clusterOn atomic.Bool
 	gatewayOn atomic.Bool
 
