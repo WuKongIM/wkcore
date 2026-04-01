@@ -101,6 +101,22 @@ func TestNewServiceUsesDefaultNowWhenUnset(t *testing.T) {
 	require.True(t, !got.Before(before.Add(-time.Second)) && !got.After(after.Add(time.Second)))
 }
 
+func TestNewServiceUsesInjectedRegistry(t *testing.T) {
+	fixedNow := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	reg := &capturingRegistry{}
+	svc := New(Options{
+		Now:      func() time.Time { return fixedNow },
+		Registry: reg,
+	})
+
+	ctx := newAuthedContext(t, 1, "u1")
+	require.NoError(t, svc.OnSessionOpen(ctx))
+
+	require.Len(t, reg.registered, 1)
+	require.Equal(t, "u1", reg.registered[0].UID)
+	require.Equal(t, fixedNow, reg.registered[0].ConnectedAt)
+}
+
 func newAuthedContext(t *testing.T, sessionID uint64, uid string) *gateway.Context {
 	t.Helper()
 
@@ -116,4 +132,38 @@ func newAuthedContext(t *testing.T, sessionID uint64, uid string) *gateway.Conte
 		Session:  sess,
 		Listener: "tcp",
 	}
+}
+
+type capturingRegistry struct {
+	registered   []SessionMeta
+	bySessionID  map[uint64]SessionMeta
+	byUID        map[string][]SessionMeta
+	unregistered []uint64
+}
+
+func (r *capturingRegistry) Register(meta SessionMeta) error {
+	r.registered = append(r.registered, meta)
+	if r.bySessionID == nil {
+		r.bySessionID = make(map[uint64]SessionMeta)
+	}
+	if r.byUID == nil {
+		r.byUID = make(map[string][]SessionMeta)
+	}
+	r.bySessionID[meta.SessionID] = meta
+	r.byUID[meta.UID] = append(r.byUID[meta.UID], meta)
+	return nil
+}
+
+func (r *capturingRegistry) Unregister(sessionID uint64) {
+	r.unregistered = append(r.unregistered, sessionID)
+	delete(r.bySessionID, sessionID)
+}
+
+func (r *capturingRegistry) Session(sessionID uint64) (SessionMeta, bool) {
+	meta, ok := r.bySessionID[sessionID]
+	return meta, ok
+}
+
+func (r *capturingRegistry) SessionsByUID(uid string) []SessionMeta {
+	return append([]SessionMeta(nil), r.byUID[uid]...)
 }

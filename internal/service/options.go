@@ -4,13 +4,21 @@ import "time"
 
 type Options struct {
 	Now               func() time.Time
+	Registry          SessionRegistry
 	SequenceAllocator SequenceAllocator
 	DeliveryPort      DeliveryPort
 }
 
 type SequenceAllocator interface {
 	NextMessageID() int64
-	NextUserSequence(uid string) uint32
+	NextChannelSequence(channelKey string) uint32
+}
+
+func (o Options) sessionRegistry() SessionRegistry {
+	if o.Registry == nil {
+		return NewRegistry()
+	}
+	return o.Registry
 }
 
 func (o Options) sequenceAllocator() SequenceAllocator {

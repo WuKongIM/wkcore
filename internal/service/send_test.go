@@ -1,7 +1,6 @@
 package service
 
 import (
-	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -144,6 +143,40 @@ func TestHandleSendPreservesReplyTokenOnSendackWrites(t *testing.T) {
 	require.Equal(t, "reply-1", write.meta.ReplyToken)
 }
 
+func TestHandleSendAllocatesChannelScopedSequence(t *testing.T) {
+	sender := testkit.NewRecordingSession(1, "tcp")
+	recipient := testkit.NewRecordingSession(2, "tcp")
+	sender.SetValue(gateway.SessionValueUID, "u1")
+
+	reg := &capturingRegistry{
+		byUID: map[string][]SessionMeta{
+			"u2": {{
+				SessionID: 2,
+				UID:       "u2",
+				Session:   recipient,
+			}},
+		},
+	}
+	seq := &recordingSequenceAllocator{messageID: 99, sequence: 7}
+	svc := New(Options{
+		Now:               fixedNowFn,
+		Registry:          reg,
+		SequenceAllocator: seq,
+	})
+
+	ctx := &gateway.Context{Session: sender, Listener: "tcp"}
+	pkt := &wkpacket.SendPacket{
+		ChannelID:   "u2",
+		ChannelType: wkpacket.ChannelTypePerson,
+		Payload:     []byte("hi"),
+		ClientSeq:   15,
+		ClientMsgNo: "m6",
+	}
+
+	require.NoError(t, svc.OnFrame(ctx, pkt))
+	require.Equal(t, []string{"u2"}, seq.channelKeys)
+}
+
 func TestHandleSendWritesExplicitAckWhenDeliveryFails(t *testing.T) {
 	sender := testkit.NewRecordingSession(1, "tcp")
 	recipientA := testkit.NewRecordingSession(2, "tcp")
@@ -263,11 +296,26 @@ type partialFailingDelivery struct {
 	err error
 }
 
-func (d partialFailingDelivery) Deliver(_ context.Context, recipients []SessionMeta, frame wkpacket.Frame) error {
+func (d partialFailingDelivery) Deliver(recipients []SessionMeta, frame wkpacket.Frame) error {
 	if len(recipients) > 0 && recipients[0].Session != nil {
 		if err := recipients[0].Session.WriteFrame(frame); err != nil {
 			return err
 		}
 	}
 	return d.err
+}
+
+type recordingSequenceAllocator struct {
+	messageID   int64
+	sequence    uint32
+	channelKeys []string
+}
+
+func (s *recordingSequenceAllocator) NextMessageID() int64 {
+	return s.messageID
+}
+
+func (s *recordingSequenceAllocator) NextChannelSequence(channelKey string) uint32 {
+	s.channelKeys = append(s.channelKeys, channelKey)
+	return s.sequence
 }

@@ -10,10 +10,11 @@ import (
 func TestSendackEncodeAndDecode(t *testing.T) {
 
 	packet := &wkpacket.SendackPacket{
-		ClientSeq:  234,
-		MessageSeq: 2,
-		MessageID:  1234,
-		ReasonCode: wkpacket.ReasonSuccess,
+		ClientSeq:   234,
+		ClientMsgNo: "client-msg-no",
+		MessageSeq:  2,
+		MessageID:   1234,
+		ReasonCode:  wkpacket.ReasonSuccess,
 	}
 
 	codec := New()
@@ -28,6 +29,7 @@ func TestSendackEncodeAndDecode(t *testing.T) {
 
 	// 比较
 	assert.Equal(t, packet.ClientSeq, resultSendackPacket.ClientSeq)
+	assert.Equal(t, packet.ClientMsgNo, resultSendackPacket.ClientMsgNo)
 	assert.Equal(t, packet.MessageSeq, resultSendackPacket.MessageSeq)
 	assert.Equal(t, packet.MessageID, resultSendackPacket.MessageID)
 	assert.Equal(t, packet.ReasonCode, resultSendackPacket.ReasonCode)

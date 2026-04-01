@@ -1,7 +1,6 @@
 package service
 
 import (
-	"context"
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
@@ -18,20 +17,37 @@ func (s *Service) handleSend(ctx *gateway.Context, pkt *wkpacket.SendPacket) err
 		return s.writeSendack(ctx, pkt, 0, 0, wkpacket.ReasonNotSupportChannelType)
 	}
 
-	recipients := s.registry.SessionsByUID(pkt.ChannelID)
+	target := resolveLocalPersonTarget(pkt)
+	recipients := s.registry.SessionsByUID(target.RecipientUID)
 	if len(recipients) == 0 {
 		return s.writeSendack(ctx, pkt, 0, 0, wkpacket.ReasonUserNotOnNode)
 	}
 
 	msgID := s.sequencer.NextMessageID()
-	msgSeq := s.sequencer.NextUserSequence(pkt.ChannelID)
+	msgSeq := s.sequencer.NextChannelSequence(target.SequenceKey)
 	recv := buildPersonRecvPacket(senderUID, pkt, msgID, msgSeq, s.opts.Now())
 
-	if err := s.delivery.Deliver(context.Background(), recipients, recv); err != nil {
+	if err := s.delivery.Deliver(recipients, recv); err != nil {
 		return s.writeSendack(ctx, pkt, msgID, msgSeq, wkpacket.ReasonSystemError)
 	}
 
 	return s.writeSendack(ctx, pkt, msgID, msgSeq, wkpacket.ReasonSuccess)
+}
+
+type localPersonTarget struct {
+	RecipientUID string
+	SequenceKey  string
+}
+
+func resolveLocalPersonTarget(pkt *wkpacket.SendPacket) localPersonTarget {
+	if pkt == nil {
+		return localPersonTarget{}
+	}
+
+	return localPersonTarget{
+		RecipientUID: pkt.ChannelID,
+		SequenceKey:  pkt.ChannelID,
+	}
 }
 
 func senderUIDFromContext(ctx *gateway.Context) (string, error) {

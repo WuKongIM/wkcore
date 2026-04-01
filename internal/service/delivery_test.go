@@ -1,7 +1,6 @@
 package service
 
 import (
-	"context"
 	"errors"
 	"testing"
 
@@ -19,13 +18,13 @@ func TestMemorySequencerAllocatesMonotonicMessageIDs(t *testing.T) {
 	require.Equal(t, int64(3), seq.NextMessageID())
 }
 
-func TestMemorySequencerAllocatesPerUserSequences(t *testing.T) {
+func TestMemorySequencerAllocatesPerChannelSequences(t *testing.T) {
 	seq := &memorySequencer{}
 
-	require.Equal(t, uint32(1), seq.NextUserSequence("u1"))
-	require.Equal(t, uint32(2), seq.NextUserSequence("u1"))
-	require.Equal(t, uint32(1), seq.NextUserSequence("u2"))
-	require.Equal(t, uint32(3), seq.NextUserSequence("u1"))
+	require.Equal(t, uint32(1), seq.NextChannelSequence("u1"))
+	require.Equal(t, uint32(2), seq.NextChannelSequence("u1"))
+	require.Equal(t, uint32(1), seq.NextChannelSequence("u2"))
+	require.Equal(t, uint32(3), seq.NextChannelSequence("u1"))
 }
 
 func TestLocalDeliveryWritesFrameToEveryRecipientSession(t *testing.T) {
@@ -34,7 +33,7 @@ func TestLocalDeliveryWritesFrameToEveryRecipientSession(t *testing.T) {
 	delivery := localDelivery{}
 
 	frame := &wkpacket.PingPacket{}
-	err := delivery.Deliver(context.Background(), []SessionMeta{
+	err := delivery.Deliver([]SessionMeta{
 		{UID: "u2", Session: s1},
 		{UID: "u2", Session: s2},
 	}, frame)
@@ -51,7 +50,7 @@ func TestLocalDeliveryContinuesAfterWriteFrameError(t *testing.T) {
 	second := testkit.NewRecordingSession(12, "tcp")
 	delivery := localDelivery{}
 
-	err := delivery.Deliver(context.Background(), []SessionMeta{
+	err := delivery.Deliver([]SessionMeta{
 		{UID: "u2", Session: first},
 		{UID: "u2", Session: second},
 	}, &wkpacket.PingPacket{})

@@ -18,7 +18,7 @@ func (s *memorySequencer) NextMessageID() int64 {
 	return s.nextMessageID.Add(1)
 }
 
-func (s *memorySequencer) NextUserSequence(uid string) uint32 {
+func (s *memorySequencer) NextChannelSequence(channelKey string) uint32 {
 	if s == nil {
 		return 0
 	}
@@ -30,7 +30,7 @@ func (s *memorySequencer) NextUserSequence(uid string) uint32 {
 		s.userSeq = make(map[string]uint32)
 	}
 
-	next := s.userSeq[uid] + 1
-	s.userSeq[uid] = next
+	next := s.userSeq[channelKey] + 1
+	s.userSeq[channelKey] = next
 	return next
 }

@@ -6,6 +6,13 @@ import (
 	"sync"
 )
 
+type SessionRegistry interface {
+	Register(meta SessionMeta) error
+	Unregister(sessionID uint64)
+	Session(sessionID uint64) (SessionMeta, bool)
+	SessionsByUID(uid string) []SessionMeta
+}
+
 type Registry struct {
 	mu        sync.RWMutex
 	bySession map[uint64]SessionMeta

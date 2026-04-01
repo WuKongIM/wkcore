@@ -22,6 +22,11 @@ func decodeSendack(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.F
 	}
 	sendackPacket.ClientSeq = uint64(clientSeq)
 
+	// clientMsgNo
+	if sendackPacket.ClientMsgNo, err = dec.String(); err != nil {
+		return nil, errors.Wrap(err, "解码ClientMsgNo失败！")
+	}
+
 	// messageSeq
 	if sendackPacket.MessageSeq, err = dec.Uint32(); err != nil {
 		return nil, errors.Wrap(err, "解码MessageSeq失败！")
@@ -42,6 +47,8 @@ func encodeSendack(sendackPacket *wkpacket.SendackPacket, enc *Encoder, _ uint8)
 	enc.WriteInt64(sendackPacket.MessageID)
 	// clientSeq
 	enc.WriteUint32(uint32(sendackPacket.ClientSeq))
+	// clientMsgNo
+	enc.WriteString(sendackPacket.ClientMsgNo)
 	// 消息序列号(客户端维护)
 	enc.WriteUint32(sendackPacket.MessageSeq)
 	// 原因代码
@@ -49,6 +56,10 @@ func encodeSendack(sendackPacket *wkpacket.SendackPacket, enc *Encoder, _ uint8)
 	return nil
 }
 
-func encodeSendackSize(_ *wkpacket.SendackPacket, _ uint8) int {
-	return wkpacket.MessageIDByteSize + wkpacket.ClientSeqByteSize + wkpacket.MessageSeqByteSize + wkpacket.ReasonCodeByteSize
+func encodeSendackSize(packet *wkpacket.SendackPacket, _ uint8) int {
+	return wkpacket.MessageIDByteSize +
+		wkpacket.ClientSeqByteSize +
+		len(packet.ClientMsgNo) + wkpacket.StringFixLenByteSize +
+		wkpacket.MessageSeqByteSize +
+		wkpacket.ReasonCodeByteSize
 }

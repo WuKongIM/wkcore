@@ -23,14 +23,6 @@ func TestServiceOnFramePingIsNoop(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestServiceOnFrameSendIsNoop(t *testing.T) {
-	svc := New(Options{})
-
-	err := svc.OnFrame(newAuthedContext(t, 1, "u1"), &wkpacket.SendPacket{})
-
-	require.NoError(t, err)
-}
-
 func TestServiceOnFrameRecvackIsNoop(t *testing.T) {
 	svc := New(Options{})
 
