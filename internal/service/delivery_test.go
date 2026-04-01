@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/service/testkit"
 	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/stretchr/testify/require"
@@ -41,4 +43,33 @@ func TestLocalDeliveryWritesFrameToEveryRecipientSession(t *testing.T) {
 	require.Len(t, s2.WrittenFrames(), 1)
 	require.Same(t, frame, s1.WrittenFrames()[0])
 	require.Same(t, frame, s2.WrittenFrames()[0])
+}
+
+func TestLocalDeliveryContinuesAfterWriteFrameError(t *testing.T) {
+	writeErr := errors.New("boom")
+	first := &erroringSession{RecordingSession: testkit.NewRecordingSession(11, "tcp"), err: writeErr}
+	second := testkit.NewRecordingSession(12, "tcp")
+	delivery := localDelivery{}
+
+	err := delivery.Deliver(context.Background(), []SessionMeta{
+		{UID: "u2", Session: first},
+		{UID: "u2", Session: second},
+	}, &wkpacket.PingPacket{})
+
+	require.ErrorIs(t, err, writeErr)
+	require.Equal(t, 1, first.writeAttempts)
+	require.Len(t, second.WrittenFrames(), 1)
+}
+
+type erroringSession struct {
+	*testkit.RecordingSession
+	err           error
+	writeAttempts int
+}
+
+func (s *erroringSession) WriteFrame(frame wkpacket.Frame, opts ...session.WriteOption) error {
+	s.writeAttempts++
+	_ = frame
+	_ = opts
+	return s.err
 }

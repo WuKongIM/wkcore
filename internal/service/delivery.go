@@ -13,13 +13,19 @@ type DeliveryPort interface {
 type localDelivery struct{}
 
 func (localDelivery) Deliver(_ context.Context, recipients []SessionMeta, frame wkpacket.Frame) error {
+	var firstErr error
 	for _, recipient := range recipients {
 		if recipient.Session == nil {
-			return ErrUnauthenticatedSession
+			if firstErr == nil {
+				firstErr = ErrUnauthenticatedSession
+			}
+			continue
 		}
 		if err := recipient.Session.WriteFrame(frame); err != nil {
-			return err
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	return nil
+	return firstErr
 }
