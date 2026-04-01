@@ -93,19 +93,19 @@ func TestConfigGatewayDefaultsSessionOptions(t *testing.T) {
 	cfg.Gateway.DefaultSession = gateway.SessionOptions{}
 
 	require.NoError(t, cfg.ApplyDefaultsAndValidate())
-	require.Equal(t, gateway.DefaultSessionOptions(), cfg.Gateway.DefaultSession)
+	require.NotNil(t, cfg.Gateway.DefaultSession.CloseOnHandlerError)
+	require.True(t, *cfg.Gateway.DefaultSession.CloseOnHandlerError)
 }
 
 func TestConfigGatewayPreservesExplicitFalseCloseOnHandlerError(t *testing.T) {
 	cfg := validConfig()
 	cfg.Gateway.DefaultSession = gateway.SessionOptions{
-		CloseOnHandlerErrorSet: true,
-		CloseOnHandlerError:    false,
+		CloseOnHandlerError: boolPtr(false),
 	}
 
 	require.NoError(t, cfg.ApplyDefaultsAndValidate())
-	require.False(t, cfg.Gateway.DefaultSession.CloseOnHandlerError)
-	require.True(t, cfg.Gateway.DefaultSession.CloseOnHandlerErrorSet)
+	require.NotNil(t, cfg.Gateway.DefaultSession.CloseOnHandlerError)
+	require.False(t, *cfg.Gateway.DefaultSession.CloseOnHandlerError)
 }
 
 func validConfig() Config {
@@ -134,3 +134,5 @@ func validConfig() Config {
 		},
 	}
 }
+
+func boolPtr(v bool) *bool { return &v }

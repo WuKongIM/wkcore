@@ -608,7 +608,7 @@ func (s *Server) handleHandlerError(state *sessionState, err error) {
 	}
 
 	reason := closeReasonForError(err, gatewaytypes.CloseReasonHandlerError)
-	if s.options.DefaultSession.CloseOnHandlerError {
+	if s.options.DefaultSession.CloseOnHandlerError == nil || *s.options.DefaultSession.CloseOnHandlerError {
 		state.close(reason, err)
 		return
 	}

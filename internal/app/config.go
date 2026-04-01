@@ -97,7 +97,7 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 		return fmt.Errorf("%w: cluster groups do not match group count", ErrInvalidConfig)
 	}
 
-	c.Gateway.DefaultSession = normalizeSessionOptions(c.Gateway.DefaultSession)
+	c.Gateway.DefaultSession = gateway.NormalizeSessionOptions(c.Gateway.DefaultSession)
 
 	nodeSet := make(map[uint64]struct{}, len(c.Cluster.Nodes))
 	selfNodeFound := false
@@ -147,33 +147,4 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	}
 
 	return nil
-}
-
-func normalizeSessionOptions(opt gateway.SessionOptions) gateway.SessionOptions {
-	def := gateway.DefaultSessionOptions()
-	if opt == (gateway.SessionOptions{}) {
-		return def
-	}
-	if opt.ReadBufferSize == 0 {
-		opt.ReadBufferSize = def.ReadBufferSize
-	}
-	if opt.WriteQueueSize == 0 {
-		opt.WriteQueueSize = def.WriteQueueSize
-	}
-	if opt.MaxInboundBytes == 0 {
-		opt.MaxInboundBytes = def.MaxInboundBytes
-	}
-	if opt.MaxOutboundBytes == 0 {
-		opt.MaxOutboundBytes = def.MaxOutboundBytes
-	}
-	if opt.IdleTimeout == 0 {
-		opt.IdleTimeout = def.IdleTimeout
-	}
-	if opt.WriteTimeout == 0 {
-		opt.WriteTimeout = def.WriteTimeout
-	}
-	if !opt.CloseOnHandlerErrorSet {
-		opt.CloseOnHandlerError = def.CloseOnHandlerError
-	}
-	return opt
 }
