@@ -89,7 +89,16 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	if c.Storage.RaftPath == "" {
 		c.Storage.RaftPath = filepath.Join(c.Node.DataDir, "raft")
 	}
-	if c.Storage.DBPath == c.Storage.RaftPath {
+
+	dbPath, err := normalizeStoragePath(c.Storage.DBPath)
+	if err != nil {
+		return fmt.Errorf("%w: normalize db path: %v", ErrInvalidConfig, err)
+	}
+	raftPath, err := normalizeStoragePath(c.Storage.RaftPath)
+	if err != nil {
+		return fmt.Errorf("%w: normalize raft path: %v", ErrInvalidConfig, err)
+	}
+	if dbPath == raftPath {
 		return fmt.Errorf("%w: storage db path and raft path must differ", ErrInvalidConfig)
 	}
 
@@ -161,4 +170,8 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	}
 
 	return nil
+}
+
+func normalizeStoragePath(path string) (string, error) {
+	return filepath.Abs(filepath.Clean(path))
 }

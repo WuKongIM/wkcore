@@ -57,6 +57,14 @@ func TestConfigValidateRejectsSharedStoragePaths(t *testing.T) {
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
+func TestConfigValidateRejectsAliasedSharedStoragePaths(t *testing.T) {
+	cfg := validConfig()
+	cfg.Storage.DBPath = "/tmp/wukong-node-1/data"
+	cfg.Storage.RaftPath = "/tmp/wukong-node-1/data/"
+
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
+}
+
 func TestConfigValidateRejectsDuplicateClusterNodeIDs(t *testing.T) {
 	cfg := validConfig()
 	cfg.Cluster.Nodes = []NodeConfigRef{
