@@ -29,11 +29,37 @@ func TestServiceOnSessionCloseUnregistersSession(t *testing.T) {
 	ctx := newAuthedContext(t, 1, "u1")
 
 	require.NoError(t, svc.OnSessionOpen(ctx))
-	svc.OnSessionClose(ctx)
+	require.NoError(t, svc.OnSessionClose(ctx))
 
 	require.Empty(t, svc.registry.SessionsByUID("u1"))
 	_, ok := svc.registry.Session(1)
 	require.False(t, ok)
+}
+
+func TestServiceOnSessionCloseIsNilSafe(t *testing.T) {
+	t.Run("nil receiver", func(t *testing.T) {
+		var svc *Service
+
+		require.NotPanics(t, func() {
+			require.NoError(t, svc.OnSessionClose(newAuthedContext(t, 1, "u1")))
+		})
+	})
+
+	t.Run("nil context", func(t *testing.T) {
+		svc := New(Options{})
+
+		require.NotPanics(t, func() {
+			require.NoError(t, svc.OnSessionClose(nil))
+		})
+	})
+
+	t.Run("nil session", func(t *testing.T) {
+		svc := New(Options{})
+
+		require.NotPanics(t, func() {
+			require.NoError(t, svc.OnSessionClose(&gateway.Context{}))
+		})
+	})
 }
 
 func TestServiceOnSessionErrorDoesNotMutateRegistry(t *testing.T) {
@@ -47,6 +73,20 @@ func TestServiceOnSessionErrorDoesNotMutateRegistry(t *testing.T) {
 
 	after := svc.registry.SessionsByUID("u1")
 	require.Equal(t, before, after)
+}
+
+func TestServiceOnSessionOpenRejectsUnauthenticatedContext(t *testing.T) {
+	svc := New(Options{Now: func() time.Time { return time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC) }})
+
+	err := svc.OnSessionOpen(&gateway.Context{
+		Session: session.New(session.Config{
+			ID:       1,
+			Listener: "tcp",
+		}),
+	})
+
+	require.ErrorIs(t, err, ErrUnauthenticatedSession)
+	require.Empty(t, svc.registry.SessionsByUID(""))
 }
 
 func TestNewServiceUsesDefaultNowWhenUnset(t *testing.T) {
