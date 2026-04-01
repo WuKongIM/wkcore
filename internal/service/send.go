@@ -28,7 +28,7 @@ func (s *Service) handleSend(ctx *gateway.Context, pkt *wkpacket.SendPacket) err
 	recv := buildPersonRecvPacket(senderUID, pkt, msgID, msgSeq, s.opts.Now())
 
 	if err := s.delivery.Deliver(context.Background(), recipients, recv); err != nil {
-		return err
+		return s.writeSendack(ctx, pkt, msgID, msgSeq, wkpacket.ReasonSystemError)
 	}
 
 	return s.writeSendack(ctx, pkt, msgID, msgSeq, wkpacket.ReasonSuccess)
@@ -52,7 +52,7 @@ func (s *Service) writeSendack(ctx *gateway.Context, pkt *wkpacket.SendPacket, m
 		return ErrUnauthenticatedSession
 	}
 
-	return ctx.Session.WriteFrame(&wkpacket.SendackPacket{
+	return ctx.WriteFrame(&wkpacket.SendackPacket{
 		MessageID:   msgID,
 		MessageSeq:  msgSeq,
 		ClientSeq:   pkt.ClientSeq,
@@ -62,8 +62,11 @@ func (s *Service) writeSendack(ctx *gateway.Context, pkt *wkpacket.SendPacket, m
 }
 
 func buildPersonRecvPacket(senderUID string, pkt *wkpacket.SendPacket, msgID int64, msgSeq uint32, now time.Time) *wkpacket.RecvPacket {
+	framer := pkt.Framer
+	framer.FrameType = wkpacket.RECV
+
 	return &wkpacket.RecvPacket{
-		Framer:      pkt.Framer,
+		Framer:      framer,
 		Setting:     pkt.Setting,
 		MsgKey:      pkt.MsgKey,
 		Expire:      pkt.Expire,

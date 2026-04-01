@@ -1,10 +1,14 @@
 package service
 
 import (
+	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
+	gatewaysession "github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/service/testkit"
 	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/stretchr/testify/require"
@@ -114,6 +118,62 @@ func TestHandleSendRejectsUnsupportedChannelType(t *testing.T) {
 	require.Zero(t, ack.MessageSeq)
 }
 
+func TestHandleSendPreservesReplyTokenOnSendackWrites(t *testing.T) {
+	sender := newOptionRecordingSession(1, "tcp")
+	recipient := testkit.NewRecordingSession(2, "tcp")
+
+	svc := New(Options{Now: fixedNowFn})
+	registerRecipient(t, svc, "u2", recipient)
+
+	sender.SetValue(gateway.SessionValueUID, "u1")
+	ctx := &gateway.Context{Session: sender, Listener: "tcp", ReplyToken: "reply-1"}
+	pkt := &wkpacket.SendPacket{
+		ChannelID:   "u2",
+		ChannelType: wkpacket.ChannelTypePerson,
+		Payload:     []byte("hi"),
+		ClientSeq:   13,
+		ClientMsgNo: "m4",
+	}
+
+	require.NoError(t, svc.OnFrame(ctx, pkt))
+	require.Len(t, sender.Writes(), 1)
+
+	write := sender.Writes()[0]
+	ack := requireSendackPacket(t, write.frame)
+	require.Equal(t, wkpacket.ReasonSuccess, ack.ReasonCode)
+	require.Equal(t, "reply-1", write.meta.ReplyToken)
+}
+
+func TestHandleSendWritesExplicitAckWhenDeliveryFails(t *testing.T) {
+	sender := testkit.NewRecordingSession(1, "tcp")
+	recipientA := testkit.NewRecordingSession(2, "tcp")
+	recipientB := testkit.NewRecordingSession(3, "tcp")
+	sender.SetValue(gateway.SessionValueUID, "u1")
+
+	svc := New(Options{
+		Now:          fixedNowFn,
+		DeliveryPort: partialFailingDelivery{err: errors.New("boom")},
+	})
+	registerRecipient(t, svc, "u2", recipientA, recipientB)
+
+	ctx := &gateway.Context{Session: sender, Listener: "tcp"}
+	pkt := &wkpacket.SendPacket{
+		ChannelID:   "u2",
+		ChannelType: wkpacket.ChannelTypePerson,
+		Payload:     []byte("hi"),
+		ClientSeq:   14,
+		ClientMsgNo: "m5",
+	}
+
+	require.NoError(t, svc.OnFrame(ctx, pkt))
+	require.Len(t, sender.WrittenFrames(), 1)
+	require.Len(t, recipientA.WrittenFrames(), 1)
+	require.Empty(t, recipientB.WrittenFrames())
+
+	ack := requireSendackPacket(t, sender.WrittenFrames()[0])
+	require.Equal(t, wkpacket.ReasonSystemError, ack.ReasonCode)
+}
+
 func TestHandleSendRequiresAuthenticatedSender(t *testing.T) {
 	sender := testkit.NewRecordingSession(1, "tcp")
 	recipient := testkit.NewRecordingSession(2, "tcp")
@@ -134,7 +194,7 @@ func TestHandleSendRequiresAuthenticatedSender(t *testing.T) {
 	require.Empty(t, recipient.WrittenFrames())
 }
 
-func registerRecipient(t *testing.T, svc *Service, uid string, sessions ...*testkit.RecordingSession) {
+func registerRecipient(t *testing.T, svc *Service, uid string, sessions ...gatewaysession.Session) {
 	t.Helper()
 
 	for _, sess := range sessions {
@@ -162,4 +222,52 @@ func requireRecvPacket(t *testing.T, frame wkpacket.Frame) *wkpacket.RecvPacket 
 	recv, ok := frame.(*wkpacket.RecvPacket)
 	require.True(t, ok, "expected *wkpacket.RecvPacket, got %T", frame)
 	return recv
+}
+
+type outboundWrite struct {
+	frame wkpacket.Frame
+	meta  gatewaysession.OutboundMeta
+}
+
+type optionRecordingSession struct {
+	gatewaysession.Session
+	mu     sync.Mutex
+	writes []outboundWrite
+}
+
+func newOptionRecordingSession(id uint64, listener string) *optionRecordingSession {
+	recorder := &optionRecordingSession{}
+	recorder.Session = gatewaysession.New(gatewaysession.Config{
+		ID:       id,
+		Listener: listener,
+		WriteFrameFn: func(frame wkpacket.Frame, meta gatewaysession.OutboundMeta) error {
+			recorder.mu.Lock()
+			defer recorder.mu.Unlock()
+			recorder.writes = append(recorder.writes, outboundWrite{frame: frame, meta: meta})
+			return nil
+		},
+	})
+	return recorder
+}
+
+func (s *optionRecordingSession) Writes() []outboundWrite {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := make([]outboundWrite, len(s.writes))
+	copy(out, s.writes)
+	return out
+}
+
+type partialFailingDelivery struct {
+	err error
+}
+
+func (d partialFailingDelivery) Deliver(_ context.Context, recipients []SessionMeta, frame wkpacket.Frame) error {
+	if len(recipients) > 0 && recipients[0].Session != nil {
+		if err := recipients[0].Session.WriteFrame(frame); err != nil {
+			return err
+		}
+	}
+	return d.err
 }
