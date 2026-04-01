@@ -47,6 +47,29 @@ func TestSessionMetaFromContextRequiresUID(t *testing.T) {
 	require.ErrorIs(t, err, ErrUnauthenticatedSession)
 }
 
+func TestSessionMetaFromContextFallsBackToSessionListener(t *testing.T) {
+	sess := session.New(session.Config{
+		ID:       1,
+		Listener: "tcp",
+	})
+	sess.SetValue(gateway.SessionValueUID, "u1")
+	sess.SetValue(gateway.SessionValueDeviceFlag, wkpacket.APP)
+	sess.SetValue(gateway.SessionValueDeviceLevel, wkpacket.DeviceLevelMaster)
+
+	meta, err := sessionMetaFromContext(&gateway.Context{
+		Session: sess,
+	}, time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	require.Equal(t, "tcp", meta.Listener)
+}
+
+func TestRegistryRegisterRejectsUnauthenticatedMeta(t *testing.T) {
+	reg := NewRegistry()
+
+	err := reg.Register(SessionMeta{})
+	require.ErrorIs(t, err, ErrUnauthenticatedSession)
+}
+
 func TestRegistryRegisterLookupAndUnregister(t *testing.T) {
 	reg := NewRegistry()
 	fixedNow := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
@@ -90,6 +113,34 @@ func TestRegistryRegisterLookupAndUnregister(t *testing.T) {
 	require.Len(t, reg.SessionsByUID("u1"), 1)
 }
 
+func TestRegistryRegisterOverwritesSessionAndCleansOldUIDBucket(t *testing.T) {
+	reg := NewRegistry()
+	fixedNow := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+
+	firstSess := session.New(session.Config{ID: 1, Listener: "tcp"})
+	firstSess.SetValue(gateway.SessionValueUID, "u1")
+	firstSess.SetValue(gateway.SessionValueDeviceFlag, wkpacket.APP)
+	firstSess.SetValue(gateway.SessionValueDeviceLevel, wkpacket.DeviceLevelMaster)
+	firstMeta, err := sessionMetaFromContext(&gateway.Context{Session: firstSess, Listener: "tcp"}, fixedNow)
+	require.NoError(t, err)
+	require.NoError(t, reg.Register(firstMeta))
+
+	secondSess := session.New(session.Config{ID: 1, Listener: "tcp"})
+	secondSess.SetValue(gateway.SessionValueUID, "u2")
+	secondSess.SetValue(gateway.SessionValueDeviceFlag, wkpacket.WEB)
+	secondSess.SetValue(gateway.SessionValueDeviceLevel, wkpacket.DeviceLevelSlave)
+	secondMeta, err := sessionMetaFromContext(&gateway.Context{Session: secondSess, Listener: "tcp"}, fixedNow.Add(time.Minute))
+	require.NoError(t, err)
+	require.NoError(t, reg.Register(secondMeta))
+
+	_, ok := reg.Session(1)
+	require.True(t, ok)
+	require.Equal(t, secondMeta, mustSessionMeta(t, reg, 1))
+	require.Empty(t, reg.SessionsByUID("u1"))
+	require.Len(t, reg.SessionsByUID("u2"), 1)
+	require.Equal(t, secondMeta, reg.SessionsByUID("u2")[0])
+}
+
 func TestRegistryUnregisterIsIdempotent(t *testing.T) {
 	reg := NewRegistry()
 	fixedNow := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
@@ -108,6 +159,13 @@ func TestRegistryUnregisterIsIdempotent(t *testing.T) {
 	_, ok := reg.Session(1)
 	require.False(t, ok)
 	require.Empty(t, reg.SessionsByUID("u1"))
+}
+
+func mustSessionMeta(t *testing.T, reg *Registry, sessionID uint64) SessionMeta {
+	t.Helper()
+	meta, ok := reg.Session(sessionID)
+	require.True(t, ok)
+	return meta
 }
 
 func listenersOf(metas []SessionMeta) []string {

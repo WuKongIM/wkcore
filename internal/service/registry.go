@@ -1,6 +1,7 @@
 package service
 
 import (
+	"reflect"
 	"sort"
 	"sync"
 )
@@ -21,6 +22,9 @@ func NewRegistry() *Registry {
 func (r *Registry) Register(meta SessionMeta) error {
 	if r == nil {
 		return nil
+	}
+	if meta.SessionID == 0 || meta.UID == "" || isNilSession(meta.Session) {
+		return ErrUnauthenticatedSession
 	}
 
 	r.mu.Lock()
@@ -106,4 +110,18 @@ func (r *Registry) SessionsByUID(uid string) []SessionMeta {
 		return metas[i].SessionID < metas[j].SessionID
 	})
 	return metas
+}
+
+func isNilSession(sess any) bool {
+	if sess == nil {
+		return true
+	}
+
+	rv := reflect.ValueOf(sess)
+	switch rv.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return rv.IsNil()
+	default:
+		return false
+	}
 }
