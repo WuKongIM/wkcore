@@ -4,6 +4,9 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 )
 
+func (s *Service) OnListenerError(string, error) {
+}
+
 func (s *Service) OnSessionOpen(ctx *gateway.Context) error {
 	if s == nil {
 		return nil
