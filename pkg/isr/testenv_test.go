@@ -361,13 +361,17 @@ func newFollowerEnv(t *testing.T) *testEnv {
 }
 
 func activeMeta(epoch uint64, leader NodeID) GroupMeta {
+	return activeMetaWithMinISR(epoch, leader, 2)
+}
+
+func activeMetaWithMinISR(epoch uint64, leader NodeID, minISR int) GroupMeta {
 	return GroupMeta{
 		GroupID:    10,
 		Epoch:      epoch,
 		Leader:     leader,
 		Replicas:   []NodeID{1, 2, 3},
 		ISR:        []NodeID{1, 2, 3},
-		MinISR:     2,
+		MinISR:     minISR,
 		LeaseUntil: time.Unix(1_700_000_300, 0).UTC(),
 	}
 }
@@ -377,4 +381,114 @@ func (r *replica) mustApplyMeta(t *testing.T, meta GroupMeta) {
 	if err := r.ApplyMeta(meta); err != nil {
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}
+}
+
+func newFollowerReplica(t *testing.T) *replica {
+	t.Helper()
+	return newFollowerEnv(t).replica
+}
+
+type threeReplicaCluster struct {
+	leader    *replica
+	follower2 *replica
+	follower3 *replica
+}
+
+func newThreeReplicaCluster(t *testing.T) *threeReplicaCluster {
+	t.Helper()
+
+	meta := activeMetaWithMinISR(7, 1, 3)
+
+	leaderEnv := newTestEnv(t)
+	leaderEnv.replica = newReplicaFromEnv(t, leaderEnv)
+	leaderEnv.replica.mustApplyMeta(t, meta)
+	if err := leaderEnv.replica.BecomeLeader(meta); err != nil {
+		t.Fatalf("leader BecomeLeader() error = %v", err)
+	}
+
+	follower2Env := newTestEnv(t)
+	follower2Env.localNode = 2
+	follower2Env.replica = newReplicaFromEnv(t, follower2Env)
+	follower2Env.replica.mustApplyMeta(t, meta)
+	if err := follower2Env.replica.BecomeFollower(meta); err != nil {
+		t.Fatalf("follower2 BecomeFollower() error = %v", err)
+	}
+
+	follower3Env := newTestEnv(t)
+	follower3Env.localNode = 3
+	follower3Env.replica = newReplicaFromEnv(t, follower3Env)
+	follower3Env.replica.mustApplyMeta(t, meta)
+	if err := follower3Env.replica.BecomeFollower(meta); err != nil {
+		t.Fatalf("follower3 BecomeFollower() error = %v", err)
+	}
+
+	return &threeReplicaCluster{
+		leader:    leaderEnv.replica,
+		follower2: follower2Env.replica,
+		follower3: follower3Env.replica,
+	}
+}
+
+func (c *threeReplicaCluster) replicateOnce(t *testing.T, follower *replica) {
+	t.Helper()
+
+	req := FetchRequest{
+		GroupID:     c.leader.state.GroupID,
+		Epoch:       c.leader.state.Epoch,
+		ReplicaID:   follower.localNode,
+		FetchOffset: follower.state.LEO,
+		OffsetEpoch: follower.state.Epoch,
+		MaxBytes:    1024,
+	}
+	result, err := c.leader.Fetch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if err := follower.ApplyFetch(context.Background(), ApplyFetchRequest{
+		GroupID:    req.GroupID,
+		Epoch:      result.Epoch,
+		Leader:     c.leader.localNode,
+		TruncateTo: result.TruncateTo,
+		Records:    result.Records,
+		LeaderHW:   result.HW,
+	}); err != nil {
+		t.Fatalf("ApplyFetch() error = %v", err)
+	}
+	if follower.state.LEO == 0 {
+		t.Fatal("follower LEO did not advance after ApplyFetch")
+	}
+	_, err = c.leader.Fetch(context.Background(), FetchRequest{
+		GroupID:     req.GroupID,
+		Epoch:       result.Epoch,
+		ReplicaID:   follower.localNode,
+		FetchOffset: follower.state.LEO,
+		OffsetEpoch: follower.state.Epoch,
+		MaxBytes:    1024,
+	})
+	if err != nil {
+		t.Fatalf("ack Fetch() error = %v", err)
+	}
+	if c.leader.progress[follower.localNode] != follower.state.LEO {
+		t.Fatalf("leader progress[%d] = %d, follower LEO = %d", follower.localNode, c.leader.progress[follower.localNode], follower.state.LEO)
+	}
+}
+
+func waitForReplicaLEO(t *testing.T, r *replica, want uint64) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		r.mu.RLock()
+		got := r.state.LEO
+		r.mu.RUnlock()
+		if got == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	r.mu.RLock()
+	got := r.state.LEO
+	r.mu.RUnlock()
+	t.Fatalf("replica LEO = %d, want %d", got, want)
 }

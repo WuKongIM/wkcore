@@ -20,6 +20,7 @@ type replica struct {
 	meta         GroupMeta
 	state        ReplicaState
 	progress     map[NodeID]uint64
+	waiters      []*appendWaiter
 	epochHistory []EpochPoint
 	recovered    bool
 }
@@ -169,15 +170,6 @@ func (r *replica) InstallSnapshot(ctx context.Context, snap Snapshot) error {
 		return ErrTombstoned
 	}
 	return errNotImplemented
-}
-
-func (r *replica) Append(ctx context.Context, batch []Record) (CommitResult, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.state.Role == RoleTombstoned {
-		return CommitResult{}, ErrTombstoned
-	}
-	return CommitResult{}, errNotImplemented
 }
 
 func (r *replica) Status() ReplicaState {

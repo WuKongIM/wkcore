@@ -34,6 +34,9 @@ func (r *replica) Fetch(_ context.Context, req FetchRequest) (FetchResult, error
 
 	matchOffset, truncateTo := r.divergenceStateLocked(req.FetchOffset, req.OffsetEpoch, leaderLEO)
 	r.setReplicaProgressLocked(req.ReplicaID, matchOffset)
+	if err := r.advanceHWLocked(); err != nil {
+		return FetchResult{}, err
+	}
 	if truncateTo != nil {
 		return FetchResult{
 			Epoch:      r.state.Epoch,
