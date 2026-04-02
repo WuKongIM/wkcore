@@ -299,6 +299,44 @@ func newRecoveredLeaderEnv(t *testing.T) *testEnv {
 	return env
 }
 
+func newFetchEnvWithHistory(t *testing.T) *testEnv {
+	t.Helper()
+
+	env := newTestEnv(t)
+	env.log.records = []Record{
+		{Payload: []byte("r0"), SizeBytes: 1},
+		{Payload: []byte("r1"), SizeBytes: 1},
+		{Payload: []byte("r2"), SizeBytes: 1},
+		{Payload: []byte("r3"), SizeBytes: 1},
+	}
+	env.log.leo = 4
+	env.checkpoints.loadErr = nil
+	env.checkpoints.checkpoint = Checkpoint{
+		Epoch:          3,
+		LogStartOffset: 0,
+		HW:             4,
+	}
+	env.history.loadErr = nil
+	env.history.points = []EpochPoint{{Epoch: 3, StartOffset: 0}}
+	env.replica = newReplicaFromEnv(t, env)
+	env.replica.mustApplyMeta(t, activeMeta(7, 1))
+	if err := env.replica.BecomeLeader(activeMeta(7, 1)); err != nil {
+		t.Fatalf("BecomeLeader() error = %v", err)
+	}
+	env.log.records = append(env.log.records,
+		Record{Payload: []byte("r4"), SizeBytes: 1},
+		Record{Payload: []byte("r5"), SizeBytes: 1},
+	)
+	env.log.leo = 6
+	env.replica.state.LEO = 6
+	return env
+}
+
+func newLeaderReplica(t *testing.T) *replica {
+	t.Helper()
+	return newFetchEnvWithHistory(t).replica
+}
+
 func activeMeta(epoch uint64, leader NodeID) GroupMeta {
 	return GroupMeta{
 		GroupID:    10,

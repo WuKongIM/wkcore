@@ -129,14 +129,7 @@ func (r *replica) BecomeLeader(meta GroupMeta) error {
 	r.epochHistory = nextHistory
 	r.state.Role = RoleLeader
 	r.state.LEO = leo
-	r.progress = make(map[NodeID]uint64, len(normalized.ISR))
-	for _, id := range normalized.ISR {
-		if id == r.localNode {
-			r.progress[id] = leo
-			continue
-		}
-		r.progress[id] = recoveryCutoff
-	}
+	r.seedLeaderProgressLocked(normalized.ISR, leo, recoveryCutoff)
 	if !r.now().Before(normalized.LeaseUntil) {
 		r.state.Role = RoleFencedLeader
 		return ErrLeaseExpired
@@ -185,15 +178,6 @@ func (r *replica) Append(ctx context.Context, batch []Record) (CommitResult, err
 		return CommitResult{}, ErrTombstoned
 	}
 	return CommitResult{}, errNotImplemented
-}
-
-func (r *replica) Fetch(ctx context.Context, req FetchRequest) (FetchResult, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.state.Role == RoleTombstoned {
-		return FetchResult{}, ErrTombstoned
-	}
-	return FetchResult{}, errNotImplemented
 }
 
 func (r *replica) ApplyFetch(ctx context.Context, req ApplyFetchRequest) error {
