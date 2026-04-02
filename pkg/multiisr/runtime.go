@@ -2,6 +2,7 @@ package multiisr
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/isr"
@@ -14,6 +15,8 @@ type runtime struct {
 	groups     map[uint64]*group
 	scheduler  *scheduler
 	tombstones map[uint64]map[uint64]tombstone
+	sessions   peerSessionCache
+	requestID  atomic.Uint64
 }
 
 func New(cfg Config) (Runtime, error) {
@@ -45,6 +48,7 @@ func New(cfg Config) (Runtime, error) {
 		cfg:        cfg,
 		groups:     make(map[uint64]*group),
 		scheduler:  newScheduler(),
+		sessions:   newPeerSessionCache(),
 		tombstones: make(map[uint64]map[uint64]tombstone),
 	}
 	cfg.Transport.RegisterHandler(r.handleEnvelope)
@@ -85,6 +89,9 @@ func (r *runtime) EnsureGroup(meta isr.GroupMeta) error {
 		generation: generation,
 		replica:    replica,
 		now:        r.cfg.Now,
+		onReplication: func() {
+			r.processReplication(meta.GroupID)
+		},
 	})
 	r.groups[meta.GroupID].setMeta(meta)
 	return nil
@@ -131,18 +138,60 @@ func (r *runtime) Group(groupID uint64) (GroupHandle, bool) {
 	return g, true
 }
 
-func (r *runtime) handleEnvelope(env Envelope) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.dropExpiredTombstonesLocked(r.cfg.Now())
-
-	if g, ok := r.groups[env.GroupID]; ok && g.generation == env.Generation {
+func (r *runtime) enqueueReplication(groupID uint64, peer isr.NodeID) {
+	r.mu.RLock()
+	g, ok := r.groups[groupID]
+	r.mu.RUnlock()
+	if !ok {
 		return
 	}
-	if generations, ok := r.tombstones[env.GroupID]; ok {
-		if _, ok := generations[env.Generation]; ok {
+	g.enqueueReplication(peer)
+	g.markReplication()
+	r.scheduler.enqueue(groupID)
+}
+
+func (r *runtime) runScheduler() {
+	for {
+		select {
+		case groupID := <-r.scheduler.ch:
+			r.scheduler.begin(groupID)
+			r.processGroup(groupID)
+			if r.scheduler.done(groupID) {
+				r.scheduler.requeue(groupID)
+			}
+		default:
 			return
 		}
+	}
+}
+
+func (r *runtime) processGroup(groupID uint64) {
+	r.mu.RLock()
+	g, ok := r.groups[groupID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+	g.runPendingTasks()
+}
+
+func (r *runtime) processReplication(groupID uint64) {
+	r.mu.RLock()
+	g, ok := r.groups[groupID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	meta := g.Status()
+	for _, peer := range g.drainReplicationPeers() {
+		_ = r.sendEnvelope(Envelope{
+			Peer:       peer,
+			GroupID:    groupID,
+			Epoch:      meta.Epoch,
+			Generation: g.generation,
+			RequestID:  r.requestID.Add(1),
+			Kind:       MessageKindFetchRequest,
+		})
 	}
 }

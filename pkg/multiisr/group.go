@@ -18,6 +18,8 @@ type group struct {
 	meta    isr.GroupMeta
 	pending taskMask
 
+	replicationPeers []isr.NodeID
+
 	onControl     func()
 	onReplication func()
 	onCommit      func()
@@ -105,4 +107,18 @@ func (g *group) runTask(mask taskMask, fn func()) {
 	if fn != nil {
 		fn()
 	}
+}
+
+func (g *group) enqueueReplication(peer isr.NodeID) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.replicationPeers = append(g.replicationPeers, peer)
+}
+
+func (g *group) drainReplicationPeers() []isr.NodeID {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	peers := append([]isr.NodeID(nil), g.replicationPeers...)
+	g.replicationPeers = g.replicationPeers[:0]
+	return peers
 }
