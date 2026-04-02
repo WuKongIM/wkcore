@@ -15,6 +15,7 @@ type fakeLogStore struct {
 	syncCount     int
 	truncateCalls []uint64
 	calls         *callLog
+	appendSignal  chan uint64
 }
 
 func (f *fakeLogStore) LEO() uint64 {
@@ -31,6 +32,12 @@ func (f *fakeLogStore) Append(records []Record) (uint64, error) {
 	for _, record := range records {
 		f.records = append(f.records, cloneRecord(record))
 		f.leo++
+	}
+	if f.appendSignal != nil {
+		select {
+		case f.appendSignal <- f.leo:
+		default:
+		}
 	}
 	return base, nil
 }
@@ -198,7 +205,7 @@ func (c *manualClock) Advance(d time.Duration) {
 }
 
 type testEnv struct {
-	t           *testing.T
+	t           testing.TB
 	localNode   NodeID
 	log         *fakeLogStore
 	checkpoints *fakeCheckpointStore
@@ -209,14 +216,14 @@ type testEnv struct {
 	replica     *replica
 }
 
-func newTestEnv(t *testing.T) *testEnv {
+func newTestEnv(t testing.TB) *testEnv {
 	t.Helper()
 
 	calls := &callLog{}
 	return &testEnv{
 		t:           t,
 		localNode:   1,
-		log:         &fakeLogStore{calls: calls},
+		log:         &fakeLogStore{calls: calls, appendSignal: make(chan uint64, 8)},
 		checkpoints: &fakeCheckpointStore{loadErr: ErrEmptyState, calls: calls},
 		history:     &fakeEpochHistoryStore{loadErr: ErrEmptyState, calls: calls},
 		snapshots:   &fakeSnapshotApplier{calls: calls},
@@ -236,7 +243,7 @@ func (e *testEnv) config() ReplicaConfig {
 	}
 }
 
-func newReplicaFromEnv(t *testing.T, env *testEnv) *replica {
+func newReplicaFromEnv(t testing.TB, env *testEnv) *replica {
 	t.Helper()
 
 	got, err := NewReplica(env.config())
@@ -252,7 +259,7 @@ func newReplicaFromEnv(t *testing.T, env *testEnv) *replica {
 	return r
 }
 
-func newTestReplica(t *testing.T) *replica {
+func newTestReplica(t testing.TB) *replica {
 	t.Helper()
 	return newReplicaFromEnv(t, newTestEnv(t))
 }
@@ -284,7 +291,7 @@ func (c *callLog) snapshot() []string {
 	return append([]string(nil), c.calls...)
 }
 
-func newRecoveredLeaderEnv(t *testing.T) *testEnv {
+func newRecoveredLeaderEnv(t testing.TB) *testEnv {
 	t.Helper()
 
 	env := newTestEnv(t)
@@ -301,7 +308,7 @@ func newRecoveredLeaderEnv(t *testing.T) *testEnv {
 	return env
 }
 
-func newFetchEnvWithHistory(t *testing.T) *testEnv {
+func newFetchEnvWithHistory(t testing.TB) *testEnv {
 	t.Helper()
 
 	env := newTestEnv(t)
@@ -334,12 +341,12 @@ func newFetchEnvWithHistory(t *testing.T) *testEnv {
 	return env
 }
 
-func newLeaderReplica(t *testing.T) *replica {
+func newLeaderReplica(t testing.TB) *replica {
 	t.Helper()
 	return newFetchEnvWithHistory(t).replica
 }
 
-func newFollowerEnv(t *testing.T) *testEnv {
+func newFollowerEnv(t testing.TB) *testEnv {
 	t.Helper()
 
 	env := newTestEnv(t)
@@ -376,14 +383,14 @@ func activeMetaWithMinISR(epoch uint64, leader NodeID, minISR int) GroupMeta {
 	}
 }
 
-func (r *replica) mustApplyMeta(t *testing.T, meta GroupMeta) {
+func (r *replica) mustApplyMeta(t testing.TB, meta GroupMeta) {
 	t.Helper()
 	if err := r.ApplyMeta(meta); err != nil {
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}
 }
 
-func newFollowerReplica(t *testing.T) *replica {
+func newFollowerReplica(t testing.TB) *replica {
 	t.Helper()
 	return newFollowerEnv(t).replica
 }
@@ -394,7 +401,7 @@ type threeReplicaCluster struct {
 	follower3 *replica
 }
 
-func newThreeReplicaCluster(t *testing.T) *threeReplicaCluster {
+func newThreeReplicaCluster(t testing.TB) *threeReplicaCluster {
 	t.Helper()
 
 	meta := activeMetaWithMinISR(7, 1, 3)
@@ -429,7 +436,7 @@ func newThreeReplicaCluster(t *testing.T) *threeReplicaCluster {
 	}
 }
 
-func (c *threeReplicaCluster) replicateOnce(t *testing.T, follower *replica) {
+func (c *threeReplicaCluster) replicateOnce(t testing.TB, follower *replica) {
 	t.Helper()
 
 	req := FetchRequest{
@@ -473,22 +480,22 @@ func (c *threeReplicaCluster) replicateOnce(t *testing.T, follower *replica) {
 	}
 }
 
-func waitForReplicaLEO(t *testing.T, r *replica, want uint64) {
+func waitForLogAppend(t testing.TB, log *fakeLogStore, want uint64) {
 	t.Helper()
 
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		r.mu.RLock()
-		got := r.state.LEO
-		r.mu.RUnlock()
-		if got == want {
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case got := <-log.appendSignal:
+			if got == want {
+				return
+			}
+		case <-deadline:
+			log.mu.Lock()
+			got := log.leo
+			log.mu.Unlock()
+			t.Fatalf("log LEO = %d, want %d", got, want)
 			return
 		}
-		time.Sleep(time.Millisecond)
 	}
-
-	r.mu.RLock()
-	got := r.state.LEO
-	r.mu.RUnlock()
-	t.Fatalf("replica LEO = %d, want %d", got, want)
 }
