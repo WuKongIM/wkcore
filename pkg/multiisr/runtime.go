@@ -11,16 +11,15 @@ import (
 type runtime struct {
 	cfg Config
 
-	mu             sync.RWMutex
-	groups         map[uint64]*group
-	scheduler      *scheduler
-	tombstones     map[uint64]map[uint64]tombstone
-	sessions       peerSessionCache
-	peerRequests   peerRequestState
-	snapshots      snapshotState
-	requestID      atomic.Uint64
-	advanceClock   func(time.Duration)
-	snapshotRunner func(groupID uint64, bytes int64) bool
+	mu               sync.RWMutex
+	groups           map[uint64]*group
+	scheduler        *scheduler
+	tombstones       map[uint64]map[uint64]tombstone
+	sessions         peerSessionCache
+	peerRequests     peerRequestState
+	snapshots        snapshotState
+	snapshotThrottle snapshotThrottle
+	requestID        atomic.Uint64
 }
 
 func New(cfg Config) (Runtime, error) {
@@ -49,12 +48,13 @@ func New(cfg Config) (Runtime, error) {
 		cfg.Now = time.Now
 	}
 	r := &runtime{
-		cfg:          cfg,
-		groups:       make(map[uint64]*group),
-		scheduler:    newScheduler(),
-		sessions:     newPeerSessionCache(),
-		peerRequests: newPeerRequestState(),
-		tombstones:   make(map[uint64]map[uint64]tombstone),
+		cfg:              cfg,
+		groups:           make(map[uint64]*group),
+		scheduler:        newScheduler(),
+		sessions:         newPeerSessionCache(),
+		peerRequests:     newPeerRequestState(),
+		tombstones:       make(map[uint64]map[uint64]tombstone),
+		snapshotThrottle: newSnapshotThrottle(cfg.Limits.MaxRecoveryBytesPerSecond, time.Sleep),
 	}
 	cfg.Transport.RegisterHandler(r.handleEnvelope)
 	return r, nil

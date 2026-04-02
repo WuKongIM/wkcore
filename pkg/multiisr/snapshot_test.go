@@ -44,17 +44,17 @@ func TestSnapshotTaskRequeuesWhenInflightLimitReached(t *testing.T) {
 	mustEnsureLocal(t, env.runtime, testMetaLocal(64, 1, 1, []isr.NodeID{1, 2}))
 	mustEnsureLocal(t, env.runtime, testMetaLocal(65, 1, 1, []isr.NodeID{1, 2}))
 
-	env.runtime.snapshotRunner = func(groupID uint64, bytes int64) bool {
-		return groupID != 64
+	if !env.runtime.snapshots.begin(1) {
+		t.Fatalf("expected to reserve one inflight snapshot")
 	}
 	env.runtime.queueSnapshot(64)
 	env.runtime.queueSnapshot(65)
 	env.runtime.runScheduler()
-	if got := env.runtime.queuedSnapshotGroups(); got != 1 {
-		t.Fatalf("expected one waiting snapshot, got %d", got)
+	if got := env.runtime.queuedSnapshotGroups(); got != 2 {
+		t.Fatalf("expected two waiting snapshots, got %d", got)
 	}
 
-	env.runtime.completeSnapshot(64)
+	env.runtime.completeSnapshot(0)
 	env.runtime.runScheduler()
 	if got := env.runtime.queuedSnapshotGroups(); got != 0 {
 		t.Fatalf("expected waiting snapshot to be resumed, got %d", got)
@@ -69,32 +69,26 @@ func TestSnapshotWaitingQueueIsFIFO(t *testing.T) {
 	mustEnsureLocal(t, env.runtime, testMetaLocal(67, 1, 1, []isr.NodeID{1, 2}))
 	mustEnsureLocal(t, env.runtime, testMetaLocal(68, 1, 1, []isr.NodeID{1, 2}))
 
-	resumed := make([]uint64, 0, 2)
-	env.runtime.snapshotRunner = func(groupID uint64, bytes int64) bool {
-		if groupID == 66 {
-			return false
-		}
-		resumed = append(resumed, groupID)
-		return true
+	if !env.runtime.snapshots.begin(1) {
+		t.Fatalf("expected to reserve one inflight snapshot")
 	}
-	env.runtime.queueSnapshot(66)
-	env.runtime.queueSnapshot(67)
-	env.runtime.queueSnapshot(68)
+	env.runtime.queueSnapshotChunk(66, 101)
+	env.runtime.queueSnapshotChunk(67, 102)
+	env.runtime.queueSnapshotChunk(68, 103)
 	env.runtime.runScheduler()
 
-	env.runtime.completeSnapshot(66)
-	env.runtime.runScheduler()
-	env.runtime.completeSnapshot(67)
+	env.runtime.completeSnapshot(0)
 	env.runtime.runScheduler()
 
-	if len(resumed) != 2 || resumed[0] != 67 || resumed[1] != 68 {
-		t.Fatalf("expected FIFO resumed order [67 68], got %v", resumed)
+	if len(env.throttle.values) != 3 || env.throttle.values[0] != 101 || env.throttle.values[1] != 102 || env.throttle.values[2] != 103 {
+		t.Fatalf("expected FIFO throttle trace [101 102 103], got %v", env.throttle.values)
 	}
 }
 
 type snapshotTestEnv struct {
-	runtime *runtime
-	clock   *snapshotManualClock
+	runtime  *runtime
+	clock    *snapshotManualClock
+	throttle *fakeSnapshotThrottle
 }
 
 func newSnapshotTestEnv(t *testing.T, mutate func(*Config)) *snapshotTestEnv {
@@ -126,11 +120,13 @@ func newSnapshotTestEnv(t *testing.T, mutate func(*Config)) *snapshotTestEnv {
 		t.Fatalf("New() error = %v", err)
 	}
 	impl := rt.(*runtime)
-	impl.advanceClock = clock.Advance
+	throttle := &fakeSnapshotThrottle{advance: clock.Advance, rate: cfg.Limits.MaxRecoveryBytesPerSecond}
+	impl.snapshotThrottle = throttle
 
 	return &snapshotTestEnv{
-		runtime: impl,
-		clock:   clock,
+		runtime:  impl,
+		clock:    clock,
+		throttle: throttle,
 	}
 }
 
@@ -148,4 +144,21 @@ func (c *snapshotManualClock) Now() time.Time {
 
 func (c *snapshotManualClock) Advance(d time.Duration) {
 	c.now = c.now.Add(d)
+}
+
+type fakeSnapshotThrottle struct {
+	advance func(time.Duration)
+	values  []int64
+	rate    int64
+}
+
+func (t *fakeSnapshotThrottle) Wait(bytes int64) {
+	t.values = append(t.values, bytes)
+	if t.advance != nil && bytes > 0 {
+		rate := t.rate
+		if rate <= 0 {
+			return
+		}
+		t.advance(time.Duration(bytes) * time.Second / time.Duration(rate))
+	}
 }

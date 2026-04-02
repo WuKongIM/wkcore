@@ -5,6 +5,35 @@ import (
 	"time"
 )
 
+type snapshotThrottle interface {
+	Wait(bytes int64)
+}
+
+type fixedRateSnapshotThrottle struct {
+	bytesPerSecond int64
+	sleep          func(time.Duration)
+}
+
+func newSnapshotThrottle(bytesPerSecond int64, sleep func(time.Duration)) snapshotThrottle {
+	return fixedRateSnapshotThrottle{
+		bytesPerSecond: bytesPerSecond,
+		sleep:          sleep,
+	}
+}
+
+func (t fixedRateSnapshotThrottle) Wait(bytes int64) {
+	if t.bytesPerSecond <= 0 || bytes <= 0 {
+		return
+	}
+	delay := time.Duration(bytes*int64(time.Second)) / time.Duration(t.bytesPerSecond)
+	if delay <= 0 {
+		delay = time.Second
+	}
+	if t.sleep != nil {
+		t.sleep(delay)
+	}
+}
+
 type snapshotState struct {
 	mu            sync.Mutex
 	inflight      int
@@ -102,18 +131,7 @@ func (r *runtime) processSnapshot(groupID uint64) {
 	}
 
 	bytes := g.drainSnapshotBytes()
-	if r.snapshotRunner != nil && !r.snapshotRunner(groupID, bytes) {
-		return
-	}
-	if rate := r.cfg.Limits.MaxRecoveryBytesPerSecond; rate > 0 && bytes > 0 {
-		delay := time.Duration(bytes*int64(time.Second)) / time.Duration(rate)
-		if delay <= 0 {
-			delay = time.Second
-		}
-		if r.advanceClock != nil {
-			r.advanceClock(delay)
-		}
-	}
+	r.snapshotThrottle.Wait(bytes)
 	r.completeSnapshot(groupID)
 }
 

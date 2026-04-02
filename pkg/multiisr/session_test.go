@@ -88,6 +88,19 @@ func TestFetchResponseDecodesPayloadIntoApplyFetch(t *testing.T) {
 	}
 }
 
+func TestFetchResponsePayloadUsesVersionedBinaryCodec(t *testing.T) {
+	payload := mustEncodeFetchResponsePayload(t, fetchResponsePayload{
+		LeaderHW: 3,
+		Records:  []isr.Record{{Payload: []byte("x"), SizeBytes: 1}},
+	})
+	if len(payload) == 0 {
+		t.Fatalf("expected encoded payload")
+	}
+	if payload[0] != fetchResponseCodecVersion1 {
+		t.Fatalf("expected codec version byte %d, got %d", fetchResponseCodecVersion1, payload[0])
+	}
+}
+
 type sessionTestEnv struct {
 	runtime     *runtime
 	generations *sessionGenerationStore
