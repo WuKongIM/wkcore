@@ -17,7 +17,9 @@ type runtime struct {
 	tombstones   map[uint64]map[uint64]tombstone
 	sessions     peerSessionCache
 	peerRequests peerRequestState
+	snapshots    snapshotState
 	requestID    atomic.Uint64
+	advanceClock func(time.Duration)
 }
 
 func New(cfg Config) (Runtime, error) {
@@ -93,6 +95,9 @@ func (r *runtime) EnsureGroup(meta isr.GroupMeta) error {
 		now:        r.cfg.Now,
 		onReplication: func() {
 			r.processReplication(meta.GroupID)
+		},
+		onSnapshot: func() {
+			r.processSnapshot(meta.GroupID)
 		},
 	})
 	r.groups[meta.GroupID].setMeta(meta)

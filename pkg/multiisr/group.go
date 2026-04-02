@@ -19,6 +19,7 @@ type group struct {
 	pending taskMask
 
 	replicationPeers []isr.NodeID
+	snapshotBytes    int64
 
 	onControl     func()
 	onReplication func()
@@ -121,4 +122,18 @@ func (g *group) drainReplicationPeers() []isr.NodeID {
 	peers := append([]isr.NodeID(nil), g.replicationPeers...)
 	g.replicationPeers = g.replicationPeers[:0]
 	return peers
+}
+
+func (g *group) enqueueSnapshot(bytes int64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.snapshotBytes += bytes
+}
+
+func (g *group) drainSnapshotBytes() int64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	bytes := g.snapshotBytes
+	g.snapshotBytes = 0
+	return bytes
 }
