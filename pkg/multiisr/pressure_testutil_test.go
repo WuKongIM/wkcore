@@ -385,6 +385,19 @@ func (h *pressureHarness) clearPeerBackpressure() {
 	}
 }
 
+func (h *pressureHarness) reserveSnapshotSlot(tb testing.TB) {
+	tb.Helper()
+
+	if !h.runtime.snapshots.begin(h.runtime.cfg.Limits.MaxSnapshotInflight) {
+		tb.Fatal("expected to reserve snapshot slot")
+	}
+}
+
+func (h *pressureHarness) releaseSnapshotSlot() {
+	h.runtime.completeSnapshot(0)
+	h.observeState()
+}
+
 func (h *pressureHarness) deliverAvailableFetchResponses() int {
 	delivered := 0
 	for _, peer := range h.peerIDs {

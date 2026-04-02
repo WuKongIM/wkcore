@@ -100,6 +100,56 @@ func TestRuntimeStressPeerQueueRecovery(t *testing.T) {
 	h.assertPeerQueuesDrained(t)
 }
 
+func TestRuntimeStressSnapshotInterference(t *testing.T) {
+	cfg, err := loadPressureConfig()
+	if err != nil {
+		t.Fatalf("loadPressureConfig() error = %v", err)
+	}
+	if !cfg.stressEnabled {
+		t.Skip("set MULTIISR_STRESS=1 to enable")
+	}
+
+	h := newPressureHarness(t, cfg, func(cfg *Config) {
+		cfg.Limits.MaxFetchInflightPeer = 1
+		cfg.Limits.MaxSnapshotInflight = 1
+	})
+	rounds := pressureStressRounds(cfg.duration)
+	releaseInterval := maxInt(1, cfg.snapshotInterval*2)
+
+	h.reserveSnapshotSlot(t)
+	for round := 0; round < rounds; round++ {
+		h.enqueueReplicationRound(round)
+		if (round+1)%cfg.snapshotInterval == 0 {
+			h.queueSnapshot(round, 256)
+		}
+		h.runSchedulingTicks(1)
+		h.deliverAvailableFetchResponses()
+
+		if (round+1)%releaseInterval == 0 {
+			h.releaseSnapshotSlot()
+			h.runSchedulingTicks(1)
+			h.reserveSnapshotSlot(t)
+		}
+		h.clock.Advance(pressureStressStep)
+	}
+
+	h.releaseSnapshotSlot()
+	for i := 0; i < len(h.groupIDs)+rounds; i++ {
+		h.runSchedulingTicks(1)
+		h.deliverFetchResponses(0)
+		if h.runtime.queuedSnapshotGroups() == 0 {
+			break
+		}
+	}
+
+	if h.snapshotWaitingHighWatermark == 0 {
+		t.Fatal("expected snapshot waiting queue during interference")
+	}
+	h.assertAllGroupsMadeProgress(t)
+	h.assertPeerQueuesDrained(t)
+	h.assertSnapshotQueueDrained(t)
+}
+
 func pressureStressRounds(duration time.Duration) int {
 	if duration <= 0 {
 		return 1
@@ -116,6 +166,13 @@ func pressureStressRounds(duration time.Duration) int {
 
 func minInt(a, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b
