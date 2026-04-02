@@ -19,6 +19,7 @@ type replica struct {
 
 	meta         GroupMeta
 	state        ReplicaState
+	progress     map[NodeID]uint64
 	epochHistory []EpochPoint
 	recovered    bool
 }
@@ -76,7 +77,71 @@ func (r *replica) BecomeLeader(meta GroupMeta) error {
 	if r.state.Role == RoleTombstoned {
 		return ErrTombstoned
 	}
-	return errNotImplemented
+	if !r.recovered {
+		return ErrCorruptState
+	}
+
+	normalized, err := normalizeMeta(meta)
+	if err != nil {
+		return err
+	}
+	if normalized.Leader != r.localNode {
+		return ErrInvalidMeta
+	}
+	if err := r.validateMetaLocked(normalized); err != nil {
+		return err
+	}
+
+	recoveryCutoff := r.state.HW
+	leo := r.log.LEO()
+	if leo < recoveryCutoff {
+		return ErrCorruptState
+	}
+	if leo > recoveryCutoff {
+		if err := r.log.Truncate(recoveryCutoff); err != nil {
+			return err
+		}
+		if err := r.log.Sync(); err != nil {
+			return err
+		}
+		leo = r.log.LEO()
+		if leo != recoveryCutoff {
+			return ErrCorruptState
+		}
+	}
+
+	point := EpochPoint{Epoch: normalized.Epoch, StartOffset: leo}
+	if err := r.history.Append(point); err != nil {
+		return err
+	}
+
+	nextHistory := append([]EpochPoint(nil), r.epochHistory...)
+	if len(nextHistory) == 0 {
+		nextHistory = append(nextHistory, point)
+	} else {
+		last := nextHistory[len(nextHistory)-1]
+		if last.Epoch != point.Epoch || last.StartOffset != point.StartOffset {
+			nextHistory = append(nextHistory, point)
+		}
+	}
+
+	r.commitMetaLocked(normalized)
+	r.epochHistory = nextHistory
+	r.state.Role = RoleLeader
+	r.state.LEO = leo
+	r.progress = make(map[NodeID]uint64, len(normalized.ISR))
+	for _, id := range normalized.ISR {
+		if id == r.localNode {
+			r.progress[id] = leo
+			continue
+		}
+		r.progress[id] = recoveryCutoff
+	}
+	if !r.now().Before(normalized.LeaseUntil) {
+		r.state.Role = RoleFencedLeader
+		return ErrLeaseExpired
+	}
+	return nil
 }
 
 func (r *replica) BecomeFollower(meta GroupMeta) error {

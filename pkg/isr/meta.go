@@ -5,7 +5,14 @@ func (r *replica) applyMetaLocked(meta GroupMeta) error {
 	if err != nil {
 		return err
 	}
+	if err := r.validateMetaLocked(normalized); err != nil {
+		return err
+	}
+	r.commitMetaLocked(normalized)
+	return nil
+}
 
+func (r *replica) validateMetaLocked(normalized GroupMeta) error {
 	switch {
 	case r.state.GroupID != 0 && normalized.GroupID != r.state.GroupID:
 		return ErrInvalidMeta
@@ -16,12 +23,14 @@ func (r *replica) applyMetaLocked(meta GroupMeta) error {
 	case normalized.Epoch == r.state.Epoch && r.state.Leader != 0 && normalized.Leader != r.state.Leader:
 		return ErrStaleMeta
 	}
+	return nil
+}
 
+func (r *replica) commitMetaLocked(normalized GroupMeta) {
 	r.meta = normalized
 	r.state.GroupID = normalized.GroupID
 	r.state.Epoch = normalized.Epoch
 	r.state.Leader = normalized.Leader
-	return nil
 }
 
 func normalizeMeta(meta GroupMeta) (GroupMeta, error) {

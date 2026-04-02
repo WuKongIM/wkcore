@@ -2,6 +2,7 @@ package isr
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ type fakeLogStore struct {
 	leo           uint64
 	syncCount     int
 	truncateCalls []uint64
+	calls         *callLog
 }
 
 func (f *fakeLogStore) LEO() uint64 {
@@ -64,6 +66,9 @@ func (f *fakeLogStore) Truncate(to uint64) error {
 	defer f.mu.Unlock()
 
 	f.truncateCalls = append(f.truncateCalls, to)
+	if f.calls != nil {
+		f.calls.add(fmt.Sprintf("log.truncate:%d", to))
+	}
 	if to < uint64(len(f.records)) {
 		f.records = append([]Record(nil), f.records[:to]...)
 	} else if to == 0 {
@@ -77,6 +82,9 @@ func (f *fakeLogStore) Sync() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.syncCount++
+	if f.calls != nil {
+		f.calls.add("log.sync")
+	}
 	return nil
 }
 
@@ -85,6 +93,7 @@ type fakeCheckpointStore struct {
 	checkpoint Checkpoint
 	loadErr    error
 	stored     []Checkpoint
+	calls      *callLog
 }
 
 func (f *fakeCheckpointStore) Load() (Checkpoint, error) {
@@ -98,6 +107,9 @@ func (f *fakeCheckpointStore) Store(checkpoint Checkpoint) error {
 	defer f.mu.Unlock()
 	f.checkpoint = checkpoint
 	f.stored = append(f.stored, checkpoint)
+	if f.calls != nil {
+		f.calls.add(fmt.Sprintf("checkpoint.store:%d", checkpoint.HW))
+	}
 	return nil
 }
 
@@ -115,6 +127,7 @@ type fakeEpochHistoryStore struct {
 	points   []EpochPoint
 	loadErr  error
 	appended []EpochPoint
+	calls    *callLog
 }
 
 func (f *fakeEpochHistoryStore) Load() ([]EpochPoint, error) {
@@ -126,20 +139,40 @@ func (f *fakeEpochHistoryStore) Load() ([]EpochPoint, error) {
 func (f *fakeEpochHistoryStore) Append(point EpochPoint) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.points = append(f.points, point)
+
+	if len(f.points) > 0 {
+		last := f.points[len(f.points)-1]
+		switch {
+		case point.Epoch > last.Epoch:
+			f.points = append(f.points, point)
+		case point.Epoch == last.Epoch && point.StartOffset == last.StartOffset:
+			// Idempotent replay.
+		default:
+			return ErrCorruptState
+		}
+	} else {
+		f.points = append(f.points, point)
+	}
 	f.appended = append(f.appended, point)
+	if f.calls != nil {
+		f.calls.add(fmt.Sprintf("history.append:%d@%d", point.Epoch, point.StartOffset))
+	}
 	return nil
 }
 
 type fakeSnapshotApplier struct {
 	mu        sync.Mutex
 	installed []Snapshot
+	calls     *callLog
 }
 
 func (f *fakeSnapshotApplier) InstallSnapshot(ctx context.Context, snap Snapshot) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.installed = append(f.installed, cloneSnapshot(snap))
+	if f.calls != nil {
+		f.calls.add(fmt.Sprintf("snapshot.install:%d", snap.EndOffset))
+	}
 	return nil
 }
 
@@ -171,18 +204,22 @@ type testEnv struct {
 	history     *fakeEpochHistoryStore
 	snapshots   *fakeSnapshotApplier
 	clock       *manualClock
+	calls       *callLog
+	replica     *replica
 }
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 
+	calls := &callLog{}
 	return &testEnv{
 		t:           t,
-		log:         &fakeLogStore{},
-		checkpoints: &fakeCheckpointStore{loadErr: ErrEmptyState},
-		history:     &fakeEpochHistoryStore{loadErr: ErrEmptyState},
-		snapshots:   &fakeSnapshotApplier{},
+		log:         &fakeLogStore{calls: calls},
+		checkpoints: &fakeCheckpointStore{loadErr: ErrEmptyState, calls: calls},
+		history:     &fakeEpochHistoryStore{loadErr: ErrEmptyState, calls: calls},
+		snapshots:   &fakeSnapshotApplier{calls: calls},
 		clock:       newManualClock(time.Unix(1_700_000_000, 0).UTC()),
+		calls:       calls,
 	}
 }
 
@@ -209,6 +246,7 @@ func newReplicaFromEnv(t *testing.T, env *testEnv) *replica {
 	if !ok {
 		t.Fatalf("NewReplica() type = %T", got)
 	}
+	env.replica = r
 	return r
 }
 
@@ -225,4 +263,57 @@ func cloneRecord(record Record) Record {
 func cloneSnapshot(snap Snapshot) Snapshot {
 	snap.Payload = append([]byte(nil), snap.Payload...)
 	return snap
+}
+
+type callLog struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (c *callLog) add(call string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, call)
+}
+
+func (c *callLog) snapshot() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.calls...)
+}
+
+func newRecoveredLeaderEnv(t *testing.T) *testEnv {
+	t.Helper()
+
+	env := newTestEnv(t)
+	env.log.leo = 4
+	env.checkpoints.loadErr = nil
+	env.checkpoints.checkpoint = Checkpoint{
+		Epoch:          6,
+		LogStartOffset: 0,
+		HW:             4,
+	}
+	env.history.loadErr = nil
+	env.history.points = []EpochPoint{{Epoch: 6, StartOffset: 0}}
+	env.replica = newReplicaFromEnv(t, env)
+	return env
+}
+
+func activeMeta(epoch uint64, leader NodeID) GroupMeta {
+	return GroupMeta{
+		GroupID:    10,
+		Epoch:      epoch,
+		Leader:     leader,
+		Replicas:   []NodeID{1, 2, 3},
+		ISR:        []NodeID{1, 2, 3},
+		MinISR:     2,
+		LeaseUntil: time.Unix(1_700_000_300, 0).UTC(),
+	}
+}
+
+func (r *replica) mustApplyMeta(t *testing.T, meta GroupMeta) {
+	t.Helper()
+	if err := r.ApplyMeta(meta); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
 }

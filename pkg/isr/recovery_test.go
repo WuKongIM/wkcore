@@ -50,3 +50,41 @@ func TestNewReplicaBootstrapsEmptyState(t *testing.T) {
 		t.Fatalf("status = %+v", st)
 	}
 }
+
+func TestBecomeLeaderTruncatesThenSyncsThenAppendsEpochPoint(t *testing.T) {
+	env := newRecoveredLeaderEnv(t)
+	env.log.leo = 6
+	env.replica.mustApplyMeta(t, activeMeta(7, 1))
+
+	if err := env.replica.BecomeLeader(activeMeta(7, 1)); err != nil {
+		t.Fatalf("BecomeLeader() error = %v", err)
+	}
+
+	if got := env.calls.snapshot(); !reflect.DeepEqual(got, []string{
+		"log.truncate:4",
+		"log.sync",
+		"history.append:7@4",
+	}) {
+		t.Fatalf("call order = %v", got)
+	}
+}
+
+func TestBecomeLeaderReplaysIdenticalEpochPointIdempotently(t *testing.T) {
+	env := newRecoveredLeaderEnv(t)
+	env.history.points = []EpochPoint{{Epoch: 7, StartOffset: 4}}
+	env.replica.mustApplyMeta(t, activeMeta(7, 1))
+
+	if err := env.replica.BecomeLeader(activeMeta(7, 1)); err != nil {
+		t.Fatalf("BecomeLeader() error = %v", err)
+	}
+
+	if env.replica.state.Role != RoleLeader {
+		t.Fatalf("role = %v", env.replica.state.Role)
+	}
+	if got := len(env.replica.progress); got != 3 {
+		t.Fatalf("progress size = %d", got)
+	}
+	if got := env.replica.progress[1]; got != 4 {
+		t.Fatalf("leader progress = %d", got)
+	}
+}
