@@ -18,7 +18,7 @@ type group struct {
 	meta    isr.GroupMeta
 	pending taskMask
 
-	replicationPeers []isr.NodeID
+	replicationPeers nodeIDQueue
 	snapshotBytes    int64
 
 	onControl     func()
@@ -119,15 +119,13 @@ func (g *group) runTask(mask taskMask, fn func()) {
 func (g *group) enqueueReplication(peer isr.NodeID) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.replicationPeers = append(g.replicationPeers, peer)
+	g.replicationPeers.enqueue(peer)
 }
 
-func (g *group) drainReplicationPeers() []isr.NodeID {
+func (g *group) popReplicationPeer() (isr.NodeID, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	peers := append([]isr.NodeID(nil), g.replicationPeers...)
-	g.replicationPeers = g.replicationPeers[:0]
-	return peers
+	return g.replicationPeers.pop()
 }
 
 func (g *group) enqueueSnapshot(bytes int64) {
@@ -142,4 +140,43 @@ func (g *group) drainSnapshotBytes() int64 {
 	bytes := g.snapshotBytes
 	g.snapshotBytes = 0
 	return bytes
+}
+
+type nodeIDQueue struct {
+	items []isr.NodeID
+	head  int
+}
+
+func (q *nodeIDQueue) enqueue(nodeID isr.NodeID) {
+	if q.head == len(q.items) {
+		q.items = q.items[:0]
+		q.head = 0
+	} else if q.head > 0 && len(q.items) == cap(q.items) {
+		q.compact()
+	}
+	q.items = append(q.items, nodeID)
+}
+
+func (q *nodeIDQueue) pop() (isr.NodeID, bool) {
+	if q.head >= len(q.items) {
+		return 0, false
+	}
+
+	nodeID := q.items[q.head]
+	q.items[q.head] = 0
+	q.head++
+	if q.head == len(q.items) {
+		q.items = q.items[:0]
+		q.head = 0
+	}
+	return nodeID, true
+}
+
+func (q *nodeIDQueue) compact() {
+	n := copy(q.items, q.items[q.head:])
+	for i := n; i < len(q.items); i++ {
+		q.items[i] = 0
+	}
+	q.items = q.items[:n]
+	q.head = 0
 }

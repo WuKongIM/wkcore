@@ -192,7 +192,11 @@ func (r *runtime) processReplication(groupID uint64) {
 	}
 
 	meta := g.Status()
-	for _, peer := range g.drainReplicationPeers() {
+	for {
+		peer, ok := g.popReplicationPeer()
+		if !ok {
+			break
+		}
 		_ = r.sendEnvelope(Envelope{
 			Peer:       peer,
 			GroupID:    groupID,
