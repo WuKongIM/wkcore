@@ -89,8 +89,13 @@ Round-trip alloc profile (`tmp/isr-pressure/2026-04-02/roundtrip.mem.top.txt`):
 
 ## Recommendation
 
-Pending analysis.
+Based on the current evidence, a production optimization pass is not justified yet:
+
+- CPU time is dominated by runtime scheduling and synchronization primitives, not by a small set of `pkg/isr` compute hotspots.
+- The largest allocation sites are split between `pkg/isr` record-copying/bookkeeping and test-only harness code such as `benchmarkRoundTripHarness`, `fakeLogStore`, and checkpoint/reset helpers.
+- The benchmark doubles and reset mechanics contribute enough noise that the end-to-end allocation profile is not cleanly attributable to production logic alone.
+- The remaining `pkg/isr` allocation sites are real, but the evidence here is not yet specific enough to define a bounded change that stays clearly within the current semantics and test boundary.
 
 ## Conclusion
 
-Pending analysis.
+暂不建议优化
