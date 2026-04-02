@@ -539,12 +539,13 @@ func BenchmarkReplicaApplyFetch(b *testing.B) {
 
 func BenchmarkNewReplicaRecovery(b *testing.B) {
 	cases := []struct {
-		name  string
-		state string
+		name         string
+		state        string
+		resetAfterOp int
 	}{
-		{name: "state=empty", state: "empty"},
-		{name: "state=clean_checkpoint", state: "clean_checkpoint"},
-		{name: "state=dirty_tail", state: "dirty_tail"},
+		{name: "state=empty", state: "empty", resetAfterOp: 0},
+		{name: "state=clean_checkpoint", state: "clean_checkpoint", resetAfterOp: 0},
+		{name: "state=dirty_tail", state: "dirty_tail", resetAfterOp: 1},
 	}
 
 	for _, tc := range cases {
@@ -553,7 +554,7 @@ func BenchmarkNewReplicaRecovery(b *testing.B) {
 			harness := newBenchmarkRecoveryHarness(b, benchmarkRecoveryConfig{state: tc.state})
 			b.ReportAllocs()
 			b.ResetTimer()
-			runBenchmarkWithResetPolicy(b, 0, func() {
+			runBenchmarkWithResetPolicy(b, tc.resetAfterOp, func() {
 				harness.rebuild()
 			}, func() error {
 				return harness.recoverOnce()
