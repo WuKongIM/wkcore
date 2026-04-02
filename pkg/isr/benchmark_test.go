@@ -313,11 +313,100 @@ func TestBenchmarkTruncateApplyFixtureStartsWithDirtyTail(t *testing.T) {
 	}
 }
 
+func TestBenchmarkRecoveryFixturesMatchSpec(t *testing.T) {
+	cases := []struct {
+		name  string
+		state string
+	}{
+		{name: "state=empty", state: "empty"},
+		{name: "state=clean_checkpoint", state: "clean_checkpoint"},
+		{name: "state=dirty_tail", state: "dirty_tail"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newBenchmarkRecoveryFixture(t, tc.state)
+			if fixture == nil {
+				t.Fatal("fixture = nil")
+			}
+		})
+	}
+}
+
+type benchmarkRecoveryConfig struct {
+	state string
+}
+
+type benchmarkRecoveryHarness struct {
+	t   testing.TB
+	cfg benchmarkRecoveryConfig
+	env *testEnv
+}
+
+func newBenchmarkRecoveryHarness(t testing.TB, cfg benchmarkRecoveryConfig) *benchmarkRecoveryHarness {
+	t.Helper()
+
+	h := &benchmarkRecoveryHarness{
+		t:   t,
+		cfg: cfg,
+	}
+	h.rebuild()
+	return h
+}
+
+func newBenchmarkRecoveryFixture(t testing.TB, state string) *testEnv {
+	t.Helper()
+
+	env := newTestEnv(t)
+	switch state {
+	case "empty":
+		// Default empty fixture.
+	case "clean_checkpoint":
+		env.log.records = makeBenchmarkRecords(64, 128)
+		env.log.leo = 64
+		env.checkpoints.loadErr = nil
+		env.checkpoints.checkpoint = Checkpoint{
+			Epoch:          3,
+			LogStartOffset: 0,
+			HW:             64,
+		}
+		env.history.loadErr = nil
+		env.history.points = []EpochPoint{{Epoch: 3, StartOffset: 0}}
+	case "dirty_tail":
+		env.log.records = makeBenchmarkRecords(96, 128)
+		env.log.leo = 96
+		env.checkpoints.loadErr = nil
+		env.checkpoints.checkpoint = Checkpoint{
+			Epoch:          3,
+			LogStartOffset: 0,
+			HW:             64,
+		}
+		env.history.loadErr = nil
+		env.history.points = []EpochPoint{{Epoch: 3, StartOffset: 0}}
+	default:
+		t.Fatalf("unknown benchmark recovery state %q", state)
+	}
+	return env
+}
+
+func (h *benchmarkRecoveryHarness) rebuild() {
+	h.t.Helper()
+
+	h.env = newBenchmarkRecoveryFixture(h.t, h.cfg.state)
+}
+
+func (h *benchmarkRecoveryHarness) recoverOnce() error {
+	_, err := NewReplica(h.env.config())
+	return err
+}
+
 const (
 	benchmarkReplicaAppendResetAfterOps          = 256
 	benchmarkReplicaFetchResetAfterOps           = 0
 	benchmarkReplicaApplyFetchAppendOnlyResetOps = 256
-	benchmarkReplicaApplyFetchTruncateResetOps    = 1
+	benchmarkReplicaApplyFetchTruncateResetOps   = 1
+	benchmarkRoundTripResetAfterOps              = 128
 )
 
 func runBenchmarkWithResetPolicy(b *testing.B, resetAfterOps int, rebuild func(), op func() error) {
@@ -420,6 +509,60 @@ func BenchmarkReplicaApplyFetch(b *testing.B) {
 				harness.rebuild()
 			}, func() error {
 				return harness.applyOnce(ctx)
+			})
+		})
+	}
+}
+
+func BenchmarkNewReplicaRecovery(b *testing.B) {
+	cases := []struct {
+		name  string
+		state string
+	}{
+		{name: "state=empty", state: "empty"},
+		{name: "state=clean_checkpoint", state: "clean_checkpoint"},
+		{name: "state=dirty_tail", state: "dirty_tail"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		b.Run(tc.name, func(b *testing.B) {
+			harness := newBenchmarkRecoveryHarness(b, benchmarkRecoveryConfig{state: tc.state})
+			b.ReportAllocs()
+			b.ResetTimer()
+			runBenchmarkWithResetPolicy(b, 0, func() {
+				harness.rebuild()
+			}, func() error {
+				return harness.recoverOnce()
+			})
+		})
+	}
+}
+
+func BenchmarkThreeReplicaReplicationRoundTrip(b *testing.B) {
+	cases := []struct {
+		name         string
+		batchSize    int
+		payloadBytes int
+	}{
+		{name: "batch=1/payload=128", batchSize: 1, payloadBytes: 128},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		b.Run(tc.name, func(b *testing.B) {
+			harness := newBenchmarkRoundTripHarness(b, benchmarkRoundTripConfig{
+				batchSize:    tc.batchSize,
+				payloadBytes: tc.payloadBytes,
+			})
+			b.ReportAllocs()
+			ctx := context.Background()
+			b.ResetTimer()
+			runBenchmarkWithResetPolicy(b, benchmarkRoundTripResetAfterOps, func() {
+				harness.rebuild()
+			}, func() error {
+				_, err := harness.runOnce(ctx)
+				return err
 			})
 		})
 	}
