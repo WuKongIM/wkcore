@@ -6,47 +6,58 @@ import (
 )
 
 type benchmarkRoundTripConfig struct {
-	batchSize    int
-	payloadBytes int
+	batchSize      int
+	payloadBytes   int
+	reserveRecords int
 }
 
 type benchmarkRoundTripHarness struct {
 	t       testing.TB
 	cfg     benchmarkRoundTripConfig
 	cluster *threeReplicaCluster
+	batch   []Record
 }
 
 func newBenchmarkRoundTripHarness(t testing.TB, cfg benchmarkRoundTripConfig) *benchmarkRoundTripHarness {
 	t.Helper()
 
+	batchSize := cfg.batchSize
+	if batchSize <= 0 {
+		batchSize = 1
+	}
 	return &benchmarkRoundTripHarness{
 		t:       t,
 		cfg:     cfg,
 		cluster: newThreeReplicaCluster(t),
+		batch:   makeBenchmarkRecords(batchSize, cfg.payloadBytes),
 	}
 }
 
 func (h *benchmarkRoundTripHarness) rebuild() {
 	h.t.Helper()
 	h.cluster = newThreeReplicaCluster(h.t)
+	reserveRecords := h.cfg.reserveRecords
+	if reserveRecords < len(h.batch) {
+		reserveRecords = len(h.batch)
+	}
+	// Reserve enough capacity for a whole reset window so each window keeps a
+	// similar append/replication shape instead of repeatedly paying slice growth.
+	h.cluster.leader.log.(*fakeLogStore).records = make([]Record, 0, reserveRecords)
+	h.cluster.follower2.log.(*fakeLogStore).records = make([]Record, 0, reserveRecords)
+	h.cluster.follower3.log.(*fakeLogStore).records = make([]Record, 0, reserveRecords)
 }
 
 func (h *benchmarkRoundTripHarness) runOnce(ctx context.Context) (CommitResult, error) {
-	batchSize := h.cfg.batchSize
-	if batchSize <= 0 {
-		batchSize = 1
-	}
-	batch := makeBenchmarkRecords(batchSize, h.cfg.payloadBytes)
 	done := make(chan struct {
 		res CommitResult
 		err error
 	}, 1)
 
 	startLEO := h.cluster.leader.log.(*fakeLogStore).LEO()
-	wantLEO := startLEO + uint64(len(batch))
+	wantLEO := startLEO + uint64(len(h.batch))
 
 	go func() {
-		res, err := h.cluster.leader.Append(ctx, batch)
+		res, err := h.cluster.leader.Append(ctx, h.batch)
 		done <- struct {
 			res CommitResult
 			err error
@@ -54,6 +65,7 @@ func (h *benchmarkRoundTripHarness) runOnce(ctx context.Context) (CommitResult, 
 	}()
 
 	waitForLogAppend(h.t, h.cluster.leader.log.(*fakeLogStore), wantLEO)
+	batchSize := len(h.batch)
 	replicaMaxBytes := batchSize * h.cfg.payloadBytes
 	if replicaMaxBytes <= 0 {
 		replicaMaxBytes = 1
@@ -424,6 +436,9 @@ func (h *benchmarkRecoveryHarness) recoverOnce() error {
 	return err
 }
 
+// Reset intervals are benchmark tuning knobs: they keep the fixture bounded
+// and the workload shape comparable inside each window, but they are not
+// correctness requirements.
 const (
 	benchmarkReplicaAppendResetAfterOps          = 256
 	benchmarkReplicaFetchResetAfterOps           = 0
@@ -460,8 +475,9 @@ func BenchmarkReplicaAppend(b *testing.B) {
 		tc := tc
 		b.Run(tc.name, func(b *testing.B) {
 			harness := newBenchmarkRoundTripHarness(b, benchmarkRoundTripConfig{
-				batchSize:    tc.batchSize,
-				payloadBytes: tc.payloadLen,
+				batchSize:      tc.batchSize,
+				payloadBytes:   tc.payloadLen,
+				reserveRecords: tc.batchSize * benchmarkReplicaAppendResetAfterOps,
 			})
 			b.ReportAllocs()
 			ctx := context.Background()
@@ -576,8 +592,9 @@ func BenchmarkThreeReplicaReplicationRoundTrip(b *testing.B) {
 		tc := tc
 		b.Run(tc.name, func(b *testing.B) {
 			harness := newBenchmarkRoundTripHarness(b, benchmarkRoundTripConfig{
-				batchSize:    tc.batchSize,
-				payloadBytes: tc.payloadBytes,
+				batchSize:      tc.batchSize,
+				payloadBytes:   tc.payloadBytes,
+				reserveRecords: tc.batchSize * benchmarkRoundTripResetAfterOps,
 			})
 			b.ReportAllocs()
 			ctx := context.Background()
