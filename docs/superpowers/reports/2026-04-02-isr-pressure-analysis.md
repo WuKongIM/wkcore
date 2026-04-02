@@ -37,7 +37,25 @@ go tool pprof -top tmp/isr-pressure/2026-04-02/roundtrip.mem.pprof > tmp/isr-pre
 
 ## Baseline Results
 
-Pending benchmark execution.
+Append baseline:
+
+- `BenchmarkReplicaAppend/batch=1/payload=128`: `2148 ns/op`, `1909 B/op`, `23 allocs/op`
+- `BenchmarkReplicaAppend/batch=16/payload=128`: `5528 ns/op`, `13463 B/op`, `109 allocs/op`
+- `BenchmarkReplicaAppend/batch=16/payload=1024`: `15018 ns/op`, `85158 B/op`, `109 allocs/op`
+
+Round-trip baseline:
+
+- `BenchmarkThreeReplicaReplicationRoundTrip/batch=1/payload=128`: `2221 ns/op`, `1907 B/op`, `23 allocs/op`
+
+Supporting baselines:
+
+- `BenchmarkReplicaFetch/max_bytes=4096/backlog=32`: `1167 ns/op`, `6264 B/op`, `39 allocs/op`
+- `BenchmarkReplicaFetch/max_bytes=65536/backlog=256`: `7998 ns/op`, `51832 B/op`, `266 allocs/op`
+- `BenchmarkReplicaApplyFetch/mode=append_only`: `129.9 ns/op`, `347 B/op`, `2 allocs/op`
+- `BenchmarkReplicaApplyFetch/mode=truncate_append`: `851.1 ns/op`, `417 B/op`, `10 allocs/op`
+- `BenchmarkNewReplicaRecovery/state=empty`: `92.12 ns/op`, `368 B/op`, `2 allocs/op`
+- `BenchmarkNewReplicaRecovery/state=clean_checkpoint`: `100.3 ns/op`, `400 B/op`, `4 allocs/op`
+- `BenchmarkNewReplicaRecovery/state=dirty_tail`: `947.9 ns/op`, `2793 B/op`, `9 allocs/op`
 
 ## CPU Hotspots
 
