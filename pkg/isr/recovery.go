@@ -1,6 +1,9 @@
 package isr
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 func (r *replica) recoverFromStores() error {
 	checkpoint, err := r.checkpoints.Load()
@@ -80,6 +83,38 @@ func validateEpochHistory(history []EpochPoint) error {
 		if point.Epoch == prev.Epoch && point.StartOffset != prev.StartOffset {
 			return ErrCorruptState
 		}
+	}
+	return nil
+}
+
+func (r *replica) InstallSnapshot(ctx context.Context, snap Snapshot) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.state.Role == RoleTombstoned {
+		return ErrTombstoned
+	}
+	if err := r.snapshots.InstallSnapshot(ctx, snap); err != nil {
+		return err
+	}
+
+	checkpoint := Checkpoint{
+		Epoch:          snap.Epoch,
+		LogStartOffset: snap.EndOffset,
+		HW:             snap.EndOffset,
+	}
+	if err := r.checkpoints.Store(checkpoint); err != nil {
+		return err
+	}
+
+	leo := r.log.LEO()
+	r.state.Role = RoleFollower
+	r.state.Epoch = snap.Epoch
+	r.state.LogStartOffset = snap.EndOffset
+	r.state.HW = snap.EndOffset
+	r.state.LEO = leo
+	if leo < snap.EndOffset {
+		return ErrCorruptState
 	}
 	return nil
 }

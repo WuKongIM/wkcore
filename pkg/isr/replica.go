@@ -1,7 +1,6 @@
 package isr
 
 import (
-	"context"
 	"sync"
 	"time"
 )
@@ -161,15 +160,6 @@ func (r *replica) Tombstone() error {
 
 	r.state.Role = RoleTombstoned
 	return nil
-}
-
-func (r *replica) InstallSnapshot(ctx context.Context, snap Snapshot) error {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.state.Role == RoleTombstoned {
-		return ErrTombstoned
-	}
-	return errNotImplemented
 }
 
 func (r *replica) Status() ReplicaState {
