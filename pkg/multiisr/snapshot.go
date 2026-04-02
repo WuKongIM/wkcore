@@ -9,7 +9,8 @@ type snapshotState struct {
 	mu            sync.Mutex
 	inflight      int
 	maxConcurrent int
-	waiting       map[uint64]struct{}
+	waiting       []uint64
+	waitingSet    map[uint64]struct{}
 }
 
 func (s *snapshotState) begin(limit int) bool {
@@ -37,20 +38,26 @@ func (s *snapshotState) finish() {
 func (s *snapshotState) wait(groupID uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.waiting == nil {
-		s.waiting = make(map[uint64]struct{})
+	if s.waitingSet == nil {
+		s.waitingSet = make(map[uint64]struct{})
 	}
-	s.waiting[groupID] = struct{}{}
+	if _, exists := s.waitingSet[groupID]; exists {
+		return
+	}
+	s.waiting = append(s.waiting, groupID)
+	s.waitingSet[groupID] = struct{}{}
 }
 
 func (s *snapshotState) popWaiter() (uint64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for groupID := range s.waiting {
-		delete(s.waiting, groupID)
-		return groupID, true
+	if len(s.waiting) == 0 {
+		return 0, false
 	}
-	return 0, false
+	groupID := s.waiting[0]
+	s.waiting = s.waiting[1:]
+	delete(s.waitingSet, groupID)
+	return groupID, true
 }
 
 func (s *snapshotState) maxObserved() int {
@@ -117,6 +124,12 @@ func (r *runtime) maxSnapshotConcurrent() int {
 func (r *runtime) completeSnapshot(groupID uint64) {
 	r.snapshots.finish()
 	if nextGroupID, ok := r.snapshots.popWaiter(); ok {
+		r.mu.RLock()
+		g, exists := r.groups[nextGroupID]
+		r.mu.RUnlock()
+		if exists {
+			g.markSnapshot()
+		}
 		r.scheduler.enqueue(nextGroupID)
 	}
 }

@@ -294,13 +294,18 @@ func (m *sessionPeerSessionManager) createdFor(peer isr.NodeID) int {
 
 func (m *sessionPeerSessionManager) session(peer isr.NodeID) *trackingPeerSession {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.cache[peer]
+	session, ok := m.cache[peer]
+	m.mu.Unlock()
+	if ok {
+		return session
+	}
+	return m.Session(peer).(*trackingPeerSession)
 }
 
 type trackingPeerSession struct {
-	mu    sync.Mutex
-	sends int
+	mu           sync.Mutex
+	sends        int
+	backpressure BackpressureState
 }
 
 func (s *trackingPeerSession) Send(env Envelope) error {
@@ -319,7 +324,9 @@ func (s *trackingPeerSession) Flush() error {
 }
 
 func (s *trackingPeerSession) Backpressure() BackpressureState {
-	return BackpressureState{}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.backpressure
 }
 
 func (s *trackingPeerSession) Close() error {
@@ -330,6 +337,12 @@ func (s *trackingPeerSession) sendCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sends
+}
+
+func (s *trackingPeerSession) setBackpressure(state BackpressureState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.backpressure = state
 }
 
 func mustEncodeFetchResponsePayload(t *testing.T, payload fetchResponsePayload) []byte {

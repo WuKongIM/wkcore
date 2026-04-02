@@ -61,6 +61,37 @@ func TestSnapshotTaskRequeuesWhenInflightLimitReached(t *testing.T) {
 	}
 }
 
+func TestSnapshotWaitingQueueIsFIFO(t *testing.T) {
+	env := newSnapshotTestEnv(t, func(cfg *Config) {
+		cfg.Limits.MaxSnapshotInflight = 1
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(66, 1, 1, []isr.NodeID{1, 2}))
+	mustEnsureLocal(t, env.runtime, testMetaLocal(67, 1, 1, []isr.NodeID{1, 2}))
+	mustEnsureLocal(t, env.runtime, testMetaLocal(68, 1, 1, []isr.NodeID{1, 2}))
+
+	resumed := make([]uint64, 0, 2)
+	env.runtime.snapshotRunner = func(groupID uint64, bytes int64) bool {
+		if groupID == 66 {
+			return false
+		}
+		resumed = append(resumed, groupID)
+		return true
+	}
+	env.runtime.queueSnapshot(66)
+	env.runtime.queueSnapshot(67)
+	env.runtime.queueSnapshot(68)
+	env.runtime.runScheduler()
+
+	env.runtime.completeSnapshot(66)
+	env.runtime.runScheduler()
+	env.runtime.completeSnapshot(67)
+	env.runtime.runScheduler()
+
+	if len(resumed) != 2 || resumed[0] != 67 || resumed[1] != 68 {
+		t.Fatalf("expected FIFO resumed order [67 68], got %v", resumed)
+	}
+}
+
 type snapshotTestEnv struct {
 	runtime *runtime
 	clock   *snapshotManualClock

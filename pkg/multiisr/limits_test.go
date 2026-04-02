@@ -88,6 +88,24 @@ func TestUnknownFetchResponseDoesNotReleasePeerInflight(t *testing.T) {
 	}
 }
 
+func TestHardBackpressureQueuesWithoutSending(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Limits.MaxFetchInflightPeer = 2
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(75, 3, 1, []isr.NodeID{1, 2}))
+
+	env.sessions.session(2).setBackpressure(BackpressureState{Level: BackpressureHard})
+	env.runtime.enqueueReplication(75, 2)
+	env.runtime.runScheduler()
+
+	if got := env.sessions.session(2).sendCount(); got != 0 {
+		t.Fatalf("hard backpressure should block immediate send, got %d", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("hard backpressure should queue request, got %d", got)
+	}
+}
+
 func newSessionTestEnvWithConfig(t *testing.T, mutate func(*Config)) *sessionTestEnv {
 	t.Helper()
 
