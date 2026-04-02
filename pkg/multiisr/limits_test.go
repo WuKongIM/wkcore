@@ -106,6 +106,64 @@ func TestHardBackpressureQueuesWithoutSending(t *testing.T) {
 	}
 }
 
+func TestPeerRequestStateRetainsQueueBucketAfterDrain(t *testing.T) {
+	state := newPeerRequestState()
+	peer := isr.NodeID(2)
+
+	state.enqueue(Envelope{Peer: peer, GroupID: 1})
+	state.enqueue(Envelope{Peer: peer, GroupID: 2})
+
+	if _, ok := state.popQueued(peer); !ok {
+		t.Fatal("expected first queued envelope")
+	}
+	if _, ok := state.popQueued(peer); !ok {
+		t.Fatal("expected second queued envelope")
+	}
+
+	if _, ok := state.queued[peer]; !ok {
+		t.Fatal("expected drained peer queue bucket to be retained for reuse")
+	}
+	if got := state.queuedCount(peer); got != 0 {
+		t.Fatalf("queuedCount() = %d, want 0", got)
+	}
+
+	state.enqueue(Envelope{Peer: peer, GroupID: 3})
+	if got := state.queuedCount(peer); got != 1 {
+		t.Fatalf("queuedCount() after reuse = %d, want 1", got)
+	}
+}
+
+func TestPeerRequestStatePreservesFIFOAcrossQueueReuse(t *testing.T) {
+	state := newPeerRequestState()
+	peer := isr.NodeID(2)
+
+	state.enqueue(Envelope{Peer: peer, GroupID: 1})
+	state.enqueue(Envelope{Peer: peer, GroupID: 2})
+	state.enqueue(Envelope{Peer: peer, GroupID: 3})
+
+	for _, want := range []uint64{1, 2} {
+		env, ok := state.popQueued(peer)
+		if !ok {
+			t.Fatalf("popQueued() missing envelope %d", want)
+		}
+		if env.GroupID != want {
+			t.Fatalf("popQueued() group = %d, want %d", env.GroupID, want)
+		}
+	}
+
+	state.enqueue(Envelope{Peer: peer, GroupID: 4})
+
+	for _, want := range []uint64{3, 4} {
+		env, ok := state.popQueued(peer)
+		if !ok {
+			t.Fatalf("popQueued() missing envelope %d", want)
+		}
+		if env.GroupID != want {
+			t.Fatalf("popQueued() group = %d, want %d", env.GroupID, want)
+		}
+	}
+}
+
 func newSessionTestEnvWithConfig(t *testing.T, mutate func(*Config)) *sessionTestEnv {
 	t.Helper()
 
