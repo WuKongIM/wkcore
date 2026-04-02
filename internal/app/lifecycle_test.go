@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
-	"github.com/WuKongIM/WuKongIM/pkg/raftstore"
-	"github.com/WuKongIM/WuKongIM/pkg/wkcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/raftstore"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkdb"
 	"github.com/stretchr/testify/require"
 )
 

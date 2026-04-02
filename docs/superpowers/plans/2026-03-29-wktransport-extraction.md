@@ -2041,8 +2041,8 @@ import (
 	"sync/atomic"
 
 	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
-	"github.com/WuKongIM/WuKongIM/pkg/raftstore"
-	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/raftstore"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/wkfsm"
 	"github.com/WuKongIM/WuKongIM/pkg/wktransport"
 	raft "go.etcd.io/raft/v3"

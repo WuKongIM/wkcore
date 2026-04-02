@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/raftstore"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
-	"github.com/WuKongIM/WuKongIM/pkg/raftstore"
-	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
 )
 
 const (

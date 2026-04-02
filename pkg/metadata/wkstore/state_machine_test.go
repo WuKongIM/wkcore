@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
-	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
 )
 
 func TestStateMachineEncodeUpsertCommands(t *testing.T) {

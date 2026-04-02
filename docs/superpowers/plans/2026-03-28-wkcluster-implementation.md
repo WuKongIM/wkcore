@@ -1545,8 +1545,8 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
-	"github.com/WuKongIM/WuKongIM/pkg/raftstore"
-	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/raftstore"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/wkfsm"
 	"go.etcd.io/raft/v3"
 )
@@ -1709,7 +1709,7 @@ package wkcluster
 import (
 	"context"
 
-	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/wkfsm"
 )
 

@@ -8,10 +8,10 @@ import (
 	accessgateway "github.com/WuKongIM/WuKongIM/internal/access/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/raftstore"
-	"github.com/WuKongIM/WuKongIM/pkg/wkcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
-	"github.com/WuKongIM/WuKongIM/pkg/wkstore"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/raftstore"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkstore"
 )
 
 type App struct {

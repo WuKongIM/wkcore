@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
-	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
 )
 
 // Compile-time interface assertion.

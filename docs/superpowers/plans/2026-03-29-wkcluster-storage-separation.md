@@ -141,8 +141,8 @@ package wkstore
 import (
 	"context"
 
-	"github.com/WuKongIM/WuKongIM/pkg/wkcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkdb"
 )
 
 // Store provides business-level distributed storage APIs
@@ -443,8 +443,8 @@ raftDB *raftstore.DB
 
 Remove imports:
 ```go
-"github.com/WuKongIM/WuKongIM/pkg/raftstore"
-"github.com/WuKongIM/WuKongIM/pkg/wkdb"
+"github.com/WuKongIM/WuKongIM/pkg/metadata/raftstore"
+"github.com/WuKongIM/WuKongIM/pkg/metadata/wkdb"
 "github.com/WuKongIM/WuKongIM/pkg/wkfsm"
 ```
 
@@ -567,7 +567,7 @@ The cluster_test.go and stress_test.go files call business APIs like `c.CreateCh
 - [ ] **Step 1: Update cluster_test.go**
 
 Key changes:
-1. Add imports: `"github.com/WuKongIM/WuKongIM/pkg/wkstore"`, `"github.com/WuKongIM/WuKongIM/pkg/raftstore"`, `"github.com/WuKongIM/WuKongIM/pkg/wkdb"`
+1. Add imports: `"github.com/WuKongIM/WuKongIM/pkg/metadata/wkstore"`, `"github.com/WuKongIM/WuKongIM/pkg/metadata/raftstore"`, `"github.com/WuKongIM/WuKongIM/pkg/metadata/wkdb"`
 2. Each test function that creates a Config must supply `NewStorage`/`NewStateMachine` factories
 3. Each test function that calls `c.CreateChannel` etc. must create a `wkstore.Store` and use it
 

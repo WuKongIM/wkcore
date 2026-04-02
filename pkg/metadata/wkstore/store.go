@@ -3,8 +3,8 @@ package wkstore
 import (
 	"context"
 
-	"github.com/WuKongIM/WuKongIM/pkg/wkcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkdb"
 )
 
 // Store provides business-level distributed storage APIs
