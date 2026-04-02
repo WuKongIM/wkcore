@@ -357,6 +357,45 @@ func (h *pressureHarness) assertPeerQueuesDrained(tb testing.TB) {
 	}
 }
 
+func (h *pressureHarness) assertSnapshotQueueDrained(tb testing.TB) {
+	tb.Helper()
+
+	if waiting := h.runtime.queuedSnapshotGroups(); waiting != 0 {
+		tb.Fatalf("snapshot waiting queue = %d, want 0", waiting)
+	}
+}
+
+func (h *pressureHarness) maxQueuedPeerRequests() int {
+	maxQueued := 0
+	for _, peer := range h.peerIDs {
+		if queued := h.queueHighWatermark[peer]; queued > maxQueued {
+			maxQueued = queued
+		}
+	}
+	return maxQueued
+}
+
+func (h *pressureHarness) setPeerBackpressure(peer isr.NodeID, level BackpressureLevel) {
+	h.sessions.session(peer).setBackpressure(BackpressureState{Level: level})
+}
+
+func (h *pressureHarness) clearPeerBackpressure() {
+	for _, peer := range h.peerIDs {
+		h.setPeerBackpressure(peer, BackpressureNone)
+	}
+}
+
+func (h *pressureHarness) deliverAvailableFetchResponses() int {
+	delivered := 0
+	for _, peer := range h.peerIDs {
+		if state := h.sessions.session(peer).Backpressure(); state.Level == BackpressureHard {
+			continue
+		}
+		delivered += h.deliverPeerFetchResponses(peer, 0)
+	}
+	return delivered
+}
+
 func mustEnsurePressureGroup(tb testing.TB, rt *runtime, meta isr.GroupMeta) {
 	tb.Helper()
 	if err := rt.EnsureGroup(meta); err != nil {
