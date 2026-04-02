@@ -6,5 +6,5 @@ func (s *Server) registerRoutes() {
 	}
 
 	s.engine.GET("/healthz", s.handleHealthz)
-	s.engine.POST("/api/messages/send", s.handleSendMessage)
+	s.engine.POST("/message/send", s.handleSendMessage)
 }
