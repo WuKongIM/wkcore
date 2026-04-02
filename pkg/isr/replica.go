@@ -17,9 +17,10 @@ type replica struct {
 	snapshots   SnapshotApplier
 	now         func() time.Time
 
-	meta   GroupMeta
-	state  ReplicaState
-	epochs []EpochPoint
+	meta         GroupMeta
+	state        ReplicaState
+	epochHistory []EpochPoint
+	recovered    bool
 }
 
 func NewReplica(cfg ReplicaConfig) (Replica, error) {
@@ -52,6 +53,9 @@ func NewReplica(cfg ReplicaConfig) (Replica, error) {
 		state: ReplicaState{
 			Role: RoleFollower,
 		},
+	}
+	if err := r.recoverFromStores(); err != nil {
+		return nil, err
 	}
 	return r, nil
 }
