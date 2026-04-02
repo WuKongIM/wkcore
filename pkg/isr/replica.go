@@ -180,15 +180,6 @@ func (r *replica) Append(ctx context.Context, batch []Record) (CommitResult, err
 	return CommitResult{}, errNotImplemented
 }
 
-func (r *replica) ApplyFetch(ctx context.Context, req ApplyFetchRequest) error {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.state.Role == RoleTombstoned {
-		return ErrTombstoned
-	}
-	return errNotImplemented
-}
-
 func (r *replica) Status() ReplicaState {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

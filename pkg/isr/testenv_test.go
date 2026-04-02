@@ -199,6 +199,7 @@ func (c *manualClock) Advance(d time.Duration) {
 
 type testEnv struct {
 	t           *testing.T
+	localNode   NodeID
 	log         *fakeLogStore
 	checkpoints *fakeCheckpointStore
 	history     *fakeEpochHistoryStore
@@ -214,6 +215,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	calls := &callLog{}
 	return &testEnv{
 		t:           t,
+		localNode:   1,
 		log:         &fakeLogStore{calls: calls},
 		checkpoints: &fakeCheckpointStore{loadErr: ErrEmptyState, calls: calls},
 		history:     &fakeEpochHistoryStore{loadErr: ErrEmptyState, calls: calls},
@@ -225,7 +227,7 @@ func newTestEnv(t *testing.T) *testEnv {
 
 func (e *testEnv) config() ReplicaConfig {
 	return ReplicaConfig{
-		LocalNode:         1,
+		LocalNode:         e.localNode,
 		LogStore:          e.log,
 		CheckpointStore:   e.checkpoints,
 		EpochHistoryStore: e.history,
@@ -335,6 +337,27 @@ func newFetchEnvWithHistory(t *testing.T) *testEnv {
 func newLeaderReplica(t *testing.T) *replica {
 	t.Helper()
 	return newFetchEnvWithHistory(t).replica
+}
+
+func newFollowerEnv(t *testing.T) *testEnv {
+	t.Helper()
+
+	env := newTestEnv(t)
+	env.localNode = 2
+	env.checkpoints.loadErr = nil
+	env.checkpoints.checkpoint = Checkpoint{
+		Epoch:          7,
+		LogStartOffset: 0,
+		HW:             0,
+	}
+	env.history.loadErr = nil
+	env.history.points = []EpochPoint{{Epoch: 7, StartOffset: 0}}
+	env.replica = newReplicaFromEnv(t, env)
+	env.replica.mustApplyMeta(t, activeMeta(7, 1))
+	if err := env.replica.BecomeFollower(activeMeta(7, 1)); err != nil {
+		t.Fatalf("BecomeFollower() error = %v", err)
+	}
+	return env
 }
 
 func activeMeta(epoch uint64, leader NodeID) GroupMeta {
