@@ -28,7 +28,7 @@ func TestAppendWaitsUntilMinISRReplicasAcknowledgeViaFetch(t *testing.T) {
 		}
 		done <- res
 	}()
-	waitForReplicaLEO(t, env.leader, 1)
+	waitForLogAppend(t, env.leader.log.(*fakeLogStore), 1)
 
 	env.replicateOnce(t, env.follower2)
 	if got := env.leader.progress[2]; got != 1 {
