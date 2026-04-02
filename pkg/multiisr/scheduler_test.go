@@ -69,6 +69,54 @@ func TestGroupPopReplicationPeerQueueReusableAfterDrain(t *testing.T) {
 	}
 }
 
+func TestSchedulerPendingQueuePreservesFIFO(t *testing.T) {
+	var q schedulerQueue
+
+	for _, groupID := range []uint64{11, 12, 13} {
+		q.enqueue(groupID)
+	}
+
+	for _, want := range []uint64{11, 12, 13} {
+		got, ok := q.pop()
+		if !ok {
+			t.Fatalf("pop() missing group %d", want)
+		}
+		if got != want {
+			t.Fatalf("pop() = %d, want %d", got, want)
+		}
+	}
+
+	if _, ok := q.pop(); ok {
+		t.Fatal("expected empty pending queue after drain")
+	}
+}
+
+func TestSchedulerPendingQueueReusableAfterDrain(t *testing.T) {
+	var q schedulerQueue
+
+	q.enqueue(21)
+	q.enqueue(22)
+	if _, ok := q.pop(); !ok {
+		t.Fatal("expected first queued group")
+	}
+	if _, ok := q.pop(); !ok {
+		t.Fatal("expected second queued group")
+	}
+
+	q.enqueue(31)
+	q.enqueue(32)
+
+	for _, want := range []uint64{31, 32} {
+		got, ok := q.pop()
+		if !ok {
+			t.Fatalf("pop() missing group %d after reuse", want)
+		}
+		if got != want {
+			t.Fatalf("pop() = %d, want %d", got, want)
+		}
+	}
+}
+
 func newScheduledTestGroup() (*group, *[]string) {
 	log := make([]string, 0, 5)
 	g := &group{
