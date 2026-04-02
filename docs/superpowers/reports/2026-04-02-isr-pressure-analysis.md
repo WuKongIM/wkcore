@@ -59,11 +59,33 @@ Supporting baselines:
 
 ## CPU Hotspots
 
-Pending profile capture.
+Append CPU profile (`tmp/isr-pressure/2026-04-02/append.cpu.top.txt`):
+
+- Runtime wake/sleep primitives dominate the sample: `runtime.pthread_cond_signal` `45.69%`, `runtime.pthread_cond_wait` `23.01%`, `runtime.usleep` `9.80%`, `runtime.madvise` `9.69%`.
+- No `pkg/isr` function appears as a meaningful flat CPU hotspot in this capture. The visible `pkg/isr` rows are cumulative only and stay below `1%` flat, for example `(*benchmarkRoundTripHarness).runOnce` and `(*replica).Fetch`.
+- Interpretation: append-path CPU time is dominated by scheduler, parking, and wakeup behavior from the goroutine-driven benchmark harness, not by a concentrated `pkg/isr` compute hotspot.
+
+Round-trip CPU profile (`tmp/isr-pressure/2026-04-02/roundtrip.cpu.top.txt`):
+
+- The same runtime pattern repeats: `runtime.pthread_cond_signal` `45.43%`, `runtime.pthread_cond_wait` `25.19%`, `runtime.usleep` `15.06%`, `runtime.kevent` `4.94%`.
+- The only visible flat `pkg/isr` CPU row is `(*fakeLogStore).Append` at `0.12%`; `(*replica).Append` appears only as `0.62%` cumulative.
+- Interpretation: the round-trip benchmark is also CPU-bound mainly by runtime synchronization and goroutine scheduling, so this profile does not show a single `pkg/isr` function that dominates CPU consumption.
 
 ## Memory Hotspots
 
-Pending profile capture.
+Append alloc profile (`tmp/isr-pressure/2026-04-02/append.mem.top.txt`):
+
+- `cloneRecord` dominates allocations at `79.45%`.
+- Secondary contributors are `(*fakeLogStore).Read` at `5.09%` flat / `36.67%` cumulative, `(*benchmarkRoundTripHarness).rebuild` at `4.42%`, `(*callLog).add` at `1.96%`, and `(*replica).Append` at `1.76%` flat / `18.56%` cumulative.
+- Timer and checkpoint bookkeeping also show up: `time.NewTimer` `1.17%`, `(*fakeCheckpointStore).Store` `1.33%`, `(*replica).advanceHWLocked` `1.06%`.
+- Interpretation: append-path allocation pressure is real, but it is split between `pkg/isr` record-copy paths and benchmark fixture churn in the fake log/checkpoint stores and harness rebuild path.
+
+Round-trip alloc profile (`tmp/isr-pressure/2026-04-02/roundtrip.mem.top.txt`):
+
+- `cloneRecord` remains the largest allocator at `30.26%`.
+- Additional heavy allocators are `(*callLog).add` `10.79%`, `(*benchmarkRoundTripHarness).runOnce` `10.09%` flat / `73.35%` cumulative, `(*replica).Append` `9.32%` flat / `19.42%` cumulative, `(*fakeCheckpointStore).Store` `6.78%`, and `(*replica).advanceHWLocked` `6.09%`.
+- Timer and harness-reset overhead are material: `time.NewTimer` `6.66%`, `(*benchmarkRoundTripHarness).rebuild` `5.79%`, and `(*fakeLogStore).Read` `3.23%` flat / `15.50%` cumulative.
+- Interpretation: round-trip allocations are dominated by `pkg/isr` data-copying and bookkeeping paths, but benchmark doubles and reset mechanics still contribute a meaningful share of the allocation profile.
 
 ## Recommendation
 
