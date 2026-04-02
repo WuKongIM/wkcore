@@ -49,3 +49,14 @@ func TestEnsureGroupReturnsErrTooManyGroups(t *testing.T) {
 		t.Fatalf("expected ErrTooManyGroups, got %v", err)
 	}
 }
+
+func TestEnsureGroupRejectsDuplicateActiveGroup(t *testing.T) {
+	env := newTestEnv(t)
+	meta := testMeta(43, 1, 1, []isr.NodeID{1, 2})
+
+	mustEnsure(t, env.runtime, meta)
+	err := env.runtime.EnsureGroup(meta)
+	if !errors.Is(err, multiisr.ErrGroupExists) {
+		t.Fatalf("expected ErrGroupExists, got %v", err)
+	}
+}

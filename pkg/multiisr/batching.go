@@ -1,7 +1,8 @@
 package multiisr
 
 func (r *runtime) sendEnvelope(env Envelope) error {
-	if !r.peerRequests.tryAcquire(env.Peer, r.cfg.Limits.MaxFetchInflightPeer) {
+	trackInflight := env.Kind == MessageKindFetchRequest
+	if trackInflight && !r.peerRequests.tryAcquire(env.Peer, r.cfg.Limits.MaxFetchInflightPeer) {
 		r.peerRequests.enqueue(env)
 		return ErrBackpressured
 	}
@@ -10,5 +11,11 @@ func (r *runtime) sendEnvelope(env Envelope) error {
 	if session.TryBatch(env) {
 		return nil
 	}
-	return session.Send(env)
+	if err := session.Send(env); err != nil {
+		if trackInflight {
+			r.peerRequests.release(env.Peer)
+		}
+		return err
+	}
+	return nil
 }

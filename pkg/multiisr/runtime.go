@@ -11,15 +11,16 @@ import (
 type runtime struct {
 	cfg Config
 
-	mu           sync.RWMutex
-	groups       map[uint64]*group
-	scheduler    *scheduler
-	tombstones   map[uint64]map[uint64]tombstone
-	sessions     peerSessionCache
-	peerRequests peerRequestState
-	snapshots    snapshotState
-	requestID    atomic.Uint64
-	advanceClock func(time.Duration)
+	mu             sync.RWMutex
+	groups         map[uint64]*group
+	scheduler      *scheduler
+	tombstones     map[uint64]map[uint64]tombstone
+	sessions       peerSessionCache
+	peerRequests   peerRequestState
+	snapshots      snapshotState
+	requestID      atomic.Uint64
+	advanceClock   func(time.Duration)
+	snapshotRunner func(groupID uint64, bytes int64) bool
 }
 
 func New(cfg Config) (Runtime, error) {
@@ -66,7 +67,7 @@ func (r *runtime) EnsureGroup(meta isr.GroupMeta) error {
 	r.dropExpiredTombstonesLocked(r.cfg.Now())
 
 	if _, ok := r.groupLocked(meta.GroupID); ok {
-		return nil
+		return ErrGroupExists
 	}
 	if r.cfg.Limits.MaxGroups > 0 && len(r.groups) >= r.cfg.Limits.MaxGroups {
 		return ErrTooManyGroups
@@ -205,4 +206,16 @@ func (r *runtime) processReplication(groupID uint64) {
 
 func (r *runtime) queuedPeerRequests(peer isr.NodeID) int {
 	return r.peerRequests.queuedCount(peer)
+}
+
+func (r *runtime) releasePeerInflight(peer isr.NodeID) {
+	r.peerRequests.release(peer)
+}
+
+func (r *runtime) drainPeerQueue(peer isr.NodeID) {
+	env, ok := r.peerRequests.popQueued(peer)
+	if !ok {
+		return
+	}
+	_ = r.sendEnvelope(env)
 }

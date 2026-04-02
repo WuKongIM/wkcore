@@ -62,6 +62,12 @@ func (g *group) setMeta(meta isr.GroupMeta) {
 	g.meta = meta
 }
 
+func (g *group) metaSnapshot() isr.GroupMeta {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.meta
+}
+
 func (g *group) markControl() {
 	g.markTask(taskControl)
 }

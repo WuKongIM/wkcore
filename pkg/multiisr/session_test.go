@@ -33,6 +33,61 @@ func TestInboundEnvelopeDemuxRequiresMatchingGeneration(t *testing.T) {
 	}
 }
 
+func TestFetchResponseDropsStaleEpoch(t *testing.T) {
+	env := newSessionTestEnv(t)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(24, 3, 1, []isr.NodeID{1, 2}))
+
+	payload := mustEncodeFetchResponsePayload(t, fetchResponsePayload{
+		LeaderHW: 5,
+		Records:  []isr.Record{{Payload: []byte("stale"), SizeBytes: 5}},
+	})
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		GroupID:    24,
+		Generation: 1,
+		Epoch:      2,
+		Kind:       MessageKindFetchResponse,
+		Payload:    payload,
+	})
+	if env.factory.replicas[0].applyFetchCalls != 0 {
+		t.Fatalf("stale epoch response should be dropped")
+	}
+}
+
+func TestFetchResponseDecodesPayloadIntoApplyFetch(t *testing.T) {
+	env := newSessionTestEnv(t)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(25, 4, 1, []isr.NodeID{1, 2}))
+
+	truncateTo := uint64(7)
+	payload := mustEncodeFetchResponsePayload(t, fetchResponsePayload{
+		LeaderHW:   11,
+		TruncateTo: &truncateTo,
+		Records:    []isr.Record{{Payload: []byte("ok"), SizeBytes: 2}},
+	})
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		GroupID:    25,
+		Generation: 1,
+		Epoch:      4,
+		Kind:       MessageKindFetchResponse,
+		Payload:    payload,
+	})
+
+	if env.factory.replicas[0].applyFetchCalls != 1 {
+		t.Fatalf("expected fetch response to be applied")
+	}
+	got := env.factory.replicas[0].lastApplyFetch
+	if got.LeaderHW != 11 {
+		t.Fatalf("expected LeaderHW 11, got %d", got.LeaderHW)
+	}
+	if got.TruncateTo == nil || *got.TruncateTo != 7 {
+		t.Fatalf("expected TruncateTo 7, got %+v", got.TruncateTo)
+	}
+	if len(got.Records) != 1 || string(got.Records[0].Payload) != "ok" {
+		t.Fatalf("unexpected records: %+v", got.Records)
+	}
+}
+
 type sessionTestEnv struct {
 	runtime     *runtime
 	generations *sessionGenerationStore
@@ -141,6 +196,7 @@ type sessionReplica struct {
 	mu              sync.Mutex
 	state           isr.ReplicaState
 	applyFetchCalls int
+	lastApplyFetch  isr.ApplyFetchRequest
 }
 
 func (r *sessionReplica) ApplyMeta(meta isr.GroupMeta) error {
@@ -172,6 +228,7 @@ func (r *sessionReplica) ApplyFetch(ctx context.Context, req isr.ApplyFetchReque
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.applyFetchCalls++
+	r.lastApplyFetch = req
 	return nil
 }
 func (r *sessionReplica) Status() isr.ReplicaState {
@@ -273,4 +330,13 @@ func (s *trackingPeerSession) sendCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sends
+}
+
+func mustEncodeFetchResponsePayload(t *testing.T, payload fetchResponsePayload) []byte {
+	t.Helper()
+	data, err := encodeFetchResponsePayload(payload)
+	if err != nil {
+		t.Fatalf("encodeFetchResponsePayload() error = %v", err)
+	}
+	return data
 }

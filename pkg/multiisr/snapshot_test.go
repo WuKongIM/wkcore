@@ -37,6 +37,30 @@ func TestRecoveryBandwidthLimiterThrottlesSnapshotChunks(t *testing.T) {
 	}
 }
 
+func TestSnapshotTaskRequeuesWhenInflightLimitReached(t *testing.T) {
+	env := newSnapshotTestEnv(t, func(cfg *Config) {
+		cfg.Limits.MaxSnapshotInflight = 1
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(64, 1, 1, []isr.NodeID{1, 2}))
+	mustEnsureLocal(t, env.runtime, testMetaLocal(65, 1, 1, []isr.NodeID{1, 2}))
+
+	env.runtime.snapshotRunner = func(groupID uint64, bytes int64) bool {
+		return groupID != 64
+	}
+	env.runtime.queueSnapshot(64)
+	env.runtime.queueSnapshot(65)
+	env.runtime.runScheduler()
+	if got := env.runtime.queuedSnapshotGroups(); got != 1 {
+		t.Fatalf("expected one waiting snapshot, got %d", got)
+	}
+
+	env.runtime.completeSnapshot(64)
+	env.runtime.runScheduler()
+	if got := env.runtime.queuedSnapshotGroups(); got != 0 {
+		t.Fatalf("expected waiting snapshot to be resumed, got %d", got)
+	}
+}
+
 type snapshotTestEnv struct {
 	runtime *runtime
 	clock   *snapshotManualClock

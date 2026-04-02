@@ -9,6 +9,7 @@ type snapshotState struct {
 	mu            sync.Mutex
 	inflight      int
 	maxConcurrent int
+	waiting       map[uint64]struct{}
 }
 
 func (s *snapshotState) begin(limit int) bool {
@@ -33,10 +34,35 @@ func (s *snapshotState) finish() {
 	}
 }
 
+func (s *snapshotState) wait(groupID uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.waiting == nil {
+		s.waiting = make(map[uint64]struct{})
+	}
+	s.waiting[groupID] = struct{}{}
+}
+
+func (s *snapshotState) popWaiter() (uint64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for groupID := range s.waiting {
+		delete(s.waiting, groupID)
+		return groupID, true
+	}
+	return 0, false
+}
+
 func (s *snapshotState) maxObserved() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.maxConcurrent
+}
+
+func (s *snapshotState) waitingCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.waiting)
 }
 
 func (r *runtime) queueSnapshot(groupID uint64) {
@@ -64,11 +90,14 @@ func (r *runtime) processSnapshot(groupID uint64) {
 	}
 
 	if !r.snapshots.begin(r.cfg.Limits.MaxSnapshotInflight) {
+		r.snapshots.wait(groupID)
 		return
 	}
-	defer r.snapshots.finish()
 
 	bytes := g.drainSnapshotBytes()
+	if r.snapshotRunner != nil && !r.snapshotRunner(groupID, bytes) {
+		return
+	}
 	if rate := r.cfg.Limits.MaxRecoveryBytesPerSecond; rate > 0 && bytes > 0 {
 		delay := time.Duration(bytes*int64(time.Second)) / time.Duration(rate)
 		if delay <= 0 {
@@ -78,8 +107,20 @@ func (r *runtime) processSnapshot(groupID uint64) {
 			r.advanceClock(delay)
 		}
 	}
+	r.completeSnapshot(groupID)
 }
 
 func (r *runtime) maxSnapshotConcurrent() int {
 	return r.snapshots.maxObserved()
+}
+
+func (r *runtime) completeSnapshot(groupID uint64) {
+	r.snapshots.finish()
+	if nextGroupID, ok := r.snapshots.popWaiter(); ok {
+		r.scheduler.enqueue(nextGroupID)
+	}
+}
+
+func (r *runtime) queuedSnapshotGroups() int {
+	return r.snapshots.waitingCount()
 }
