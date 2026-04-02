@@ -12,6 +12,7 @@ type runtime struct {
 
 	mu         sync.RWMutex
 	groups     map[uint64]*group
+	scheduler  *scheduler
 	tombstones map[uint64]map[uint64]tombstone
 }
 
@@ -43,6 +44,7 @@ func New(cfg Config) (Runtime, error) {
 	r := &runtime{
 		cfg:        cfg,
 		groups:     make(map[uint64]*group),
+		scheduler:  newScheduler(),
 		tombstones: make(map[uint64]map[uint64]tombstone),
 	}
 	cfg.Transport.RegisterHandler(r.handleEnvelope)
@@ -82,7 +84,9 @@ func (r *runtime) EnsureGroup(meta isr.GroupMeta) error {
 		id:         meta.GroupID,
 		generation: generation,
 		replica:    replica,
+		now:        r.cfg.Now,
 	})
+	r.groups[meta.GroupID].setMeta(meta)
 	return nil
 }
 
@@ -111,6 +115,7 @@ func (r *runtime) ApplyMeta(meta isr.GroupMeta) error {
 	if !ok {
 		return ErrGroupNotFound
 	}
+	g.setMeta(meta)
 	return g.replica.ApplyMeta(meta)
 }
 

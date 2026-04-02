@@ -78,6 +78,21 @@ func mustRemove(t *testing.T, rt multiisr.Runtime, groupID uint64) {
 	}
 }
 
+func mustGroup(t *testing.T, rt multiisr.Runtime, groupID uint64) multiisr.GroupHandle {
+	t.Helper()
+	group, ok := rt.Group(groupID)
+	if !ok {
+		t.Fatalf("Group(%d) not found", groupID)
+	}
+	return group
+}
+
+func fencedLeaderMeta(groupID uint64) isr.GroupMeta {
+	meta := testMeta(groupID, 1, 1, []isr.NodeID{1, 2})
+	meta.LeaseUntil = time.Unix(1699999999, 0)
+	return meta
+}
+
 type fakeGenerationStore struct {
 	mu     sync.Mutex
 	values map[uint64]uint64
