@@ -129,16 +129,25 @@ func newBenchmarkFetchHarness(t testing.TB, cfg benchmarkFetchConfig) *benchmark
 func (h *benchmarkFetchHarness) rebuild() {
 	h.t.Helper()
 
-	h.leaderEnv = newFetchEnvWithHistory(h.t)
+	h.leaderEnv = newTestEnv(h.t)
+	h.leaderEnv.log.records = makeBenchmarkRecords(h.cfg.backlogRecords, h.cfg.payloadBytes)
+	h.leaderEnv.log.leo = uint64(len(h.leaderEnv.log.records))
+	h.leaderEnv.checkpoints.loadErr = nil
+	h.leaderEnv.checkpoints.checkpoint = Checkpoint{
+		Epoch:          3,
+		LogStartOffset: 0,
+		HW:             uint64(len(h.leaderEnv.log.records)),
+	}
+	h.leaderEnv.history.loadErr = nil
+	h.leaderEnv.history.points = []EpochPoint{{Epoch: 3, StartOffset: 0}}
+	h.leaderEnv.replica = newReplicaFromEnv(h.t, h.leaderEnv)
 	h.leader = h.leaderEnv.replica
 
-	records := makeBenchmarkRecords(h.cfg.backlogRecords, h.cfg.payloadBytes)
-	leo := uint64(len(records))
-	h.leaderEnv.log.records = records
-	h.leaderEnv.log.leo = leo
-	h.leaderEnv.checkpoints.checkpoint.HW = leo
-	h.leader.state.HW = leo
-	h.leader.state.LEO = leo
+	meta := activeMeta(7, 1)
+	h.leader.mustApplyMeta(h.t, meta)
+	if err := h.leader.BecomeLeader(meta); err != nil {
+		h.t.Fatalf("BecomeLeader() error = %v", err)
+	}
 
 	h.req = FetchRequest{
 		GroupID:     h.leader.state.GroupID,
@@ -162,9 +171,8 @@ const (
 )
 
 type benchmarkApplyFetchConfig struct {
-	mode          benchmarkApplyMode
-	payloadBytes  int
-	resetAfterOps int
+	mode         benchmarkApplyMode
+	payloadBytes int
 }
 
 type benchmarkApplyFetchHarness struct {
@@ -293,9 +301,8 @@ func TestBenchmarkFetchFixtureUsesBacklogAndOffsetZero(t *testing.T) {
 
 func TestBenchmarkTruncateApplyFixtureStartsWithDirtyTail(t *testing.T) {
 	harness := newBenchmarkApplyFetchHarness(t, benchmarkApplyFetchConfig{
-		mode:          benchmarkApplyModeTruncateAppend,
-		payloadBytes:  128,
-		resetAfterOps: 1,
+		mode:         benchmarkApplyModeTruncateAppend,
+		payloadBytes: 128,
 	})
 
 	if got := harness.follower.state.LEO; got <= harness.follower.state.HW {
@@ -403,9 +410,8 @@ func BenchmarkReplicaApplyFetch(b *testing.B) {
 		tc := tc
 		b.Run(tc.name, func(b *testing.B) {
 			harness := newBenchmarkApplyFetchHarness(b, benchmarkApplyFetchConfig{
-				mode:          tc.mode,
-				payloadBytes:  128,
-				resetAfterOps: tc.resetAfterOp,
+				mode:         tc.mode,
+				payloadBytes: 128,
 			})
 			b.ReportAllocs()
 			ctx := context.Background()
