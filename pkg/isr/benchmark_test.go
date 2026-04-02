@@ -315,20 +315,43 @@ func TestBenchmarkTruncateApplyFixtureStartsWithDirtyTail(t *testing.T) {
 
 func TestBenchmarkRecoveryFixturesMatchSpec(t *testing.T) {
 	cases := []struct {
-		name  string
-		state string
+		name    string
+		state   string
+		wantLEO uint64
+		wantHW  uint64
+		wantErr error
 	}{
-		{name: "state=empty", state: "empty"},
-		{name: "state=clean_checkpoint", state: "clean_checkpoint"},
-		{name: "state=dirty_tail", state: "dirty_tail"},
+		{name: "state=empty", state: "empty", wantErr: ErrEmptyState},
+		{name: "state=clean_checkpoint", state: "clean_checkpoint", wantLEO: 64, wantHW: 64},
+		{name: "state=dirty_tail", state: "dirty_tail", wantLEO: 96, wantHW: 64},
 	}
 
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newBenchmarkRecoveryFixture(t, tc.state)
-			if fixture == nil {
-				t.Fatal("fixture = nil")
+			if got := fixture.log.LEO(); got != tc.wantLEO {
+				t.Fatalf("log LEO = %d, want %d", got, tc.wantLEO)
+			}
+			if got := fixture.checkpoints.checkpoint.HW; got != tc.wantHW {
+				t.Fatalf("checkpoint HW = %d, want %d", got, tc.wantHW)
+			}
+			if got := fixture.checkpoints.loadErr; got != tc.wantErr {
+				t.Fatalf("checkpoint loadErr = %v, want %v", got, tc.wantErr)
+			}
+			switch tc.state {
+			case "empty":
+				if got := fixture.history.loadErr; got != ErrEmptyState {
+					t.Fatalf("history loadErr = %v, want %v", got, ErrEmptyState)
+				}
+			case "clean_checkpoint", "dirty_tail":
+				if got := fixture.history.loadErr; got != nil {
+					t.Fatalf("history loadErr = %v, want nil", got)
+				}
+				wantPoints := []EpochPoint{{Epoch: 3, StartOffset: 0}}
+				if got := fixture.history.points; len(got) != 1 || got[0] != wantPoints[0] {
+					t.Fatalf("history points = %+v, want %+v", got, wantPoints)
+				}
 			}
 		})
 	}
