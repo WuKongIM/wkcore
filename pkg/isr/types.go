@@ -27,14 +27,13 @@ type GroupMeta struct {
 }
 
 type ReplicaState struct {
-	GroupID         uint64
-	Role            Role
-	Epoch           uint64
-	Leader          NodeID
-	LogStartOffset  uint64
-	HW              uint64
-	LEO             uint64
-	LastLeaseUpdate time.Time
+	GroupID        uint64
+	Role           Role
+	Epoch          uint64
+	Leader         NodeID
+	LogStartOffset uint64
+	HW             uint64
+	LEO            uint64
 }
 
 type Record struct {
