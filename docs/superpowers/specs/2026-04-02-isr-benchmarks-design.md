@@ -95,6 +95,53 @@ state=dirty_tail
 
 这样可以避免模糊命名，也便于后续扩展更多场景。
 
+## Benchmark 夹具配方
+
+为了让实现计划可以直接映射到具体 setup，本设计固定几种基准夹具配方。
+
+### Recovery 夹具
+
+`state=empty`
+
+- `fakeCheckpointStore.Load()` 返回 `ErrEmptyState`
+- `fakeEpochHistoryStore.Load()` 返回 `ErrEmptyState`
+- `fakeLogStore.leo = 0`
+- 预期 `NewReplica` 直接恢复为空 follower 状态
+
+`state=clean_checkpoint`
+
+- `fakeCheckpointStore.Load()` 返回 `{Epoch: 7, LogStartOffset: 0, HW: 64}`
+- `fakeEpochHistoryStore.Load()` 返回 `[{Epoch: 7, StartOffset: 0}]`
+- `fakeLogStore.leo = 64`
+- 预期 `NewReplica` 不触发截断
+
+`state=dirty_tail`
+
+- `fakeCheckpointStore.Load()` 返回 `{Epoch: 7, LogStartOffset: 0, HW: 64}`
+- `fakeEpochHistoryStore.Load()` 返回 `[{Epoch: 7, StartOffset: 0}]`
+- `fakeLogStore.leo = 96`
+- 预期 `NewReplica` 截断到 `HW=64`
+
+### Fetch / ApplyFetch 夹具
+
+`Fetch`
+
+- 使用预填充 leader 日志
+- 预填充记录数由 `backlogRecords` 参数控制
+- `FetchOffset` 默认从 `0` 开始，保证 benchmark 主要测量读取与结果构造成本
+
+`ApplyFetch mode=append_only`
+
+- follower 初始 `LEO=0, HW=0`
+- leader 返回无 `TruncateTo` 的 records
+- 每轮只测追加与 checkpoint 推进
+
+`ApplyFetch mode=truncate_append`
+
+- follower 初始存在未提交脏尾
+- 请求携带 `TruncateTo` 和追加 records
+- 每轮覆盖“先截断，再追加，再 checkpoint”完整路径
+
 ## Benchmark 矩阵
 
 第一版包含五组 benchmark。
@@ -106,7 +153,8 @@ state=dirty_tail
 特点:
 
 - 使用 leader 场景，而不是 follower 或未提交场景
-- benchmark helper 在每轮内推进 follower progress，保证 `Append` 可以完成
+- 计时区间包含 helper 驱动的 follower ack，直到 `Append` 返回提交结果
+- 该 benchmark 测量的是 committed append 路径，而不是“只写 leader 本地日志、不等待提交”的局部路径
 - 使用参数表驱动不同 `batchSize` 与 `payloadBytes`
 
 建议的初始参数:
@@ -222,6 +270,23 @@ benchmark helper 只放在测试文件内，不进入生产代码。
 - 每轮都执行完整复制闭环
 - 如状态累计会影响下一轮，就在计时外重建三副本集群
 - 不引入后台 goroutine 或随机 sleep 控制提交
+
+### `resetAfterOps` 固定规则
+
+第一版明确以下默认值:
+
+- `BenchmarkReplicaAppend`: `resetAfterOps=256`
+- `BenchmarkReplicaFetch`: `resetAfterOps=0`
+- `BenchmarkReplicaApplyFetch mode=append_only`: `resetAfterOps=256`
+- `BenchmarkReplicaApplyFetch mode=truncate_append`: `resetAfterOps=1`
+- `BenchmarkNewReplicaRecovery`: `resetAfterOps=0`
+- `BenchmarkThreeReplicaReplicationRoundTrip`: `resetAfterOps=128`
+
+其中:
+
+- `0` 表示该 benchmark 不需要周期性重建
+- `1` 表示每轮都在计时外重建夹具
+- 非零值必须通过参数表显式声明，不能把重置周期硬编码在循环体中
 
 ## 可扩展性与可维护性
 
