@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
 )
 
 // Wire format (version 1):

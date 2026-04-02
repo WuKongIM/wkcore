@@ -7,7 +7,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/sequence"
-	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
 )
 
 var ErrUnauthenticatedSender = errors.New("usecase/message: unauthenticated sender")

@@ -9,10 +9,10 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/sequence"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/metadata/raftstore"
-	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkdb"
-	"github.com/WuKongIM/WuKongIM/pkg/metadata/wkstore"
+	"github.com/WuKongIM/WuKongIM/pkg/controller/raftstore"
+	"github.com/WuKongIM/WuKongIM/pkg/controller/wkcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/controller/wkstore"
 	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
 )
 
