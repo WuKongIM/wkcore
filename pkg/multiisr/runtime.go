@@ -11,12 +11,13 @@ import (
 type runtime struct {
 	cfg Config
 
-	mu         sync.RWMutex
-	groups     map[uint64]*group
-	scheduler  *scheduler
-	tombstones map[uint64]map[uint64]tombstone
-	sessions   peerSessionCache
-	requestID  atomic.Uint64
+	mu           sync.RWMutex
+	groups       map[uint64]*group
+	scheduler    *scheduler
+	tombstones   map[uint64]map[uint64]tombstone
+	sessions     peerSessionCache
+	peerRequests peerRequestState
+	requestID    atomic.Uint64
 }
 
 func New(cfg Config) (Runtime, error) {
@@ -45,11 +46,12 @@ func New(cfg Config) (Runtime, error) {
 		cfg.Now = time.Now
 	}
 	r := &runtime{
-		cfg:        cfg,
-		groups:     make(map[uint64]*group),
-		scheduler:  newScheduler(),
-		sessions:   newPeerSessionCache(),
-		tombstones: make(map[uint64]map[uint64]tombstone),
+		cfg:          cfg,
+		groups:       make(map[uint64]*group),
+		scheduler:    newScheduler(),
+		sessions:     newPeerSessionCache(),
+		peerRequests: newPeerRequestState(),
+		tombstones:   make(map[uint64]map[uint64]tombstone),
 	}
 	cfg.Transport.RegisterHandler(r.handleEnvelope)
 	return r, nil
@@ -194,4 +196,8 @@ func (r *runtime) processReplication(groupID uint64) {
 			Kind:       MessageKindFetchRequest,
 		})
 	}
+}
+
+func (r *runtime) queuedPeerRequests(peer isr.NodeID) int {
+	return r.peerRequests.queuedCount(peer)
 }

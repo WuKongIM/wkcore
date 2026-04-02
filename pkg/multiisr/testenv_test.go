@@ -20,6 +20,12 @@ type testEnv struct {
 }
 
 func newTestEnv(t *testing.T) *testEnv {
+	return newTestEnvWithOptions(t)
+}
+
+type testEnvOption func(*multiisr.Config)
+
+func newTestEnvWithOptions(t *testing.T, opts ...testEnvOption) *testEnv {
 	t.Helper()
 
 	clock := newManualClock(time.Unix(1700000000, 0))
@@ -28,7 +34,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	transport := &fakeTransport{}
 	sessions := &fakePeerSessionManager{}
 
-	rt, err := multiisr.New(multiisr.Config{
+	cfg := multiisr.Config{
 		LocalNode:       1,
 		ReplicaFactory:  factory,
 		GenerationStore: generations,
@@ -38,7 +44,12 @@ func newTestEnv(t *testing.T) *testEnv {
 			TombstoneTTL: 30 * time.Second,
 		},
 		Now: clock.Now,
-	})
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	rt, err := multiisr.New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -50,6 +61,12 @@ func newTestEnv(t *testing.T) *testEnv {
 		transport:   transport,
 		sessions:    sessions,
 		clock:       clock,
+	}
+}
+
+func withMaxGroups(n int) testEnvOption {
+	return func(cfg *multiisr.Config) {
+		cfg.Limits.MaxGroups = n
 	}
 }
 

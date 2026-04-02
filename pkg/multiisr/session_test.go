@@ -235,10 +235,42 @@ func (m *sessionPeerSessionManager) createdFor(peer isr.NodeID) int {
 	return m.created[peer]
 }
 
-type trackingPeerSession struct{}
+func (m *sessionPeerSessionManager) session(peer isr.NodeID) *trackingPeerSession {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cache[peer]
+}
 
-func (s *trackingPeerSession) Send(env Envelope) error         { return nil }
-func (s *trackingPeerSession) TryBatch(env Envelope) bool      { return false }
-func (s *trackingPeerSession) Flush() error                    { return nil }
-func (s *trackingPeerSession) Backpressure() BackpressureState { return BackpressureState{} }
-func (s *trackingPeerSession) Close() error                    { return nil }
+type trackingPeerSession struct {
+	mu    sync.Mutex
+	sends int
+}
+
+func (s *trackingPeerSession) Send(env Envelope) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sends++
+	return nil
+}
+
+func (s *trackingPeerSession) TryBatch(env Envelope) bool {
+	return false
+}
+
+func (s *trackingPeerSession) Flush() error {
+	return nil
+}
+
+func (s *trackingPeerSession) Backpressure() BackpressureState {
+	return BackpressureState{}
+}
+
+func (s *trackingPeerSession) Close() error {
+	return nil
+}
+
+func (s *trackingPeerSession) sendCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sends
+}

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/WuKongIM/WuKongIM/pkg/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/multiisr"
 )
 
 func TestAppendChecksLeaseSynchronouslyBeforeReplicaAppend(t *testing.T) {
@@ -19,5 +20,32 @@ func TestAppendChecksLeaseSynchronouslyBeforeReplicaAppend(t *testing.T) {
 	}
 	if env.factory.replicas[0].appendCalls != 0 {
 		t.Fatalf("append should be fenced before reaching replica")
+	}
+}
+
+func TestRuntimeReconcileFlowEnsureApplyRemoveEnsure(t *testing.T) {
+	env := newTestEnv(t)
+	meta1 := testMeta(31, 1, 1, []isr.NodeID{1, 2})
+	meta2 := testMeta(31, 2, 2, []isr.NodeID{1, 2})
+
+	mustEnsure(t, env.runtime, meta1)
+	if err := env.runtime.ApplyMeta(meta2); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+	mustRemove(t, env.runtime, 31)
+	if err := env.runtime.EnsureGroup(meta2); err != nil {
+		t.Fatalf("EnsureGroup() after remove error = %v", err)
+	}
+	if got := env.generations.stored[31]; got != 2 {
+		t.Fatalf("expected generation 2 after re-ensure, got %d", got)
+	}
+}
+
+func TestEnsureGroupReturnsErrTooManyGroups(t *testing.T) {
+	env := newTestEnvWithOptions(t, withMaxGroups(1))
+	mustEnsure(t, env.runtime, testMeta(41, 1, 1, []isr.NodeID{1, 2}))
+	err := env.runtime.EnsureGroup(testMeta(42, 1, 1, []isr.NodeID{1, 2}))
+	if !errors.Is(err, multiisr.ErrTooManyGroups) {
+		t.Fatalf("expected ErrTooManyGroups, got %v", err)
 	}
 }
