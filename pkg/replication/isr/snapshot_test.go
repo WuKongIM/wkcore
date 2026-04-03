@@ -11,7 +11,7 @@ func TestInstallSnapshotPersistsPayloadBeforeCheckpoint(t *testing.T) {
 	env := newFollowerEnv(t)
 	env.log.leo = 8
 	snap := Snapshot{
-		GroupID:   10,
+		GroupKey:  "group-10",
 		Epoch:     7,
 		EndOffset: 8,
 		Payload:   []byte("snap"),
@@ -33,7 +33,7 @@ func TestInstallSnapshotRejectsLogStoreBehindSnapshotEndOffset(t *testing.T) {
 	env.log.leo = 5
 
 	err := env.replica.InstallSnapshot(context.Background(), Snapshot{
-		GroupID:   10,
+		GroupKey:  "group-10",
 		Epoch:     7,
 		EndOffset: 8,
 	})
@@ -46,7 +46,7 @@ func TestNewReplicaRecoversInstalledSnapshotOffsets(t *testing.T) {
 	env := newFollowerEnv(t)
 	env.log.leo = 8
 	snap := Snapshot{
-		GroupID:   10,
+		GroupKey:  "group-10",
 		Epoch:     7,
 		EndOffset: 8,
 		Payload:   []byte("snap"),

@@ -6,6 +6,7 @@ import (
 )
 
 type NodeID uint64
+type GroupKey string
 
 type Role uint8
 
@@ -17,7 +18,7 @@ const (
 )
 
 type GroupMeta struct {
-	GroupID    uint64
+	GroupKey   GroupKey
 	Epoch      uint64
 	Leader     NodeID
 	Replicas   []NodeID
@@ -27,7 +28,7 @@ type GroupMeta struct {
 }
 
 type ReplicaState struct {
-	GroupID        uint64
+	GroupKey       GroupKey
 	Role           Role
 	Epoch          uint64
 	Leader         NodeID
@@ -48,7 +49,7 @@ type Checkpoint struct {
 }
 
 type Snapshot struct {
-	GroupID   uint64
+	GroupKey  GroupKey
 	Epoch     uint64
 	EndOffset uint64
 	Payload   []byte
@@ -66,7 +67,7 @@ type CommitResult struct {
 }
 
 type FetchRequest struct {
-	GroupID     uint64
+	GroupKey    GroupKey
 	Epoch       uint64
 	ReplicaID   NodeID
 	FetchOffset uint64
@@ -82,7 +83,7 @@ type FetchResult struct {
 }
 
 type ApplyFetchRequest struct {
-	GroupID    uint64
+	GroupKey   GroupKey
 	Epoch      uint64
 	Leader     NodeID
 	TruncateTo *uint64

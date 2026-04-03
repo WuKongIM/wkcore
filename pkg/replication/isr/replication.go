@@ -12,7 +12,7 @@ func (r *replica) ApplyFetch(_ context.Context, req ApplyFetchRequest) error {
 	if r.state.Role != RoleFollower && r.state.Role != RoleFencedLeader {
 		return ErrNotLeader
 	}
-	if r.state.GroupID != 0 && req.GroupID != r.state.GroupID {
+	if r.state.GroupKey != "" && req.GroupKey != r.state.GroupKey {
 		return ErrStaleMeta
 	}
 	if req.Epoch != r.state.Epoch {

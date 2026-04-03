@@ -18,7 +18,7 @@ func (r *replica) Fetch(_ context.Context, req FetchRequest) (FetchResult, error
 	if r.state.Role != RoleLeader && r.state.Role != RoleFencedLeader {
 		return FetchResult{}, ErrNotLeader
 	}
-	if r.state.GroupID != 0 && req.GroupID != r.state.GroupID {
+	if r.state.GroupKey != "" && req.GroupKey != r.state.GroupKey {
 		return FetchResult{}, ErrStaleMeta
 	}
 	if req.Epoch != r.state.Epoch {

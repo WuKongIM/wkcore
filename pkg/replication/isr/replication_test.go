@@ -23,7 +23,7 @@ func TestApplyFetchTruncatesUncommittedTailBeforeAppending(t *testing.T) {
 	truncateTo := uint64(4)
 
 	err := env.replica.ApplyFetch(context.Background(), ApplyFetchRequest{
-		GroupID:    10,
+		GroupKey:   "group-10",
 		Epoch:      7,
 		Leader:     1,
 		TruncateTo: &truncateTo,
@@ -38,11 +38,25 @@ func TestApplyFetchTruncatesUncommittedTailBeforeAppending(t *testing.T) {
 	}
 }
 
+func TestApplyFetchRejectsMismatchedGroupKey(t *testing.T) {
+	env := newFollowerEnv(t)
+
+	err := env.replica.ApplyFetch(context.Background(), ApplyFetchRequest{
+		GroupKey: "group-other",
+		Epoch:    7,
+		Leader:   1,
+		LeaderHW: 0,
+	})
+	if !errors.Is(err, ErrStaleMeta) {
+		t.Fatalf("expected ErrStaleMeta, got %v", err)
+	}
+}
+
 func TestApplyFetchAdvancesCheckpointToMinLeaderHWAndLEO(t *testing.T) {
 	env := newFollowerEnv(t)
 
 	err := env.replica.ApplyFetch(context.Background(), ApplyFetchRequest{
-		GroupID:  10,
+		GroupKey: "group-10",
 		Epoch:    7,
 		Leader:   1,
 		Records:  []Record{{Payload: []byte("a"), SizeBytes: 1}},
@@ -60,7 +74,7 @@ func TestApplyFetchRejectsStaleEpoch(t *testing.T) {
 	env := newFollowerEnv(t)
 
 	err := env.replica.ApplyFetch(context.Background(), ApplyFetchRequest{
-		GroupID:  10,
+		GroupKey: "group-10",
 		Epoch:    6,
 		Leader:   1,
 		LeaderHW: 0,
@@ -76,7 +90,7 @@ func TestApplyFetchRejectsTruncateBelowHW(t *testing.T) {
 	truncateTo := uint64(3)
 
 	err := env.replica.ApplyFetch(context.Background(), ApplyFetchRequest{
-		GroupID:    10,
+		GroupKey:   "group-10",
 		Epoch:      7,
 		Leader:     1,
 		TruncateTo: &truncateTo,

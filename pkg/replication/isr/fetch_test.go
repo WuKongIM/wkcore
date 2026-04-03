@@ -10,7 +10,7 @@ func TestFetchRejectsInvalidBudget(t *testing.T) {
 	r := newLeaderReplica(t)
 
 	_, err := r.Fetch(context.Background(), FetchRequest{
-		GroupID:     10,
+		GroupKey:    "group-10",
 		Epoch:       7,
 		ReplicaID:   2,
 		FetchOffset: 0,
@@ -22,11 +22,27 @@ func TestFetchRejectsInvalidBudget(t *testing.T) {
 	}
 }
 
+func TestFetchRejectsMismatchedGroupKey(t *testing.T) {
+	r := newLeaderReplica(t)
+
+	_, err := r.Fetch(context.Background(), FetchRequest{
+		GroupKey:    "group-other",
+		Epoch:       7,
+		ReplicaID:   2,
+		FetchOffset: 0,
+		OffsetEpoch: 3,
+		MaxBytes:    1024,
+	})
+	if !errors.Is(err, ErrStaleMeta) {
+		t.Fatalf("expected ErrStaleMeta, got %v", err)
+	}
+}
+
 func TestFetchReturnsTruncateToWhenOffsetEpochDiverges(t *testing.T) {
 	env := newFetchEnvWithHistory(t)
 
 	result, err := env.replica.Fetch(context.Background(), FetchRequest{
-		GroupID:     10,
+		GroupKey:    "group-10",
 		Epoch:       7,
 		ReplicaID:   2,
 		FetchOffset: 5,
@@ -46,7 +62,7 @@ func TestFetchReturnsSnapshotRequiredWhenFollowerFallsBehindLogStart(t *testing.
 	env.replica.state.LogStartOffset = 4
 
 	_, err := env.replica.Fetch(context.Background(), FetchRequest{
-		GroupID:     10,
+		GroupKey:    "group-10",
 		Epoch:       7,
 		ReplicaID:   2,
 		FetchOffset: 3,
@@ -62,7 +78,7 @@ func TestFetchUpdatesLeaderProgressFromFollowerAck(t *testing.T) {
 	env := newFetchEnvWithHistory(t)
 
 	_, err := env.replica.Fetch(context.Background(), FetchRequest{
-		GroupID:     10,
+		GroupKey:    "group-10",
 		Epoch:       7,
 		ReplicaID:   2,
 		FetchOffset: 5,

@@ -14,11 +14,9 @@ func (r *replica) applyMetaLocked(meta GroupMeta) error {
 
 func (r *replica) validateMetaLocked(normalized GroupMeta) error {
 	switch {
-	case r.state.GroupID != 0 && normalized.GroupID != r.state.GroupID:
+	case r.state.GroupKey != "" && normalized.GroupKey != r.state.GroupKey:
 		return ErrInvalidMeta
 	case normalized.Epoch < r.state.Epoch:
-		return ErrStaleMeta
-	case normalized.Epoch == r.state.Epoch && r.state.GroupID != 0 && normalized.GroupID != r.state.GroupID:
 		return ErrStaleMeta
 	case normalized.Epoch == r.state.Epoch && r.state.Leader != 0 && normalized.Leader != r.state.Leader:
 		return ErrStaleMeta
@@ -28,7 +26,7 @@ func (r *replica) validateMetaLocked(normalized GroupMeta) error {
 
 func (r *replica) commitMetaLocked(normalized GroupMeta) {
 	r.meta = normalized
-	r.state.GroupID = normalized.GroupID
+	r.state.GroupKey = normalized.GroupKey
 	r.state.Epoch = normalized.Epoch
 	r.state.Leader = normalized.Leader
 }
@@ -37,7 +35,7 @@ func normalizeMeta(meta GroupMeta) (GroupMeta, error) {
 	meta.Replicas = dedupeNodeIDs(meta.Replicas)
 	meta.ISR = dedupeNodeIDs(meta.ISR)
 
-	if meta.GroupID == 0 {
+	if meta.GroupKey == "" {
 		return GroupMeta{}, ErrInvalidMeta
 	}
 	if len(meta.Replicas) == 0 {

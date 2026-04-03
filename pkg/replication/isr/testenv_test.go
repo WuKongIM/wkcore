@@ -373,7 +373,7 @@ func activeMeta(epoch uint64, leader NodeID) GroupMeta {
 
 func activeMetaWithMinISR(epoch uint64, leader NodeID, minISR int) GroupMeta {
 	return GroupMeta{
-		GroupID:    10,
+		GroupKey:   "group-10",
 		Epoch:      epoch,
 		Leader:     leader,
 		Replicas:   []NodeID{1, 2, 3},
@@ -440,7 +440,7 @@ func (c *threeReplicaCluster) replicateOnce(t testing.TB, follower *replica) {
 	t.Helper()
 
 	req := FetchRequest{
-		GroupID:     c.leader.state.GroupID,
+		GroupKey:    c.leader.state.GroupKey,
 		Epoch:       c.leader.state.Epoch,
 		ReplicaID:   follower.localNode,
 		FetchOffset: follower.state.LEO,
@@ -452,7 +452,7 @@ func (c *threeReplicaCluster) replicateOnce(t testing.TB, follower *replica) {
 		t.Fatalf("Fetch() error = %v", err)
 	}
 	if err := follower.ApplyFetch(context.Background(), ApplyFetchRequest{
-		GroupID:    req.GroupID,
+		GroupKey:   req.GroupKey,
 		Epoch:      result.Epoch,
 		Leader:     c.leader.localNode,
 		TruncateTo: result.TruncateTo,
@@ -465,7 +465,7 @@ func (c *threeReplicaCluster) replicateOnce(t testing.TB, follower *replica) {
 		t.Fatal("follower LEO did not advance after ApplyFetch")
 	}
 	_, err = c.leader.Fetch(context.Background(), FetchRequest{
-		GroupID:     req.GroupID,
+		GroupKey:    req.GroupKey,
 		Epoch:       result.Epoch,
 		ReplicaID:   follower.localNode,
 		FetchOffset: follower.state.LEO,
