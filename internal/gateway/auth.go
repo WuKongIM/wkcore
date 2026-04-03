@@ -12,9 +12,10 @@ type AuthenticatorFunc = gatewaytypes.AuthenticatorFunc
 type AuthResult = gatewaytypes.AuthResult
 
 const (
-	SessionValueUID         = "gateway.uid"
-	SessionValueDeviceFlag  = "gateway.device_flag"
-	SessionValueDeviceLevel = "gateway.device_level"
+	SessionValueUID             = gatewaytypes.SessionValueUID
+	SessionValueDeviceFlag      = gatewaytypes.SessionValueDeviceFlag
+	SessionValueDeviceLevel     = gatewaytypes.SessionValueDeviceLevel
+	SessionValueProtocolVersion = gatewaytypes.SessionValueProtocolVersion
 )
 
 type WKProtoAuthOptions struct {
@@ -89,6 +90,7 @@ func NewWKProtoAuthenticator(opts WKProtoAuthOptions) Authenticator {
 				SessionValueUID:         connect.UID,
 				SessionValueDeviceFlag:  connect.DeviceFlag,
 				SessionValueDeviceLevel: deviceLevel,
+				SessionValueProtocolVersion: serverVersion,
 			},
 		}, nil
 	})

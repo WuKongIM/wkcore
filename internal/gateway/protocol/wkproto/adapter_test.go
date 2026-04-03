@@ -3,6 +3,7 @@ package wkproto_test
 import (
 	"testing"
 
+	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	adapterpkg "github.com/WuKongIM/WuKongIM/internal/gateway/protocol/wkproto"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
@@ -76,5 +77,34 @@ func TestAdapterDecodeStickyFrames(t *testing.T) {
 	}
 	if len(frames) != 2 {
 		t.Fatalf("expected two frames, got %d", len(frames))
+	}
+}
+
+func TestAdapterUsesSessionVersionForOutboundFrames(t *testing.T) {
+	adapter := adapterpkg.New()
+	sess := testkit.NewProtocolSession()
+	sess.SetValue(gateway.SessionValueProtocolVersion, uint8(5))
+
+	encoded, err := adapter.Encode(sess, &wkpacket.SendackPacket{
+		MessageID:   9,
+		MessageSeq:  42,
+		ClientSeq:   7,
+		ClientMsgNo: "m1",
+		ReasonCode:  wkpacket.ReasonSuccess,
+	}, session.OutboundMeta{})
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+
+	frame, _, err := codec.New().DecodeFrame(encoded, 5)
+	if err != nil {
+		t.Fatalf("DecodeFrame: %v", err)
+	}
+	ack, ok := frame.(*wkpacket.SendackPacket)
+	if !ok {
+		t.Fatalf("expected sendack, got %T", frame)
+	}
+	if ack.MessageSeq != 42 {
+		t.Fatalf("MessageSeq = %d, want 42", ack.MessageSeq)
 	}
 }
