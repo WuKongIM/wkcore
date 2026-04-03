@@ -110,7 +110,7 @@ Each node process creates one local snowflake generator at startup.
 V1 uses direct node-id mapping:
 
 - app `Node.ID` maps directly to the snowflake node id
-- startup must validate that `Node.ID` fits the supported snowflake node-id range
+- startup must validate that `Node.ID` fits the supported snowflake node-id range `0..1023`
 - if the configured node id is outside that range, app startup must fail fast
 
 This is a deliberate V1 constraint because silent hashing or truncation would risk collisions.
@@ -135,6 +135,20 @@ Projection rules:
 
 `LeaseUntil` must come from the control plane.
 The send path must not invent or extend leader lease locally.
+
+### Metadata Distribution
+
+Request-scoped metadata refresh is not sufficient for multi-node ISR readiness.
+
+Every replica node listed in `ChannelRuntimeMeta.Replicas` must have local metadata and local ISR group lifecycle applied before it can participate in replication.
+
+V1 requires a node-local metadata sync path in `internal/app`:
+
+- preload all channel runtime metadata whose replica set includes the local node during startup
+- reconcile local applied metadata when the control-plane metadata changes or on bounded periodic refresh
+- ensure follower groups are created and updated before the leader depends on them for commit
+
+`message.MetaRefresher` remains a request-path repair mechanism for stale local metadata, not the primary metadata distribution mechanism for the data plane.
 
 ## Write Path
 
@@ -178,7 +192,29 @@ Reason:
 - if quorum is not satisfied, ISR append may wait for replication progress
 - that wait must be cancellable
 
+This requires plumbing context from access ingress down into the durable send path.
+
+V1 must not recreate an unbounded background context inside the usecase.
+
 ## Replication Transport
+
+### Required `isrnode` Core Extension
+
+The transport adapter alone is not sufficient with the current `pkg/replication/isrnode` surface.
+
+Today the runtime can originate replication work and consume fetch responses, but it does not expose a production serving path for inbound fetch requests.
+
+V1 must add a narrow core extension in `pkg/replication/isrnode` for serving inbound replication fetches:
+
+- accept a fetch request addressed by group key, generation, epoch, and follower identity
+- validate local ownership and generation fencing
+- execute the local replica fetch path
+- return a fetch result payload for the transport adapter to encode and send
+
+The rule is:
+
+- fetch semantics and group/generation validation stay in `pkg/replication/isrnode`
+- wire framing and network transport stay in the adapter package
 
 ### Required Production Adapter
 
@@ -191,6 +227,7 @@ Responsibilities:
 - implement `isrnode.Transport`
 - implement `isrnode.PeerSessionManager`
 - define the concrete wire codec for ISR replication envelopes and responses
+- use the narrow `isrnode` fetch-serving extension for inbound replication requests
 - isolate data-plane traffic from existing raft traffic
 
 This adapter must stay outside `pkg/replication/isrnode` so the core runtime remains generic.
@@ -200,6 +237,8 @@ This adapter must stay outside `pkg/replication/isrnode` so the core runtime rem
 - data-plane transport uses its own message types or RPC payloads on shared node transport
 - replication traffic must not reuse control-plane raft payload semantics
 - per-peer session reuse and backpressure remain the responsibility of the transport adapter
+- V1 must not assume a second independent `nodetransport.Server.HandleRPC(...)` registration slot on the shared server; the existing control-plane runtime already owns that slot today
+- if shared RPC is used, the implementation must introduce an explicit RPC multiplexer; otherwise prefer dedicated data-plane message types on the shared server
 
 ## Channel State Storage
 
@@ -292,10 +331,12 @@ Cross-node online fanout is explicitly out of scope for this phase.
 1. add real `ChannelStateStore` and `StateStoreFactory` to `pkg/storage/channellog`
 2. add snowflake-backed `MessageIDGenerator`
 3. add authoritative control-plane `ChannelRuntimeMeta`
-4. add production `isrnode` transport/session adapter on top of `nodetransport`
-5. wire `isrnode.Runtime` + `channellog.Cluster` into `internal/app`
-6. switch `message.App` durable path to request-scoped context and real `channellog.Cluster`
-7. add three-node integration coverage
+4. add the narrow `isrnode` inbound fetch-serving extension
+5. add production `isrnode` transport/session adapter on top of `nodetransport`
+6. add node-local metadata preload and reconcile in `internal/app`
+7. wire `isrnode.Runtime` + `channellog.Cluster` into `internal/app`
+8. switch `message.App` durable path to request-scoped context and real `channellog.Cluster`
+9. add three-node integration coverage
 
 ## Completion Criteria
 
@@ -306,4 +347,3 @@ This phase is complete when all of the following are true:
 - acked messages are readable from `pkg/storage/channellog`
 - follower restart preserves committed messages
 - `ErrStaleMeta`, `ErrNotLeader`, lease-expired, and quorum-timeout semantics are deterministic
-
