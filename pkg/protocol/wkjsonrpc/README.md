@@ -13,7 +13,7 @@ Takes a Go struct representing a JSON-RPC message (Request, Response, or Notific
 **Example:**
 
 ```go
-import "github.com/WuKongIM/WuKongIM/pkg/proto/jsonrpc"
+import "github.com/WuKongIM/WuKongIM/pkg/protocol/wkjsonrpc"
 
 // Assuming connectReq is a populated jsonrpc.ConnectRequest struct
 jsonData, err := jsonrpc.Encode(connectReq)
@@ -42,7 +42,7 @@ import (
 	"encoding/json"
 	"net"
 	"log"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/jsonrpc"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkjsonrpc"
 	"io"
 )
 

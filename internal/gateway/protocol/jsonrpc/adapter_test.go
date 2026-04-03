@@ -8,8 +8,8 @@ import (
 	adapterpkg "github.com/WuKongIM/WuKongIM/internal/gateway/protocol/jsonrpc"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
-	pkgjsonrpc "github.com/WuKongIM/WuKongIM/pkg/proto/jsonrpc"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	pkgjsonrpc "github.com/WuKongIM/WuKongIM/pkg/protocol/wkjsonrpc"
 )
 
 func TestAdapterDecodeReturnsReplyTokenForRequest(t *testing.T) {

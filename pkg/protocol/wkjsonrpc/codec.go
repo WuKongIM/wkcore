@@ -1,4 +1,4 @@
-package jsonrpc
+package wkjsonrpc
 
 import (
 	"encoding/json"

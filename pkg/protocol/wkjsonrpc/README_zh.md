@@ -13,7 +13,7 @@
 **示例：**
 
 ```go
-import "github.com/WuKongIM/WuKongIM/pkg/proto/jsonrpc"
+import "github.com/WuKongIM/WuKongIM/pkg/protocol/wkjsonrpc"
 
 // 假设 connectReq 是一个已填充数据的 jsonrpc.ConnectRequest 结构体
 jsonData, err := jsonrpc.Encode(connectReq)
@@ -42,7 +42,7 @@ import (
 	"encoding/json"
 	"net"
 	"log"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/jsonrpc"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkjsonrpc"
 	"io"
 )
 
