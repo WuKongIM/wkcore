@@ -6,7 +6,7 @@ import "fmt"
 type RecvackPacket struct {
 	Framer
 	MessageID  int64  // 服务端的消息ID(全局唯一)
-	MessageSeq uint32 // 消息序列号
+	MessageSeq uint64 // 消息序列号
 }
 
 // GetPacketType 包类型

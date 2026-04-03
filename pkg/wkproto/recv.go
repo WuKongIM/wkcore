@@ -64,7 +64,7 @@ func decodeRecv(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Fram
 		return nil, errors.Wrap(err, "解码MessageId失败！")
 	}
 	// 消息序列号 （用户唯一，有序递增）
-	if recvPacket.MessageSeq, err = dec.Uint32(); err != nil {
+	if recvPacket.MessageSeq, err = decodeMessageSeq(dec, version); err != nil {
 		return nil, errors.Wrap(err, "解码MessageSeq失败！")
 	}
 	// 消息时间
@@ -127,7 +127,9 @@ func encodeRecv(recvPacket *wkpacket.RecvPacket, enc *Encoder, version uint8) er
 	// 消息唯一ID
 	enc.WriteInt64(recvPacket.MessageID)
 	// 消息有序ID
-	enc.WriteUint32(recvPacket.MessageSeq)
+	if err := encodeMessageSeq(enc, version, recvPacket.MessageSeq); err != nil {
+		return err
+	}
 	// 消息时间戳
 	enc.WriteInt32(recvPacket.Timestamp)
 
@@ -158,7 +160,7 @@ func encodeRecvSize(packet *wkpacket.RecvPacket, version uint8) int {
 		}
 	}
 	size += wkpacket.MessageIDByteSize
-	size += wkpacket.MessageSeqByteSize
+	size += messageSeqSize(version)
 	size += wkpacket.TimestampByteSize
 	if packet.Setting.IsSet(wkpacket.SettingTopic) {
 		size += len(packet.Topic) + wkpacket.StringFixLenByteSize

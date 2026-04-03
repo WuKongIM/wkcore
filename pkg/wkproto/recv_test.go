@@ -49,3 +49,26 @@ func TestRecvEncodeAndDecode(t *testing.T) {
 	assert.Equal(t, packet.Framer.GetRedDot(), resultRecvPacket.Framer.GetRedDot())
 	assert.Equal(t, packet.Framer.GetsyncOnce(), resultRecvPacket.Framer.GetsyncOnce())
 }
+
+func TestRecvEncodeAndDecodeSupportsUint64MessageSeqOnLatestVersion(t *testing.T) {
+	packet := &wkpacket.RecvPacket{
+		MessageID:   1223,
+		Expire:      10,
+		MessageSeq:  uint64(^uint32(0)) + 7,
+		Timestamp:   int32(time.Now().Unix()),
+		ChannelID:   "3434",
+		ChannelType: 2,
+		FromUID:     "123",
+		Payload:     []byte("u64"),
+	}
+
+	codec := New()
+	packetBytes, err := codec.EncodeFrame(packet, wkpacket.LatestVersion)
+	assert.NoError(t, err)
+
+	resultPacket, _, err := codec.DecodeFrame(packetBytes, wkpacket.LatestVersion)
+	assert.NoError(t, err)
+	resultRecvPacket, ok := resultPacket.(*wkpacket.RecvPacket)
+	assert.Equal(t, true, ok)
+	assert.Equal(t, packet.MessageSeq, resultRecvPacket.MessageSeq)
+}

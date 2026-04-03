@@ -310,7 +310,9 @@ const (
 	TimeDiffByteSize        = 8
 	ReasonCodeByteSize      = 1
 	MessageIDByteSize       = 8
-	MessageSeqByteSize      = 4
+	MessageSeqLegacyByteSize = 4
+	MessageSeqU64ByteSize    = 8
+	MessageSeqByteSize       = MessageSeqU64ByteSize
 	TimestampByteSize       = 4
 	BigTimestampByteSize    = 8
 	ActionByteSize          = 1
@@ -350,6 +352,8 @@ const (
 )
 
 const (
+	LegacyMessageSeqVersion = 5
+	MessageSeqU64Version    = 6
 	// LatestVersion 最新版本
-	LatestVersion = 5
+	LatestVersion = MessageSeqU64Version
 )

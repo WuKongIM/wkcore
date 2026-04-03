@@ -34,3 +34,23 @@ func TestSendackEncodeAndDecode(t *testing.T) {
 	assert.Equal(t, packet.MessageID, resultSendackPacket.MessageID)
 	assert.Equal(t, packet.ReasonCode, resultSendackPacket.ReasonCode)
 }
+
+func TestSendackEncodeAndDecodeSupportsUint64MessageSeqOnLatestVersion(t *testing.T) {
+	packet := &wkpacket.SendackPacket{
+		ClientSeq:   234,
+		ClientMsgNo: "client-msg-no",
+		MessageSeq:  uint64(^uint32(0)) + 7,
+		MessageID:   1234,
+		ReasonCode:  wkpacket.ReasonSuccess,
+	}
+
+	codec := New()
+	packetBytes, err := codec.EncodeFrame(packet, wkpacket.LatestVersion)
+	assert.NoError(t, err)
+
+	resultPacket, _, err := codec.DecodeFrame(packetBytes, wkpacket.LatestVersion)
+	assert.NoError(t, err)
+	resultSendackPacket, ok := resultPacket.(*wkpacket.SendackPacket)
+	assert.Equal(t, true, ok)
+	assert.Equal(t, packet.MessageSeq, resultSendackPacket.MessageSeq)
+}

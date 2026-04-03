@@ -3,8 +3,8 @@ package wkpacket
 import "testing"
 
 func TestLatestVersionAndFrameTypes(t *testing.T) {
-	if LatestVersion != 5 {
-		t.Fatalf("LatestVersion = %d, want 5", LatestVersion)
+	if LatestVersion != 6 {
+		t.Fatalf("LatestVersion = %d, want 6", LatestVersion)
 	}
 
 	if got := (&PingPacket{}).GetFrameType(); got != PING {

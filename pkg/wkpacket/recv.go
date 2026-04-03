@@ -22,7 +22,7 @@ type RecvPacket struct {
 	MsgKey      string // 用于验证此消息是否合法（仿中间人篡改）
 	Expire      uint32 // 消息过期时间 0 表示永不过期
 	MessageID   int64  // 服务端的消息ID(全局唯一)
-	MessageSeq  uint32 // 消息序列号 （用户唯一，有序递增）
+	MessageSeq  uint64 // 消息序列号 （用户唯一，有序递增）
 	ClientMsgNo string // 客户端唯一标示
 
 	// 以下三个字段在5版本后不再支持
