@@ -35,10 +35,6 @@ func New(cfg Config) (Cluster, error) {
 	}, nil
 }
 
-func (c *cluster) Send(context.Context, SendRequest) (SendResult, error) {
-	return SendResult{}, errNotImplemented
-}
-
 func (c *cluster) Fetch(context.Context, FetchRequest) (FetchResult, error) {
 	return FetchResult{}, errNotImplemented
 }

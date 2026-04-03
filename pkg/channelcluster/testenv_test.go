@@ -7,13 +7,19 @@ import (
 )
 
 type fakeGroupHandle struct {
-	state     isr.ReplicaState
-	appendErr error
+	state       isr.ReplicaState
+	appendErr   error
+	appendCalls int
+	appendFn    func([]isr.Record) (isr.CommitResult, error)
 }
 
-func (f *fakeGroupHandle) Append(context.Context, []isr.Record) (isr.CommitResult, error) {
+func (f *fakeGroupHandle) Append(_ context.Context, records []isr.Record) (isr.CommitResult, error) {
+	f.appendCalls++
 	if f.appendErr != nil {
 		return isr.CommitResult{}, f.appendErr
+	}
+	if f.appendFn != nil {
+		return f.appendFn(records)
 	}
 	return isr.CommitResult{}, nil
 }
