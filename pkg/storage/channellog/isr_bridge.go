@@ -1,12 +1,10 @@
 package channellog
 
 import (
-	"bytes"
 	"context"
 	"sync"
 
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
-	"github.com/cockroachdb/pebble/v2"
 )
 
 type isrLogStoreBridge struct {
@@ -79,35 +77,16 @@ func (b *isrLogStoreBridge) Read(from uint64, maxBytes int) ([]isr.Record, error
 		return nil, nil
 	}
 
-	prefix := encodeLogPrefix(b.store.groupKey)
-	iter, err := b.store.db.db.NewIter(&pebble.IterOptions{
-		LowerBound: encodeLogRecordKey(b.store.groupKey, from),
-		UpperBound: keyUpperBound(prefix),
+	out := make([]isr.Record, 0, logScanInitialCapacity)
+	_, err := b.store.db.scanGroupOffsets(b.store.groupKey, from, maxLogScanLimit(), maxBytes, func(_ uint64, payload []byte) error {
+		out = append(out, isr.Record{
+			Payload:   payload,
+			SizeBytes: len(payload),
+		})
+		return nil
 	})
 	if err != nil {
 		return nil, err
-	}
-	defer iter.Close()
-
-	out := make([]isr.Record, 0)
-	total := 0
-	for valid := iter.First(); valid; valid = iter.Next() {
-		if !bytes.HasPrefix(iter.Key(), prefix) {
-			break
-		}
-		payload := append([]byte(nil), iter.Value()...)
-		record := isr.Record{
-			Payload:   payload,
-			SizeBytes: len(payload),
-		}
-		if len(out) > 0 && total+record.SizeBytes > maxBytes {
-			break
-		}
-		out = append(out, record)
-		total += record.SizeBytes
-		if len(out) == 1 && total > maxBytes {
-			break
-		}
 	}
 	return out, nil
 }

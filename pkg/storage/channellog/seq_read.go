@@ -7,6 +7,8 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
+const seqReadChunkLimit = 256
+
 func (s *Store) LoadMsg(seq uint64) (ChannelMessage, error) {
 	if err := s.validate(); err != nil {
 		return ChannelMessage{}, err
@@ -58,29 +60,7 @@ func (s *Store) LoadNextRangeMsgs(startSeq, endSeq uint64, limit int) ([]Channel
 	if startSeq > maxSeq {
 		return nil, nil
 	}
-
-	count := cappedReadCount(maxSeq-startSeq+1, limit)
-	if count == 0 {
-		return nil, nil
-	}
-	records, err := s.readOffsets(startSeq-1, count, math.MaxInt)
-	if err != nil {
-		return nil, err
-	}
-
-	msgs := make([]ChannelMessage, 0, len(records))
-	for _, record := range records {
-		seq := record.Offset + 1
-		if seq > maxSeq {
-			break
-		}
-		msg, err := decodeChannelMessage(record)
-		if err != nil {
-			return nil, err
-		}
-		msgs = append(msgs, msg)
-	}
-	return msgs, nil
+	return s.loadRangeMsgs(startSeq, maxSeq, limit)
 }
 
 func (s *Store) LoadPrevRangeMsgs(startSeq, endSeq uint64, limit int) ([]ChannelMessage, error) {
@@ -123,12 +103,7 @@ func (s *Store) LoadPrevRangeMsgs(startSeq, endSeq uint64, limit int) ([]Channel
 	if maxSeq < minSeq {
 		return nil, nil
 	}
-
-	count := cappedReadCount(maxSeq-minSeq+1, limit)
-	if count == 0 {
-		return nil, nil
-	}
-	return s.LoadNextRangeMsgs(minSeq, maxSeq, count)
+	return s.loadRangeMsgs(minSeq, maxSeq, limit)
 }
 
 func (s *Store) TruncateLogTo(seq uint64) error {
@@ -147,13 +122,14 @@ func (s *Store) TruncateLogTo(seq uint64) error {
 		return err
 	}
 	if err == nil {
+		clearSnapshot := checkpoint.LogStartOffset > seq
 		if checkpoint.HW > seq {
 			checkpoint.HW = seq
 		}
 		if checkpoint.LogStartOffset > seq {
 			checkpoint.LogStartOffset = seq
 		}
-		if err := s.storeCheckpoint(checkpoint); err != nil {
+		if err := s.storeCheckpointAndMaybeDeleteSnapshot(checkpoint, clearSnapshot); err != nil {
 			return err
 		}
 	}
@@ -185,17 +161,69 @@ func decodeChannelMessage(record LogRecord) (ChannelMessage, error) {
 	}, nil
 }
 
-func cappedReadCount(span uint64, limit int) int {
-	if span == 0 {
-		return 0
+func (s *Store) loadRangeMsgs(startSeq, endSeq uint64, limit int) ([]ChannelMessage, error) {
+	if startSeq > endSeq {
+		return nil, nil
 	}
 
-	maxCount := int(span)
-	if span > uint64(math.MaxInt) {
-		maxCount = math.MaxInt
+	msgs := make([]ChannelMessage, 0, initialRangeMsgCapacity(limit))
+	nextSeq := startSeq
+	remaining := limit
+
+	for nextSeq <= endSeq {
+		batchLimit := nextSeqReadBatchLimit(nextSeq, endSeq, remaining)
+		records, err := s.readOffsets(nextSeq-1, batchLimit, math.MaxInt)
+		if err != nil {
+			return nil, err
+		}
+		if len(records) == 0 {
+			return msgs, nil
+		}
+
+		for _, record := range records {
+			seq := record.Offset + 1
+			if seq > endSeq {
+				return msgs, nil
+			}
+			msg, err := decodeChannelMessage(record)
+			if err != nil {
+				return nil, err
+			}
+			msgs = append(msgs, msg)
+			nextSeq = seq + 1
+			if remaining > 0 {
+				remaining--
+				if remaining == 0 {
+					return msgs, nil
+				}
+			}
+		}
+
+		if len(records) < batchLimit {
+			return msgs, nil
+		}
 	}
-	if limit == 0 || limit > maxCount {
-		return maxCount
+	return msgs, nil
+}
+
+func nextSeqReadBatchLimit(nextSeq, endSeq uint64, remaining int) int {
+	batchLimit := seqReadChunkLimit
+	remainingSpan := endSeq - nextSeq + 1
+	if remainingSpan < uint64(batchLimit) {
+		batchLimit = int(remainingSpan)
 	}
-	return limit
+	if remaining > 0 && remaining < batchLimit {
+		batchLimit = remaining
+	}
+	if batchLimit <= 0 {
+		return 1
+	}
+	return batchLimit
+}
+
+func initialRangeMsgCapacity(limit int) int {
+	if limit <= 0 {
+		return 0
+	}
+	return minInt(limit, seqReadChunkLimit)
 }

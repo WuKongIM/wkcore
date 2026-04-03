@@ -2,10 +2,13 @@ package channellog
 
 import (
 	"bytes"
+	"math"
 
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 	"github.com/cockroachdb/pebble/v2"
 )
+
+const logScanInitialCapacity = 16
 
 func (s *Store) validate() error {
 	if s == nil || s.db == nil || s.db.db == nil || s.groupKey == "" {
@@ -113,40 +116,70 @@ func (db *DB) readGroupOffsets(groupKey isr.GroupKey, fromOffset uint64, limit i
 		return nil, nil
 	}
 
-	prefix := encodeLogPrefix(groupKey)
-	iter, err := db.db.NewIter(&pebble.IterOptions{
-		LowerBound: encodeLogRecordKey(groupKey, fromOffset),
-		UpperBound: keyUpperBound(prefix),
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer iter.Close()
-
-	out := make([]LogRecord, 0, limit)
-	total := 0
-	for valid := iter.First(); valid && len(out) < limit; valid = iter.Next() {
-		if !bytes.HasPrefix(iter.Key(), prefix) {
-			break
-		}
-		offset, err := decodeLogRecordOffset(iter.Key(), prefix)
-		if err != nil {
-			return nil, err
-		}
-		payload := append([]byte(nil), iter.Value()...)
-		size := logRecordReadSize(payload)
-		if len(out) > 0 && total+size > maxBytes {
-			break
-		}
+	out := make([]LogRecord, 0, minInt(limit, logScanInitialCapacity))
+	_, err := db.scanGroupOffsets(groupKey, fromOffset, limit, maxBytes, func(offset uint64, payload []byte) error {
 		out = append(out, LogRecord{
 			Offset:  offset,
 			Payload: payload,
 		})
-		total += size
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
 
 func logRecordReadSize(payload []byte) int {
 	return len(payload)
+}
+
+func (db *DB) scanGroupOffsets(groupKey isr.GroupKey, fromOffset uint64, limit int, maxBytes int, visit func(offset uint64, payload []byte) error) (int, error) {
+	if limit <= 0 || maxBytes <= 0 {
+		return 0, nil
+	}
+
+	prefix := encodeLogPrefix(groupKey)
+	iter, err := db.db.NewIter(&pebble.IterOptions{
+		LowerBound: encodeLogRecordKey(groupKey, fromOffset),
+		UpperBound: keyUpperBound(prefix),
+	})
+	if err != nil {
+		return 0, err
+	}
+	defer iter.Close()
+
+	total := 0
+	count := 0
+	for valid := iter.First(); valid && count < limit; valid = iter.Next() {
+		if !bytes.HasPrefix(iter.Key(), prefix) {
+			break
+		}
+		offset, err := decodeLogRecordOffset(iter.Key(), prefix)
+		if err != nil {
+			return count, err
+		}
+		payload := append([]byte(nil), iter.Value()...)
+		size := logRecordReadSize(payload)
+		if count > 0 && total+size > maxBytes {
+			break
+		}
+		if err := visit(offset, payload); err != nil {
+			return count, err
+		}
+		count++
+		total += size
+	}
+	return count, nil
+}
+
+func maxLogScanLimit() int {
+	return math.MaxInt
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

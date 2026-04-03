@@ -28,3 +28,22 @@ func (s *Store) storeCheckpoint(checkpoint isr.Checkpoint) error {
 	}
 	return s.db.db.Set(encodeCheckpointKey(s.groupKey), encodeCheckpoint(checkpoint), pebble.Sync)
 }
+
+func (s *Store) storeCheckpointAndMaybeDeleteSnapshot(checkpoint isr.Checkpoint, deleteSnapshot bool) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+
+	batch := s.db.db.NewBatch()
+	defer batch.Close()
+
+	if err := batch.Set(encodeCheckpointKey(s.groupKey), encodeCheckpoint(checkpoint), pebble.NoSync); err != nil {
+		return err
+	}
+	if deleteSnapshot {
+		if err := batch.Delete(encodeSnapshotKey(s.groupKey), pebble.NoSync); err != nil {
+			return err
+		}
+	}
+	return batch.Commit(pebble.Sync)
+}

@@ -2,6 +2,7 @@ package channellog
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
@@ -54,6 +55,27 @@ func TestLoadNextRangeMsgsTreatsZeroLimitAsUnlimited(t *testing.T) {
 	}
 	if len(msgs) != 3 {
 		t.Fatalf("len(msgs) = %d, want 3", len(msgs))
+	}
+}
+
+func TestLoadNextRangeMsgsUnlimitedReadsAcrossBatches(t *testing.T) {
+	store := openTestStore(t, ChannelKey{ChannelID: "c1", ChannelType: 1})
+	payloads := make([]string, 0, seqReadChunkLimit+3)
+	for i := 0; i < seqReadChunkLimit+3; i++ {
+		payloads = append(payloads, fmt.Sprintf("m-%d", i))
+	}
+	mustAppendStoredMessages(t, store, payloads...)
+	mustStoreCheckpoint(t, store, isr.Checkpoint{Epoch: 1, HW: uint64(len(payloads))})
+
+	msgs, err := store.LoadNextRangeMsgs(1, 0, 0)
+	if err != nil {
+		t.Fatalf("LoadNextRangeMsgs() error = %v", err)
+	}
+	if len(msgs) != len(payloads) {
+		t.Fatalf("len(msgs) = %d, want %d", len(msgs), len(payloads))
+	}
+	if msgs[0].MessageSeq != 1 || msgs[len(msgs)-1].MessageSeq != uint64(len(payloads)) {
+		t.Fatalf("seq bounds = first:%d last:%d", msgs[0].MessageSeq, msgs[len(msgs)-1].MessageSeq)
 	}
 }
 
@@ -128,5 +150,34 @@ func TestTruncateLogToRemovesTailAndClampsCheckpoint(t *testing.T) {
 	}
 	if checkpoint.HW != 2 {
 		t.Fatalf("HW = %d, want 2", checkpoint.HW)
+	}
+}
+
+func TestTruncateLogToClearsSnapshotPayloadWhenClampingLogStartOffset(t *testing.T) {
+	store := openTestStore(t, ChannelKey{ChannelID: "c1", ChannelType: 1})
+	mustAppendStoredMessages(t, store, "one", "two", "three", "four", "five")
+	mustStoreCheckpoint(t, store, isr.Checkpoint{Epoch: 2, LogStartOffset: 5, HW: 5})
+	if err := store.storeSnapshotPayload([]byte("snapshot")); err != nil {
+		t.Fatalf("storeSnapshotPayload() error = %v", err)
+	}
+
+	if err := store.TruncateLogTo(3); err != nil {
+		t.Fatalf("TruncateLogTo() error = %v", err)
+	}
+
+	payload, err := store.loadSnapshotPayload()
+	if err != nil {
+		t.Fatalf("loadSnapshotPayload() error = %v", err)
+	}
+	if payload != nil {
+		t.Fatalf("payload = %q, want nil", payload)
+	}
+
+	checkpoint, err := store.loadCheckpoint()
+	if err != nil {
+		t.Fatalf("loadCheckpoint() error = %v", err)
+	}
+	if checkpoint.LogStartOffset != 3 || checkpoint.HW != 3 {
+		t.Fatalf("checkpoint = %+v", checkpoint)
 	}
 }

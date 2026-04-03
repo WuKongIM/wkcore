@@ -1,6 +1,7 @@
 package channellog
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
@@ -46,7 +47,7 @@ func mustAppendStoredMessages(t *testing.T, store *Store, payloads ...string) {
 		encoded, err := encodeStoredMessage(storedMessage{
 			MessageID:   uint64(i + 1),
 			SenderUID:   "u1",
-			ClientMsgNo: "m" + string(rune('1'+i)),
+			ClientMsgNo: fmt.Sprintf("m%d", i+1),
 			PayloadHash: hashPayload([]byte(payload)),
 			Payload:     []byte(payload),
 		})
