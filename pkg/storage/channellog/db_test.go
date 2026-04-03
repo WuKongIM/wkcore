@@ -25,6 +25,25 @@ func TestOpenCreatesDBAndForChannelBindsDerivedGroupKey(t *testing.T) {
 	}
 }
 
+func TestDBForChannelReturnsStableStorePerKey(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+
+	first := db.ForChannel(ChannelKey{ChannelID: "c1", ChannelType: 1})
+	second := db.ForChannel(ChannelKey{ChannelID: "c1", ChannelType: 1})
+	other := db.ForChannel(ChannelKey{ChannelID: "c2", ChannelType: 1})
+
+	if first != second {
+		t.Fatal("expected ForChannel() to reuse the same Store for the same key")
+	}
+	if first == other {
+		t.Fatal("expected different keys to have different Store instances")
+	}
+}
+
 func TestDBImplementsMessageLogSurface(t *testing.T) {
 	var _ MessageLog = (*DB)(nil)
 }

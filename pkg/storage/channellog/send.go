@@ -153,7 +153,7 @@ func (c *cluster) idempotentPayloadMatches(groupKey isr.GroupKey, offset uint64,
 	if len(records) == 0 {
 		return false, ErrStaleMeta
 	}
-	message, err := decodeStoredMessage(records[0].Payload)
+	message, err := decodeStoredMessageView(records[0].Payload)
 	if err != nil {
 		return false, err
 	}

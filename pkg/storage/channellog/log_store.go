@@ -21,7 +21,10 @@ func (s *Store) appendPayloads(payloads [][]byte) (uint64, error) {
 	if err := s.validate(); err != nil {
 		return 0, err
 	}
-	base, err := s.leo()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	base, err := s.leoLocked()
 	if err != nil {
 		return 0, err
 	}
@@ -42,6 +45,8 @@ func (s *Store) appendPayloads(payloads [][]byte) (uint64, error) {
 	if err := batch.Commit(pebble.NoSync); err != nil {
 		return 0, err
 	}
+	s.cachedLEO = base + uint64(len(payloads))
+	s.leoLoaded = true
 	return base, nil
 }
 
@@ -56,6 +61,16 @@ func (s *Store) leo() (uint64, error) {
 	if err := s.validate(); err != nil {
 		return 0, err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.leoLocked()
+}
+
+func (s *Store) leoLocked() (uint64, error) {
+	if s.leoLoaded {
+		return s.cachedLEO, nil
+	}
+
 	prefix := encodeLogPrefix(s.groupKey)
 	iter, err := s.db.db.NewIter(&pebble.IterOptions{
 		LowerBound: prefix,
@@ -67,20 +82,27 @@ func (s *Store) leo() (uint64, error) {
 	defer iter.Close()
 
 	if !iter.Last() {
+		s.cachedLEO = 0
+		s.leoLoaded = true
 		return 0, nil
 	}
 	offset, err := decodeLogRecordOffset(iter.Key(), prefix)
 	if err != nil {
 		return 0, err
 	}
-	return offset + 1, nil
+	s.cachedLEO = offset + 1
+	s.leoLoaded = true
+	return s.cachedLEO, nil
 }
 
 func (s *Store) truncateOffsets(to uint64) error {
 	if err := s.validate(); err != nil {
 		return err
 	}
-	leo, err := s.leo()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	leo, err := s.leoLocked()
 	if err != nil {
 		return err
 	}
@@ -94,7 +116,12 @@ func (s *Store) truncateOffsets(to uint64) error {
 	if err := batch.DeleteRange(encodeLogRecordKey(s.groupKey, to), keyUpperBound(prefix), pebble.NoSync); err != nil {
 		return err
 	}
-	return batch.Commit(pebble.NoSync)
+	if err := batch.Commit(pebble.NoSync); err != nil {
+		return err
+	}
+	s.cachedLEO = to
+	s.leoLoaded = true
+	return nil
 }
 
 func (s *Store) sync() error {

@@ -54,3 +54,42 @@ func TestDBReadBudgetCountsPayloadBytesOnly(t *testing.T) {
 		t.Fatalf("len(records) = %d, want 2", len(records))
 	}
 }
+
+func TestStoreCachedLEOTracksAppendAndTruncate(t *testing.T) {
+	store := openTestStore(t, ChannelKey{ChannelID: "c1", ChannelType: 1})
+
+	base, err := store.appendPayloads([][]byte{[]byte("one"), []byte("two")})
+	if err != nil {
+		t.Fatalf("appendPayloads() error = %v", err)
+	}
+	if base != 0 {
+		t.Fatalf("base = %d, want 0", base)
+	}
+	if !store.leoLoaded {
+		t.Fatal("expected LEO cache to be loaded after append")
+	}
+	if store.cachedLEO != 2 {
+		t.Fatalf("cachedLEO = %d, want 2", store.cachedLEO)
+	}
+
+	if err := store.truncateOffsets(1); err != nil {
+		t.Fatalf("truncateOffsets() error = %v", err)
+	}
+	if !store.leoLoaded {
+		t.Fatal("expected LEO cache to stay loaded after truncate")
+	}
+	if store.cachedLEO != 1 {
+		t.Fatalf("cachedLEO after truncate = %d, want 1", store.cachedLEO)
+	}
+
+	base, err = store.appendPayloads([][]byte{[]byte("three")})
+	if err != nil {
+		t.Fatalf("appendPayloads(after truncate) error = %v", err)
+	}
+	if base != 1 {
+		t.Fatalf("base after truncate = %d, want 1", base)
+	}
+	if store.cachedLEO != 2 {
+		t.Fatalf("cachedLEO after reappend = %d, want 2", store.cachedLEO)
+	}
+}

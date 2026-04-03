@@ -59,7 +59,7 @@ func (b *isrLogStoreBridge) LEO() uint64 {
 func (b *isrLogStoreBridge) Append(records []isr.Record) (uint64, error) {
 	payloads := make([][]byte, 0, len(records))
 	for _, record := range records {
-		payloads = append(payloads, append([]byte(nil), record.Payload...))
+		payloads = append(payloads, record.Payload)
 	}
 	base, err := b.store.appendPayloads(payloads)
 	if err != nil {

@@ -7,6 +7,19 @@ import (
 	"time"
 )
 
+type staleAppendLEOLogStore struct {
+	*fakeLogStore
+}
+
+func (f *staleAppendLEOLogStore) LEO() uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.records) > 0 {
+		return 0
+	}
+	return f.leo
+}
+
 func TestAppendRejectsReplicaThatIsNotLeader(t *testing.T) {
 	r := newFollowerReplica(t)
 
@@ -83,5 +96,48 @@ func TestLeaderLeaseExpiryFencesAppend(t *testing.T) {
 	_, err = env.replica.Append(context.Background(), []Record{{Payload: []byte("y"), SizeBytes: 1}})
 	if !errors.Is(err, ErrLeaseExpired) {
 		t.Fatalf("expected ErrLeaseExpired on fenced leader, got %v", err)
+	}
+}
+
+func TestAppendCommitsUsingReturnedBaseOffsetWhenLEOReadLags(t *testing.T) {
+	env := newTestEnv(t)
+
+	logStore := &staleAppendLEOLogStore{
+		fakeLogStore: &fakeLogStore{},
+	}
+	got, err := NewReplica(ReplicaConfig{
+		LocalNode:         env.localNode,
+		LogStore:          logStore,
+		CheckpointStore:   env.checkpoints,
+		EpochHistoryStore: env.history,
+		SnapshotApplier:   env.snapshots,
+		Now:               env.clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("NewReplica() error = %v", err)
+	}
+
+	r, ok := got.(*replica)
+	if !ok {
+		t.Fatalf("NewReplica() type = %T", got)
+	}
+	meta := activeMetaWithMinISR(7, 1, 1)
+	r.mustApplyMeta(t, meta)
+	if err := r.BecomeLeader(meta); err != nil {
+		t.Fatalf("BecomeLeader() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	result, err := r.Append(ctx, []Record{{Payload: []byte("x"), SizeBytes: 1}})
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	if result.BaseOffset != 0 || result.NextCommitHW != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	if r.state.LEO != 1 || r.state.HW != 1 {
+		t.Fatalf("state = %+v", r.state)
 	}
 }

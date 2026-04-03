@@ -61,7 +61,7 @@ func (c *cluster) Fetch(_ context.Context, req FetchRequest) (FetchResult, error
 		if record.Offset >= state.HW {
 			break
 		}
-		message, err := decodeStoredMessage(record.Payload)
+		message, err := decodeStoredMessageView(record.Payload)
 		if err != nil {
 			return FetchResult{}, err
 		}
@@ -70,7 +70,7 @@ func (c *cluster) Fetch(_ context.Context, req FetchRequest) (FetchResult, error
 			MessageSeq:  record.Offset + 1,
 			SenderUID:   message.SenderUID,
 			ClientMsgNo: message.ClientMsgNo,
-			Payload:     append([]byte(nil), message.Payload...),
+			Payload:     message.Payload,
 		})
 		result.NextSeq = record.Offset + 2
 	}

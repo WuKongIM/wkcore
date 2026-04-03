@@ -148,7 +148,7 @@ func (s *Store) committedHW() (uint64, error) {
 }
 
 func decodeChannelMessage(record LogRecord) (ChannelMessage, error) {
-	message, err := decodeStoredMessage(record.Payload)
+	message, err := decodeStoredMessageView(record.Payload)
 	if err != nil {
 		return ChannelMessage{}, err
 	}
@@ -157,7 +157,7 @@ func decodeChannelMessage(record LogRecord) (ChannelMessage, error) {
 		MessageSeq:  record.Offset + 1,
 		SenderUID:   message.SenderUID,
 		ClientMsgNo: message.ClientMsgNo,
-		Payload:     append([]byte(nil), message.Payload...),
+		Payload:     message.Payload,
 	}, nil
 }
 

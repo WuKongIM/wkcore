@@ -1,9 +1,15 @@
 package channellog
 
-import "github.com/cockroachdb/pebble/v2"
+import (
+	"sync"
+
+	"github.com/cockroachdb/pebble/v2"
+)
 
 type DB struct {
-	db *pebble.DB
+	mu     sync.Mutex
+	db     *pebble.DB
+	stores map[ChannelKey]*Store
 }
 
 func Open(path string) (*DB, error) {
@@ -11,15 +17,24 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &DB{db: pdb}, nil
+	return &DB{
+		db:     pdb,
+		stores: make(map[ChannelKey]*Store),
+	}, nil
 }
 
 func (db *DB) Close() error {
-	if db == nil || db.db == nil {
+	if db == nil {
+		return nil
+	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.db == nil {
 		return nil
 	}
 	pdb := db.db
 	db.db = nil
+	db.stores = nil
 	return pdb.Close()
 }
 
@@ -27,9 +42,20 @@ func (db *DB) ForChannel(key ChannelKey) *Store {
 	if db == nil {
 		return nil
 	}
-	return &Store{
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if db.stores == nil {
+		db.stores = make(map[ChannelKey]*Store)
+	}
+	if store, ok := db.stores[key]; ok {
+		return store
+	}
+	store := &Store{
 		db:       db,
 		key:      key,
 		groupKey: channelGroupKey(key),
 	}
+	db.stores[key] = store
+	return store
 }

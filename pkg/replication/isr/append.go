@@ -47,7 +47,7 @@ func (r *replica) Append(ctx context.Context, batch []Record) (CommitResult, err
 		return CommitResult{}, err
 	}
 
-	leo := r.log.LEO()
+	leo := base + uint64(len(batch))
 	r.state.LEO = leo
 	r.setReplicaProgressLocked(r.localNode, leo)
 

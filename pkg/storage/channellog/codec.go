@@ -4,9 +4,18 @@ import (
 	"bytes"
 	"encoding/binary"
 	"hash/fnv"
+	"io"
 )
 
 type storedMessage struct {
+	MessageID   uint64
+	SenderUID   string
+	ClientMsgNo string
+	PayloadHash uint64
+	Payload     []byte
+}
+
+type storedMessageView struct {
 	MessageID   uint64
 	SenderUID   string
 	ClientMsgNo string
@@ -35,26 +44,61 @@ func encodeStoredMessage(message storedMessage) ([]byte, error) {
 }
 
 func decodeStoredMessage(payload []byte) (storedMessage, error) {
-	reader := bytes.NewReader(payload)
-	var message storedMessage
-	if err := binary.Read(reader, binary.BigEndian, &message.MessageID); err != nil {
+	view, err := decodeStoredMessageView(payload)
+	if err != nil {
 		return storedMessage{}, err
 	}
-	if err := binary.Read(reader, binary.BigEndian, &message.PayloadHash); err != nil {
-		return storedMessage{}, err
+	return storedMessage{
+		MessageID:   view.MessageID,
+		SenderUID:   view.SenderUID,
+		ClientMsgNo: view.ClientMsgNo,
+		PayloadHash: view.PayloadHash,
+		Payload:     append([]byte(nil), view.Payload...),
+	}, nil
+}
+
+func decodeStoredMessageView(payload []byte) (storedMessageView, error) {
+	if len(payload) < 16 {
+		return storedMessageView{}, io.ErrUnexpectedEOF
 	}
 
-	var err error
-	if message.SenderUID, err = readString(reader); err != nil {
-		return storedMessage{}, err
+	view := storedMessageView{
+		MessageID:   binary.BigEndian.Uint64(payload[:8]),
+		PayloadHash: binary.BigEndian.Uint64(payload[8:16]),
 	}
-	if message.ClientMsgNo, err = readString(reader); err != nil {
-		return storedMessage{}, err
+	pos := 16
+
+	senderUID, nextPos, err := readSizedBytesView(payload, pos)
+	if err != nil {
+		return storedMessageView{}, err
 	}
-	if message.Payload, err = readBytes(reader); err != nil {
-		return storedMessage{}, err
+	clientMsgNo, nextPos, err := readSizedBytesView(payload, nextPos)
+	if err != nil {
+		return storedMessageView{}, err
 	}
-	return message, nil
+	body, _, err := readSizedBytesView(payload, nextPos)
+	if err != nil {
+		return storedMessageView{}, err
+	}
+
+	view.SenderUID = string(senderUID)
+	view.ClientMsgNo = string(clientMsgNo)
+	// The caller already owns the encoded record bytes and may reuse the body
+	// slice directly to avoid one more payload allocation during reads.
+	view.Payload = body
+	return view, nil
+}
+
+func readSizedBytesView(payload []byte, pos int) ([]byte, int, error) {
+	if len(payload)-pos < 4 {
+		return nil, pos, io.ErrUnexpectedEOF
+	}
+	size := int(binary.BigEndian.Uint32(payload[pos : pos+4]))
+	pos += 4
+	if len(payload)-pos < size {
+		return nil, pos, io.ErrUnexpectedEOF
+	}
+	return payload[pos : pos+size], pos + size, nil
 }
 
 func hashPayload(payload []byte) uint64 {
