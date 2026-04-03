@@ -22,7 +22,7 @@ func (a *App) Send(cmd SendCommand) (SendResult, error) {
 	}
 
 	msgID := a.sequence.NextMessageID()
-	msgSeq := a.sequence.NextChannelSequence(target.SequenceKey)
+	msgSeq := uint64(a.sequence.NextChannelSequence(target.SequenceKey))
 	recv := buildPersonRecvPacket(cmd, msgID, msgSeq, a.now())
 
 	if err := a.delivery.Deliver(recipients, recv); err != nil {
@@ -52,7 +52,7 @@ func resolveLocalPersonTarget(cmd SendCommand) localPersonTarget {
 	}
 }
 
-func buildPersonRecvPacket(cmd SendCommand, msgID int64, msgSeq uint32, now time.Time) *wkpacket.RecvPacket {
+func buildPersonRecvPacket(cmd SendCommand, msgID int64, msgSeq uint64, now time.Time) *wkpacket.RecvPacket {
 	framer := cmd.Framer
 	framer.FrameType = wkpacket.RECV
 

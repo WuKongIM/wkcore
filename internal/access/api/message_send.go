@@ -17,7 +17,7 @@ type sendMessageRequest struct {
 
 type sendMessageResponse struct {
 	MessageID  int64  `json:"message_id"`
-	MessageSeq uint32 `json:"message_seq"`
+	MessageSeq uint64 `json:"message_seq"`
 	Reason     uint8  `json:"reason"`
 }
 

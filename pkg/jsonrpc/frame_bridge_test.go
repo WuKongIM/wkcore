@@ -121,6 +121,17 @@ func TestFromFrameAcceptsWKPacketConnackPacket(t *testing.T) {
 	assert.Equal(t, uint64(99), resp.Result.NodeID)
 }
 
+func TestFromProtoSendAckPreservesUint64MessageSeq(t *testing.T) {
+	result := FromProtoSendAck(&wkpacket.SendackPacket{
+		MessageID:  99,
+		MessageSeq: uint64(^uint32(0)) + 33,
+		ReasonCode: wkpacket.ReasonSuccess,
+	})
+
+	require.NotNil(t, result)
+	assert.Equal(t, uint64(^uint32(0))+33, result.MessageSeq)
+}
+
 func TestFromProtoRecvPacketMapsStreamIDFromStreamId(t *testing.T) {
 	params := FromProtoRecvPacket(&wkpacket.RecvPacket{
 		StreamNo: "stream-no",

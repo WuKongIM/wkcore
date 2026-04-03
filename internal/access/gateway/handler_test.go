@@ -74,7 +74,7 @@ func TestHandlerOnFrameSendMapsCommandAndWritesSendack(t *testing.T) {
 		Messages: &fakeMessageUsecase{
 			sendResult: message.SendResult{
 				MessageID:  99,
-				MessageSeq: 7,
+				MessageSeq: uint64(^uint32(0)) + 7,
 				Reason:     wkpacket.ReasonSuccess,
 			},
 		},
@@ -114,7 +114,7 @@ func TestHandlerOnFrameSendMapsCommandAndWritesSendack(t *testing.T) {
 	ack := requireSendackPacket(t, write.frame)
 	require.Equal(t, wkpacket.ReasonSuccess, ack.ReasonCode)
 	require.Equal(t, int64(99), ack.MessageID)
-	require.Equal(t, uint32(7), ack.MessageSeq)
+	require.Equal(t, uint64(^uint32(0))+7, ack.MessageSeq)
 	require.Equal(t, uint64(13), ack.ClientSeq)
 	require.Equal(t, "m4", ack.ClientMsgNo)
 	require.Equal(t, "reply-1", write.meta.ReplyToken)
@@ -135,7 +135,7 @@ func TestHandlerOnFrameRecvackRoutesToMessageUsecase(t *testing.T) {
 	require.Len(t, msgs.recvAckCommands, 1)
 	require.Equal(t, "u1", msgs.recvAckCommands[0].UID)
 	require.Equal(t, int64(88), msgs.recvAckCommands[0].MessageID)
-	require.Equal(t, uint32(9), msgs.recvAckCommands[0].MessageSeq)
+	require.Equal(t, uint64(9), msgs.recvAckCommands[0].MessageSeq)
 	require.True(t, msgs.recvAckCommands[0].Framer.RedDot)
 }
 

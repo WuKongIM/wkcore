@@ -21,5 +21,5 @@ type RecvAckCommand struct {
 	UID        string
 	Framer     wkpacket.Framer
 	MessageID  int64
-	MessageSeq uint32
+	MessageSeq uint64
 }

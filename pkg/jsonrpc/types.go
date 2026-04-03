@@ -116,7 +116,7 @@ type SendParams struct {
 type RecvAckParams struct {
 	Header     Header `json:"header,omitempty"`
 	MessageID  string `json:"messageId"`
-	MessageSeq uint32 `json:"messageSeq"`
+	MessageSeq uint64 `json:"messageSeq"`
 }
 
 type SubscribeParams struct {
@@ -156,7 +156,7 @@ type ConnectResult struct {
 type SendResult struct {
 	Header     *Header        `json:"header,omitempty"`
 	MessageID  string         `json:"messageId"`
-	MessageSeq uint32         `json:"messageSeq"`
+	MessageSeq uint64         `json:"messageSeq"`
 	ReasonCode ReasonCodeEnum `json:"reasonCode"`
 }
 
@@ -179,7 +179,7 @@ type RecvNotificationParams struct {
 	MsgKey      string         `json:"msgKey,omitempty"`
 	Expire      uint32         `json:"expire,omitempty"`
 	MessageID   string         `json:"messageId"`
-	MessageSeq  uint32         `json:"messageSeq"`
+	MessageSeq  uint64         `json:"messageSeq"`
 	ClientMsgNo string         `json:"clientMsgNo,omitempty"`
 	StreamNo    string         `json:"streamNo,omitempty"`
 	StreamID    string         `json:"streamId,omitempty"`

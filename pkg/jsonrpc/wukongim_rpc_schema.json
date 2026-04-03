@@ -183,7 +183,7 @@
             "properties": {
               "header": { "$ref": "#/components/schemas/Header" },
               "messageId": { "type": "string", "description": "服务端消息ID" },
-              "messageSeq": { "type": "integer", "format": "uint32", "description": "服务端消息序列号" },
+              "messageSeq": { "type": "integer", "format": "uint64", "description": "服务端消息序列号" },
               "reasonCode": { "$ref": "#/components/schemas/ReasonCodeEnum" }
             },
             "required": ["messageId", "messageSeq", "reasonCode"]
@@ -206,7 +206,7 @@
               "msgKey": { "type": "string", "description": "消息验证Key" },
                "expire": { "type": "integer", "format": "uint32", "description": "消息过期时间(秒), 0表示不过期 (协议版本 >= 3)" },
               "messageId": { "type": "string", "description": "服务端消息ID" },
-              "messageSeq": { "type": "integer", "format": "uint32", "description": "服务端消息序列号" },
+              "messageSeq": { "type": "integer", "format": "uint64", "description": "服务端消息序列号" },
               "clientMsgNo": { "type": "string", "description": "客户端消息唯一编号 (用于去重)" },
               "streamNo": { "type": "string", "description": "流编号 (如果 setting.stream 为 true, 协议版本 >= 2)" },
               "streamId": { "type": "string", "description": "流序列号 (如果 setting.stream 为 true, 协议版本 >= 2)" },
@@ -234,7 +234,7 @@
             "properties": {
                "header": { "$ref": "#/components/schemas/Header" },
                "messageId": { "type": "string", "description": "要确认的服务端消息ID" },
-               "messageSeq": { "type": "integer", "format": "uint32", "description": "要确认的服务端消息序列号" }
+               "messageSeq": { "type": "integer", "format": "uint64", "description": "要确认的服务端消息序列号" }
             },
             "required": ["messageId", "messageSeq"]
           }

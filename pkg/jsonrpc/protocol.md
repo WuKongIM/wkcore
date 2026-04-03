@@ -175,7 +175,7 @@
 | 字段          | 类型    | 必填 | 描述                       |
 | :------------ | :------ | :--- | :------------------------- |
 | `messageId`   | string  | 是   | 服务端消息ID               |
-| `messageSeq`  | integer | 是   | 服务端消息序列号           |
+| `messageSeq`  | integer(uint64) | 是   | 服务端消息序列号           |
 | `reasonCode`  | integer | 是   | 原因码 (成功时通常为0)     |
 | `header`      | Header  | 否   | 消息头                     |
 
@@ -205,7 +205,7 @@
 | 字段          | 类型         | 必填 | 描述                                   |
 | :------------ | :----------- | :--- | :------------------------------------- |
 | `messageId`   | string       | 是   | 服务端消息ID                           |
-| `messageSeq`  | integer      | 是   | 服务端消息序列号                       |
+| `messageSeq`  | integer(uint64)      | 是   | 服务端消息序列号                       |
 | `timestamp`   | integer      | 是   | 服务端消息时间戳(秒)                   |
 | `channelId`   | string       | 是   | 频道ID                                 |
 | `channelType` | integer      | 是   | 频道类型                               |
@@ -249,7 +249,7 @@
 | 字段         | 类型    | 必填 | 描述                     |
 | :----------- | :------ | :--- | :----------------------- |
 | `messageId`  | string  | 是   | 要确认的服务端消息ID     |
-| `messageSeq` | integer | 是   | 要确认的服务端消息序列号 |
+| `messageSeq` | integer(uint64) | 是   | 要确认的服务端消息序列号 |
 | `header`     | Header  | 否   | 消息头                   |
 
 **最小示例**

@@ -74,7 +74,7 @@ func TestSendDeliversLocalPersonMessage(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, wkpacket.ReasonSuccess, result.Reason)
 	require.Equal(t, int64(99), result.MessageID)
-	require.Equal(t, uint32(7), result.MessageSeq)
+	require.Equal(t, uint64(7), result.MessageSeq)
 	require.Equal(t, []string{"u2"}, seq.channelKeys)
 	require.Len(t, delivery.calls, 1)
 	require.Len(t, delivery.calls[0].recipients, 2)
@@ -84,7 +84,7 @@ func TestSendDeliversLocalPersonMessage(t *testing.T) {
 	require.Equal(t, "u1", recv.ChannelID)
 	require.Equal(t, wkpacket.ChannelTypePerson, recv.ChannelType)
 	require.Equal(t, int64(99), recv.MessageID)
-	require.Equal(t, uint32(7), recv.MessageSeq)
+	require.Equal(t, uint64(7), recv.MessageSeq)
 	require.Equal(t, []byte("hi"), recv.Payload)
 	require.Equal(t, uint64(9), recv.ClientSeq)
 	require.Equal(t, "m1", recv.ClientMsgNo)
@@ -139,7 +139,7 @@ func TestSendReturnsSystemErrorWhenDeliveryFails(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, wkpacket.ReasonSystemError, result.Reason)
 	require.Equal(t, int64(101), result.MessageID)
-	require.Equal(t, uint32(5), result.MessageSeq)
+	require.Equal(t, uint64(5), result.MessageSeq)
 }
 
 func TestNewPreservesInjectedCollaborators(t *testing.T) {

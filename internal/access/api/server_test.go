@@ -30,7 +30,7 @@ func TestSendMessageMapsJSONToUsecaseCommand(t *testing.T) {
 	msgs := &recordingMessageUsecase{
 		result: message.SendResult{
 			MessageID:  99,
-			MessageSeq: 7,
+			MessageSeq: uint64(^uint32(0)) + 7,
 			Reason:     wkpacket.ReasonSuccess,
 		},
 	}
@@ -52,7 +52,7 @@ func TestSendMessageMapsJSONToUsecaseCommand(t *testing.T) {
 	srv.Engine().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	require.JSONEq(t, `{"message_id":99,"message_seq":7,"reason":1}`, rec.Body.String())
+	require.JSONEq(t, `{"message_id":99,"message_seq":4294967302,"reason":1}`, rec.Body.String())
 	require.Len(t, msgs.calls, 1)
 	require.Equal(t, "u1", msgs.calls[0].SenderUID)
 	require.Equal(t, "u2", msgs.calls[0].ChannelID)
