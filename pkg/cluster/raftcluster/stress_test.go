@@ -1,4 +1,4 @@
-package wkcluster_test
+package raftcluster_test
 
 import (
 	"context"

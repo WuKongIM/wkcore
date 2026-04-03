@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
 	"github.com/stretchr/testify/require"
@@ -107,7 +107,7 @@ func TestStartStartsClusterBeforeGateway(t *testing.T) {
 	var calls []string
 
 	app := &App{
-		cluster: &wkcluster.Cluster{},
+		cluster: &raftcluster.Cluster{},
 		gateway: &gateway.Gateway{},
 		startClusterFn: func() error {
 			calls = append(calls, "cluster.start")
@@ -128,7 +128,7 @@ func TestStartStartsAPIAfterGatewayWhenEnabled(t *testing.T) {
 	var calls []string
 
 	app := &App{
-		cluster: &wkcluster.Cluster{},
+		cluster: &raftcluster.Cluster{},
 		gateway: &gateway.Gateway{},
 		startClusterFn: func() error {
 			calls = append(calls, "cluster.start")
@@ -153,7 +153,7 @@ func TestStartRollsBackClusterWhenGatewayStartFails(t *testing.T) {
 	startErr := errors.New("gateway start failed")
 
 	app := &App{
-		cluster: &wkcluster.Cluster{},
+		cluster: &raftcluster.Cluster{},
 		gateway: &gateway.Gateway{},
 		startClusterFn: func() error {
 			calls = append(calls, "cluster.start")
@@ -179,7 +179,7 @@ func TestStopIsSafeAfterFailedStartRollback(t *testing.T) {
 	startErr := errors.New("gateway start failed")
 
 	app := &App{
-		cluster: &wkcluster.Cluster{},
+		cluster: &raftcluster.Cluster{},
 		gateway: &gateway.Gateway{},
 		startClusterFn: func() error {
 			calls = append(calls, "cluster.start")
@@ -313,7 +313,7 @@ func TestStartReturnsAlreadyStartedAfterSuccess(t *testing.T) {
 	var calls []string
 
 	app := &App{
-		cluster: &wkcluster.Cluster{},
+		cluster: &raftcluster.Cluster{},
 		gateway: &gateway.Gateway{},
 		startClusterFn: func() error {
 			calls = append(calls, "cluster.start")
@@ -332,7 +332,7 @@ func TestStartReturnsAlreadyStartedAfterSuccess(t *testing.T) {
 
 func TestStartReturnsStoppedAfterStop(t *testing.T) {
 	app := &App{
-		cluster: &wkcluster.Cluster{},
+		cluster: &raftcluster.Cluster{},
 		gateway: &gateway.Gateway{},
 		closeRaftDBFn: func() error {
 			return nil
@@ -354,7 +354,7 @@ func TestStopWaitsForInFlightStart(t *testing.T) {
 	closeCalls := make(chan string, 2)
 
 	app := &App{
-		cluster: &wkcluster.Cluster{},
+		cluster: &raftcluster.Cluster{},
 		gateway: &gateway.Gateway{},
 		startClusterFn: func() error {
 			return nil

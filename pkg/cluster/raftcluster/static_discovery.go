@@ -1,4 +1,4 @@
-package wkcluster
+package raftcluster
 
 import "github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
 

@@ -3,7 +3,7 @@ package metastore
 import (
 	"context"
 
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metafsm"
 )
@@ -11,12 +11,12 @@ import (
 // Store provides business-level distributed storage APIs
 // built on top of wkcluster's generic Propose mechanism.
 type Store struct {
-	cluster *wkcluster.Cluster
+	cluster *raftcluster.Cluster
 	db      *metadb.DB
 }
 
 // New creates a Store.
-func New(cluster *wkcluster.Cluster, db *metadb.DB) *Store {
+func New(cluster *raftcluster.Cluster, db *metadb.DB) *Store {
 	return &Store{cluster: cluster, db: db}
 }
 

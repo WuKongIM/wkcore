@@ -1,4 +1,4 @@
-package wkcluster_test
+package raftcluster_test
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metafsm"
@@ -17,7 +17,7 @@ import (
 
 // testNode bundles a cluster, store, and storage resources for testing.
 type testNode struct {
-	cluster *wkcluster.Cluster
+	cluster *raftcluster.Cluster
 	store   *metastore.Store
 	db      *metadb.DB
 	raftDB  *raftstorage.DB
@@ -48,15 +48,15 @@ func startSingleNode(t testing.TB, groupCount int) *testNode {
 		t.Fatalf("open raftstorage: %v", err)
 	}
 
-	groups := make([]wkcluster.GroupConfig, groupCount)
+	groups := make([]raftcluster.GroupConfig, groupCount)
 	for i := range groupCount {
-		groups[i] = wkcluster.GroupConfig{
+		groups[i] = raftcluster.GroupConfig{
 			GroupID: multiraft.GroupID(i + 1),
 			Peers:   []multiraft.NodeID{1},
 		}
 	}
 
-	cfg := wkcluster.Config{
+	cfg := raftcluster.Config{
 		NodeID:     1,
 		ListenAddr: "127.0.0.1:0",
 		GroupCount: uint32(groupCount),
@@ -64,11 +64,11 @@ func startSingleNode(t testing.TB, groupCount int) *testNode {
 			return raftDB.ForGroup(uint64(groupID)), nil
 		},
 		NewStateMachine: metafsm.NewStateMachineFactory(db),
-		Nodes:           []wkcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
+		Nodes:           []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
 		Groups:          groups,
 	}
 
-	c, err := wkcluster.NewCluster(cfg)
+	c, err := raftcluster.NewCluster(cfg)
 	if err != nil {
 		_ = raftDB.Close()
 		_ = db.Close()
@@ -101,18 +101,18 @@ func startThreeNodes(t testing.TB, groupCount int) []*testNode {
 		listeners[i] = ln
 	}
 
-	nodes := make([]wkcluster.NodeConfig, 3)
+	nodes := make([]raftcluster.NodeConfig, 3)
 	for i := range 3 {
-		nodes[i] = wkcluster.NodeConfig{
+		nodes[i] = raftcluster.NodeConfig{
 			NodeID: multiraft.NodeID(i + 1),
 			Addr:   listeners[i].Addr().String(),
 		}
 		listeners[i].Close()
 	}
 
-	groups := make([]wkcluster.GroupConfig, groupCount)
+	groups := make([]raftcluster.GroupConfig, groupCount)
 	for i := range groupCount {
-		groups[i] = wkcluster.GroupConfig{
+		groups[i] = raftcluster.GroupConfig{
 			GroupID: multiraft.GroupID(i + 1),
 			Peers:   []multiraft.NodeID{1, 2, 3},
 		}
@@ -132,7 +132,7 @@ func startThreeNodes(t testing.TB, groupCount int) []*testNode {
 			t.Fatalf("open raftstorage node %d: %v", i+1, err)
 		}
 
-		cfg := wkcluster.Config{
+		cfg := raftcluster.Config{
 			NodeID:     multiraft.NodeID(i + 1),
 			ListenAddr: nodes[i].Addr,
 			GroupCount: uint32(groupCount),
@@ -144,7 +144,7 @@ func startThreeNodes(t testing.TB, groupCount int) []*testNode {
 			Groups:          groups,
 		}
 
-		c, err := wkcluster.NewCluster(cfg)
+		c, err := raftcluster.NewCluster(cfg)
 		if err != nil {
 			_ = raftDB.Close()
 			_ = db.Close()
@@ -168,7 +168,7 @@ func startThreeNodes(t testing.TB, groupCount int) []*testNode {
 	return testNodes
 }
 
-func waitForLeader(t testing.TB, c *wkcluster.Cluster, groupID uint64) {
+func waitForLeader(t testing.TB, c *raftcluster.Cluster, groupID uint64) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {

@@ -9,7 +9,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/sequence"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metafsm"
@@ -47,7 +47,7 @@ func build(cfg Config) (_ *App, err error) {
 		return nil, fmt.Errorf("app: open raftstorage: %w", err)
 	}
 
-	app.cluster, err = wkcluster.NewCluster(cfg.Cluster.runtimeConfig(app.db, app.raftDB, cfg.Node.ID))
+	app.cluster, err = raftcluster.NewCluster(cfg.Cluster.runtimeConfig(app.db, app.raftDB, cfg.Node.ID))
 	if err != nil {
 		return nil, fmt.Errorf("app: create cluster: %w", err)
 	}
@@ -87,8 +87,8 @@ func build(cfg Config) (_ *App, err error) {
 	return app, nil
 }
 
-func (c ClusterConfig) runtimeConfig(db *metadb.DB, raftDB *raftstorage.DB, nodeID uint64) wkcluster.Config {
-	return wkcluster.Config{
+func (c ClusterConfig) runtimeConfig(db *metadb.DB, raftDB *raftstorage.DB, nodeID uint64) raftcluster.Config {
+	return raftcluster.Config{
 		NodeID:          multiraft.NodeID(nodeID),
 		ListenAddr:      c.ListenAddr,
 		GroupCount:      c.GroupCount,
@@ -106,10 +106,10 @@ func (c ClusterConfig) runtimeConfig(db *metadb.DB, raftDB *raftstorage.DB, node
 	}
 }
 
-func (c ClusterConfig) runtimeNodes() []wkcluster.NodeConfig {
-	nodes := make([]wkcluster.NodeConfig, 0, len(c.Nodes))
+func (c ClusterConfig) runtimeNodes() []raftcluster.NodeConfig {
+	nodes := make([]raftcluster.NodeConfig, 0, len(c.Nodes))
 	for _, node := range c.Nodes {
-		nodes = append(nodes, wkcluster.NodeConfig{
+		nodes = append(nodes, raftcluster.NodeConfig{
 			NodeID: multiraft.NodeID(node.ID),
 			Addr:   node.Addr,
 		})
@@ -117,14 +117,14 @@ func (c ClusterConfig) runtimeNodes() []wkcluster.NodeConfig {
 	return nodes
 }
 
-func (c ClusterConfig) runtimeGroups() []wkcluster.GroupConfig {
-	groups := make([]wkcluster.GroupConfig, 0, len(c.Groups))
+func (c ClusterConfig) runtimeGroups() []raftcluster.GroupConfig {
+	groups := make([]raftcluster.GroupConfig, 0, len(c.Groups))
 	for _, group := range c.Groups {
 		peers := make([]multiraft.NodeID, 0, len(group.Peers))
 		for _, peerID := range group.Peers {
 			peers = append(peers, multiraft.NodeID(peerID))
 		}
-		groups = append(groups, wkcluster.GroupConfig{
+		groups = append(groups, raftcluster.GroupConfig{
 			GroupID: multiraft.GroupID(group.ID),
 			Peers:   peers,
 		})

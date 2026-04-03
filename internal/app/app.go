@@ -8,7 +8,7 @@ import (
 	accessgateway "github.com/WuKongIM/WuKongIM/internal/access/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metastore"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
@@ -19,7 +19,7 @@ type App struct {
 
 	db             *metadb.DB
 	raftDB         *raftstorage.DB
-	cluster        *wkcluster.Cluster
+	cluster        *raftcluster.Cluster
 	store          *metastore.Store
 	messageApp     *message.App
 	api            *accessapi.Server
@@ -62,7 +62,7 @@ func (a *App) RaftDB() *raftstorage.DB {
 	return a.raftDB
 }
 
-func (a *App) Cluster() *wkcluster.Cluster {
+func (a *App) Cluster() *raftcluster.Cluster {
 	if a == nil {
 		return nil
 	}
