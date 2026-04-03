@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/controller/raftstore"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
 )
 
 const (
@@ -19,7 +19,7 @@ const (
 	testPollInterval = testTickInterval
 )
 
-func mustNewStateMachine(t testing.TB, db *wkdb.DB, slot uint64) multiraft.StateMachine {
+func mustNewStateMachine(t testing.TB, db *metadb.DB, slot uint64) multiraft.StateMachine {
 	t.Helper()
 
 	sm, err := NewStateMachine(db, slot)
@@ -29,16 +29,16 @@ func mustNewStateMachine(t testing.TB, db *wkdb.DB, slot uint64) multiraft.State
 	return sm
 }
 
-func openTestDB(t testing.TB) *wkdb.DB {
+func openTestDB(t testing.TB) *metadb.DB {
 	t.Helper()
 
 	return openTestDBAt(t, filepath.Join(t.TempDir(), "db"))
 }
 
-func openTestDBAt(t testing.TB, path string) *wkdb.DB {
+func openTestDBAt(t testing.TB, path string) *metadb.DB {
 	t.Helper()
 
-	db, err := wkdb.Open(path)
+	db, err := metadb.Open(path)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -51,10 +51,10 @@ func openTestDBAt(t testing.TB, path string) *wkdb.DB {
 	return db
 }
 
-func openTestRaftDBAt(t testing.TB, path string) *raftstore.DB {
+func openTestRaftDBAt(t testing.TB, path string) *raftstorage.DB {
 	t.Helper()
 
-	db, err := raftstore.Open(path)
+	db, err := raftstorage.Open(path)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}

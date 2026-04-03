@@ -9,11 +9,11 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/sequence"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/raftstore"
 	"github.com/WuKongIM/WuKongIM/pkg/controller/wkcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/controller/wkstore"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
 )
 
 func build(cfg Config) (_ *App, err error) {
@@ -36,14 +36,14 @@ func build(cfg Config) (_ *App, err error) {
 		}
 	}()
 
-	app.db, err = wkdb.Open(cfg.Storage.DBPath)
+	app.db, err = metadb.Open(cfg.Storage.DBPath)
 	if err != nil {
-		return nil, fmt.Errorf("app: open wkdb: %w", err)
+		return nil, fmt.Errorf("app: open metadb: %w", err)
 	}
 
-	app.raftDB, err = raftstore.Open(cfg.Storage.RaftPath)
+	app.raftDB, err = raftstorage.Open(cfg.Storage.RaftPath)
 	if err != nil {
-		return nil, fmt.Errorf("app: open raftstore: %w", err)
+		return nil, fmt.Errorf("app: open raftstorage: %w", err)
 	}
 
 	app.cluster, err = wkcluster.NewCluster(cfg.Cluster.runtimeConfig(app.db, app.raftDB, cfg.Node.ID))
@@ -86,7 +86,7 @@ func build(cfg Config) (_ *App, err error) {
 	return app, nil
 }
 
-func (c ClusterConfig) runtimeConfig(db *wkdb.DB, raftDB *raftstore.DB, nodeID uint64) wkcluster.Config {
+func (c ClusterConfig) runtimeConfig(db *metadb.DB, raftDB *raftstorage.DB, nodeID uint64) wkcluster.Config {
 	return wkcluster.Config{
 		NodeID:          multiraft.NodeID(nodeID),
 		ListenAddr:      c.ListenAddr,
@@ -131,7 +131,7 @@ func (c ClusterConfig) runtimeGroups() []wkcluster.GroupConfig {
 	return groups
 }
 
-func newStorageFactory(raftDB *raftstore.DB) func(groupID multiraft.GroupID) (multiraft.Storage, error) {
+func newStorageFactory(raftDB *raftstorage.DB) func(groupID multiraft.GroupID) (multiraft.Storage, error) {
 	return func(groupID multiraft.GroupID) (multiraft.Storage, error) {
 		return raftDB.ForGroup(uint64(groupID)), nil
 	}

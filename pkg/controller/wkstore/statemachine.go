@@ -4,26 +4,26 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 )
 
 // Compile-time interface assertion.
 var _ multiraft.BatchStateMachine = (*stateMachine)(nil)
 
 type stateMachine struct {
-	db   *wkdb.DB
+	db   *metadb.DB
 	slot uint64
 }
 
 // NewStateMachine creates a state machine for the given slot.
 // It returns an error if db is nil or slot is zero.
-func NewStateMachine(db *wkdb.DB, slot uint64) (multiraft.StateMachine, error) {
+func NewStateMachine(db *metadb.DB, slot uint64) (multiraft.StateMachine, error) {
 	if db == nil {
-		return nil, fmt.Errorf("%w: db must not be nil", wkdb.ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: db must not be nil", metadb.ErrInvalidArgument)
 	}
 	if slot == 0 {
-		return nil, fmt.Errorf("%w: slot must not be zero", wkdb.ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: slot must not be zero", metadb.ErrInvalidArgument)
 	}
 	return &stateMachine{
 		db:   db,
@@ -50,7 +50,7 @@ func (m *stateMachine) ApplyBatch(ctx context.Context, cmds []multiraft.Command)
 			return nil, err
 		}
 		if cmd.GroupID != multiraft.GroupID(m.slot) {
-			return nil, wkdb.ErrInvalidArgument
+			return nil, metadb.ErrInvalidArgument
 		}
 
 		decoded, err := decodeCommand(cmd.Data)
@@ -70,7 +70,7 @@ func (m *stateMachine) ApplyBatch(ctx context.Context, cmds []multiraft.Command)
 }
 
 func (m *stateMachine) Restore(ctx context.Context, snap multiraft.Snapshot) error {
-	return m.db.ImportSlotSnapshot(ctx, wkdb.SlotSnapshot{
+	return m.db.ImportSlotSnapshot(ctx, metadb.SlotSnapshot{
 		SlotID: m.slot,
 		Data:   append([]byte(nil), snap.Data...),
 	})
@@ -87,7 +87,7 @@ func (m *stateMachine) Snapshot(ctx context.Context) (multiraft.Snapshot, error)
 }
 
 // NewStateMachineFactory returns a factory function suitable for wkcluster.Config.NewStateMachine.
-func NewStateMachineFactory(db *wkdb.DB) func(groupID multiraft.GroupID) (multiraft.StateMachine, error) {
+func NewStateMachineFactory(db *metadb.DB) func(groupID multiraft.GroupID) (multiraft.StateMachine, error) {
 	return func(groupID multiraft.GroupID) (multiraft.StateMachine, error) {
 		return NewStateMachine(db, uint64(groupID))
 	}

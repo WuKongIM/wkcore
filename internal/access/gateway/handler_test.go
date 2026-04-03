@@ -11,9 +11,9 @@ import (
 	gatewaysession "github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/msgstore/channelcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 	"github.com/stretchr/testify/require"
 )
 
@@ -350,14 +350,14 @@ var fixedGatewayNow = time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
 
 type fakeIdentityStore struct{}
 
-func (*fakeIdentityStore) GetUser(context.Context, string) (wkdb.User, error) {
-	return wkdb.User{}, nil
+func (*fakeIdentityStore) GetUser(context.Context, string) (metadb.User, error) {
+	return metadb.User{}, nil
 }
 
 type fakeChannelStore struct{}
 
-func (*fakeChannelStore) GetChannel(context.Context, string, int64) (wkdb.Channel, error) {
-	return wkdb.Channel{}, nil
+func (*fakeChannelStore) GetChannel(context.Context, string, int64) (metadb.Channel, error) {
+	return metadb.Channel{}, nil
 }
 
 var _ online.Registry = (*online.MemoryRegistry)(nil)

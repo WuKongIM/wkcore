@@ -8,17 +8,17 @@ import (
 	accessgateway "github.com/WuKongIM/WuKongIM/internal/access/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/raftstore"
 	"github.com/WuKongIM/WuKongIM/pkg/controller/wkcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/controller/wkstore"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
 )
 
 type App struct {
 	cfg Config
 
-	db             *wkdb.DB
-	raftDB         *raftstore.DB
+	db             *metadb.DB
+	raftDB         *raftstorage.DB
 	cluster        *wkcluster.Cluster
 	store          *wkstore.Store
 	messageApp     *message.App
@@ -48,14 +48,14 @@ func New(cfg Config) (*App, error) {
 	return build(cfg)
 }
 
-func (a *App) DB() *wkdb.DB {
+func (a *App) DB() *metadb.DB {
 	if a == nil {
 		return nil
 	}
 	return a.db
 }
 
-func (a *App) RaftDB() *raftstore.DB {
+func (a *App) RaftDB() *raftstorage.DB {
 	if a == nil {
 		return nil
 	}

@@ -1,4 +1,4 @@
-package raftstore
+package raftstorage
 
 import (
 	raft "go.etcd.io/raft/v3"

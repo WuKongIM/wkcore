@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/controller/raftstore"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
 )
 
 const (
@@ -111,12 +111,12 @@ func TestFSMStressConcurrentApply(t *testing.T) {
 		stats fsmStressStats
 		errCh = make(chan error, 1)
 		// Track last-write-wins per slot for verification.
-		lastUser    = make(map[uint64]map[string]wkdb.User)
-		lastChannel = make(map[uint64]map[string]wkdb.Channel)
+		lastUser    = make(map[uint64]map[string]metadb.User)
+		lastChannel = make(map[uint64]map[string]metadb.Channel)
 	)
 	for slot := uint64(1); slot <= uint64(cfg.Slots); slot++ {
-		lastUser[slot] = make(map[string]wkdb.User)
-		lastChannel[slot] = make(map[string]wkdb.Channel)
+		lastUser[slot] = make(map[string]metadb.User)
+		lastChannel[slot] = make(map[string]metadb.Channel)
 	}
 
 	for worker := 0; worker < cfg.Workers; worker++ {
@@ -128,11 +128,11 @@ func TestFSMStressConcurrentApply(t *testing.T) {
 			local := fsmStressStats{}
 			var localUsers []struct {
 				slot uint64
-				user wkdb.User
+				user metadb.User
 			}
 			var localChannels []struct {
 				slot    uint64
-				channel wkdb.Channel
+				channel metadb.Channel
 			}
 
 			for idx := uint64(1); ; idx++ {
@@ -145,7 +145,7 @@ func TestFSMStressConcurrentApply(t *testing.T) {
 				groupID := multiraft.GroupID(slot)
 
 				if rng.Intn(2) == 0 {
-					user := wkdb.User{
+					user := metadb.User{
 						UID:         fmt.Sprintf("stress-u-%d-%d", slot, rng.Intn(32)),
 						Token:       fmt.Sprintf("tok-%d-%d-%d", worker, idx, rng.Intn(100)),
 						DeviceFlag:  int64(rng.Intn(8)),
@@ -173,10 +173,10 @@ func TestFSMStressConcurrentApply(t *testing.T) {
 					local.UserApplies++
 					localUsers = append(localUsers, struct {
 						slot uint64
-						user wkdb.User
+						user metadb.User
 					}{slot, user})
 				} else {
-					channel := wkdb.Channel{
+					channel := metadb.Channel{
 						ChannelID:   fmt.Sprintf("stress-c-%d-%d", slot, rng.Intn(16)),
 						ChannelType: int64(rng.Intn(4) + 1),
 						Ban:         int64(rng.Intn(2)),
@@ -203,7 +203,7 @@ func TestFSMStressConcurrentApply(t *testing.T) {
 					local.ChannelApplies++
 					localChannels = append(localChannels, struct {
 						slot    uint64
-						channel wkdb.Channel
+						channel metadb.Channel
 					}{slot, channel})
 				}
 			}
@@ -301,7 +301,7 @@ func TestFSMStressSnapshotRestoreUnderConcurrentApply(t *testing.T) {
 				sm := machines[slot]
 				groupID := multiraft.GroupID(slot)
 
-				user := wkdb.User{
+				user := metadb.User{
 					UID:         fmt.Sprintf("snap-u-%d-%d", slot, rng.Intn(20)),
 					Token:       fmt.Sprintf("tok-%d-%d", worker, idx),
 					DeviceFlag:  int64(rng.Intn(8)),
@@ -468,7 +468,7 @@ func TestFSMStressMultiSlotIsolation(t *testing.T) {
 					GroupID: groupID,
 					Index:   idx,
 					Term:    1,
-					Data: EncodeUpsertUserCommand(wkdb.User{
+					Data: EncodeUpsertUserCommand(metadb.User{
 						UID:   uid,
 						Token: fmt.Sprintf("tok-%d", idx),
 					}),
@@ -554,7 +554,7 @@ func TestFSMStressRaftIntegrationApply(t *testing.T) {
 		if err := rt.BootstrapGroup(context.Background(), multiraft.BootstrapGroupRequest{
 			Group: multiraft.GroupOptions{
 				ID:           groupID,
-				Storage:      raftstore.NewMemory(),
+				Storage:      raftstorage.NewMemory(),
 				StateMachine: mustNewStateMachine(t, db, uint64(groupID)),
 			},
 			Voters: []multiraft.NodeID{1},
@@ -595,14 +595,14 @@ func TestFSMStressRaftIntegrationApply(t *testing.T) {
 
 				var data []byte
 				if rng.Intn(2) == 0 {
-					data = EncodeUpsertUserCommand(wkdb.User{
+					data = EncodeUpsertUserCommand(metadb.User{
 						UID:         fmt.Sprintf("raft-u-%d-%d", groupID, rng.Intn(16)),
 						Token:       fmt.Sprintf("tok-%d-%d", worker, idx),
 						DeviceFlag:  int64(rng.Intn(8)),
 						DeviceLevel: int64(rng.Intn(16)),
 					})
 				} else {
-					data = EncodeUpsertChannelCommand(wkdb.Channel{
+					data = EncodeUpsertChannelCommand(metadb.Channel{
 						ChannelID:   fmt.Sprintf("raft-c-%d-%d", groupID, rng.Intn(8)),
 						ChannelType: int64(rng.Intn(4) + 1),
 						Ban:         int64(rng.Intn(2)),
@@ -709,7 +709,7 @@ func TestFSMStressPebbleBackedRaftIntegration(t *testing.T) {
 				}
 				groupID := slots[(worker+idx)%len(slots)]
 
-				user := wkdb.User{
+				user := metadb.User{
 					UID:         fmt.Sprintf("pebble-u-%d-%d", groupID, rng.Intn(16)),
 					Token:       fmt.Sprintf("tok-%d-%d", worker, idx),
 					DeviceFlag:  int64(rng.Intn(8)),

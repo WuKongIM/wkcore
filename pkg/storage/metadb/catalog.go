@@ -1,4 +1,4 @@
-package wkdb
+package metadb
 
 const (
 	TableIDUser    uint32 = 1

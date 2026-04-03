@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/controller/raftstore"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
 )
 
 func TestMemoryBackedGroupAppliesProposalToWKDB(t *testing.T) {
@@ -20,7 +20,7 @@ func TestMemoryBackedGroupAppliesProposalToWKDB(t *testing.T) {
 	if err := rt.BootstrapGroup(ctx, multiraft.BootstrapGroupRequest{
 		Group: multiraft.GroupOptions{
 			ID:           groupID,
-			Storage:      raftstore.NewMemory(),
+			Storage:      raftstorage.NewMemory(),
 			StateMachine: mustNewStateMachine(t, db, uint64(groupID)),
 		},
 		Voters: []multiraft.NodeID{1},
@@ -33,7 +33,7 @@ func TestMemoryBackedGroupAppliesProposalToWKDB(t *testing.T) {
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "group become leader")
 
-	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(wkdb.User{
+	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(metadb.User{
 		UID:         "u1",
 		Token:       "t1",
 		DeviceFlag:  1,
@@ -65,7 +65,7 @@ func TestMemoryBackedGroupDoesNotRecoverDeletedSlotDataAfterOpenGroup(t *testing
 	if err := rt.BootstrapGroup(ctx, multiraft.BootstrapGroupRequest{
 		Group: multiraft.GroupOptions{
 			ID:           groupID,
-			Storage:      raftstore.NewMemory(),
+			Storage:      raftstorage.NewMemory(),
 			StateMachine: mustNewStateMachine(t, db, uint64(groupID)),
 		},
 		Voters: []multiraft.NodeID{1},
@@ -78,7 +78,7 @@ func TestMemoryBackedGroupDoesNotRecoverDeletedSlotDataAfterOpenGroup(t *testing
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "group become leader")
 
-	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(wkdb.User{
+	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "t1",
 	}))
@@ -96,21 +96,21 @@ func TestMemoryBackedGroupDoesNotRecoverDeletedSlotDataAfterOpenGroup(t *testing
 	if err := db.DeleteSlotData(ctx, uint64(groupID)); err != nil {
 		t.Fatalf("DeleteSlotData() error = %v", err)
 	}
-	if _, err := db.ForSlot(uint64(groupID)).GetUser(ctx, "u1"); !errors.Is(err, wkdb.ErrNotFound) {
+	if _, err := db.ForSlot(uint64(groupID)).GetUser(ctx, "u1"); !errors.Is(err, metadb.ErrNotFound) {
 		t.Fatalf("GetUser() after delete err = %v, want ErrNotFound", err)
 	}
 
 	reopenRT := newStartedRuntime(t)
 	if err := reopenRT.OpenGroup(ctx, multiraft.GroupOptions{
 		ID:           groupID,
-		Storage:      raftstore.NewMemory(),
+		Storage:      raftstorage.NewMemory(),
 		StateMachine: mustNewStateMachine(t, db, uint64(groupID)),
 	}); err != nil {
 		t.Fatalf("OpenGroup() error = %v", err)
 	}
 
 	_, err = db.ForSlot(uint64(groupID)).GetUser(ctx, "u1")
-	if !errors.Is(err, wkdb.ErrNotFound) {
+	if !errors.Is(err, metadb.ErrNotFound) {
 		t.Fatalf("GetUser() after reopen err = %v, want ErrNotFound", err)
 	}
 }
@@ -119,7 +119,7 @@ func TestMemoryBackedGroupReopensWithRecoveredMembership(t *testing.T) {
 	ctx := context.Background()
 	groupID := multiraft.GroupID(52)
 	db := openTestDB(t)
-	store := raftstore.NewMemory()
+	store := raftstorage.NewMemory()
 
 	rt := newStartedRuntime(t)
 	if err := rt.BootstrapGroup(ctx, multiraft.BootstrapGroupRequest{
@@ -138,7 +138,7 @@ func TestMemoryBackedGroupReopensWithRecoveredMembership(t *testing.T) {
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "group become leader")
 
-	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(wkdb.User{
+	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "before-reopen",
 	}))
@@ -167,7 +167,7 @@ func TestMemoryBackedGroupReopensWithRecoveredMembership(t *testing.T) {
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "reopened group become leader")
 
-	fut, err = reopenRT.Propose(ctx, groupID, EncodeUpsertUserCommand(wkdb.User{
+	fut, err = reopenRT.Propose(ctx, groupID, EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "after-reopen",
 	}))
@@ -214,7 +214,7 @@ func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "group become leader")
 
-	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(wkdb.User{
+	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "before-reopen",
 	}))
@@ -251,7 +251,7 @@ func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "reopened group become leader")
 
-	fut, err = reopenRT.Propose(ctx, groupID, EncodeUpsertUserCommand(wkdb.User{
+	fut, err = reopenRT.Propose(ctx, groupID, EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "after-reopen",
 	}))
@@ -298,7 +298,7 @@ func TestPebbleBackedGroupDoesNotRecoverDeletedBusinessStateWithoutSnapshot(t *t
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "group become leader")
 
-	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(wkdb.User{
+	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "t1",
 	}))
@@ -325,7 +325,7 @@ func TestPebbleBackedGroupDoesNotRecoverDeletedBusinessStateWithoutSnapshot(t *t
 	if err := reopenedBizDB.DeleteSlotData(ctx, uint64(groupID)); err != nil {
 		t.Fatalf("DeleteSlotData() error = %v", err)
 	}
-	if _, err := reopenedBizDB.ForSlot(uint64(groupID)).GetUser(ctx, "u1"); !errors.Is(err, wkdb.ErrNotFound) {
+	if _, err := reopenedBizDB.ForSlot(uint64(groupID)).GetUser(ctx, "u1"); !errors.Is(err, metadb.ErrNotFound) {
 		t.Fatalf("GetUser() after delete err = %v, want ErrNotFound", err)
 	}
 
@@ -338,7 +338,7 @@ func TestPebbleBackedGroupDoesNotRecoverDeletedBusinessStateWithoutSnapshot(t *t
 		t.Fatalf("OpenGroup() error = %v", err)
 	}
 
-	if _, err := reopenedBizDB.ForSlot(uint64(groupID)).GetUser(ctx, "u1"); !errors.Is(err, wkdb.ErrNotFound) {
+	if _, err := reopenedBizDB.ForSlot(uint64(groupID)).GetUser(ctx, "u1"); !errors.Is(err, metadb.ErrNotFound) {
 		t.Fatalf("GetUser() after reopen err = %v, want ErrNotFound", err)
 	}
 }

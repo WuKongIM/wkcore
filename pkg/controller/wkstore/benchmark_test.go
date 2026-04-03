@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 )
 
 func BenchmarkApplySingle(b *testing.B) {
@@ -16,7 +16,7 @@ func BenchmarkApplySingle(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		user := wkdb.User{
+		user := metadb.User{
 			UID:         fmt.Sprintf("bench-u-%d", i%64),
 			Token:       fmt.Sprintf("tok-%d", i),
 			DeviceFlag:  int64(i % 8),
@@ -51,7 +51,7 @@ func benchmarkApplyBatch(b *testing.B, batchSize int) {
 		cmds := make([]multiraft.Command, batchSize)
 		for j := 0; j < batchSize; j++ {
 			idx := i*batchSize + j
-			user := wkdb.User{
+			user := metadb.User{
 				UID:         fmt.Sprintf("bench-u-%d", idx%64),
 				Token:       fmt.Sprintf("tok-%d", idx),
 				DeviceFlag:  int64(idx % 8),

@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/raftstore"
 	"github.com/WuKongIM/WuKongIM/pkg/controller/wkcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
 	"github.com/stretchr/testify/require"
 )
 
@@ -201,7 +201,7 @@ func TestStopIsSafeAfterFailedStartRollback(t *testing.T) {
 			return nil
 		},
 		closeWKDBFn: func() error {
-			calls = append(calls, "wkdb.close")
+			calls = append(calls, "metadb.close")
 			return nil
 		},
 	}
@@ -213,7 +213,7 @@ func TestStopIsSafeAfterFailedStartRollback(t *testing.T) {
 		"gateway.start",
 		"cluster.stop",
 		"raft.close",
-		"wkdb.close",
+		"metadb.close",
 	}, calls)
 }
 
@@ -236,13 +236,13 @@ func TestStopStopsGatewayBeforeClosingStorage(t *testing.T) {
 			return nil
 		},
 		closeWKDBFn: func() error {
-			calls = append(calls, "wkdb.close")
+			calls = append(calls, "metadb.close")
 			return nil
 		},
 	}
 
 	require.NoError(t, app.Stop())
-	require.Equal(t, []string{"gateway.stop", "cluster.stop", "raft.close", "wkdb.close"}, calls)
+	require.Equal(t, []string{"gateway.stop", "cluster.stop", "raft.close", "metadb.close"}, calls)
 	require.False(t, app.started.Load())
 }
 
@@ -270,13 +270,13 @@ func TestStopStopsAPIBeforeGatewayAndClusterClose(t *testing.T) {
 			return nil
 		},
 		closeWKDBFn: func() error {
-			calls = append(calls, "wkdb.close")
+			calls = append(calls, "metadb.close")
 			return nil
 		},
 	}
 
 	require.NoError(t, app.Stop())
-	require.Equal(t, []string{"api.stop", "gateway.stop", "cluster.stop", "raft.close", "wkdb.close"}, calls)
+	require.Equal(t, []string{"api.stop", "gateway.stop", "cluster.stop", "raft.close", "metadb.close"}, calls)
 }
 
 func TestStopIsIdempotent(t *testing.T) {
@@ -298,14 +298,14 @@ func TestStopIsIdempotent(t *testing.T) {
 			return nil
 		},
 		closeWKDBFn: func() error {
-			calls = append(calls, "wkdb.close")
+			calls = append(calls, "metadb.close")
 			return nil
 		},
 	}
 
 	require.NoError(t, app.Stop())
 	require.NoError(t, app.Stop())
-	require.Equal(t, []string{"gateway.stop", "cluster.stop", "raft.close", "wkdb.close"}, calls)
+	require.Equal(t, []string{"gateway.stop", "cluster.stop", "raft.close", "metadb.close"}, calls)
 	require.False(t, app.started.Load())
 }
 
@@ -373,7 +373,7 @@ func TestStopWaitsForInFlightStart(t *testing.T) {
 			return nil
 		},
 		closeWKDBFn: func() error {
-			closeCalls <- "wkdb.close"
+			closeCalls <- "metadb.close"
 			return nil
 		},
 	}
@@ -441,11 +441,11 @@ func testConfig(t *testing.T) Config {
 }
 
 func openWKDBForTest(path string) (interface{ Close() error }, error) {
-	return wkdb.Open(path)
+	return metadb.Open(path)
 }
 
 func openRaftDBForTest(path string) (interface{ Close() error }, error) {
-	return raftstore.Open(path)
+	return raftstorage.Open(path)
 }
 
 func atomicBool(v bool) (flag atomic.Bool) {

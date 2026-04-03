@@ -1,4 +1,4 @@
-package wkdb
+package metadb
 
 type ShardStore struct {
 	db   *DB

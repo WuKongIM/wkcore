@@ -7,7 +7,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/sequence"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 )
 
 var ErrUnauthenticatedSender = errors.New("usecase/message: unauthenticated sender")
@@ -70,9 +70,9 @@ func (a *App) OnlineRegistry() online.Registry {
 }
 
 type IdentityStore interface {
-	GetUser(ctx context.Context, uid string) (wkdb.User, error)
+	GetUser(ctx context.Context, uid string) (metadb.User, error)
 }
 
 type ChannelStore interface {
-	GetChannel(ctx context.Context, channelID string, channelType int64) (wkdb.Channel, error)
+	GetChannel(ctx context.Context, channelID string, channelType int64) (metadb.Channel, error)
 }

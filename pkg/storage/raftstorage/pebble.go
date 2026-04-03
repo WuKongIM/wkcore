@@ -1,4 +1,4 @@
-package raftstore
+package raftstorage
 
 import (
 	"context"
@@ -323,7 +323,7 @@ func (s *pebbleStore) loadAppliedIndex() (uint64, error) {
 		return 0, err
 	}
 	if len(value) != appliedIndexSize {
-		return 0, errors.New("raftstore: invalid applied index encoding")
+		return 0, errors.New("raftstorage: invalid applied index encoding")
 	}
 	return binary.BigEndian.Uint64(value), nil
 }
@@ -347,7 +347,7 @@ func (m groupMeta) Marshal() ([]byte, error) {
 
 func (m *groupMeta) Unmarshal(data []byte) error {
 	if len(data) < groupMetaHeaderSize {
-		return errors.New("raftstore: invalid group metadata encoding")
+		return errors.New("raftstorage: invalid group metadata encoding")
 	}
 
 	m.FirstIndex = binary.BigEndian.Uint64(data[0:8])
@@ -358,7 +358,7 @@ func (m *groupMeta) Unmarshal(data []byte) error {
 
 	confStateSize := binary.BigEndian.Uint32(data[40:44])
 	if len(data[44:]) != int(confStateSize) {
-		return errors.New("raftstore: invalid group metadata conf state size")
+		return errors.New("raftstorage: invalid group metadata conf state size")
 	}
 
 	var confState raftpb.ConfState
@@ -484,7 +484,7 @@ func (db *DB) submitWrite(req *writeRequest) error {
 	db.mu.Lock()
 	if db.closing {
 		db.mu.Unlock()
-		return errors.New("raftstore: db closing")
+		return errors.New("raftstorage: db closing")
 	}
 	db.writeCh <- req
 	db.mu.Unlock()

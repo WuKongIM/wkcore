@@ -1,4 +1,4 @@
-package wkdb
+package metadb
 
 import (
 	"encoding/binary"
@@ -112,11 +112,11 @@ func decodeUserFamilyValue(key, value []byte) (string, int64, int64, error) {
 		case valueTypeBytes:
 			length, n := binary.Uvarint(payload)
 			if n <= 0 {
-				return "", 0, 0, fmt.Errorf("wkdb: invalid bytes length")
+				return "", 0, 0, fmt.Errorf("metadb: invalid bytes length")
 			}
 			payload = payload[n:]
 			if uint64(len(payload)) < length {
-				return "", 0, 0, fmt.Errorf("wkdb: bytes payload truncated")
+				return "", 0, 0, fmt.Errorf("metadb: bytes payload truncated")
 			}
 			raw := payload[:length]
 			payload = payload[length:]
@@ -131,7 +131,7 @@ func decodeUserFamilyValue(key, value []byte) (string, int64, int64, error) {
 		case valueTypeInt:
 			raw, n := binary.Uvarint(payload)
 			if n <= 0 {
-				return "", 0, 0, fmt.Errorf("wkdb: invalid int payload")
+				return "", 0, 0, fmt.Errorf("metadb: invalid int payload")
 			}
 			payload = payload[n:]
 
@@ -146,7 +146,7 @@ func decodeUserFamilyValue(key, value []byte) (string, int64, int64, error) {
 				haveLevel = true
 			}
 		default:
-			return "", 0, 0, fmt.Errorf("wkdb: unsupported value type %d", valueType)
+			return "", 0, 0, fmt.Errorf("metadb: unsupported value type %d", valueType)
 		}
 	}
 
@@ -199,7 +199,7 @@ func decodeChannelFamilyValue(key, value []byte) (int64, error) {
 		case valueTypeInt:
 			raw, n := binary.Uvarint(payload)
 			if n <= 0 {
-				return 0, fmt.Errorf("wkdb: invalid int payload")
+				return 0, fmt.Errorf("metadb: invalid int payload")
 			}
 			payload = payload[n:]
 
@@ -214,15 +214,15 @@ func decodeChannelFamilyValue(key, value []byte) (int64, error) {
 			}
 			length, n := binary.Uvarint(payload)
 			if n <= 0 {
-				return 0, fmt.Errorf("wkdb: invalid bytes length")
+				return 0, fmt.Errorf("metadb: invalid bytes length")
 			}
 			payload = payload[n:]
 			if uint64(len(payload)) < length {
-				return 0, fmt.Errorf("wkdb: bytes payload truncated")
+				return 0, fmt.Errorf("metadb: bytes payload truncated")
 			}
 			payload = payload[length:]
 		default:
-			return 0, fmt.Errorf("wkdb: unsupported value type %d", valueType)
+			return 0, fmt.Errorf("metadb: unsupported value type %d", valueType)
 		}
 	}
 
@@ -264,7 +264,7 @@ func wrapFamilyValue(key, payload []byte) []byte {
 
 func decodeWrappedValue(key, value []byte) (byte, []byte, error) {
 	if len(value) < 5 {
-		return 0, nil, fmt.Errorf("wkdb: wrapped value too short")
+		return 0, nil, fmt.Errorf("metadb: wrapped value too short")
 	}
 	want := binary.BigEndian.Uint32(value[:4])
 	body := value[4:]
@@ -301,23 +301,23 @@ func decodeFamilyPayload(payload []byte) (map[uint16]any, error) {
 		case valueTypeBytes:
 			length, n := binary.Uvarint(payload)
 			if n <= 0 {
-				return nil, fmt.Errorf("wkdb: invalid bytes length")
+				return nil, fmt.Errorf("metadb: invalid bytes length")
 			}
 			payload = payload[n:]
 			if uint64(len(payload)) < length {
-				return nil, fmt.Errorf("wkdb: bytes payload truncated")
+				return nil, fmt.Errorf("metadb: bytes payload truncated")
 			}
 			result[colID] = string(payload[:length])
 			payload = payload[length:]
 		case valueTypeInt:
 			raw, n := binary.Uvarint(payload)
 			if n <= 0 {
-				return nil, fmt.Errorf("wkdb: invalid int payload")
+				return nil, fmt.Errorf("metadb: invalid int payload")
 			}
 			payload = payload[n:]
 			result[colID] = decodeZigZagInt64(raw)
 		default:
-			return nil, fmt.Errorf("wkdb: unsupported value type %d", valueType)
+			return nil, fmt.Errorf("metadb: unsupported value type %d", valueType)
 		}
 	}
 
@@ -387,7 +387,7 @@ func appendKeyInt64Ordered(dst []byte, value int64) []byte {
 
 func decodeOrderedInt64(src []byte) (int64, []byte, error) {
 	if len(src) < 8 {
-		return 0, nil, fmt.Errorf("wkdb: ordered int64 too short")
+		return 0, nil, fmt.Errorf("metadb: ordered int64 too short")
 	}
 	u := binary.BigEndian.Uint64(src[:8]) ^ 0x8000000000000000
 	return int64(u), src[8:], nil
@@ -395,12 +395,12 @@ func decodeOrderedInt64(src []byte) (int64, []byte, error) {
 
 func decodeKeyString(src []byte) (string, []byte, error) {
 	if len(src) < 2 {
-		return "", nil, fmt.Errorf("wkdb: key string too short")
+		return "", nil, fmt.Errorf("metadb: key string too short")
 	}
 	n := binary.BigEndian.Uint16(src[:2])
 	src = src[2:]
 	if len(src) < int(n) {
-		return "", nil, fmt.Errorf("wkdb: key string truncated")
+		return "", nil, fmt.Errorf("metadb: key string truncated")
 	}
 	return string(src[:n]), src[n:], nil
 }

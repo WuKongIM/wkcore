@@ -1,4 +1,4 @@
-package wkdb
+package metadb
 
 import (
 	"encoding/binary"

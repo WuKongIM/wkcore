@@ -7,12 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 )
 
 func TestStateMachineEncodeUpsertCommands(t *testing.T) {
-	userCmd := EncodeUpsertUserCommand(wkdb.User{UID: "u1", Token: "t1", DeviceFlag: 3, DeviceLevel: 7})
+	userCmd := EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t1", DeviceFlag: 3, DeviceLevel: 7})
 	decoded, err := decodeCommand(userCmd)
 	if err != nil {
 		t.Fatalf("decodeCommand(user) error = %v", err)
@@ -25,7 +25,7 @@ func TestStateMachineEncodeUpsertCommands(t *testing.T) {
 		t.Fatalf("decoded user = %+v", uc.user)
 	}
 
-	channelCmd := EncodeUpsertChannelCommand(wkdb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 1})
+	channelCmd := EncodeUpsertChannelCommand(metadb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 1})
 	decoded, err = decodeCommand(channelCmd)
 	if err != nil {
 		t.Fatalf("decodeCommand(channel) error = %v", err)
@@ -48,7 +48,7 @@ func TestStateMachineApplyUpsertsUserAndChannel(t *testing.T) {
 		GroupID: 11,
 		Index:   1,
 		Term:    1,
-		Data:    EncodeUpsertUserCommand(wkdb.User{UID: "u1", Token: "t1", DeviceFlag: 1, DeviceLevel: 2}),
+		Data:    EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t1", DeviceFlag: 1, DeviceLevel: 2}),
 	})
 	if err != nil {
 		t.Fatalf("Apply(user create) error = %v", err)
@@ -61,7 +61,7 @@ func TestStateMachineApplyUpsertsUserAndChannel(t *testing.T) {
 		GroupID: 11,
 		Index:   2,
 		Term:    1,
-		Data:    EncodeUpsertUserCommand(wkdb.User{UID: "u1", Token: "t2", DeviceFlag: 5, DeviceLevel: 9}),
+		Data:    EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t2", DeviceFlag: 5, DeviceLevel: 9}),
 	}); err != nil {
 		t.Fatalf("Apply(user update) error = %v", err)
 	}
@@ -78,7 +78,7 @@ func TestStateMachineApplyUpsertsUserAndChannel(t *testing.T) {
 		GroupID: 11,
 		Index:   3,
 		Term:    1,
-		Data:    EncodeUpsertChannelCommand(wkdb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 1}),
+		Data:    EncodeUpsertChannelCommand(metadb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 1}),
 	}); err != nil {
 		t.Fatalf("Apply(channel create) error = %v", err)
 	}
@@ -87,7 +87,7 @@ func TestStateMachineApplyUpsertsUserAndChannel(t *testing.T) {
 		GroupID: 11,
 		Index:   4,
 		Term:    1,
-		Data:    EncodeUpsertChannelCommand(wkdb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 9}),
+		Data:    EncodeUpsertChannelCommand(metadb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 9}),
 	}); err != nil {
 		t.Fatalf("Apply(channel update) error = %v", err)
 	}
@@ -110,7 +110,7 @@ func TestStateMachineSnapshotRestoreRoundTrip(t *testing.T) {
 		GroupID: 11,
 		Index:   1,
 		Term:    1,
-		Data:    EncodeUpsertUserCommand(wkdb.User{UID: "u1", Token: "t1", DeviceFlag: 1, DeviceLevel: 2}),
+		Data:    EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t1", DeviceFlag: 1, DeviceLevel: 2}),
 	}); err != nil {
 		t.Fatalf("Apply(user) error = %v", err)
 	}
@@ -118,7 +118,7 @@ func TestStateMachineSnapshotRestoreRoundTrip(t *testing.T) {
 		GroupID: 11,
 		Index:   2,
 		Term:    1,
-		Data:    EncodeUpsertChannelCommand(wkdb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 1}),
+		Data:    EncodeUpsertChannelCommand(metadb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 1}),
 	}); err != nil {
 		t.Fatalf("Apply(channel) error = %v", err)
 	}
@@ -163,11 +163,11 @@ func TestStateMachineSnapshotIsSlotScoped(t *testing.T) {
 		GroupID: 11,
 		Index:   1,
 		Term:    1,
-		Data:    EncodeUpsertUserCommand(wkdb.User{UID: "u1", Token: "slot11"}),
+		Data:    EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "slot11"}),
 	}); err != nil {
 		t.Fatalf("Apply(slot11) error = %v", err)
 	}
-	if err := db.ForSlot(12).CreateUser(ctx, wkdb.User{UID: "u1", Token: "slot12"}); err != nil {
+	if err := db.ForSlot(12).CreateUser(ctx, metadb.User{UID: "u1", Token: "slot12"}); err != nil {
 		t.Fatalf("CreateUser(slot12) error = %v", err)
 	}
 
@@ -191,7 +191,7 @@ func TestStateMachineSnapshotIsSlotScoped(t *testing.T) {
 	}
 
 	_, err = restoreDB.ForSlot(12).GetUser(ctx, "u1")
-	if !errors.Is(err, wkdb.ErrNotFound) {
+	if !errors.Is(err, metadb.ErrNotFound) {
 		t.Fatalf("GetUser(slot12) err = %v, want ErrNotFound", err)
 	}
 }
@@ -205,9 +205,9 @@ func TestStateMachineRejectsMismatchedGroupID(t *testing.T) {
 		GroupID: 12,
 		Index:   1,
 		Term:    1,
-		Data:    EncodeUpsertUserCommand(wkdb.User{UID: "u1", Token: "t1"}),
+		Data:    EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t1"}),
 	})
-	if !errors.Is(err, wkdb.ErrInvalidArgument) {
+	if !errors.Is(err, metadb.ErrInvalidArgument) {
 		t.Fatalf("Apply() err = %v, want ErrInvalidArgument", err)
 	}
 }
@@ -223,7 +223,7 @@ func TestStateMachineRejectsTruncatedCommand(t *testing.T) {
 		Term:    1,
 		Data:    []byte{0x01}, // only version byte, missing cmdType
 	})
-	if !errors.Is(err, wkdb.ErrCorruptValue) {
+	if !errors.Is(err, metadb.ErrCorruptValue) {
 		t.Fatalf("Apply(truncated) err = %v, want ErrCorruptValue", err)
 	}
 }
@@ -239,7 +239,7 @@ func TestStateMachineRejectsUnknownCommand(t *testing.T) {
 		Term:    1,
 		Data:    []byte{commandVersion, 0xFF}, // valid header, unknown command type
 	})
-	if !errors.Is(err, wkdb.ErrInvalidArgument) {
+	if !errors.Is(err, metadb.ErrInvalidArgument) {
 		t.Fatalf("Apply(unknown) err = %v, want ErrInvalidArgument", err)
 	}
 }
@@ -247,10 +247,10 @@ func TestStateMachineRejectsUnknownCommand(t *testing.T) {
 func TestNewStateMachineValidation(t *testing.T) {
 	db := openTestDB(t)
 
-	if _, err := NewStateMachine(nil, 1); !errors.Is(err, wkdb.ErrInvalidArgument) {
+	if _, err := NewStateMachine(nil, 1); !errors.Is(err, metadb.ErrInvalidArgument) {
 		t.Fatalf("NewStateMachine(nil, 1) err = %v, want ErrInvalidArgument", err)
 	}
-	if _, err := NewStateMachine(db, 0); !errors.Is(err, wkdb.ErrInvalidArgument) {
+	if _, err := NewStateMachine(db, 0); !errors.Is(err, metadb.ErrInvalidArgument) {
 		t.Fatalf("NewStateMachine(db, 0) err = %v, want ErrInvalidArgument", err)
 	}
 	sm, err := NewStateMachine(db, 1)
@@ -271,9 +271,9 @@ func TestApplyBatchUpsertsMultipleCommands(t *testing.T) {
 	bsm := sm.(multiraft.BatchStateMachine)
 
 	cmds := []multiraft.Command{
-		{GroupID: 11, Index: 1, Term: 1, Data: EncodeUpsertUserCommand(wkdb.User{UID: "u1", Token: "t1", DeviceFlag: 1, DeviceLevel: 2})},
-		{GroupID: 11, Index: 2, Term: 1, Data: EncodeUpsertChannelCommand(wkdb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 3})},
-		{GroupID: 11, Index: 3, Term: 1, Data: EncodeUpsertUserCommand(wkdb.User{UID: "u2", Token: "t2", DeviceFlag: 4, DeviceLevel: 5})},
+		{GroupID: 11, Index: 1, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t1", DeviceFlag: 1, DeviceLevel: 2})},
+		{GroupID: 11, Index: 2, Term: 1, Data: EncodeUpsertChannelCommand(metadb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 3})},
+		{GroupID: 11, Index: 3, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u2", Token: "t2", DeviceFlag: 4, DeviceLevel: 5})},
 	}
 
 	results, err := bsm.ApplyBatch(ctx, cmds)
@@ -322,12 +322,12 @@ func TestApplyBatchRejectsOnMismatchedGroupID(t *testing.T) {
 	bsm := sm.(multiraft.BatchStateMachine)
 
 	cmds := []multiraft.Command{
-		{GroupID: 11, Index: 1, Term: 1, Data: EncodeUpsertUserCommand(wkdb.User{UID: "u1", Token: "t1"})},
-		{GroupID: 99, Index: 2, Term: 1, Data: EncodeUpsertUserCommand(wkdb.User{UID: "u2", Token: "t2"})},
+		{GroupID: 11, Index: 1, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t1"})},
+		{GroupID: 99, Index: 2, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u2", Token: "t2"})},
 	}
 
 	_, err := bsm.ApplyBatch(ctx, cmds)
-	if !errors.Is(err, wkdb.ErrInvalidArgument) {
+	if !errors.Is(err, metadb.ErrInvalidArgument) {
 		t.Fatalf("ApplyBatch() err = %v, want ErrInvalidArgument", err)
 	}
 }
@@ -340,7 +340,7 @@ func TestApplyBatchAtomicity(t *testing.T) {
 
 	// First command is valid, second has invalid data — the whole batch should fail.
 	cmds := []multiraft.Command{
-		{GroupID: 11, Index: 1, Term: 1, Data: EncodeUpsertUserCommand(wkdb.User{UID: "u-atomic", Token: "t1"})},
+		{GroupID: 11, Index: 1, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u-atomic", Token: "t1"})},
 		{GroupID: 11, Index: 2, Term: 1, Data: []byte{commandVersion, 0xFF}}, // unknown type
 	}
 
@@ -351,7 +351,7 @@ func TestApplyBatchAtomicity(t *testing.T) {
 
 	// Verify no partial writes: u-atomic should not exist.
 	_, err = db.ForSlot(11).GetUser(ctx, "u-atomic")
-	if !errors.Is(err, wkdb.ErrNotFound) {
+	if !errors.Is(err, metadb.ErrNotFound) {
 		t.Fatalf("GetUser(u-atomic) err = %v, want ErrNotFound (no partial writes)", err)
 	}
 }
@@ -361,27 +361,27 @@ func TestApplyBatchAtomicity(t *testing.T) {
 func TestEncodeDecodeEdgeCases(t *testing.T) {
 	tests := []struct {
 		name string
-		user wkdb.User
+		user metadb.User
 	}{
 		{
 			name: "empty UID and Token",
-			user: wkdb.User{UID: "", Token: "", DeviceFlag: 0, DeviceLevel: 0},
+			user: metadb.User{UID: "", Token: "", DeviceFlag: 0, DeviceLevel: 0},
 		},
 		{
 			name: "zero-value fields",
-			user: wkdb.User{UID: "u", Token: "t", DeviceFlag: 0, DeviceLevel: 0},
+			user: metadb.User{UID: "u", Token: "t", DeviceFlag: 0, DeviceLevel: 0},
 		},
 		{
 			name: "MaxInt64 fields",
-			user: wkdb.User{UID: "u", Token: "t", DeviceFlag: math.MaxInt64, DeviceLevel: math.MaxInt64},
+			user: metadb.User{UID: "u", Token: "t", DeviceFlag: math.MaxInt64, DeviceLevel: math.MaxInt64},
 		},
 		{
 			name: "negative int64 fields",
-			user: wkdb.User{UID: "u", Token: "t", DeviceFlag: math.MinInt64, DeviceLevel: -1},
+			user: metadb.User{UID: "u", Token: "t", DeviceFlag: math.MinInt64, DeviceLevel: -1},
 		},
 		{
 			name: "long strings (1KB+)",
-			user: wkdb.User{UID: strings.Repeat("x", 1024), Token: strings.Repeat("y", 2048), DeviceFlag: 1, DeviceLevel: 2},
+			user: metadb.User{UID: strings.Repeat("x", 1024), Token: strings.Repeat("y", 2048), DeviceFlag: 1, DeviceLevel: 2},
 		},
 	}
 
@@ -418,7 +418,7 @@ func TestApplyBatch_DeleteChannel(t *testing.T) {
 	ctx := context.Background()
 
 	// First create a channel via upsert
-	createCmd := EncodeUpsertChannelCommand(wkdb.Channel{
+	createCmd := EncodeUpsertChannelCommand(metadb.Channel{
 		ChannelID: "ch1", ChannelType: 1, Ban: 0,
 	})
 	_, err := sm.Apply(ctx, multiraft.Command{GroupID: 1, Data: createCmd})
@@ -444,7 +444,7 @@ func TestApplyBatch_DeleteChannel(t *testing.T) {
 
 	// Verify channel is gone
 	_, err = db.ForSlot(1).GetChannel(ctx, "ch1", 1)
-	if err != wkdb.ErrNotFound {
+	if err != metadb.ErrNotFound {
 		t.Fatalf("expected ErrNotFound, got: %v", err)
 	}
 }
@@ -452,19 +452,19 @@ func TestApplyBatch_DeleteChannel(t *testing.T) {
 func TestEncodeDecodeChannelEdgeCases(t *testing.T) {
 	tests := []struct {
 		name    string
-		channel wkdb.Channel
+		channel metadb.Channel
 	}{
 		{
 			name:    "empty ChannelID",
-			channel: wkdb.Channel{ChannelID: "", ChannelType: 0, Ban: 0},
+			channel: metadb.Channel{ChannelID: "", ChannelType: 0, Ban: 0},
 		},
 		{
 			name:    "MaxInt64 fields",
-			channel: wkdb.Channel{ChannelID: "c1", ChannelType: math.MaxInt64, Ban: math.MaxInt64},
+			channel: metadb.Channel{ChannelID: "c1", ChannelType: math.MaxInt64, Ban: math.MaxInt64},
 		},
 		{
 			name:    "long ChannelID (1KB+)",
-			channel: wkdb.Channel{ChannelID: strings.Repeat("z", 1024), ChannelType: 1, Ban: 0},
+			channel: metadb.Channel{ChannelID: strings.Repeat("z", 1024), ChannelType: 1, Ban: 0},
 		},
 	}
 

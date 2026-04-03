@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 )
 
 // Wire format (version 1):
@@ -49,7 +49,7 @@ const (
 // Each command type implements this interface, carrying its own typed
 // payload and knowing how to apply itself to a WriteBatch.
 type command interface {
-	apply(wb *wkdb.WriteBatch, slot uint64) error
+	apply(wb *metadb.WriteBatch, slot uint64) error
 }
 
 // commandDecoder parses TLV fields after the header into a typed command.
@@ -67,20 +67,20 @@ var commandDecoders = map[uint8]commandDecoder{
 // --- UpsertUser ---
 
 type upsertUserCmd struct {
-	user wkdb.User
+	user metadb.User
 }
 
-func (c *upsertUserCmd) apply(wb *wkdb.WriteBatch, slot uint64) error {
+func (c *upsertUserCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
 	return wb.UpsertUser(slot, c.user)
 }
 
 // --- UpsertChannel ---
 
 type upsertChannelCmd struct {
-	channel wkdb.Channel
+	channel metadb.Channel
 }
 
-func (c *upsertChannelCmd) apply(wb *wkdb.WriteBatch, slot uint64) error {
+func (c *upsertChannelCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
 	return wb.UpsertChannel(slot, c.channel)
 }
 
@@ -91,12 +91,12 @@ type deleteChannelCmd struct {
 	channelType int64
 }
 
-func (c *deleteChannelCmd) apply(wb *wkdb.WriteBatch, slot uint64) error {
+func (c *deleteChannelCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
 	return wb.DeleteChannel(slot, c.channelID, c.channelType)
 }
 
 // EncodeUpsertUserCommand encodes a User into a binary command.
-func EncodeUpsertUserCommand(u wkdb.User) []byte {
+func EncodeUpsertUserCommand(u metadb.User) []byte {
 	uidLen := len(u.UID)
 	tokenLen := len(u.Token)
 	// header + 2 string fields + 2 int64 fields
@@ -123,7 +123,7 @@ func EncodeUpsertUserCommand(u wkdb.User) []byte {
 }
 
 // EncodeUpsertChannelCommand encodes a Channel into a binary command.
-func EncodeUpsertChannelCommand(ch wkdb.Channel) []byte {
+func EncodeUpsertChannelCommand(ch metadb.Channel) []byte {
 	idLen := len(ch.ChannelID)
 	// header + 1 string field + 2 int64 fields
 	size := headerSize +
@@ -163,24 +163,24 @@ func EncodeDeleteChannelCommand(channelID string, channelType int64) []byte {
 // decodeCommand parses a binary-encoded command using the decoder registry.
 func decodeCommand(data []byte) (command, error) {
 	if len(data) < headerSize {
-		return nil, fmt.Errorf("%w: command too short", wkdb.ErrCorruptValue)
+		return nil, fmt.Errorf("%w: command too short", metadb.ErrCorruptValue)
 	}
 
 	version := data[0]
 	if version != commandVersion {
-		return nil, fmt.Errorf("%w: unsupported command version %d", wkdb.ErrCorruptValue, version)
+		return nil, fmt.Errorf("%w: unsupported command version %d", metadb.ErrCorruptValue, version)
 	}
 
 	cmdType := data[1]
 	decoder, ok := commandDecoders[cmdType]
 	if !ok {
-		return nil, fmt.Errorf("%w: unknown command type %d", wkdb.ErrInvalidArgument, cmdType)
+		return nil, fmt.Errorf("%w: unknown command type %d", metadb.ErrInvalidArgument, cmdType)
 	}
 	return decoder(data[headerSize:])
 }
 
 func decodeUpsertUser(data []byte) (command, error) {
-	var u wkdb.User
+	var u metadb.User
 	off := 0
 	for off < len(data) {
 		tag, value, n, err := readTLV(data[off:])
@@ -195,12 +195,12 @@ func decodeUpsertUser(data []byte) (command, error) {
 			u.Token = string(value)
 		case tagUserDeviceFlag:
 			if len(value) != 8 {
-				return nil, fmt.Errorf("%w: bad DeviceFlag length", wkdb.ErrCorruptValue)
+				return nil, fmt.Errorf("%w: bad DeviceFlag length", metadb.ErrCorruptValue)
 			}
 			u.DeviceFlag = int64(binary.BigEndian.Uint64(value))
 		case tagUserDeviceLevel:
 			if len(value) != 8 {
-				return nil, fmt.Errorf("%w: bad DeviceLevel length", wkdb.ErrCorruptValue)
+				return nil, fmt.Errorf("%w: bad DeviceLevel length", metadb.ErrCorruptValue)
 			}
 			u.DeviceLevel = int64(binary.BigEndian.Uint64(value))
 		default:
@@ -211,7 +211,7 @@ func decodeUpsertUser(data []byte) (command, error) {
 }
 
 func decodeUpsertChannel(data []byte) (command, error) {
-	var ch wkdb.Channel
+	var ch metadb.Channel
 	off := 0
 	for off < len(data) {
 		tag, value, n, err := readTLV(data[off:])
@@ -224,12 +224,12 @@ func decodeUpsertChannel(data []byte) (command, error) {
 			ch.ChannelID = string(value)
 		case tagChannelType:
 			if len(value) != 8 {
-				return nil, fmt.Errorf("%w: bad ChannelType length", wkdb.ErrCorruptValue)
+				return nil, fmt.Errorf("%w: bad ChannelType length", metadb.ErrCorruptValue)
 			}
 			ch.ChannelType = int64(binary.BigEndian.Uint64(value))
 		case tagChannelBan:
 			if len(value) != 8 {
-				return nil, fmt.Errorf("%w: bad Ban length", wkdb.ErrCorruptValue)
+				return nil, fmt.Errorf("%w: bad Ban length", metadb.ErrCorruptValue)
 			}
 			ch.Ban = int64(binary.BigEndian.Uint64(value))
 		default:
@@ -253,7 +253,7 @@ func decodeDeleteChannel(data []byte) (command, error) {
 			cmd.channelID = string(value)
 		case tagChannelType:
 			if len(value) != 8 {
-				return nil, fmt.Errorf("%w: bad ChannelType length", wkdb.ErrCorruptValue)
+				return nil, fmt.Errorf("%w: bad ChannelType length", metadb.ErrCorruptValue)
 			}
 			cmd.channelType = int64(binary.BigEndian.Uint64(value))
 		default:
@@ -286,14 +286,14 @@ func putInt64Field(buf []byte, off int, tag uint8, v int64) int {
 // readTLV reads one TLV entry from data and returns (tag, value, bytesConsumed, error).
 func readTLV(data []byte) (uint8, []byte, int, error) {
 	if len(data) < tlvOverhead {
-		return 0, nil, 0, fmt.Errorf("%w: truncated TLV header", wkdb.ErrCorruptValue)
+		return 0, nil, 0, fmt.Errorf("%w: truncated TLV header", metadb.ErrCorruptValue)
 	}
 	tag := data[0]
 	length := int(binary.BigEndian.Uint32(data[1:]))
 	end := tlvOverhead + length
 	if end > len(data) {
 		return 0, nil, 0, fmt.Errorf("%w: truncated TLV value (tag=%d, need=%d, have=%d)",
-			wkdb.ErrCorruptValue, tag, length, len(data)-tlvOverhead)
+			metadb.ErrCorruptValue, tag, length, len(data)-tlvOverhead)
 	}
 	return tag, data[tlvOverhead:end], end, nil
 }

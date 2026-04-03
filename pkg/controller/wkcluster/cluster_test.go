@@ -1,26 +1,25 @@
 package wkcluster_test
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/controller/raftstore"
 	"github.com/WuKongIM/WuKongIM/pkg/controller/wkcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/controller/wkstore"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
 )
 
 // testNode bundles a cluster, store, and storage resources for testing.
 type testNode struct {
 	cluster *wkcluster.Cluster
 	store   *wkstore.Store
-	db      *wkdb.DB
-	raftDB  *raftstore.DB
+	db      *metadb.DB
+	raftDB  *raftstorage.DB
 	nodeID  multiraft.NodeID
 }
 
@@ -38,14 +37,14 @@ func startSingleNode(t testing.TB, groupCount int) *testNode {
 	t.Helper()
 	dir := t.TempDir()
 
-	db, err := wkdb.Open(filepath.Join(dir, "data"))
+	db, err := metadb.Open(filepath.Join(dir, "data"))
 	if err != nil {
-		t.Fatalf("open wkdb: %v", err)
+		t.Fatalf("open metadb: %v", err)
 	}
-	raftDB, err := raftstore.Open(filepath.Join(dir, "raft"))
+	raftDB, err := raftstorage.Open(filepath.Join(dir, "raft"))
 	if err != nil {
 		_ = db.Close()
-		t.Fatalf("open raftstore: %v", err)
+		t.Fatalf("open raftstorage: %v", err)
 	}
 
 	groups := make([]wkcluster.GroupConfig, groupCount)
@@ -122,14 +121,14 @@ func startThreeNodes(t testing.TB, groupCount int) []*testNode {
 	for i := range 3 {
 		dir := filepath.Join(t.TempDir(), fmt.Sprintf("n%d", i+1))
 
-		db, err := wkdb.Open(filepath.Join(dir, "data"))
+		db, err := metadb.Open(filepath.Join(dir, "data"))
 		if err != nil {
-			t.Fatalf("open wkdb node %d: %v", i+1, err)
+			t.Fatalf("open metadb node %d: %v", i+1, err)
 		}
-		raftDB, err := raftstore.Open(filepath.Join(dir, "raft"))
+		raftDB, err := raftstorage.Open(filepath.Join(dir, "raft"))
 		if err != nil {
 			_ = db.Close()
-			t.Fatalf("open raftstore node %d: %v", i+1, err)
+			t.Fatalf("open raftstorage node %d: %v", i+1, err)
 		}
 
 		cfg := wkcluster.Config{
@@ -243,117 +242,4 @@ func waitForAllStableLeaders(t testing.TB, testNodes []*testNode, groupCount int
 		leaders[r.groupID] = r.leaderID
 	}
 	return leaders
-}
-
-// ── Tests ───────────────────────────────────────────────────────────
-
-func TestCluster_SingleNode_CreateAndGetChannel(t *testing.T) {
-	n := startSingleNode(t, 1)
-	defer n.stop()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	waitForLeader(t, n.cluster, 1)
-
-	if err := n.store.CreateChannel(ctx, "ch-1", 1); err != nil {
-		t.Fatalf("CreateChannel: %v", err)
-	}
-
-	ch, err := n.store.GetChannel(ctx, "ch-1", 1)
-	if err != nil {
-		t.Fatalf("GetChannel: %v", err)
-	}
-	if ch.ChannelID != "ch-1" || ch.ChannelType != 1 {
-		t.Fatalf("unexpected channel: %+v", ch)
-	}
-}
-
-func TestCluster_SingleNode_UpdateChannel(t *testing.T) {
-	n := startSingleNode(t, 1)
-	defer n.stop()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	waitForLeader(t, n.cluster, 1)
-
-	if err := n.store.CreateChannel(ctx, "ch-upd", 1); err != nil {
-		t.Fatalf("CreateChannel: %v", err)
-	}
-	if err := n.store.UpdateChannel(ctx, "ch-upd", 1, 1); err != nil {
-		t.Fatalf("UpdateChannel: %v", err)
-	}
-
-	ch, err := n.store.GetChannel(ctx, "ch-upd", 1)
-	if err != nil {
-		t.Fatalf("GetChannel: %v", err)
-	}
-	if ch.Ban != 1 {
-		t.Fatalf("expected Ban=1, got %d", ch.Ban)
-	}
-}
-
-func TestCluster_SingleNode_DeleteChannel(t *testing.T) {
-	n := startSingleNode(t, 1)
-	defer n.stop()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	waitForLeader(t, n.cluster, 1)
-
-	if err := n.store.CreateChannel(ctx, "ch-del", 1); err != nil {
-		t.Fatalf("CreateChannel: %v", err)
-	}
-	if err := n.store.DeleteChannel(ctx, "ch-del", 1); err != nil {
-		t.Fatalf("DeleteChannel: %v", err)
-	}
-
-	_, err := n.store.GetChannel(ctx, "ch-del", 1)
-	if err == nil {
-		t.Fatal("expected error for deleted channel")
-	}
-}
-
-func TestCluster_ThreeNode_ForwardToLeader(t *testing.T) {
-	testNodes := startThreeNodes(t, 1)
-	defer func() {
-		for _, n := range testNodes {
-			n.stop()
-		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	leaderID := waitForStableLeader(t, testNodes, 1)
-
-	var leader, follower *testNode
-	for _, n := range testNodes {
-		if n.nodeID == leaderID {
-			leader = n
-		} else if follower == nil {
-			follower = n
-		}
-	}
-	if follower == nil || leader == nil {
-		t.Fatal("could not identify leader/follower")
-	}
-
-	t.Logf("leader=node%d, follower=node%d", leader.nodeID, follower.nodeID)
-
-	// Create channel on follower — should forward to leader
-	if err := follower.store.CreateChannel(ctx, "forwarded-ch", 1); err != nil {
-		t.Fatalf("CreateChannel on follower: %v", err)
-	}
-
-	time.Sleep(200 * time.Millisecond) // allow replication
-	ch, err := leader.store.GetChannel(ctx, "forwarded-ch", 1)
-	if err != nil {
-		t.Fatalf("GetChannel on leader: %v", err)
-	}
-	if ch.ChannelID != "forwarded-ch" {
-		t.Fatalf("unexpected: %+v", ch)
-	}
 }
