@@ -15,15 +15,15 @@ func TestNewRuntimeValidatesRequiredDependencies(t *testing.T) {
 	}
 }
 
-func TestRuntimeSurfaceExposesReconcileAndLookup(t *testing.T) {
+func TestRuntimeSurfaceUsesGroupKey(t *testing.T) {
 	var rt isrnode.Runtime
-	var meta isr.GroupMeta
+	meta := isr.GroupMeta{GroupKey: isr.GroupKey("group-1")}
 
 	compileRuntimeSurface := func(r isrnode.Runtime) {
 		_ = r.EnsureGroup(meta)
 		_ = r.ApplyMeta(meta)
-		_ = r.RemoveGroup(meta.GroupID)
-		_, _ = r.Group(meta.GroupID)
+		_ = r.RemoveGroup(meta.GroupKey)
+		_, _ = r.Group(meta.GroupKey)
 	}
 
 	_ = compileRuntimeSurface

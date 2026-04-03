@@ -2,6 +2,7 @@ package isrnode
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -9,13 +10,17 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
+func testGroupKey(groupID uint64) isr.GroupKey {
+	return isr.GroupKey("group-" + strconv.FormatUint(groupID, 10))
+}
+
 func TestManyGroupsToSamePeerReuseOneSession(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(21, 1, 1, []isr.NodeID{1, 2}))
 	mustEnsureLocal(t, env.runtime, testMetaLocal(22, 1, 1, []isr.NodeID{1, 2}))
 
-	env.runtime.enqueueReplication(21, 2)
-	env.runtime.enqueueReplication(22, 2)
+	env.runtime.enqueueReplication(testGroupKey(21), 2)
+	env.runtime.enqueueReplication(testGroupKey(22), 2)
 	env.runtime.runScheduler()
 
 	if got := env.sessions.createdFor(2); got != 1 {
@@ -27,7 +32,7 @@ func TestInboundEnvelopeDemuxRequiresMatchingGeneration(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(23, 1, 1, []isr.NodeID{1, 2}))
 
-	env.transport.deliver(Envelope{GroupID: 23, Generation: 99, Epoch: 1, Kind: MessageKindFetchResponse})
+	env.transport.deliver(Envelope{GroupKey: testGroupKey(23), Generation: 99, Epoch: 1, Kind: MessageKindFetchResponse})
 	if env.factory.replicas[0].applyFetchCalls != 0 {
 		t.Fatalf("unexpected apply fetch on generation mismatch")
 	}
@@ -43,7 +48,7 @@ func TestFetchResponseDropsStaleEpoch(t *testing.T) {
 	})
 	env.transport.deliver(Envelope{
 		Peer:       2,
-		GroupID:    24,
+		GroupKey:   testGroupKey(24),
 		Generation: 1,
 		Epoch:      2,
 		Kind:       MessageKindFetchResponse,
@@ -66,7 +71,7 @@ func TestFetchResponseDecodesPayloadIntoApplyFetch(t *testing.T) {
 	})
 	env.transport.deliver(Envelope{
 		Peer:       2,
-		GroupID:    25,
+		GroupKey:   testGroupKey(25),
 		Generation: 1,
 		Epoch:      4,
 		Kind:       MessageKindFetchResponse,
@@ -143,7 +148,7 @@ func newSessionTestEnv(t *testing.T) *sessionTestEnv {
 
 func testMetaLocal(groupID, epoch uint64, leader isr.NodeID, replicas []isr.NodeID) isr.GroupMeta {
 	return isr.GroupMeta{
-		GroupID:  groupID,
+		GroupKey: testGroupKey(groupID),
 		Epoch:    epoch,
 		Leader:   leader,
 		Replicas: append([]isr.NodeID(nil), replicas...),
@@ -155,29 +160,29 @@ func testMetaLocal(groupID, epoch uint64, leader isr.NodeID, replicas []isr.Node
 func mustEnsureLocal(t *testing.T, rt *runtime, meta isr.GroupMeta) {
 	t.Helper()
 	if err := rt.EnsureGroup(meta); err != nil {
-		t.Fatalf("EnsureGroup(%d) error = %v", meta.GroupID, err)
+		t.Fatalf("EnsureGroup(%q) error = %v", meta.GroupKey, err)
 	}
 }
 
 type sessionGenerationStore struct {
 	mu     sync.Mutex
-	values map[uint64]uint64
+	values map[isr.GroupKey]uint64
 }
 
 func newSessionGenerationStore() *sessionGenerationStore {
-	return &sessionGenerationStore{values: make(map[uint64]uint64)}
+	return &sessionGenerationStore{values: make(map[isr.GroupKey]uint64)}
 }
 
-func (s *sessionGenerationStore) Load(groupID uint64) (uint64, error) {
+func (s *sessionGenerationStore) Load(groupKey isr.GroupKey) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.values[groupID], nil
+	return s.values[groupKey], nil
 }
 
-func (s *sessionGenerationStore) Store(groupID uint64, generation uint64) error {
+func (s *sessionGenerationStore) Store(groupKey isr.GroupKey, generation uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.values[groupID] = generation
+	s.values[groupKey] = generation
 	return nil
 }
 
@@ -195,10 +200,10 @@ func (f *sessionReplicaFactory) New(cfg GroupConfig) (isr.Replica, error) {
 	defer f.mu.Unlock()
 	replica := &sessionReplica{
 		state: isr.ReplicaState{
-			GroupID: cfg.GroupID,
-			Role:    isr.RoleLeader,
-			Epoch:   cfg.Meta.Epoch,
-			Leader:  cfg.Meta.Leader,
+			GroupKey: cfg.GroupKey,
+			Role:     isr.RoleLeader,
+			Epoch:    cfg.Meta.Epoch,
+			Leader:   cfg.Meta.Leader,
 		},
 	}
 	f.replicas = append(f.replicas, replica)
@@ -215,6 +220,7 @@ type sessionReplica struct {
 func (r *sessionReplica) ApplyMeta(meta isr.GroupMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.state.GroupKey = meta.GroupKey
 	r.state.Epoch = meta.Epoch
 	r.state.Leader = meta.Leader
 	return nil

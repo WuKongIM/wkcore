@@ -2,6 +2,7 @@ package isrnode_test
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -70,9 +71,13 @@ func withMaxGroups(n int) testEnvOption {
 	}
 }
 
+func testGroupKey(groupID uint64) isr.GroupKey {
+	return isr.GroupKey("group-" + strconv.FormatUint(groupID, 10))
+}
+
 func testMeta(groupID, epoch uint64, leader isr.NodeID, replicas []isr.NodeID) isr.GroupMeta {
 	return isr.GroupMeta{
-		GroupID:  groupID,
+		GroupKey: testGroupKey(groupID),
 		Epoch:    epoch,
 		Leader:   leader,
 		Replicas: append([]isr.NodeID(nil), replicas...),
@@ -84,22 +89,24 @@ func testMeta(groupID, epoch uint64, leader isr.NodeID, replicas []isr.NodeID) i
 func mustEnsure(t *testing.T, rt isrnode.Runtime, meta isr.GroupMeta) {
 	t.Helper()
 	if err := rt.EnsureGroup(meta); err != nil {
-		t.Fatalf("EnsureGroup(%d) error = %v", meta.GroupID, err)
+		t.Fatalf("EnsureGroup(%q) error = %v", meta.GroupKey, err)
 	}
 }
 
 func mustRemove(t *testing.T, rt isrnode.Runtime, groupID uint64) {
 	t.Helper()
-	if err := rt.RemoveGroup(groupID); err != nil {
-		t.Fatalf("RemoveGroup(%d) error = %v", groupID, err)
+	groupKey := testGroupKey(groupID)
+	if err := rt.RemoveGroup(groupKey); err != nil {
+		t.Fatalf("RemoveGroup(%q) error = %v", groupKey, err)
 	}
 }
 
 func mustGroup(t *testing.T, rt isrnode.Runtime, groupID uint64) isrnode.GroupHandle {
 	t.Helper()
-	group, ok := rt.Group(groupID)
+	groupKey := testGroupKey(groupID)
+	group, ok := rt.Group(groupKey)
 	if !ok {
-		t.Fatalf("Group(%d) not found", groupID)
+		t.Fatalf("Group(%q) not found", groupKey)
 	}
 	return group
 }
@@ -112,33 +119,33 @@ func fencedLeaderMeta(groupID uint64) isr.GroupMeta {
 
 type fakeGenerationStore struct {
 	mu     sync.Mutex
-	values map[uint64]uint64
-	stored map[uint64]uint64
+	values map[isr.GroupKey]uint64
+	stored map[isr.GroupKey]uint64
 }
 
 func newFakeGenerationStore() *fakeGenerationStore {
 	return &fakeGenerationStore{
-		values: make(map[uint64]uint64),
-		stored: make(map[uint64]uint64),
+		values: make(map[isr.GroupKey]uint64),
+		stored: make(map[isr.GroupKey]uint64),
 	}
 }
 
-func (s *fakeGenerationStore) Load(groupID uint64) (uint64, error) {
+func (s *fakeGenerationStore) Load(groupKey isr.GroupKey) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.values[groupID], nil
+	return s.values[groupKey], nil
 }
 
-func (s *fakeGenerationStore) Store(groupID uint64, generation uint64) error {
+func (s *fakeGenerationStore) Store(groupKey isr.GroupKey, generation uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.values[groupID] = generation
-	s.stored[groupID] = generation
+	s.values[groupKey] = generation
+	s.stored[groupKey] = generation
 	return nil
 }
 
 type createdReplica struct {
-	groupID    uint64
+	groupKey   isr.GroupKey
 	generation uint64
 	meta       isr.GroupMeta
 }
@@ -159,14 +166,14 @@ func (f *fakeReplicaFactory) New(cfg isrnode.GroupConfig) (isr.Replica, error) {
 
 	replica := &fakeReplica{
 		state: isr.ReplicaState{
-			GroupID: cfg.GroupID,
-			Epoch:   cfg.Meta.Epoch,
-			Leader:  cfg.Meta.Leader,
-			Role:    isr.RoleFollower,
+			GroupKey: cfg.GroupKey,
+			Epoch:    cfg.Meta.Epoch,
+			Leader:   cfg.Meta.Leader,
+			Role:     isr.RoleFollower,
 		},
 	}
 	f.created = append(f.created, createdReplica{
-		groupID:    cfg.GroupID,
+		groupKey:   cfg.GroupKey,
 		generation: cfg.Generation,
 		meta:       cfg.Meta,
 	})
@@ -188,7 +195,7 @@ func (r *fakeReplica) ApplyMeta(meta isr.GroupMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.metaCalls = append(r.metaCalls, meta)
-	r.state.GroupID = meta.GroupID
+	r.state.GroupKey = meta.GroupKey
 	r.state.Epoch = meta.Epoch
 	r.state.Leader = meta.Leader
 	return nil

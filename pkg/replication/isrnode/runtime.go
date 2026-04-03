@@ -12,9 +12,9 @@ type runtime struct {
 	cfg Config
 
 	mu               sync.RWMutex
-	groups           map[uint64]*group
+	groups           map[isr.GroupKey]*group
 	scheduler        *scheduler
-	tombstones       map[uint64]map[uint64]tombstone
+	tombstones       map[isr.GroupKey]map[uint64]tombstone
 	sessions         peerSessionCache
 	peerRequests     peerRequestState
 	snapshots        snapshotState
@@ -49,11 +49,11 @@ func New(cfg Config) (Runtime, error) {
 	}
 	r := &runtime{
 		cfg:              cfg,
-		groups:           make(map[uint64]*group),
+		groups:           make(map[isr.GroupKey]*group),
 		scheduler:        newScheduler(),
 		sessions:         newPeerSessionCache(),
 		peerRequests:     newPeerRequestState(),
-		tombstones:       make(map[uint64]map[uint64]tombstone),
+		tombstones:       make(map[isr.GroupKey]map[uint64]tombstone),
 		snapshotThrottle: newSnapshotThrottle(cfg.Limits.MaxRecoveryBytesPerSecond, time.Sleep),
 	}
 	cfg.Transport.RegisterHandler(r.handleEnvelope)
@@ -66,19 +66,19 @@ func (r *runtime) EnsureGroup(meta isr.GroupMeta) error {
 
 	r.dropExpiredTombstonesLocked(r.cfg.Now())
 
-	if _, ok := r.groupLocked(meta.GroupID); ok {
+	if _, ok := r.groupLocked(meta.GroupKey); ok {
 		return ErrGroupExists
 	}
 	if r.cfg.Limits.MaxGroups > 0 && len(r.groups) >= r.cfg.Limits.MaxGroups {
 		return ErrTooManyGroups
 	}
 
-	generation, err := r.allocateGeneration(meta.GroupID)
+	generation, err := r.allocateGeneration(meta.GroupKey)
 	if err != nil {
 		return err
 	}
 	replica, err := r.cfg.ReplicaFactory.New(GroupConfig{
-		GroupID:    meta.GroupID,
+		GroupKey:   meta.GroupKey,
 		Generation: generation,
 		Meta:       meta,
 	})
@@ -90,32 +90,32 @@ func (r *runtime) EnsureGroup(meta isr.GroupMeta) error {
 	}
 
 	r.putGroupLocked(&group{
-		id:         meta.GroupID,
+		id:         meta.GroupKey,
 		generation: generation,
 		replica:    replica,
 		now:        r.cfg.Now,
 		onReplication: func() {
-			r.processReplication(meta.GroupID)
+			r.processReplication(meta.GroupKey)
 		},
 		onSnapshot: func() {
-			r.processSnapshot(meta.GroupID)
+			r.processSnapshot(meta.GroupKey)
 		},
 	})
-	r.groups[meta.GroupID].setMeta(meta)
+	r.groups[meta.GroupKey].setMeta(meta)
 	return nil
 }
 
-func (r *runtime) RemoveGroup(groupID uint64) error {
+func (r *runtime) RemoveGroup(groupKey isr.GroupKey) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.dropExpiredTombstonesLocked(r.cfg.Now())
 
-	g, ok := r.groupLocked(groupID)
+	g, ok := r.groupLocked(groupKey)
 	if !ok {
 		return ErrGroupNotFound
 	}
-	delete(r.groups, groupID)
+	delete(r.groups, groupKey)
 	if err := g.replica.Tombstone(); err != nil {
 		return err
 	}
@@ -125,7 +125,7 @@ func (r *runtime) RemoveGroup(groupID uint64) error {
 
 func (r *runtime) ApplyMeta(meta isr.GroupMeta) error {
 	r.mu.RLock()
-	g, ok := r.groups[meta.GroupID]
+	g, ok := r.groups[meta.GroupKey]
 	r.mu.RUnlock()
 	if !ok {
 		return ErrGroupNotFound
@@ -134,38 +134,38 @@ func (r *runtime) ApplyMeta(meta isr.GroupMeta) error {
 	return g.replica.ApplyMeta(meta)
 }
 
-func (r *runtime) Group(groupID uint64) (GroupHandle, bool) {
+func (r *runtime) Group(groupKey isr.GroupKey) (GroupHandle, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.dropExpiredTombstonesLocked(r.cfg.Now())
-	g, ok := r.groupLocked(groupID)
+	g, ok := r.groupLocked(groupKey)
 	if !ok {
 		return nil, false
 	}
 	return g, true
 }
 
-func (r *runtime) enqueueReplication(groupID uint64, peer isr.NodeID) {
+func (r *runtime) enqueueReplication(groupKey isr.GroupKey, peer isr.NodeID) {
 	r.mu.RLock()
-	g, ok := r.groups[groupID]
+	g, ok := r.groups[groupKey]
 	r.mu.RUnlock()
 	if !ok {
 		return
 	}
 	g.enqueueReplication(peer)
 	g.markReplication()
-	r.scheduler.enqueue(groupID)
+	r.scheduler.enqueue(groupKey)
 }
 
 func (r *runtime) runScheduler() {
 	for {
 		select {
-		case groupID := <-r.scheduler.ch:
-			r.scheduler.begin(groupID)
-			r.processGroup(groupID)
-			if r.scheduler.done(groupID) {
-				r.scheduler.requeue(groupID)
+		case groupKey := <-r.scheduler.ch:
+			r.scheduler.begin(groupKey)
+			r.processGroup(groupKey)
+			if r.scheduler.done(groupKey) {
+				r.scheduler.requeue(groupKey)
 			}
 		default:
 			return
@@ -173,9 +173,9 @@ func (r *runtime) runScheduler() {
 	}
 }
 
-func (r *runtime) processGroup(groupID uint64) {
+func (r *runtime) processGroup(groupKey isr.GroupKey) {
 	r.mu.RLock()
-	g, ok := r.groups[groupID]
+	g, ok := r.groups[groupKey]
 	r.mu.RUnlock()
 	if !ok {
 		return
@@ -183,9 +183,9 @@ func (r *runtime) processGroup(groupID uint64) {
 	g.runPendingTasks()
 }
 
-func (r *runtime) processReplication(groupID uint64) {
+func (r *runtime) processReplication(groupKey isr.GroupKey) {
 	r.mu.RLock()
-	g, ok := r.groups[groupID]
+	g, ok := r.groups[groupKey]
 	r.mu.RUnlock()
 	if !ok {
 		return
@@ -199,7 +199,7 @@ func (r *runtime) processReplication(groupID uint64) {
 		}
 		_ = r.sendEnvelope(Envelope{
 			Peer:       peer,
-			GroupID:    groupID,
+			GroupKey:   groupKey,
 			Epoch:      meta.Epoch,
 			Generation: g.generation,
 			RequestID:  r.requestID.Add(1),

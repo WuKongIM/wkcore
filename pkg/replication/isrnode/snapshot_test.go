@@ -14,8 +14,8 @@ func TestSnapshotTasksRespectMaxSnapshotInflight(t *testing.T) {
 	mustEnsureLocal(t, env.runtime, testMetaLocal(61, 1, 1, []isr.NodeID{1, 2}))
 	mustEnsureLocal(t, env.runtime, testMetaLocal(62, 1, 1, []isr.NodeID{1, 2}))
 
-	env.runtime.queueSnapshot(61)
-	env.runtime.queueSnapshot(62)
+	env.runtime.queueSnapshot(testGroupKey(61))
+	env.runtime.queueSnapshot(testGroupKey(62))
 	env.runtime.runScheduler()
 
 	if got := env.runtime.maxSnapshotConcurrent(); got != 1 {
@@ -30,7 +30,7 @@ func TestRecoveryBandwidthLimiterThrottlesSnapshotChunks(t *testing.T) {
 	mustEnsureLocal(t, env.runtime, testMetaLocal(63, 1, 1, []isr.NodeID{1, 2}))
 
 	startedAt := env.clock.Now()
-	env.runtime.queueSnapshotChunk(63, 256)
+	env.runtime.queueSnapshotChunk(testGroupKey(63), 256)
 	env.runtime.runScheduler()
 	if env.clock.Now().Sub(startedAt) < time.Second {
 		t.Fatalf("expected throttling delay")
@@ -47,14 +47,14 @@ func TestSnapshotTaskRequeuesWhenInflightLimitReached(t *testing.T) {
 	if !env.runtime.snapshots.begin(1) {
 		t.Fatalf("expected to reserve one inflight snapshot")
 	}
-	env.runtime.queueSnapshot(64)
-	env.runtime.queueSnapshot(65)
+	env.runtime.queueSnapshot(testGroupKey(64))
+	env.runtime.queueSnapshot(testGroupKey(65))
 	env.runtime.runScheduler()
 	if got := env.runtime.queuedSnapshotGroups(); got != 2 {
 		t.Fatalf("expected two waiting snapshots, got %d", got)
 	}
 
-	env.runtime.completeSnapshot(0)
+	env.runtime.completeSnapshot("")
 	env.runtime.runScheduler()
 	if got := env.runtime.queuedSnapshotGroups(); got != 0 {
 		t.Fatalf("expected waiting snapshot to be resumed, got %d", got)
@@ -72,12 +72,12 @@ func TestSnapshotWaitingQueueIsFIFO(t *testing.T) {
 	if !env.runtime.snapshots.begin(1) {
 		t.Fatalf("expected to reserve one inflight snapshot")
 	}
-	env.runtime.queueSnapshotChunk(66, 101)
-	env.runtime.queueSnapshotChunk(67, 102)
-	env.runtime.queueSnapshotChunk(68, 103)
+	env.runtime.queueSnapshotChunk(testGroupKey(66), 101)
+	env.runtime.queueSnapshotChunk(testGroupKey(67), 102)
+	env.runtime.queueSnapshotChunk(testGroupKey(68), 103)
 	env.runtime.runScheduler()
 
-	env.runtime.completeSnapshot(0)
+	env.runtime.completeSnapshot("")
 	env.runtime.runScheduler()
 
 	if len(env.throttle.values) != 3 || env.throttle.values[0] != 101 || env.throttle.values[1] != 102 || env.throttle.values[2] != 103 {

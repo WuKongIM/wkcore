@@ -33,7 +33,7 @@ type BackpressureState struct {
 
 type Envelope struct {
 	Peer       isr.NodeID
-	GroupID    uint64
+	GroupKey   isr.GroupKey
 	Epoch      uint64
 	Generation uint64
 	RequestID  uint64
@@ -53,20 +53,20 @@ type Limits struct {
 }
 
 type GroupHandle interface {
-	ID() uint64
+	ID() isr.GroupKey
 	Status() isr.ReplicaState
 	Append(ctx context.Context, records []isr.Record) (isr.CommitResult, error)
 }
 
 type Runtime interface {
 	EnsureGroup(meta isr.GroupMeta) error
-	RemoveGroup(groupID uint64) error
+	RemoveGroup(groupKey isr.GroupKey) error
 	ApplyMeta(meta isr.GroupMeta) error
-	Group(groupID uint64) (GroupHandle, bool)
+	Group(groupKey isr.GroupKey) (GroupHandle, bool)
 }
 
 type GroupConfig struct {
-	GroupID    uint64
+	GroupKey   isr.GroupKey
 	Generation uint64
 	Meta       isr.GroupMeta
 }
@@ -76,8 +76,8 @@ type ReplicaFactory interface {
 }
 
 type GenerationStore interface {
-	Load(groupID uint64) (uint64, error)
-	Store(groupID uint64, generation uint64) error
+	Load(groupKey isr.GroupKey) (uint64, error)
+	Store(groupKey isr.GroupKey, generation uint64) error
 }
 
 type Transport interface {

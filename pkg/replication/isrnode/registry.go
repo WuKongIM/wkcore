@@ -1,15 +1,19 @@
 package isrnode
 
-import "time"
+import (
+	"time"
+
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
+)
 
 type tombstone struct {
-	groupID    uint64
+	groupKey   isr.GroupKey
 	generation uint64
 	expiresAt  time.Time
 }
 
-func (r *runtime) groupLocked(groupID uint64) (*group, bool) {
-	g, ok := r.groups[groupID]
+func (r *runtime) groupLocked(groupKey isr.GroupKey) (*group, bool) {
+	g, ok := r.groups[groupKey]
 	return g, ok
 }
 
@@ -24,14 +28,14 @@ func (r *runtime) tombstoneGroupLocked(g *group) {
 		r.tombstones[g.id] = generations
 	}
 	generations[g.generation] = tombstone{
-		groupID:    g.id,
+		groupKey:   g.id,
 		generation: g.generation,
 		expiresAt:  r.cfg.Now().Add(r.cfg.Tombstones.TombstoneTTL),
 	}
 }
 
 func (r *runtime) dropExpiredTombstonesLocked(now time.Time) {
-	for groupID, generations := range r.tombstones {
+	for groupKey, generations := range r.tombstones {
 		for generation, stone := range generations {
 			if now.Before(stone.expiresAt) {
 				continue
@@ -39,7 +43,7 @@ func (r *runtime) dropExpiredTombstonesLocked(now time.Time) {
 			delete(generations, generation)
 		}
 		if len(generations) == 0 {
-			delete(r.tombstones, groupID)
+			delete(r.tombstones, groupKey)
 		}
 	}
 }

@@ -9,7 +9,7 @@ import (
 )
 
 type group struct {
-	id         uint64
+	id         isr.GroupKey
 	generation uint64
 	replica    isr.Replica
 	now        func() time.Time
@@ -28,7 +28,7 @@ type group struct {
 	onSnapshot    func()
 }
 
-func (g *group) ID() uint64 {
+func (g *group) ID() isr.GroupKey {
 	return g.id
 }
 

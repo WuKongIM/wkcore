@@ -3,6 +3,8 @@ package isrnode
 import (
 	"sync"
 	"time"
+
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
 type snapshotThrottle interface {
@@ -38,8 +40,8 @@ type snapshotState struct {
 	mu            sync.Mutex
 	inflight      int
 	maxConcurrent int
-	waiting       []uint64
-	waitingSet    map[uint64]struct{}
+	waiting       []isr.GroupKey
+	waitingSet    map[isr.GroupKey]struct{}
 }
 
 func (s *snapshotState) begin(limit int) bool {
@@ -64,29 +66,29 @@ func (s *snapshotState) finish() {
 	}
 }
 
-func (s *snapshotState) wait(groupID uint64) {
+func (s *snapshotState) wait(groupKey isr.GroupKey) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.waitingSet == nil {
-		s.waitingSet = make(map[uint64]struct{})
+		s.waitingSet = make(map[isr.GroupKey]struct{})
 	}
-	if _, exists := s.waitingSet[groupID]; exists {
+	if _, exists := s.waitingSet[groupKey]; exists {
 		return
 	}
-	s.waiting = append(s.waiting, groupID)
-	s.waitingSet[groupID] = struct{}{}
+	s.waiting = append(s.waiting, groupKey)
+	s.waitingSet[groupKey] = struct{}{}
 }
 
-func (s *snapshotState) popWaiter() (uint64, bool) {
+func (s *snapshotState) popWaiter() (isr.GroupKey, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.waiting) == 0 {
-		return 0, false
+		return "", false
 	}
-	groupID := s.waiting[0]
+	groupKey := s.waiting[0]
 	s.waiting = s.waiting[1:]
-	delete(s.waitingSet, groupID)
-	return groupID, true
+	delete(s.waitingSet, groupKey)
+	return groupKey, true
 }
 
 func (s *snapshotState) maxObserved() int {
@@ -101,54 +103,54 @@ func (s *snapshotState) waitingCount() int {
 	return len(s.waiting)
 }
 
-func (r *runtime) queueSnapshot(groupID uint64) {
-	r.queueSnapshotChunk(groupID, 0)
+func (r *runtime) queueSnapshot(groupKey isr.GroupKey) {
+	r.queueSnapshotChunk(groupKey, 0)
 }
 
-func (r *runtime) queueSnapshotChunk(groupID uint64, bytes int64) {
+func (r *runtime) queueSnapshotChunk(groupKey isr.GroupKey, bytes int64) {
 	r.mu.RLock()
-	g, ok := r.groups[groupID]
+	g, ok := r.groups[groupKey]
 	r.mu.RUnlock()
 	if !ok {
 		return
 	}
 	g.enqueueSnapshot(bytes)
 	g.markSnapshot()
-	r.scheduler.enqueue(groupID)
+	r.scheduler.enqueue(groupKey)
 }
 
-func (r *runtime) processSnapshot(groupID uint64) {
+func (r *runtime) processSnapshot(groupKey isr.GroupKey) {
 	r.mu.RLock()
-	g, ok := r.groups[groupID]
+	g, ok := r.groups[groupKey]
 	r.mu.RUnlock()
 	if !ok {
 		return
 	}
 
 	if !r.snapshots.begin(r.cfg.Limits.MaxSnapshotInflight) {
-		r.snapshots.wait(groupID)
+		r.snapshots.wait(groupKey)
 		return
 	}
 
 	bytes := g.drainSnapshotBytes()
 	r.snapshotThrottle.Wait(bytes)
-	r.completeSnapshot(groupID)
+	r.completeSnapshot(groupKey)
 }
 
 func (r *runtime) maxSnapshotConcurrent() int {
 	return r.snapshots.maxObserved()
 }
 
-func (r *runtime) completeSnapshot(groupID uint64) {
+func (r *runtime) completeSnapshot(groupKey isr.GroupKey) {
 	r.snapshots.finish()
-	if nextGroupID, ok := r.snapshots.popWaiter(); ok {
+	if nextGroupKey, ok := r.snapshots.popWaiter(); ok {
 		r.mu.RLock()
-		g, exists := r.groups[nextGroupID]
+		g, exists := r.groups[nextGroupKey]
 		r.mu.RUnlock()
 		if exists {
 			g.markSnapshot()
 		}
-		r.scheduler.enqueue(nextGroupID)
+		r.scheduler.enqueue(nextGroupKey)
 	}
 }
 

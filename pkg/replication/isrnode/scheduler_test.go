@@ -73,7 +73,7 @@ func TestSchedulerPendingQueuePreservesFIFO(t *testing.T) {
 	var q schedulerQueue
 
 	for _, groupID := range []uint64{11, 12, 13} {
-		q.enqueue(groupID)
+		q.enqueue(testGroupKey(groupID))
 	}
 
 	for _, want := range []uint64{11, 12, 13} {
@@ -81,8 +81,8 @@ func TestSchedulerPendingQueuePreservesFIFO(t *testing.T) {
 		if !ok {
 			t.Fatalf("pop() missing group %d", want)
 		}
-		if got != want {
-			t.Fatalf("pop() = %d, want %d", got, want)
+		if got != testGroupKey(want) {
+			t.Fatalf("pop() = %q, want %q", got, testGroupKey(want))
 		}
 	}
 
@@ -94,8 +94,8 @@ func TestSchedulerPendingQueuePreservesFIFO(t *testing.T) {
 func TestSchedulerPendingQueueReusableAfterDrain(t *testing.T) {
 	var q schedulerQueue
 
-	q.enqueue(21)
-	q.enqueue(22)
+	q.enqueue(testGroupKey(21))
+	q.enqueue(testGroupKey(22))
 	if _, ok := q.pop(); !ok {
 		t.Fatal("expected first queued group")
 	}
@@ -103,16 +103,16 @@ func TestSchedulerPendingQueueReusableAfterDrain(t *testing.T) {
 		t.Fatal("expected second queued group")
 	}
 
-	q.enqueue(31)
-	q.enqueue(32)
+	q.enqueue(testGroupKey(31))
+	q.enqueue(testGroupKey(32))
 
 	for _, want := range []uint64{31, 32} {
 		got, ok := q.pop()
 		if !ok {
 			t.Fatalf("pop() missing group %d after reuse", want)
 		}
-		if got != want {
-			t.Fatalf("pop() = %d, want %d", got, want)
+		if got != testGroupKey(want) {
+			t.Fatalf("pop() = %q, want %q", got, testGroupKey(want))
 		}
 	}
 }

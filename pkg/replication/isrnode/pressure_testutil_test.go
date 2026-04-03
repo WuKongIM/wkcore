@@ -252,12 +252,12 @@ func (h *pressureHarness) peerFor(groupIndex, round int) isr.NodeID {
 
 func (h *pressureHarness) enqueueReplication(groupIndex, round int) {
 	groupID := h.groupIDs[groupIndex%len(h.groupIDs)]
-	h.runtime.enqueueReplication(groupID, h.peerFor(groupIndex, round))
+	h.runtime.enqueueReplication(testGroupKey(groupID), h.peerFor(groupIndex, round))
 }
 
 func (h *pressureHarness) enqueueReplicationToPeer(groupIndex int, peer isr.NodeID) {
 	groupID := h.groupIDs[groupIndex%len(h.groupIDs)]
-	h.runtime.enqueueReplication(groupID, peer)
+	h.runtime.enqueueReplication(testGroupKey(groupID), peer)
 }
 
 func (h *pressureHarness) enqueueReplicationRound(round int) {
@@ -268,7 +268,7 @@ func (h *pressureHarness) enqueueReplicationRound(round int) {
 
 func (h *pressureHarness) queueSnapshot(groupIndex int, bytes int64) {
 	groupID := h.groupIDs[groupIndex%len(h.groupIDs)]
-	h.runtime.queueSnapshotChunk(groupID, bytes)
+	h.runtime.queueSnapshotChunk(testGroupKey(groupID), bytes)
 }
 
 func (h *pressureHarness) runSchedulingTicks(rounds int) {
@@ -303,7 +303,7 @@ func (h *pressureHarness) deliverPeerFetchResponses(peer isr.NodeID, limit int) 
 		for _, env := range envs {
 			h.transport.deliver(Envelope{
 				Peer:       env.Peer,
-				GroupID:    env.GroupID,
+				GroupKey:   env.GroupKey,
 				Generation: env.Generation,
 				Epoch:      env.Epoch,
 				Kind:       MessageKindFetchResponse,
@@ -394,7 +394,7 @@ func (h *pressureHarness) reserveSnapshotSlot(tb testing.TB) {
 }
 
 func (h *pressureHarness) releaseSnapshotSlot() {
-	h.runtime.completeSnapshot(0)
+	h.runtime.completeSnapshot("")
 	h.observeState()
 }
 
@@ -412,18 +412,18 @@ func (h *pressureHarness) deliverAvailableFetchResponses() int {
 func mustEnsurePressureGroup(tb testing.TB, rt *runtime, meta isr.GroupMeta) {
 	tb.Helper()
 	if err := rt.EnsureGroup(meta); err != nil {
-		tb.Fatalf("EnsureGroup(%d) error = %v", meta.GroupID, err)
+		tb.Fatalf("EnsureGroup(%q) error = %v", meta.GroupKey, err)
 	}
 }
 
 type pressureReplicaFactory struct {
 	mu       sync.Mutex
-	replicas map[uint64]*pressureReplica
+	replicas map[isr.GroupKey]*pressureReplica
 }
 
 func newPressureReplicaFactory() *pressureReplicaFactory {
 	return &pressureReplicaFactory{
-		replicas: make(map[uint64]*pressureReplica),
+		replicas: make(map[isr.GroupKey]*pressureReplica),
 	}
 }
 
@@ -433,19 +433,19 @@ func (f *pressureReplicaFactory) New(cfg GroupConfig) (isr.Replica, error) {
 
 	replica := &pressureReplica{
 		state: isr.ReplicaState{
-			GroupID: cfg.GroupID,
-			Role:    isr.RoleLeader,
-			Epoch:   cfg.Meta.Epoch,
-			Leader:  cfg.Meta.Leader,
+			GroupKey: cfg.GroupKey,
+			Role:     isr.RoleLeader,
+			Epoch:    cfg.Meta.Epoch,
+			Leader:   cfg.Meta.Leader,
 		},
 	}
-	f.replicas[cfg.GroupID] = replica
+	f.replicas[cfg.GroupKey] = replica
 	return replica, nil
 }
 
 func (f *pressureReplicaFactory) progressCount(groupID uint64) int {
 	f.mu.Lock()
-	replica := f.replicas[groupID]
+	replica := f.replicas[testGroupKey(groupID)]
 	f.mu.Unlock()
 	if replica == nil {
 		return 0

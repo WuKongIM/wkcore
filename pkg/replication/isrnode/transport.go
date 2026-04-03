@@ -116,9 +116,9 @@ func (r *runtime) handleEnvelope(env Envelope) {
 
 	r.mu.Lock()
 	r.dropExpiredTombstonesLocked(r.cfg.Now())
-	if active, ok := r.groups[env.GroupID]; ok && active.generation == env.Generation {
+	if active, ok := r.groups[env.GroupKey]; ok && active.generation == env.Generation {
 		g = active
-	} else if generations, ok := r.tombstones[env.GroupID]; ok {
+	} else if generations, ok := r.tombstones[env.GroupKey]; ok {
 		if _, ok := generations[env.Generation]; ok {
 			knownDrop = true
 		}
@@ -148,7 +148,7 @@ func (r *runtime) deliverEnvelope(g *group, env Envelope) {
 			return
 		}
 		_ = g.replica.ApplyFetch(context.Background(), isr.ApplyFetchRequest{
-			GroupID:    env.GroupID,
+			GroupKey:   env.GroupKey,
 			Epoch:      env.Epoch,
 			Leader:     env.Peer,
 			TruncateTo: payload.TruncateTo,

@@ -36,7 +36,7 @@ func TestRuntimeReconcileFlowEnsureApplyRemoveEnsure(t *testing.T) {
 	if err := env.runtime.EnsureGroup(meta2); err != nil {
 		t.Fatalf("EnsureGroup() after remove error = %v", err)
 	}
-	if got := env.generations.stored[31]; got != 2 {
+	if got := env.generations.stored[testGroupKey(31)]; got != 2 {
 		t.Fatalf("expected generation 2 after re-ensure, got %d", got)
 	}
 }
