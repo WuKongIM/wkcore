@@ -5,7 +5,7 @@ import (
 	"errors"
 	"math"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
 type appliedMessage struct {

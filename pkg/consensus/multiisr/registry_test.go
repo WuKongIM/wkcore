@@ -3,8 +3,8 @@ package multiisr_test
 import (
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/isr"
 	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiisr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
 func TestEnsureGroupStoresNextGenerationBeforeReplicaCreation(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
 func TestSchedulerRunsTasksInRequiredOrder(t *testing.T) {

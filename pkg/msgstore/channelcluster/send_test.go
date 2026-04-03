@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
 func TestSendReturnsCommittedMessageSeqFromHW(t *testing.T) {

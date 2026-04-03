@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
 const maxLegacyMessageSeq = uint64(^uint32(0))

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
 const fetchResponseCodecVersion1 byte = 1

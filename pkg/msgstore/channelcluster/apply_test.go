@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
 func TestCheckpointBridgeReplaysCommittedRecordsIntoIdempotencyState(t *testing.T) {

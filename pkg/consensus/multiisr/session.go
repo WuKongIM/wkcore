@@ -3,7 +3,7 @@ package multiisr
 import (
 	"sync"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
 type peerSessionCache struct {

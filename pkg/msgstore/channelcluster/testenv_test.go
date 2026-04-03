@@ -3,7 +3,7 @@ package channelcluster
 import (
 	"context"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
 type fakeGroupHandle struct {

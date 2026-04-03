@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
 type NodeID = isr.NodeID

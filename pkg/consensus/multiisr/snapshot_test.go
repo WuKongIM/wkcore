@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
 func TestSnapshotTasksRespectMaxSnapshotInflight(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/isr"
 	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiisr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
 func TestAppendChecksLeaseSynchronouslyBeforeReplicaAppend(t *testing.T) {
