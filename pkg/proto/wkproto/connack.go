@@ -1,11 +1,11 @@
 package wkproto
 
 import (
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/pkg/errors"
 )
 
-func encodeConnack(connack *wkpacket.ConnackPacket, enc *Encoder, version uint8) error {
+func encodeConnack(connack *wkframe.ConnackPacket, enc *Encoder, version uint8) error {
 	if connack.GetHasServerVersion() {
 		enc.WriteUint8(connack.ServerVersion)
 	}
@@ -19,25 +19,25 @@ func encodeConnack(connack *wkpacket.ConnackPacket, enc *Encoder, version uint8)
 	return nil
 }
 
-func encodeConnackSize(packet *wkpacket.ConnackPacket, version uint8) int {
+func encodeConnackSize(packet *wkframe.ConnackPacket, version uint8) int {
 	size := 0
 	if packet.GetHasServerVersion() {
-		size += wkpacket.VersionByteSize
+		size += wkframe.VersionByteSize
 	}
-	size += wkpacket.TimeDiffByteSize
-	size += wkpacket.ReasonCodeByteSize
-	size += len(packet.ServerKey) + wkpacket.StringFixLenByteSize
-	size += len(packet.Salt) + wkpacket.StringFixLenByteSize
+	size += wkframe.TimeDiffByteSize
+	size += wkframe.ReasonCodeByteSize
+	size += len(packet.ServerKey) + wkframe.StringFixLenByteSize
+	size += len(packet.Salt) + wkframe.StringFixLenByteSize
 	if version >= 4 {
-		size += wkpacket.NodeIdByteSize
+		size += wkframe.NodeIdByteSize
 	}
 	return size
 }
 
-func decodeConnack(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Frame, error) {
+func decodeConnack(frame wkframe.Frame, data []byte, version uint8) (wkframe.Frame, error) {
 	dec := NewDecoder(data)
-	connackPacket := &wkpacket.ConnackPacket{}
-	connackPacket.Framer = frame.(wkpacket.Framer)
+	connackPacket := &wkframe.ConnackPacket{}
+	connackPacket.Framer = frame.(wkframe.Framer)
 
 	var err error
 
@@ -54,7 +54,7 @@ func decodeConnack(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.F
 	if reasonCode, err = dec.Uint8(); err != nil {
 		return nil, errors.Wrap(err, "解码ReasonCode失败！")
 	}
-	connackPacket.ReasonCode = wkpacket.ReasonCode(reasonCode)
+	connackPacket.ReasonCode = wkframe.ReasonCode(reasonCode)
 
 	if connackPacket.ServerKey, err = dec.String(); err != nil {
 		return nil, errors.Wrap(err, "解码ServerKey失败！")

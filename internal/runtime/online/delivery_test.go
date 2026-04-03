@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,7 +15,7 @@ func TestLocalDeliveryWritesFrameToEveryRecipientSession(t *testing.T) {
 	s2 := newRecordingSession(12, "tcp")
 	delivery := LocalDelivery{}
 
-	frame := &wkpacket.PingPacket{}
+	frame := &wkframe.PingPacket{}
 	err := delivery.Deliver([]OnlineConn{
 		{UID: "u2", Session: s1},
 		{UID: "u2", Session: s2},
@@ -36,7 +36,7 @@ func TestLocalDeliveryContinuesAfterWriteFrameError(t *testing.T) {
 	err := delivery.Deliver([]OnlineConn{
 		{UID: "u2", Session: first},
 		{UID: "u2", Session: second},
-	}, &wkpacket.PingPacket{})
+	}, &wkframe.PingPacket{})
 
 	require.ErrorIs(t, err, writeErr)
 	require.Equal(t, 1, first.writeAttempts)
@@ -49,7 +49,7 @@ type erroringSession struct {
 	writeAttempts int
 }
 
-func (s *erroringSession) WriteFrame(frame wkpacket.Frame, opts ...session.WriteOption) error {
+func (s *erroringSession) WriteFrame(frame wkframe.Frame, opts ...session.WriteOption) error {
 	s.writeAttempts++
 	_ = frame
 	_ = opts
@@ -61,7 +61,7 @@ type recordingSession struct {
 	listener string
 
 	mu            sync.Mutex
-	writtenFrames []wkpacket.Frame
+	writtenFrames []wkframe.Frame
 }
 
 func newRecordingSession(id uint64, listener string) *recordingSession {
@@ -84,7 +84,7 @@ func (s *recordingSession) LocalAddr() string {
 	return ""
 }
 
-func (s *recordingSession) WriteFrame(frame wkpacket.Frame, _ ...session.WriteOption) error {
+func (s *recordingSession) WriteFrame(frame wkframe.Frame, _ ...session.WriteOption) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -102,11 +102,11 @@ func (s *recordingSession) Value(string) any {
 	return nil
 }
 
-func (s *recordingSession) WrittenFrames() []wkpacket.Frame {
+func (s *recordingSession) WrittenFrames() []wkframe.Frame {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	out := make([]wkpacket.Frame, len(s.writtenFrames))
+	out := make([]wkframe.Frame, len(s.writtenFrames))
 	copy(out, s.writtenFrames)
 	return out
 }

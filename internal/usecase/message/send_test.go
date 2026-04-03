@@ -9,7 +9,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/msgstore/channelcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,7 +20,7 @@ func TestSendRejectsUnauthenticatedSender(t *testing.T) {
 
 	result, err := app.Send(SendCommand{
 		ChannelID:   "u2",
-		ChannelType: wkpacket.ChannelTypePerson,
+		ChannelType: wkframe.ChannelTypePerson,
 		Payload:     []byte("hi"),
 	})
 
@@ -34,13 +34,13 @@ func TestSendReturnsUnsupportedChannelType(t *testing.T) {
 	result, err := app.Send(SendCommand{
 		SenderUID:   "u1",
 		ChannelID:   "group-1",
-		ChannelType: wkpacket.ChannelTypeGroup,
+		ChannelType: wkframe.ChannelTypeGroup,
 		ClientSeq:   12,
 		ClientMsgNo: "m3",
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, wkpacket.ReasonNotSupportChannelType, result.Reason)
+	require.Equal(t, wkframe.ReasonNotSupportChannelType, result.Reason)
 	require.Zero(t, result.MessageID)
 	require.Zero(t, result.MessageSeq)
 }
@@ -66,14 +66,14 @@ func TestSendDeliversLocalPersonMessage(t *testing.T) {
 	result, err := app.Send(SendCommand{
 		SenderUID:   "u1",
 		ChannelID:   "u2",
-		ChannelType: wkpacket.ChannelTypePerson,
+		ChannelType: wkframe.ChannelTypePerson,
 		Payload:     []byte("hi"),
 		ClientSeq:   9,
 		ClientMsgNo: "m1",
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, wkpacket.ReasonSuccess, result.Reason)
+	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
 	require.Equal(t, int64(99), result.MessageID)
 	require.Equal(t, uint64(7), result.MessageSeq)
 	require.Equal(t, []string{"u2"}, seq.channelKeys)
@@ -83,7 +83,7 @@ func TestSendDeliversLocalPersonMessage(t *testing.T) {
 	recv := requireRecvPacket(t, delivery.calls[0].frame)
 	require.Equal(t, "u1", recv.FromUID)
 	require.Equal(t, "u1", recv.ChannelID)
-	require.Equal(t, wkpacket.ChannelTypePerson, recv.ChannelType)
+	require.Equal(t, wkframe.ChannelTypePerson, recv.ChannelType)
 	require.Equal(t, int64(99), recv.MessageID)
 	require.Equal(t, uint64(7), recv.MessageSeq)
 	require.Equal(t, []byte("hi"), recv.Payload)
@@ -101,13 +101,13 @@ func TestSendReturnsUserNotOnNodeWhenRecipientOffline(t *testing.T) {
 	result, err := app.Send(SendCommand{
 		SenderUID:   "u1",
 		ChannelID:   "u2",
-		ChannelType: wkpacket.ChannelTypePerson,
+		ChannelType: wkframe.ChannelTypePerson,
 		ClientSeq:   11,
 		ClientMsgNo: "m2",
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, wkpacket.ReasonUserNotOnNode, result.Reason)
+	require.Equal(t, wkframe.ReasonUserNotOnNode, result.Reason)
 	require.Zero(t, result.MessageID)
 	require.Zero(t, result.MessageSeq)
 }
@@ -131,14 +131,14 @@ func TestSendReturnsSystemErrorWhenDeliveryFails(t *testing.T) {
 	result, err := app.Send(SendCommand{
 		SenderUID:   "u1",
 		ChannelID:   "u2",
-		ChannelType: wkpacket.ChannelTypePerson,
+		ChannelType: wkframe.ChannelTypePerson,
 		Payload:     []byte("hi"),
 		ClientSeq:   14,
 		ClientMsgNo: "m5",
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, wkpacket.ReasonSystemError, result.Reason)
+	require.Equal(t, wkframe.ReasonSystemError, result.Reason)
 	require.Equal(t, int64(101), result.MessageID)
 	require.Equal(t, uint64(5), result.MessageSeq)
 }
@@ -161,7 +161,7 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	refresher := &fakeMetaRefresher{
 		metas: []channelcluster.ChannelMeta{{
 			ChannelID:    "u2",
-			ChannelType:  wkpacket.ChannelTypePerson,
+			ChannelType:  wkframe.ChannelTypePerson,
 			ChannelEpoch: 11,
 			LeaderEpoch:  3,
 		}},
@@ -177,14 +177,14 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	result, err := app.Send(SendCommand{
 		SenderUID:   "u1",
 		ChannelID:   "u2",
-		ChannelType: wkpacket.ChannelTypePerson,
+		ChannelType: wkframe.ChannelTypePerson,
 		Payload:     []byte("hi"),
 		ClientSeq:   21,
 		ClientMsgNo: "m6",
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, wkpacket.ReasonSuccess, result.Reason)
+	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
 	require.Equal(t, int64(201), result.MessageID)
 	require.Equal(t, uint64(7), result.MessageSeq)
 	require.Len(t, refresher.keys, 1)
@@ -221,14 +221,14 @@ func TestSendClusterSuccessDoesNotRequireLocalRecipient(t *testing.T) {
 	result, err := app.Send(SendCommand{
 		SenderUID:   "u1",
 		ChannelID:   "u2",
-		ChannelType: wkpacket.ChannelTypePerson,
+		ChannelType: wkframe.ChannelTypePerson,
 		Payload:     []byte("hi"),
 		ClientSeq:   22,
 		ClientMsgNo: "m7",
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, wkpacket.ReasonSuccess, result.Reason)
+	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
 	require.Equal(t, int64(301), result.MessageID)
 	require.Equal(t, uint64(15), result.MessageSeq)
 	require.Empty(t, delivery.calls)
@@ -258,11 +258,11 @@ func TestSendReturnsProtocolUpgradeRequiredWhenClusterRejectsLegacyClient(t *tes
 	result, err := app.Send(SendCommand{
 		SenderUID:       "u1",
 		ChannelID:       "u2",
-		ChannelType:     wkpacket.ChannelTypePerson,
+		ChannelType:     wkframe.ChannelTypePerson,
 		Payload:         []byte("hi"),
 		ClientSeq:       23,
 		ClientMsgNo:     "m8",
-		ProtocolVersion: wkpacket.LegacyMessageSeqVersion,
+		ProtocolVersion: wkframe.LegacyMessageSeqVersion,
 	})
 
 	require.ErrorIs(t, err, channelcluster.ErrProtocolUpgradeRequired)
@@ -352,14 +352,14 @@ func (f *fakeRegistry) ConnectionsByUID(uid string) []online.OnlineConn {
 
 type deliveryCall struct {
 	recipients []online.OnlineConn
-	frame      wkpacket.Frame
+	frame      wkframe.Frame
 }
 
 type recordingDelivery struct {
 	calls []deliveryCall
 }
 
-func (d *recordingDelivery) Deliver(recipients []online.OnlineConn, frame wkpacket.Frame) error {
+func (d *recordingDelivery) Deliver(recipients []online.OnlineConn, frame wkframe.Frame) error {
 	copiedRecipients := make([]online.OnlineConn, len(recipients))
 	copy(copiedRecipients, recipients)
 	d.calls = append(d.calls, deliveryCall{recipients: copiedRecipients, frame: frame})
@@ -370,7 +370,7 @@ type failingDelivery struct {
 	err error
 }
 
-func (d failingDelivery) Deliver([]online.OnlineConn, wkpacket.Frame) error {
+func (d failingDelivery) Deliver([]online.OnlineConn, wkframe.Frame) error {
 	return d.err
 }
 
@@ -389,11 +389,11 @@ func (a *recordingSequenceAllocator) NextChannelSequence(channelKey string) uint
 	return a.sequence
 }
 
-func requireRecvPacket(t *testing.T, frame wkpacket.Frame) *wkpacket.RecvPacket {
+func requireRecvPacket(t *testing.T, frame wkframe.Frame) *wkframe.RecvPacket {
 	t.Helper()
 
-	recv, ok := frame.(*wkpacket.RecvPacket)
-	require.True(t, ok, "expected *wkpacket.RecvPacket, got %T", frame)
+	recv, ok := frame.(*wkframe.RecvPacket)
+	require.True(t, ok, "expected *wkframe.RecvPacket, got %T", frame)
 	return recv
 }
 

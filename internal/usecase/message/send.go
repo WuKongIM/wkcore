@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/msgstore/channelcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
 func (a *App) Send(cmd SendCommand) (SendResult, error) {
@@ -13,8 +13,8 @@ func (a *App) Send(cmd SendCommand) (SendResult, error) {
 		return SendResult{}, ErrUnauthenticatedSender
 	}
 
-	if cmd.ChannelType != wkpacket.ChannelTypePerson {
-		return SendResult{Reason: wkpacket.ReasonNotSupportChannelType}, nil
+	if cmd.ChannelType != wkframe.ChannelTypePerson {
+		return SendResult{Reason: wkframe.ReasonNotSupportChannelType}, nil
 	}
 
 	if a.cluster != nil {
@@ -42,7 +42,7 @@ func (a *App) sendDurablePerson(ctx context.Context, cmd SendCommand) (SendResul
 	sendResult := SendResult{
 		MessageID:  int64(result.MessageID),
 		MessageSeq: result.MessageSeq,
-		Reason:     wkpacket.ReasonSuccess,
+		Reason:     wkframe.ReasonSuccess,
 	}
 
 	// Durable ack follows the replicated write; local fanout is best-effort.
@@ -54,7 +54,7 @@ func (a *App) sendLocalPerson(cmd SendCommand) (SendResult, error) {
 	target := resolveLocalPersonTarget(cmd)
 	recipients := a.online.ConnectionsByUID(target.RecipientUID)
 	if len(recipients) == 0 {
-		return SendResult{Reason: wkpacket.ReasonUserNotOnNode}, nil
+		return SendResult{Reason: wkframe.ReasonUserNotOnNode}, nil
 	}
 
 	msgID := a.sequence.NextMessageID()
@@ -63,14 +63,14 @@ func (a *App) sendLocalPerson(cmd SendCommand) (SendResult, error) {
 		return SendResult{
 			MessageID:  msgID,
 			MessageSeq: msgSeq,
-			Reason:     wkpacket.ReasonSystemError,
+			Reason:     wkframe.ReasonSystemError,
 		}, nil
 	}
 
 	return SendResult{
 		MessageID:  msgID,
 		MessageSeq: msgSeq,
-		Reason:     wkpacket.ReasonSuccess,
+		Reason:     wkframe.ReasonSuccess,
 	}, nil
 }
 
@@ -95,11 +95,11 @@ func resolveLocalPersonTarget(cmd SendCommand) localPersonTarget {
 	}
 }
 
-func buildPersonRecvPacket(cmd SendCommand, msgID int64, msgSeq uint64, now time.Time) *wkpacket.RecvPacket {
+func buildPersonRecvPacket(cmd SendCommand, msgID int64, msgSeq uint64, now time.Time) *wkframe.RecvPacket {
 	framer := cmd.Framer
-	framer.FrameType = wkpacket.RECV
+	framer.FrameType = wkframe.RECV
 
-	return &wkpacket.RecvPacket{
+	return &wkframe.RecvPacket{
 		Framer:      framer,
 		Setting:     cmd.Setting,
 		MsgKey:      cmd.MsgKey,
@@ -110,7 +110,7 @@ func buildPersonRecvPacket(cmd SendCommand, msgID int64, msgSeq uint64, now time
 		StreamNo:    cmd.StreamNo,
 		Timestamp:   int32(now.Unix()),
 		ChannelID:   cmd.SenderUID,
-		ChannelType: wkpacket.ChannelTypePerson,
+		ChannelType: wkframe.ChannelTypePerson,
 		Topic:       cmd.Topic,
 		FromUID:     cmd.SenderUID,
 		Payload:     cmd.Payload,
@@ -119,5 +119,5 @@ func buildPersonRecvPacket(cmd SendCommand, msgID int64, msgSeq uint64, now time
 }
 
 func supportsMessageSeqU64(version uint8) bool {
-	return version == 0 || version > wkpacket.LegacyMessageSeqVersion
+	return version == 0 || version > wkframe.LegacyMessageSeqVersion
 }

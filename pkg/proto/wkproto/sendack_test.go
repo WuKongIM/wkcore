@@ -3,18 +3,18 @@ package wkproto
 import (
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestSendackEncodeAndDecode(t *testing.T) {
 
-	packet := &wkpacket.SendackPacket{
+	packet := &wkframe.SendackPacket{
 		ClientSeq:   234,
 		ClientMsgNo: "client-msg-no",
 		MessageSeq:  2,
 		MessageID:   1234,
-		ReasonCode:  wkpacket.ReasonSuccess,
+		ReasonCode:  wkframe.ReasonSuccess,
 	}
 
 	codec := New()
@@ -24,7 +24,7 @@ func TestSendackEncodeAndDecode(t *testing.T) {
 	// 解码
 	resultPacket, _, err := codec.DecodeFrame(packetBytes, 1)
 	assert.NoError(t, err)
-	resultSendackPacket, ok := resultPacket.(*wkpacket.SendackPacket)
+	resultSendackPacket, ok := resultPacket.(*wkframe.SendackPacket)
 	assert.Equal(t, true, ok)
 
 	// 比较
@@ -36,21 +36,21 @@ func TestSendackEncodeAndDecode(t *testing.T) {
 }
 
 func TestSendackEncodeAndDecodeSupportsUint64MessageSeqOnLatestVersion(t *testing.T) {
-	packet := &wkpacket.SendackPacket{
+	packet := &wkframe.SendackPacket{
 		ClientSeq:   234,
 		ClientMsgNo: "client-msg-no",
 		MessageSeq:  uint64(^uint32(0)) + 7,
 		MessageID:   1234,
-		ReasonCode:  wkpacket.ReasonSuccess,
+		ReasonCode:  wkframe.ReasonSuccess,
 	}
 
 	codec := New()
-	packetBytes, err := codec.EncodeFrame(packet, wkpacket.LatestVersion)
+	packetBytes, err := codec.EncodeFrame(packet, wkframe.LatestVersion)
 	assert.NoError(t, err)
 
-	resultPacket, _, err := codec.DecodeFrame(packetBytes, wkpacket.LatestVersion)
+	resultPacket, _, err := codec.DecodeFrame(packetBytes, wkframe.LatestVersion)
 	assert.NoError(t, err)
-	resultSendackPacket, ok := resultPacket.(*wkpacket.SendackPacket)
+	resultSendackPacket, ok := resultPacket.(*wkframe.SendackPacket)
 	assert.Equal(t, true, ok)
 	assert.Equal(t, packet.MessageSeq, resultSendackPacket.MessageSeq)
 }

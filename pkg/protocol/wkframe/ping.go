@@ -1,4 +1,4 @@
-package wkpacket
+package wkframe
 
 // PingPacket ping包
 type PingPacket struct {

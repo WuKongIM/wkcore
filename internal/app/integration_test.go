@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 	codec "github.com/WuKongIM/WuKongIM/pkg/proto/wkproto"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,31 +28,31 @@ func TestAppStartAcceptsWKProtoConnectionAndStopsCleanly(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
-	sendAppWKProtoFrame(t, conn, &wkpacket.ConnectPacket{
-		Version:         wkpacket.LatestVersion,
+	sendAppWKProtoFrame(t, conn, &wkframe.ConnectPacket{
+		Version:         wkframe.LatestVersion,
 		UID:             "app-user",
 		DeviceID:        "app-device",
-		DeviceFlag:      wkpacket.APP,
+		DeviceFlag:      wkframe.APP,
 		ClientTimestamp: time.Now().UnixMilli(),
 	})
 
 	frame := readAppWKProtoFrame(t, conn)
-	connack, ok := frame.(*wkpacket.ConnackPacket)
-	require.True(t, ok, "expected *wkpacket.ConnackPacket, got %T", frame)
-	require.Equal(t, wkpacket.ReasonSuccess, connack.ReasonCode)
+	connack, ok := frame.(*wkframe.ConnackPacket)
+	require.True(t, ok, "expected *wkframe.ConnackPacket, got %T", frame)
+	require.Equal(t, wkframe.ReasonSuccess, connack.ReasonCode)
 }
 
-func sendAppWKProtoFrame(t *testing.T, conn net.Conn, frame wkpacket.Frame) {
+func sendAppWKProtoFrame(t *testing.T, conn net.Conn, frame wkframe.Frame) {
 	t.Helper()
 
-	payload, err := codec.New().EncodeFrame(frame, wkpacket.LatestVersion)
+	payload, err := codec.New().EncodeFrame(frame, wkframe.LatestVersion)
 	require.NoError(t, err)
 
 	_, err = conn.Write(payload)
 	require.NoError(t, err)
 }
 
-func readAppWKProtoFrame(t *testing.T, conn net.Conn) wkpacket.Frame {
+func readAppWKProtoFrame(t *testing.T, conn net.Conn) wkframe.Frame {
 	t.Helper()
 
 	require.NoError(t, conn.SetReadDeadline(time.Now().Add(appReadTimeout)))
@@ -60,7 +60,7 @@ func readAppWKProtoFrame(t *testing.T, conn net.Conn) wkpacket.Frame {
 		_ = conn.SetReadDeadline(time.Time{})
 	}()
 
-	frame, err := codec.New().DecodePacketWithConn(conn, wkpacket.LatestVersion)
+	frame, err := codec.New().DecodePacketWithConn(conn, wkframe.LatestVersion)
 	require.NoError(t, err)
 	return frame
 }

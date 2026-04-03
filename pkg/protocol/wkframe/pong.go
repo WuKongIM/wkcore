@@ -1,4 +1,4 @@
-package wkpacket
+package wkframe
 
 // PongPacket pong包对ping的回应
 type PongPacket struct {

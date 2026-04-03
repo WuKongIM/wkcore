@@ -3,15 +3,15 @@ package wkproto
 import (
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestSuback(t *testing.T) {
-	packet := &wkpacket.SubackPacket{
+	packet := &wkframe.SubackPacket{
 		ChannelID:   "123456",
 		ChannelType: 1,
-		Action:      wkpacket.Subscribe,
+		Action:      wkframe.Subscribe,
 		ReasonCode:  1,
 	}
 
@@ -23,7 +23,7 @@ func TestSuback(t *testing.T) {
 	// 解码
 	resultPacket, _, err := codec.DecodeFrame(packetBytes, 1)
 	assert.NoError(t, err)
-	resultSubackPacket, ok := resultPacket.(*wkpacket.SubackPacket)
+	resultSubackPacket, ok := resultPacket.(*wkframe.SubackPacket)
 	assert.Equal(t, true, ok)
 
 	// 比较

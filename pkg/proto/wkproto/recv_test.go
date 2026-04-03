@@ -4,13 +4,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestRecvEncodeAndDecode(t *testing.T) {
 
-	packet := &wkpacket.RecvPacket{
+	packet := &wkframe.RecvPacket{
 		MessageID:   1223,
 		Expire:      10,
 		MessageSeq:  9238934,
@@ -20,7 +20,7 @@ func TestRecvEncodeAndDecode(t *testing.T) {
 		FromUID:     "123",
 		Payload:     []byte("中文测试"),
 	}
-	packet.Framer = wkpacket.Framer{
+	packet.Framer = wkframe.Framer{
 		NoPersist: true,
 		SyncOnce:  true,
 	}
@@ -33,7 +33,7 @@ func TestRecvEncodeAndDecode(t *testing.T) {
 	// 解码
 	resultPacket, _, err := codec.DecodeFrame(packetBytes, 3)
 	assert.NoError(t, err)
-	resultRecvPacket, ok := resultPacket.(*wkpacket.RecvPacket)
+	resultRecvPacket, ok := resultPacket.(*wkframe.RecvPacket)
 	assert.Equal(t, true, ok)
 
 	// 比较
@@ -51,7 +51,7 @@ func TestRecvEncodeAndDecode(t *testing.T) {
 }
 
 func TestRecvEncodeAndDecodeSupportsUint64MessageSeqOnLatestVersion(t *testing.T) {
-	packet := &wkpacket.RecvPacket{
+	packet := &wkframe.RecvPacket{
 		MessageID:   1223,
 		Expire:      10,
 		MessageSeq:  uint64(^uint32(0)) + 7,
@@ -63,12 +63,12 @@ func TestRecvEncodeAndDecodeSupportsUint64MessageSeqOnLatestVersion(t *testing.T
 	}
 
 	codec := New()
-	packetBytes, err := codec.EncodeFrame(packet, wkpacket.LatestVersion)
+	packetBytes, err := codec.EncodeFrame(packet, wkframe.LatestVersion)
 	assert.NoError(t, err)
 
-	resultPacket, _, err := codec.DecodeFrame(packetBytes, wkpacket.LatestVersion)
+	resultPacket, _, err := codec.DecodeFrame(packetBytes, wkframe.LatestVersion)
 	assert.NoError(t, err)
-	resultRecvPacket, ok := resultPacket.(*wkpacket.RecvPacket)
+	resultRecvPacket, ok := resultPacket.(*wkframe.RecvPacket)
 	assert.Equal(t, true, ok)
 	assert.Equal(t, packet.MessageSeq, resultRecvPacket.MessageSeq)
 }

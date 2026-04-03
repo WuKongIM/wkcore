@@ -5,7 +5,7 @@ import (
 
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
 func onlineConnFromContext(ctx *coregateway.Context, now time.Time) (online.OnlineConn, error) {
@@ -34,35 +34,35 @@ func onlineConnFromContext(ctx *coregateway.Context, now time.Time) (online.Onli
 	return conn, nil
 }
 
-func deviceFlagFromValue(value any) wkpacket.DeviceFlag {
+func deviceFlagFromValue(value any) wkframe.DeviceFlag {
 	switch v := value.(type) {
-	case wkpacket.DeviceFlag:
+	case wkframe.DeviceFlag:
 		return v
 	case uint8:
-		return wkpacket.DeviceFlag(v)
+		return wkframe.DeviceFlag(v)
 	case int:
-		return wkpacket.DeviceFlag(v)
+		return wkframe.DeviceFlag(v)
 	case int32:
-		return wkpacket.DeviceFlag(v)
+		return wkframe.DeviceFlag(v)
 	case int64:
-		return wkpacket.DeviceFlag(v)
+		return wkframe.DeviceFlag(v)
 	default:
 		return 0
 	}
 }
 
-func deviceLevelFromValue(value any) wkpacket.DeviceLevel {
+func deviceLevelFromValue(value any) wkframe.DeviceLevel {
 	switch v := value.(type) {
-	case wkpacket.DeviceLevel:
+	case wkframe.DeviceLevel:
 		return v
 	case uint8:
-		return wkpacket.DeviceLevel(v)
+		return wkframe.DeviceLevel(v)
 	case int:
-		return wkpacket.DeviceLevel(v)
+		return wkframe.DeviceLevel(v)
 	case int32:
-		return wkpacket.DeviceLevel(v)
+		return wkframe.DeviceLevel(v)
 	case int64:
-		return wkpacket.DeviceLevel(v)
+		return wkframe.DeviceLevel(v)
 	default:
 		return 0
 	}

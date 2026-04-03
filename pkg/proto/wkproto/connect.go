@@ -1,14 +1,14 @@
 package wkproto
 
 import (
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/pkg/errors"
 )
 
-func decodeConnect(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Frame, error) {
+func decodeConnect(frame wkframe.Frame, data []byte, version uint8) (wkframe.Frame, error) {
 	dec := NewDecoder(data)
-	connectPacket := &wkpacket.ConnectPacket{}
-	connectPacket.Framer = frame.(wkpacket.Framer)
+	connectPacket := &wkframe.ConnectPacket{}
+	connectPacket.Framer = frame.(wkframe.Framer)
 	var err error
 	if connectPacket.Version, err = dec.Uint8(); err != nil {
 		return nil, errors.Wrap(err, "解码version失败！")
@@ -17,7 +17,7 @@ func decodeConnect(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.F
 	if deviceFlag, err = dec.Uint8(); err != nil {
 		return nil, errors.Wrap(err, "解码DeviceFlag失败！")
 	}
-	connectPacket.DeviceFlag = wkpacket.DeviceFlag(deviceFlag)
+	connectPacket.DeviceFlag = wkframe.DeviceFlag(deviceFlag)
 	// DeviceId
 	if connectPacket.DeviceID, err = dec.String(); err != nil {
 		return nil, errors.Wrap(err, "解码DeviceId失败！")
@@ -38,7 +38,7 @@ func decodeConnect(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.F
 	return connectPacket, err
 }
 
-func encodeConnect(connectPacket *wkpacket.ConnectPacket, enc *Encoder, _ uint8) error {
+func encodeConnect(connectPacket *wkframe.ConnectPacket, enc *Encoder, _ uint8) error {
 	// 协议版本
 	enc.WriteUint8(connectPacket.Version)
 	// 设备标示
@@ -57,14 +57,14 @@ func encodeConnect(connectPacket *wkpacket.ConnectPacket, enc *Encoder, _ uint8)
 	return nil
 }
 
-func encodeConnectSize(connectPacket *wkpacket.ConnectPacket, _ uint8) int {
+func encodeConnectSize(connectPacket *wkframe.ConnectPacket, _ uint8) int {
 	var size = 0
-	size += wkpacket.VersionByteSize
-	size += wkpacket.DeviceFlagByteSize
-	size += len(connectPacket.DeviceID) + wkpacket.StringFixLenByteSize
-	size += len(connectPacket.UID) + wkpacket.StringFixLenByteSize
-	size += len(connectPacket.Token) + wkpacket.StringFixLenByteSize
-	size += wkpacket.ClientTimestampByteSize
-	size += len(connectPacket.ClientKey) + wkpacket.StringFixLenByteSize
+	size += wkframe.VersionByteSize
+	size += wkframe.DeviceFlagByteSize
+	size += len(connectPacket.DeviceID) + wkframe.StringFixLenByteSize
+	size += len(connectPacket.UID) + wkframe.StringFixLenByteSize
+	size += len(connectPacket.Token) + wkframe.StringFixLenByteSize
+	size += wkframe.ClientTimestampByteSize
+	size += len(connectPacket.ClientKey) + wkframe.StringFixLenByteSize
 	return size
 }

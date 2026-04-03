@@ -7,16 +7,16 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
 	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
 type noopHandler struct{}
 
-func (noopHandler) OnListenerError(string, error)                  {}
-func (noopHandler) OnSessionOpen(*gateway.Context) error           { return nil }
-func (noopHandler) OnFrame(*gateway.Context, wkpacket.Frame) error { return nil }
-func (noopHandler) OnSessionClose(*gateway.Context) error          { return nil }
-func (noopHandler) OnSessionError(*gateway.Context, error)         {}
+func (noopHandler) OnListenerError(string, error)                 {}
+func (noopHandler) OnSessionOpen(*gateway.Context) error          { return nil }
+func (noopHandler) OnFrame(*gateway.Context, wkframe.Frame) error { return nil }
+func (noopHandler) OnSessionClose(*gateway.Context) error         { return nil }
+func (noopHandler) OnSessionError(*gateway.Context, error)        {}
 
 func TestOptionsValidateRejectsDuplicateListenerNames(t *testing.T) {
 	opts := gateway.Options{
@@ -134,9 +134,9 @@ func TestOptionsValidateRequiresWebsocketPath(t *testing.T) {
 func TestOptionsValidateAcceptsAuthenticator(t *testing.T) {
 	opts := gateway.Options{
 		Handler: noopHandler{},
-		Authenticator: gateway.AuthenticatorFunc(func(*gateway.Context, *wkpacket.ConnectPacket) (*gateway.AuthResult, error) {
+		Authenticator: gateway.AuthenticatorFunc(func(*gateway.Context, *wkframe.ConnectPacket) (*gateway.AuthResult, error) {
 			return &gateway.AuthResult{
-				Connack: &wkpacket.ConnackPacket{ReasonCode: wkpacket.ReasonSuccess},
+				Connack: &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonSuccess},
 			}, nil
 		}),
 	}

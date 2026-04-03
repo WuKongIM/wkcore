@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,8 +23,8 @@ func TestRegistryRegisterLookupAndUnregister(t *testing.T) {
 	conn1 := OnlineConn{
 		SessionID:   1,
 		UID:         "u1",
-		DeviceFlag:  wkpacket.APP,
-		DeviceLevel: wkpacket.DeviceLevelMaster,
+		DeviceFlag:  wkframe.APP,
+		DeviceLevel: wkframe.DeviceLevelMaster,
 		Listener:    "tcp",
 		ConnectedAt: fixedNow,
 		Session:     session.New(session.Config{ID: 1, Listener: "tcp"}),
@@ -32,8 +32,8 @@ func TestRegistryRegisterLookupAndUnregister(t *testing.T) {
 	conn2 := OnlineConn{
 		SessionID:   2,
 		UID:         "u1",
-		DeviceFlag:  wkpacket.WEB,
-		DeviceLevel: wkpacket.DeviceLevelSlave,
+		DeviceFlag:  wkframe.WEB,
+		DeviceLevel: wkframe.DeviceLevelSlave,
 		Listener:    "ws",
 		ConnectedAt: fixedNow.Add(time.Minute),
 		Session:     session.New(session.Config{ID: 2, Listener: "ws"}),
@@ -51,8 +51,8 @@ func TestRegistryRegisterLookupAndUnregister(t *testing.T) {
 	require.ElementsMatch(t, []string{"tcp", "ws"}, listenersOf(connections))
 	require.Contains(t, connectionIDsOf(connections), uint64(1))
 	require.Contains(t, connectionIDsOf(connections), uint64(2))
-	require.Contains(t, deviceFlagsOf(connections), wkpacket.APP)
-	require.Contains(t, deviceFlagsOf(connections), wkpacket.DeviceFlag(wkpacket.WEB))
+	require.Contains(t, deviceFlagsOf(connections), wkframe.APP)
+	require.Contains(t, deviceFlagsOf(connections), wkframe.DeviceFlag(wkframe.WEB))
 
 	connections[0].Listener = "mutated"
 	connectionsAgain := reg.ConnectionsByUID("u1")
@@ -71,8 +71,8 @@ func TestRegistryRegisterOverwritesSessionAndCleansOldUIDBucket(t *testing.T) {
 	first := OnlineConn{
 		SessionID:   1,
 		UID:         "u1",
-		DeviceFlag:  wkpacket.APP,
-		DeviceLevel: wkpacket.DeviceLevelMaster,
+		DeviceFlag:  wkframe.APP,
+		DeviceLevel: wkframe.DeviceLevelMaster,
 		Listener:    "tcp",
 		ConnectedAt: fixedNow,
 		Session:     session.New(session.Config{ID: 1, Listener: "tcp"}),
@@ -80,8 +80,8 @@ func TestRegistryRegisterOverwritesSessionAndCleansOldUIDBucket(t *testing.T) {
 	second := OnlineConn{
 		SessionID:   1,
 		UID:         "u2",
-		DeviceFlag:  wkpacket.WEB,
-		DeviceLevel: wkpacket.DeviceLevelSlave,
+		DeviceFlag:  wkframe.WEB,
+		DeviceLevel: wkframe.DeviceLevelSlave,
 		Listener:    "tcp",
 		ConnectedAt: fixedNow.Add(time.Minute),
 		Session:     session.New(session.Config{ID: 1, Listener: "tcp"}),
@@ -103,8 +103,8 @@ func TestRegistryUnregisterIsIdempotent(t *testing.T) {
 	conn := OnlineConn{
 		SessionID:   1,
 		UID:         "u1",
-		DeviceFlag:  wkpacket.APP,
-		DeviceLevel: wkpacket.DeviceLevelMaster,
+		DeviceFlag:  wkframe.APP,
+		DeviceLevel: wkframe.DeviceLevelMaster,
 		Listener:    "tcp",
 		ConnectedAt: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC),
 		Session:     session.New(session.Config{ID: 1, Listener: "tcp"}),
@@ -136,8 +136,8 @@ func connectionIDsOf(conns []OnlineConn) []uint64 {
 	return ids
 }
 
-func deviceFlagsOf(conns []OnlineConn) []wkpacket.DeviceFlag {
-	flags := make([]wkpacket.DeviceFlag, 0, len(conns))
+func deviceFlagsOf(conns []OnlineConn) []wkframe.DeviceFlag {
+	flags := make([]wkframe.DeviceFlag, 0, len(conns))
 	for _, conn := range conns {
 		flags = append(flags, conn.DeviceFlag)
 	}

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
 func newTestSession(id uint64) Session {
@@ -149,7 +149,7 @@ func TestSessionCloseBlocksConcurrentWriteUntilClosed(t *testing.T) {
 	var writeCalls atomic.Int32
 	started := make(chan struct{})
 	release := make(chan struct{})
-	sess.writeFrameFn = func(frame wkpacket.Frame, meta OutboundMeta) error {
+	sess.writeFrameFn = func(frame wkframe.Frame, meta OutboundMeta) error {
 		writeCalls.Add(1)
 		select {
 		case <-started:
@@ -162,7 +162,7 @@ func TestSessionCloseBlocksConcurrentWriteUntilClosed(t *testing.T) {
 
 	writeDone := make(chan error, 1)
 	go func() {
-		writeDone <- sess.WriteFrame(&wkpacket.PingPacket{})
+		writeDone <- sess.WriteFrame(&wkframe.PingPacket{})
 	}()
 
 	select {
@@ -188,7 +188,7 @@ func TestSessionCloseBlocksConcurrentWriteUntilClosed(t *testing.T) {
 
 	secondWriteDone := make(chan error, 1)
 	go func() {
-		secondWriteDone <- sess.WriteFrame(&wkpacket.PingPacket{})
+		secondWriteDone <- sess.WriteFrame(&wkframe.PingPacket{})
 	}()
 
 	select {

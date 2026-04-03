@@ -3,16 +3,16 @@ package wkproto
 import (
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestSendEncodeAndDecode(t *testing.T) {
-	var setting wkpacket.Setting
-	setting.Set(wkpacket.SettingNoEncrypt)
-	packet := &wkpacket.SendPacket{
-		Framer: wkpacket.Framer{
+	var setting wkframe.Setting
+	setting.Set(wkframe.SettingNoEncrypt)
+	packet := &wkframe.SendPacket{
+		Framer: wkframe.Framer{
 			RedDot: true,
 		},
 		Expire:      100,
@@ -26,13 +26,13 @@ func TestSendEncodeAndDecode(t *testing.T) {
 
 	codec := New()
 	// 编码
-	packetBytes, err := codec.EncodeFrame(packet, wkpacket.LatestVersion)
+	packetBytes, err := codec.EncodeFrame(packet, wkframe.LatestVersion)
 	assert.NoError(t, err)
 
 	// 解码
-	resultPacket, _, err := codec.DecodeFrame(packetBytes, wkpacket.LatestVersion)
+	resultPacket, _, err := codec.DecodeFrame(packetBytes, wkframe.LatestVersion)
 	assert.NoError(t, err)
-	resultSendPacket, ok := resultPacket.(*wkpacket.SendPacket)
+	resultSendPacket, ok := resultPacket.(*wkframe.SendPacket)
 	assert.Equal(t, true, ok)
 
 	// 比较
@@ -46,11 +46,11 @@ func TestSendEncodeAndDecode(t *testing.T) {
 }
 
 func TestSendEncodeAndDecodeV5WithStreamDoesNotMiscalculateRemainingLength(t *testing.T) {
-	packet := &wkpacket.SendPacket{
-		Framer: wkpacket.Framer{
+	packet := &wkframe.SendPacket{
+		Framer: wkframe.Framer{
 			RedDot: true,
 		},
-		Setting:     wkpacket.SettingStream,
+		Setting:     wkframe.SettingStream,
 		ClientSeq:   7,
 		ClientMsgNo: "client-msg-no",
 		StreamNo:    "stream-no",
@@ -61,15 +61,15 @@ func TestSendEncodeAndDecodeV5WithStreamDoesNotMiscalculateRemainingLength(t *te
 	}
 
 	codec := New()
-	packetBytes, err := codec.EncodeFrame(packet, wkpacket.LatestVersion)
+	packetBytes, err := codec.EncodeFrame(packet, wkframe.LatestVersion)
 	assert.NoError(t, err)
 
-	resultPacket, consumed, err := codec.DecodeFrame(packetBytes, wkpacket.LatestVersion)
+	resultPacket, consumed, err := codec.DecodeFrame(packetBytes, wkframe.LatestVersion)
 	assert.NoError(t, err)
 	assert.Equal(t, len(packetBytes), consumed)
 
-	resultSendPacket, ok := resultPacket.(*wkpacket.SendPacket)
-	require.True(t, ok, "expected *wkpacket.SendPacket, got %T", resultPacket)
+	resultSendPacket, ok := resultPacket.(*wkframe.SendPacket)
+	require.True(t, ok, "expected *wkframe.SendPacket, got %T", resultPacket)
 	require.NotNil(t, resultSendPacket)
 	assert.Equal(t, packet.ClientSeq, resultSendPacket.ClientSeq)
 	assert.Equal(t, packet.ClientMsgNo, resultSendPacket.ClientMsgNo)

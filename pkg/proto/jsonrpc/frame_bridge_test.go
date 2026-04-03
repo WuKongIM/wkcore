@@ -3,7 +3,7 @@ package jsonrpc
 import (
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +20,7 @@ func TestConnectParamsToProtoDefaultsLatestVersion(t *testing.T) {
 	packet := params.ToProto()
 
 	require.NotNil(t, packet)
-	assert.Equal(t, uint8(wkpacket.LatestVersion), packet.Version)
+	assert.Equal(t, uint8(wkframe.LatestVersion), packet.Version)
 }
 
 func TestToFrameReturnsWKPacketFrame(t *testing.T) {
@@ -40,9 +40,9 @@ func TestToFrameReturnsWKPacketFrame(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "req-send-1", reqID)
 
-	sendFrame, ok := frame.(*wkpacket.SendPacket)
-	require.True(t, ok, "expected *wkpacket.SendPacket, got %T", frame)
-	assert.Equal(t, wkpacket.SEND, sendFrame.GetFrameType())
+	sendFrame, ok := frame.(*wkframe.SendPacket)
+	require.True(t, ok, "expected *wkframe.SendPacket, got %T", frame)
+	assert.Equal(t, wkframe.SEND, sendFrame.GetFrameType())
 }
 
 func TestToFrameSendRequestPreservesEmptyClientMsgNo(t *testing.T) {
@@ -62,8 +62,8 @@ func TestToFrameSendRequestPreservesEmptyClientMsgNo(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "req-send-1", reqID)
 
-	sendFrame, ok := frame.(*wkpacket.SendPacket)
-	require.True(t, ok, "expected *wkpacket.SendPacket, got %T", frame)
+	sendFrame, ok := frame.(*wkframe.SendPacket)
+	require.True(t, ok, "expected *wkframe.SendPacket, got %T", frame)
 	assert.Empty(t, sendFrame.ClientMsgNo)
 }
 
@@ -98,15 +98,15 @@ func TestSendParamsToProtoPreservesEmptyClientMsgNo(t *testing.T) {
 }
 
 func TestFromFrameAcceptsWKPacketConnackPacket(t *testing.T) {
-	msg, err := FromFrame("req-connect-1", &wkpacket.ConnackPacket{
-		Framer: wkpacket.Framer{
+	msg, err := FromFrame("req-connect-1", &wkframe.ConnackPacket{
+		Framer: wkframe.Framer{
 			HasServerVersion: true,
 		},
 		ServerVersion: 4,
 		ServerKey:     "server-key",
 		Salt:          "salt",
 		TimeDiff:      12,
-		ReasonCode:    wkpacket.ReasonSuccess,
+		ReasonCode:    wkframe.ReasonSuccess,
 		NodeId:        99,
 	})
 
@@ -117,15 +117,15 @@ func TestFromFrameAcceptsWKPacketConnackPacket(t *testing.T) {
 	require.NotNil(t, resp.Result)
 	assert.Equal(t, "req-connect-1", resp.ID)
 	assert.Equal(t, 4, resp.Result.ServerVersion)
-	assert.Equal(t, ReasonCodeEnum(wkpacket.ReasonSuccess), resp.Result.ReasonCode)
+	assert.Equal(t, ReasonCodeEnum(wkframe.ReasonSuccess), resp.Result.ReasonCode)
 	assert.Equal(t, uint64(99), resp.Result.NodeID)
 }
 
 func TestFromProtoSendAckPreservesUint64MessageSeq(t *testing.T) {
-	result := FromProtoSendAck(&wkpacket.SendackPacket{
+	result := FromProtoSendAck(&wkframe.SendackPacket{
 		MessageID:  99,
 		MessageSeq: uint64(^uint32(0)) + 33,
-		ReasonCode: wkpacket.ReasonSuccess,
+		ReasonCode: wkframe.ReasonSuccess,
 	})
 
 	require.NotNil(t, result)
@@ -133,7 +133,7 @@ func TestFromProtoSendAckPreservesUint64MessageSeq(t *testing.T) {
 }
 
 func TestFromProtoRecvPacketMapsStreamIDFromStreamId(t *testing.T) {
-	params := FromProtoRecvPacket(&wkpacket.RecvPacket{
+	params := FromProtoRecvPacket(&wkframe.RecvPacket{
 		StreamNo: "stream-no",
 		StreamId: 42,
 	})

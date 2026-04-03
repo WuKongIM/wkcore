@@ -2,13 +2,13 @@ package types
 
 import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
 type Handler interface {
 	OnListenerError(listener string, err error)
 	OnSessionOpen(ctx *Context) error
-	OnFrame(ctx *Context, frame wkpacket.Frame) error
+	OnFrame(ctx *Context, frame wkframe.Frame) error
 	OnSessionClose(ctx *Context) error
 	OnSessionError(ctx *Context, err error)
 }
@@ -23,7 +23,7 @@ type Context struct {
 	ReplyToken  string
 }
 
-func (ctx *Context) WriteFrame(frame wkpacket.Frame) error {
+func (ctx *Context) WriteFrame(frame wkframe.Frame) error {
 	if ctx == nil || ctx.Session == nil {
 		return session.ErrSessionClosed
 	}

@@ -11,8 +11,8 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
 	pkgjsonrpc "github.com/WuKongIM/WuKongIM/pkg/proto/jsonrpc"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 	codec "github.com/WuKongIM/WuKongIM/pkg/proto/wkproto"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/gorilla/websocket"
 )
 
@@ -38,7 +38,7 @@ func TestGatewayStartStopTCPWKProto(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
-	payload, err := codec.New().EncodeFrame(&wkpacket.PingPacket{}, wkpacket.LatestVersion)
+	payload, err := codec.New().EncodeFrame(&wkframe.PingPacket{}, wkframe.LatestVersion)
 	if err != nil {
 		t.Fatalf("EncodeFrame: %v", err)
 	}
@@ -55,9 +55,9 @@ func TestGatewayWKProtoAuthRejectsBadToken(t *testing.T) {
 		Handler: handler,
 		Authenticator: gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{
 			TokenAuthOn: true,
-			VerifyToken: func(uid string, deviceFlag wkpacket.DeviceFlag, token string) (wkpacket.DeviceLevel, error) {
+			VerifyToken: func(uid string, deviceFlag wkframe.DeviceFlag, token string) (wkframe.DeviceLevel, error) {
 				if uid == "u1" && token == "good-token" {
-					return wkpacket.DeviceLevelMaster, nil
+					return wkframe.DeviceLevelMaster, nil
 				}
 				return 0, errors.New("token verify fail")
 			},
@@ -77,15 +77,15 @@ func TestGatewayWKProtoAuthRejectsBadToken(t *testing.T) {
 	conn := dialTCPGateway(t, gw, "tcp-wkproto-auth")
 	t.Cleanup(func() { _ = conn.Close() })
 
-	connack := mustConnectWKProto(t, conn, &wkpacket.ConnectPacket{
-		Version:         wkpacket.LatestVersion,
+	connack := mustConnectWKProto(t, conn, &wkframe.ConnectPacket{
+		Version:         wkframe.LatestVersion,
 		UID:             "u1",
 		Token:           "bad-token",
 		DeviceID:        "d1",
-		DeviceFlag:      wkpacket.APP,
+		DeviceFlag:      wkframe.APP,
 		ClientTimestamp: time.Now().UnixMilli(),
 	})
-	if connack.ReasonCode != wkpacket.ReasonAuthFail {
+	if connack.ReasonCode != wkframe.ReasonAuthFail {
 		t.Fatalf("expected auth fail connack, got %v", connack.ReasonCode)
 	}
 	assertConnClosed(t, conn)
@@ -119,14 +119,14 @@ func TestGatewayWKProtoAuthRejectsBannedUID(t *testing.T) {
 	conn := dialTCPGateway(t, gw, "tcp-wkproto-ban")
 	t.Cleanup(func() { _ = conn.Close() })
 
-	connack := mustConnectWKProto(t, conn, &wkpacket.ConnectPacket{
-		Version:         wkpacket.LatestVersion,
+	connack := mustConnectWKProto(t, conn, &wkframe.ConnectPacket{
+		Version:         wkframe.LatestVersion,
 		UID:             "banned-user",
 		DeviceID:        "d1",
-		DeviceFlag:      wkpacket.APP,
+		DeviceFlag:      wkframe.APP,
 		ClientTimestamp: time.Now().UnixMilli(),
 	})
-	if connack.ReasonCode != wkpacket.ReasonBan {
+	if connack.ReasonCode != wkframe.ReasonBan {
 		t.Fatalf("expected ban connack, got %v", connack.ReasonCode)
 	}
 	assertConnClosed(t, conn)
@@ -145,9 +145,9 @@ func TestGatewayWKProtoAuthAcceptsConnectBeforeDispatchingFrames(t *testing.T) {
 			Now: func() time.Time {
 				return time.UnixMilli(10_000)
 			},
-			VerifyToken: func(uid string, deviceFlag wkpacket.DeviceFlag, token string) (wkpacket.DeviceLevel, error) {
+			VerifyToken: func(uid string, deviceFlag wkframe.DeviceFlag, token string) (wkframe.DeviceLevel, error) {
 				if uid == "u1" && token == "good-token" {
-					return wkpacket.DeviceLevelMaster, nil
+					return wkframe.DeviceLevelMaster, nil
 				}
 				return 0, errors.New("token verify fail")
 			},
@@ -167,22 +167,22 @@ func TestGatewayWKProtoAuthAcceptsConnectBeforeDispatchingFrames(t *testing.T) {
 	conn := dialTCPGateway(t, gw, "tcp-wkproto-auth-ok")
 	t.Cleanup(func() { _ = conn.Close() })
 
-	connack := mustConnectWKProto(t, conn, &wkpacket.ConnectPacket{
-		Version:         wkpacket.LatestVersion,
+	connack := mustConnectWKProto(t, conn, &wkframe.ConnectPacket{
+		Version:         wkframe.LatestVersion,
 		UID:             "u1",
 		Token:           "good-token",
 		DeviceID:        "d1",
-		DeviceFlag:      wkpacket.APP,
+		DeviceFlag:      wkframe.APP,
 		ClientTimestamp: 9_000,
 	})
-	if connack.ReasonCode != wkpacket.ReasonSuccess {
+	if connack.ReasonCode != wkframe.ReasonSuccess {
 		t.Fatalf("expected success connack, got %v", connack.ReasonCode)
 	}
 	if connack.NodeId != 42 || connack.TimeDiff != 1000 {
 		t.Fatalf("unexpected connack: %+v", connack)
 	}
 
-	payload, err := codec.New().EncodeFrame(&wkpacket.PingPacket{}, wkpacket.LatestVersion)
+	payload, err := codec.New().EncodeFrame(&wkframe.PingPacket{}, wkframe.LatestVersion)
 	if err != nil {
 		t.Fatalf("EncodeFrame: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestGatewayWKProtoAuthAcceptsConnectBeforeDispatchingFrames(t *testing.T) {
 	if got := handler.Contexts[0].Session.Value(gateway.SessionValueUID); got != "u1" {
 		t.Fatalf("expected session uid to be stored, got %#v", got)
 	}
-	if got := handler.Contexts[0].Session.Value(gateway.SessionValueDeviceLevel); got != wkpacket.DeviceLevelMaster {
+	if got := handler.Contexts[0].Session.Value(gateway.SessionValueDeviceLevel); got != wkframe.DeviceLevelMaster {
 		t.Fatalf("expected device level to be stored, got %#v", got)
 	}
 }
@@ -267,7 +267,7 @@ func TestGatewayStartStopTCPWKProtoOverStdnet(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
-	payload, err := codec.New().EncodeFrame(&wkpacket.PingPacket{}, wkpacket.LatestVersion)
+	payload, err := codec.New().EncodeFrame(&wkframe.PingPacket{}, wkframe.LatestVersion)
 	if err != nil {
 		t.Fatalf("EncodeFrame: %v", err)
 	}
@@ -348,10 +348,10 @@ func dialTCPGateway(t *testing.T, gw *gateway.Gateway, listener string) net.Conn
 	return conn
 }
 
-func mustConnectWKProto(t *testing.T, conn net.Conn, connect *wkpacket.ConnectPacket) *wkpacket.ConnackPacket {
+func mustConnectWKProto(t *testing.T, conn net.Conn, connect *wkframe.ConnectPacket) *wkframe.ConnackPacket {
 	t.Helper()
 
-	payload, err := codec.New().EncodeFrame(connect, wkpacket.LatestVersion)
+	payload, err := codec.New().EncodeFrame(connect, wkframe.LatestVersion)
 	if err != nil {
 		t.Fatalf("EncodeFrame: %v", err)
 	}
@@ -366,11 +366,11 @@ func mustConnectWKProto(t *testing.T, conn net.Conn, connect *wkpacket.ConnectPa
 		_ = conn.SetReadDeadline(time.Time{})
 	}()
 
-	frame, err := codec.New().DecodePacketWithConn(conn, wkpacket.LatestVersion)
+	frame, err := codec.New().DecodePacketWithConn(conn, wkframe.LatestVersion)
 	if err != nil {
 		t.Fatalf("DecodePacketWithConn: %v", err)
 	}
-	connack, ok := frame.(*wkpacket.ConnackPacket)
+	connack, ok := frame.(*wkframe.ConnackPacket)
 	if !ok {
 		t.Fatalf("expected connack packet, got %T", frame)
 	}

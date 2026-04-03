@@ -1,12 +1,12 @@
 package wkproto
 
 import (
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/pkg/errors"
 )
 
 func decodeMessageSeq(dec *Decoder, version uint8) (uint64, error) {
-	if version <= wkpacket.LegacyMessageSeqVersion {
+	if version <= wkframe.LegacyMessageSeqVersion {
 		value, err := dec.Uint32()
 		return uint64(value), err
 	}
@@ -14,7 +14,7 @@ func decodeMessageSeq(dec *Decoder, version uint8) (uint64, error) {
 }
 
 func encodeMessageSeq(enc *Encoder, version uint8, value uint64) error {
-	if version <= wkpacket.LegacyMessageSeqVersion {
+	if version <= wkframe.LegacyMessageSeqVersion {
 		if value > uint64(^uint32(0)) {
 			return errors.New("message seq exceeds legacy uint32")
 		}
@@ -26,8 +26,8 @@ func encodeMessageSeq(enc *Encoder, version uint8, value uint64) error {
 }
 
 func messageSeqSize(version uint8) int {
-	if version <= wkpacket.LegacyMessageSeqVersion {
-		return wkpacket.MessageSeqLegacyByteSize
+	if version <= wkframe.LegacyMessageSeqVersion {
+		return wkframe.MessageSeqLegacyByteSize
 	}
-	return wkpacket.MessageSeqU64ByteSize
+	return wkframe.MessageSeqU64ByteSize
 }

@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/gin-gonic/gin"
 )
 
@@ -49,7 +49,7 @@ func (s *Server) handleSendMessage(c *gin.Context) {
 		ChannelID:       req.ChannelID,
 		ChannelType:     req.ChannelType,
 		Payload:         payload,
-		ProtocolVersion: wkpacket.LatestVersion,
+		ProtocolVersion: wkframe.LatestVersion,
 	})
 	if err != nil {
 		if status, msg, ok := mapSendError(err); ok {

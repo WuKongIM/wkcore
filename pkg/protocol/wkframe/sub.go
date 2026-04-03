@@ -1,4 +1,4 @@
-package wkpacket
+package wkframe
 
 type SubPacket struct {
 	Framer

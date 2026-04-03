@@ -11,7 +11,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/transport"
 	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
 var (
@@ -309,7 +309,7 @@ func (s *Server) onOpen(listener *listenerRuntime, conn transport.Conn) error {
 		LocalAddr:        conn.LocalAddr(),
 		WriteQueueSize:   s.options.DefaultSession.WriteQueueSize,
 		MaxOutboundBytes: int64(s.options.DefaultSession.MaxOutboundBytes),
-		WriteFrameFn: func(frame wkpacket.Frame, meta session.OutboundMeta) error {
+		WriteFrameFn: func(frame wkframe.Frame, meta session.OutboundMeta) error {
 			return s.encodeAndQueue(state, frame, meta)
 		},
 	})
@@ -417,12 +417,12 @@ func (s *Server) onData(listener *listenerRuntime, conn transport.Conn, data []b
 	return nil
 }
 
-func (s *Server) handleAuthFrame(state *sessionState, replyToken string, frame wkpacket.Frame) (bool, error) {
+func (s *Server) handleAuthFrame(state *sessionState, replyToken string, frame wkframe.Frame) (bool, error) {
 	if state == nil || !state.requiresAuth() || state.isAuthenticated() {
 		return false, nil
 	}
 
-	connect, ok := frame.(*wkpacket.ConnectPacket)
+	connect, ok := frame.(*wkframe.ConnectPacket)
 	if !ok {
 		state.close(gatewaytypes.CloseReasonPolicyViolation, nil)
 		return true, nil
@@ -431,7 +431,7 @@ func (s *Server) handleAuthFrame(state *sessionState, replyToken string, frame w
 	ctx := s.dispatcher.context(state, replyToken, state.closeReason())
 	result, err := s.options.Authenticator.Authenticate(ctx, connect)
 	if err != nil {
-		if writeErr := s.writeImmediateFrame(state, &wkpacket.ConnackPacket{ReasonCode: wkpacket.ReasonSystemError}); writeErr != nil {
+		if writeErr := s.writeImmediateFrame(state, &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonSystemError}); writeErr != nil {
 			state.close(closeReasonForError(writeErr, gatewaytypes.CloseReasonPolicyViolation), writeErr)
 			return true, nil
 		}
@@ -444,18 +444,18 @@ func (s *Server) handleAuthFrame(state *sessionState, replyToken string, frame w
 
 	connack := result.Connack
 	if connack == nil {
-		connack = &wkpacket.ConnackPacket{ReasonCode: wkpacket.ReasonSuccess}
+		connack = &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonSuccess}
 	}
-	connack.FrameType = wkpacket.CONNACK
+	connack.FrameType = wkframe.CONNACK
 	if connack.ReasonCode == 0 {
-		connack.ReasonCode = wkpacket.ReasonSuccess
+		connack.ReasonCode = wkframe.ReasonSuccess
 	}
 
 	if writeErr := s.writeImmediateFrame(state, connack); writeErr != nil {
 		state.close(closeReasonForError(writeErr, gatewaytypes.CloseReasonPeerClosed), writeErr)
 		return true, nil
 	}
-	if connack.ReasonCode != wkpacket.ReasonSuccess {
+	if connack.ReasonCode != wkframe.ReasonSuccess {
 		state.close(gatewaytypes.CloseReasonPolicyViolation, nil)
 		return true, nil
 	}
@@ -489,7 +489,7 @@ func (s *Server) onClose(listener *listenerRuntime, conn transport.Conn, err err
 	state.close(gatewaytypes.CloseReasonPeerClosed, nil)
 }
 
-func (s *Server) encodeAndQueue(state *sessionState, frame wkpacket.Frame, meta session.OutboundMeta) error {
+func (s *Server) encodeAndQueue(state *sessionState, frame wkframe.Frame, meta session.OutboundMeta) error {
 	if state == nil || state.listener == nil || state.queue == nil {
 		return session.ErrSessionClosed
 	}
@@ -501,7 +501,7 @@ func (s *Server) encodeAndQueue(state *sessionState, frame wkpacket.Frame, meta 
 	return state.queue.EnqueueEncoded(encoded)
 }
 
-func (s *Server) writeImmediateFrame(state *sessionState, frame wkpacket.Frame) error {
+func (s *Server) writeImmediateFrame(state *sessionState, frame wkframe.Frame) error {
 	if state == nil || state.listener == nil {
 		return session.ErrSessionClosed
 	}

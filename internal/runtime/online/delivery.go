@@ -1,10 +1,10 @@
 package online
 
-import "github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+import "github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 
 type LocalDelivery struct{}
 
-func (LocalDelivery) Deliver(recipients []OnlineConn, frame wkpacket.Frame) error {
+func (LocalDelivery) Deliver(recipients []OnlineConn, frame wkframe.Frame) error {
 	var firstErr error
 	for _, recipient := range recipients {
 		if recipient.Session == nil {

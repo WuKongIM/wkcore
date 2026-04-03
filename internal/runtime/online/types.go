@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
 var ErrInvalidConnection = errors.New("runtime/online: invalid connection")
@@ -13,8 +13,8 @@ var ErrInvalidConnection = errors.New("runtime/online: invalid connection")
 type Conn struct {
 	SessionID   uint64
 	UID         string
-	DeviceFlag  wkpacket.DeviceFlag
-	DeviceLevel wkpacket.DeviceLevel
+	DeviceFlag  wkframe.DeviceFlag
+	DeviceLevel wkframe.DeviceLevel
 	Listener    string
 	ConnectedAt time.Time
 	Session     session.Session
@@ -30,5 +30,5 @@ type Registry interface {
 }
 
 type Delivery interface {
-	Deliver(recipients []OnlineConn, frame wkpacket.Frame) error
+	Deliver(recipients []OnlineConn, frame wkframe.Frame) error
 }

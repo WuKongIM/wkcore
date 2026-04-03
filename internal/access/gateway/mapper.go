@@ -3,10 +3,10 @@ package gateway
 import (
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
-func mapSendCommand(ctx *coregateway.Context, pkt *wkpacket.SendPacket) (message.SendCommand, error) {
+func mapSendCommand(ctx *coregateway.Context, pkt *wkframe.SendPacket) (message.SendCommand, error) {
 	if ctx == nil || ctx.Session == nil {
 		return message.SendCommand{}, ErrUnauthenticatedSession
 	}
@@ -16,7 +16,7 @@ func mapSendCommand(ctx *coregateway.Context, pkt *wkpacket.SendPacket) (message
 		return message.SendCommand{}, ErrUnauthenticatedSession
 	}
 
-	protocolVersion := uint8(wkpacket.LatestVersion)
+	protocolVersion := uint8(wkframe.LatestVersion)
 	if sessionVersion, ok := ctx.Session.Value(coregateway.SessionValueProtocolVersion).(uint8); ok && sessionVersion != 0 {
 		protocolVersion = sessionVersion
 	}
@@ -45,7 +45,7 @@ func mapSendCommand(ctx *coregateway.Context, pkt *wkpacket.SendPacket) (message
 	}, nil
 }
 
-func mapRecvAckCommand(ctx *coregateway.Context, pkt *wkpacket.RecvackPacket) (message.RecvAckCommand, error) {
+func mapRecvAckCommand(ctx *coregateway.Context, pkt *wkframe.RecvackPacket) (message.RecvAckCommand, error) {
 	if ctx == nil || ctx.Session == nil {
 		return message.RecvAckCommand{}, ErrUnauthenticatedSession
 	}
@@ -67,7 +67,7 @@ func mapRecvAckCommand(ctx *coregateway.Context, pkt *wkpacket.RecvackPacket) (m
 	}, nil
 }
 
-func writeSendack(ctx *coregateway.Context, pkt *wkpacket.SendPacket, result message.SendResult) error {
+func writeSendack(ctx *coregateway.Context, pkt *wkframe.SendPacket, result message.SendResult) error {
 	if ctx == nil || ctx.Session == nil {
 		return ErrUnauthenticatedSession
 	}
@@ -79,7 +79,7 @@ func writeSendack(ctx *coregateway.Context, pkt *wkpacket.SendPacket, result mes
 		clientMsgNo = pkt.ClientMsgNo
 	}
 
-	return ctx.WriteFrame(&wkpacket.SendackPacket{
+	return ctx.WriteFrame(&wkframe.SendackPacket{
 		MessageID:   result.MessageID,
 		MessageSeq:  result.MessageSeq,
 		ClientSeq:   clientSeq,

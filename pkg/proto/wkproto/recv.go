@@ -1,20 +1,20 @@
 package wkproto
 
 import (
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/pkg/errors"
 )
 
-func decodeRecv(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Frame, error) {
+func decodeRecv(frame wkframe.Frame, data []byte, version uint8) (wkframe.Frame, error) {
 	dec := NewDecoder(data)
-	recvPacket := &wkpacket.RecvPacket{}
-	recvPacket.Framer = frame.(wkpacket.Framer)
+	recvPacket := &wkframe.RecvPacket{}
+	recvPacket.Framer = frame.(wkframe.Framer)
 	var err error
 	setting, err := dec.Uint8()
 	if err != nil {
 		return nil, errors.Wrap(err, "解码消息设置失败！")
 	}
-	recvPacket.Setting = wkpacket.Setting(setting)
+	recvPacket.Setting = wkframe.Setting(setting)
 	// MsgKey
 	if recvPacket.MsgKey, err = dec.String(); err != nil {
 		return nil, errors.Wrap(err, "解码MsgKey失败！")
@@ -44,12 +44,12 @@ func decodeRecv(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Fram
 	}
 	// 流消息
 	if version < 5 { // 5版本后不再支持recv里不再需要streamNo和streamId
-		if version >= 2 && recvPacket.Setting.IsSet(wkpacket.SettingStream) {
+		if version >= 2 && recvPacket.Setting.IsSet(wkframe.SettingStream) {
 			var streamFlag uint8
 			if streamFlag, err = dec.Uint8(); err != nil {
 				return nil, errors.Wrap(err, "解码StreamFlag失败！")
 			}
-			recvPacket.StreamFlag = wkpacket.StreamFlag(streamFlag)
+			recvPacket.StreamFlag = wkframe.StreamFlag(streamFlag)
 
 			if recvPacket.StreamNo, err = dec.String(); err != nil {
 				return nil, errors.Wrap(err, "解码StreamNo失败！")
@@ -72,7 +72,7 @@ func decodeRecv(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Fram
 		return nil, errors.Wrap(err, "解码Timestamp失败！")
 	}
 
-	if recvPacket.Setting.IsSet(wkpacket.SettingTopic) {
+	if recvPacket.Setting.IsSet(wkframe.SettingTopic) {
 		// topic
 		if recvPacket.Topic, err = dec.String(); err != nil {
 			return nil, errors.Wrap(err, "解密topic消息失败！")
@@ -99,7 +99,7 @@ func decodeRecv(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Fram
 	return recvPacket, err
 }
 
-func encodeRecv(recvPacket *wkpacket.RecvPacket, enc *Encoder, version uint8) error {
+func encodeRecv(recvPacket *wkframe.RecvPacket, enc *Encoder, version uint8) error {
 	// setting
 	_ = enc.WriteByte(recvPacket.Setting.Uint8())
 	// MsgKey
@@ -117,7 +117,7 @@ func encodeRecv(recvPacket *wkpacket.RecvPacket, enc *Encoder, version uint8) er
 	enc.WriteString(recvPacket.ClientMsgNo)
 	// 流消息
 	if version < 5 { // 5版本后不再支持recv里不再需要streamNo和streamId
-		if version >= 2 && recvPacket.Setting.IsSet(wkpacket.SettingStream) {
+		if version >= 2 && recvPacket.Setting.IsSet(wkframe.SettingStream) {
 			enc.WriteUint8(uint8(recvPacket.StreamFlag))
 			enc.WriteString(recvPacket.StreamNo)
 			enc.WriteUint64(recvPacket.StreamId)
@@ -133,7 +133,7 @@ func encodeRecv(recvPacket *wkpacket.RecvPacket, enc *Encoder, version uint8) er
 	// 消息时间戳
 	enc.WriteInt32(recvPacket.Timestamp)
 
-	if recvPacket.Setting.IsSet(wkpacket.SettingTopic) {
+	if recvPacket.Setting.IsSet(wkframe.SettingTopic) {
 		enc.WriteString(recvPacket.Topic)
 	}
 	// 消息内容
@@ -141,29 +141,29 @@ func encodeRecv(recvPacket *wkpacket.RecvPacket, enc *Encoder, version uint8) er
 	return nil
 }
 
-func encodeRecvSize(packet *wkpacket.RecvPacket, version uint8) int {
+func encodeRecvSize(packet *wkframe.RecvPacket, version uint8) int {
 	size := 0
-	size += wkpacket.SettingByteSize
-	size += len(packet.MsgKey) + wkpacket.StringFixLenByteSize
-	size += len(packet.FromUID) + wkpacket.StringFixLenByteSize
-	size += len(packet.ChannelID) + wkpacket.StringFixLenByteSize
-	size += wkpacket.ChannelTypeByteSize
+	size += wkframe.SettingByteSize
+	size += len(packet.MsgKey) + wkframe.StringFixLenByteSize
+	size += len(packet.FromUID) + wkframe.StringFixLenByteSize
+	size += len(packet.ChannelID) + wkframe.StringFixLenByteSize
+	size += wkframe.ChannelTypeByteSize
 	if version >= 3 {
-		size += wkpacket.ExpireByteSize
+		size += wkframe.ExpireByteSize
 	}
-	size += len(packet.ClientMsgNo) + wkpacket.StringFixLenByteSize
+	size += len(packet.ClientMsgNo) + wkframe.StringFixLenByteSize
 	if version < 5 { // 5版本后不再支持recv里不再需要streamNo和streamId
-		if version >= 2 && packet.Setting.IsSet(wkpacket.SettingStream) {
-			size += wkpacket.StreamFlagByteSize
-			size += len(packet.StreamNo) + wkpacket.StringFixLenByteSize
-			size += wkpacket.StreamIdByteSize
+		if version >= 2 && packet.Setting.IsSet(wkframe.SettingStream) {
+			size += wkframe.StreamFlagByteSize
+			size += len(packet.StreamNo) + wkframe.StringFixLenByteSize
+			size += wkframe.StreamIdByteSize
 		}
 	}
-	size += wkpacket.MessageIDByteSize
+	size += wkframe.MessageIDByteSize
 	size += messageSeqSize(version)
-	size += wkpacket.TimestampByteSize
-	if packet.Setting.IsSet(wkpacket.SettingTopic) {
-		size += len(packet.Topic) + wkpacket.StringFixLenByteSize
+	size += wkframe.TimestampByteSize
+	if packet.Setting.IsSet(wkframe.SettingTopic) {
+		size += len(packet.Topic) + wkframe.StringFixLenByteSize
 	}
 	size += len(packet.Payload)
 	return size

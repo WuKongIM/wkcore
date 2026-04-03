@@ -4,14 +4,14 @@ import (
 	"sync"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
 type FakeProtocol struct {
 	name string
 
 	mu              sync.Mutex
-	DecodedFrames   []wkpacket.Frame
+	DecodedFrames   []wkframe.Frame
 	DecodeConsumed  int
 	DecodeErr       error
 	EncodedBytes    []byte
@@ -23,7 +23,7 @@ type FakeProtocol struct {
 	OnOpenCalls     int
 	OnCloseCalls    int
 	LastDecodeInput []byte
-	LastEncodeFrame wkpacket.Frame
+	LastEncodeFrame wkframe.Frame
 	LastEncodeMeta  session.OutboundMeta
 }
 
@@ -38,7 +38,7 @@ func (p *FakeProtocol) Name() string {
 	return p.name
 }
 
-func (p *FakeProtocol) Decode(_ session.Session, in []byte) ([]wkpacket.Frame, int, error) {
+func (p *FakeProtocol) Decode(_ session.Session, in []byte) ([]wkframe.Frame, int, error) {
 	if p == nil {
 		return nil, 0, nil
 	}
@@ -52,7 +52,7 @@ func (p *FakeProtocol) Decode(_ session.Session, in []byte) ([]wkpacket.Frame, i
 		return nil, 0, p.DecodeErr
 	}
 
-	frames := append([]wkpacket.Frame(nil), p.DecodedFrames...)
+	frames := append([]wkframe.Frame(nil), p.DecodedFrames...)
 	consumed := p.DecodeConsumed
 	if consumed == 0 && len(frames) > 0 {
 		consumed = len(in)
@@ -63,7 +63,7 @@ func (p *FakeProtocol) Decode(_ session.Session, in []byte) ([]wkpacket.Frame, i
 	return frames, consumed, nil
 }
 
-func (p *FakeProtocol) Encode(_ session.Session, frame wkpacket.Frame, meta session.OutboundMeta) ([]byte, error) {
+func (p *FakeProtocol) Encode(_ session.Session, frame wkframe.Frame, meta session.OutboundMeta) ([]byte, error) {
 	if p == nil {
 		return nil, nil
 	}

@@ -3,14 +3,14 @@ package wkproto
 import (
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestConnackEncodeAndDecode(t *testing.T) {
-	packet := &wkpacket.ConnackPacket{
+	packet := &wkframe.ConnackPacket{
 		TimeDiff:      12345,
-		ReasonCode:    wkpacket.ReasonSuccess,
+		ReasonCode:    wkframe.ReasonSuccess,
 		ServerKey:     "ServerKey",
 		Salt:          "Salt",
 		ServerVersion: 100,
@@ -23,7 +23,7 @@ func TestConnackEncodeAndDecode(t *testing.T) {
 	// 解码
 	resultPacket, _, err := codec.DecodeFrame(packetBytes, 4)
 	assert.NoError(t, err)
-	resultConnackPacket, ok := resultPacket.(*wkpacket.ConnackPacket)
+	resultConnackPacket, ok := resultPacket.(*wkframe.ConnackPacket)
 	assert.Equal(t, true, ok)
 
 	// 正确与否比较

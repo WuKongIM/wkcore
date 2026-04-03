@@ -1,10 +1,10 @@
 package message
 
-import "github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+import "github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 
 type SendCommand struct {
-	Framer               wkpacket.Framer
-	Setting              wkpacket.Setting
+	Framer               wkframe.Framer
+	Setting              wkframe.Setting
 	MsgKey               string
 	Expire               uint32
 	SenderUID            string
@@ -22,7 +22,7 @@ type SendCommand struct {
 
 type RecvAckCommand struct {
 	UID        string
-	Framer     wkpacket.Framer
+	Framer     wkframe.Framer
 	MessageID  int64
 	MessageSeq uint64
 }

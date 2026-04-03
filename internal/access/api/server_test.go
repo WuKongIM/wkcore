@@ -11,7 +11,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/pkg/msgstore/channelcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,7 +32,7 @@ func TestSendMessageMapsJSONToUsecaseCommand(t *testing.T) {
 		result: message.SendResult{
 			MessageID:  99,
 			MessageSeq: uint64(^uint32(0)) + 7,
-			Reason:     wkpacket.ReasonSuccess,
+			Reason:     wkframe.ReasonSuccess,
 		},
 	}
 	srv := New(Options{Messages: msgs})
@@ -40,7 +40,7 @@ func TestSendMessageMapsJSONToUsecaseCommand(t *testing.T) {
 	body := map[string]any{
 		"sender_uid":   "u1",
 		"channel_id":   "u2",
-		"channel_type": float64(wkpacket.ChannelTypePerson),
+		"channel_type": float64(wkframe.ChannelTypePerson),
 		"payload":      base64.StdEncoding.EncodeToString([]byte("hi")),
 	}
 	payload, err := json.Marshal(body)
@@ -57,7 +57,7 @@ func TestSendMessageMapsJSONToUsecaseCommand(t *testing.T) {
 	require.Len(t, msgs.calls, 1)
 	require.Equal(t, "u1", msgs.calls[0].SenderUID)
 	require.Equal(t, "u2", msgs.calls[0].ChannelID)
-	require.Equal(t, uint8(wkpacket.ChannelTypePerson), msgs.calls[0].ChannelType)
+	require.Equal(t, uint8(wkframe.ChannelTypePerson), msgs.calls[0].ChannelType)
 	require.Equal(t, []byte("hi"), msgs.calls[0].Payload)
 }
 

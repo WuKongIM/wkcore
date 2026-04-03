@@ -12,7 +12,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/stretchr/testify/require"
 )
 
@@ -45,7 +45,7 @@ func TestAPIServerSendMessageWithRealMessageApp(t *testing.T) {
 	body := map[string]any{
 		"sender_uid":   "u1",
 		"channel_id":   "u2",
-		"channel_type": float64(wkpacket.ChannelTypePerson),
+		"channel_type": float64(wkframe.ChannelTypePerson),
 		"payload":      base64.StdEncoding.EncodeToString([]byte("hi")),
 	}
 	payload, err := json.Marshal(body)
@@ -65,5 +65,5 @@ func TestAPIServerSendMessageWithRealMessageApp(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 	require.NotZero(t, got.MessageID)
 	require.NotZero(t, got.MessageSeq)
-	require.Equal(t, uint8(wkpacket.ReasonSuccess), got.Reason)
+	require.Equal(t, uint8(wkframe.ReasonSuccess), got.Reason)
 }

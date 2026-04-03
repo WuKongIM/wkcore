@@ -4,7 +4,7 @@ import (
 	"time"
 
 	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
 type Authenticator = gatewaytypes.Authenticator
@@ -24,7 +24,7 @@ type WKProtoAuthOptions struct {
 	Now         func() time.Time
 
 	IsVisitor   func(uid string) bool
-	VerifyToken func(uid string, deviceFlag wkpacket.DeviceFlag, token string) (wkpacket.DeviceLevel, error)
+	VerifyToken func(uid string, deviceFlag wkframe.DeviceFlag, token string) (wkframe.DeviceLevel, error)
 	IsBanned    func(uid string) (bool, error)
 }
 
@@ -34,25 +34,25 @@ func NewWKProtoAuthenticator(opts WKProtoAuthOptions) Authenticator {
 		nowFn = time.Now
 	}
 
-	return AuthenticatorFunc(func(_ *Context, connect *wkpacket.ConnectPacket) (*AuthResult, error) {
+	return AuthenticatorFunc(func(_ *Context, connect *wkframe.ConnectPacket) (*AuthResult, error) {
 		if connect == nil {
 			return &AuthResult{
-				Connack: &wkpacket.ConnackPacket{ReasonCode: wkpacket.ReasonAuthFail},
+				Connack: &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonAuthFail},
 			}, nil
 		}
 
-		deviceLevel := wkpacket.DeviceLevelSlave
+		deviceLevel := wkframe.DeviceLevelSlave
 		if opts.TokenAuthOn && !isVisitor(opts.IsVisitor, connect.UID) {
 			if connect.Token == "" || opts.VerifyToken == nil {
 				return &AuthResult{
-					Connack: &wkpacket.ConnackPacket{ReasonCode: wkpacket.ReasonAuthFail},
+					Connack: &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonAuthFail},
 				}, nil
 			}
 
 			level, err := opts.VerifyToken(connect.UID, connect.DeviceFlag, connect.Token)
 			if err != nil {
 				return &AuthResult{
-					Connack: &wkpacket.ConnackPacket{ReasonCode: wkpacket.ReasonAuthFail},
+					Connack: &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonAuthFail},
 				}, nil
 			}
 			deviceLevel = level
@@ -61,23 +61,23 @@ func NewWKProtoAuthenticator(opts WKProtoAuthOptions) Authenticator {
 		if opts.IsBanned != nil {
 			banned, err := opts.IsBanned(connect.UID)
 			if err != nil || banned {
-				reason := wkpacket.ReasonBan
+				reason := wkframe.ReasonBan
 				if err != nil {
-					reason = wkpacket.ReasonAuthFail
+					reason = wkframe.ReasonAuthFail
 				}
 				return &AuthResult{
-					Connack: &wkpacket.ConnackPacket{ReasonCode: reason},
+					Connack: &wkframe.ConnackPacket{ReasonCode: reason},
 				}, nil
 			}
 		}
 
 		serverVersion := connect.Version
-		if serverVersion == 0 || serverVersion > wkpacket.LatestVersion {
-			serverVersion = wkpacket.LatestVersion
+		if serverVersion == 0 || serverVersion > wkframe.LatestVersion {
+			serverVersion = wkframe.LatestVersion
 		}
 
-		connack := &wkpacket.ConnackPacket{
-			ReasonCode:    wkpacket.ReasonSuccess,
+		connack := &wkframe.ConnackPacket{
+			ReasonCode:    wkframe.ReasonSuccess,
 			TimeDiff:      nowFn().UnixMilli() - connect.ClientTimestamp,
 			ServerVersion: serverVersion,
 			NodeId:        opts.NodeID,

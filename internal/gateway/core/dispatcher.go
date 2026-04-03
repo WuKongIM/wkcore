@@ -2,7 +2,7 @@ package core
 
 import (
 	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
 type dispatcher struct {
@@ -27,7 +27,7 @@ func (d dispatcher) sessionOpen(state *sessionState) error {
 	return d.handler.OnSessionOpen(d.context(state, "", state.closeReason()))
 }
 
-func (d dispatcher) frame(state *sessionState, replyToken string, frame wkpacket.Frame) error {
+func (d dispatcher) frame(state *sessionState, replyToken string, frame wkframe.Frame) error {
 	if d.handler == nil {
 		return nil
 	}

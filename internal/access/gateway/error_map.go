@@ -4,23 +4,23 @@ import (
 	"errors"
 
 	"github.com/WuKongIM/WuKongIM/pkg/msgstore/channelcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
-func mapSendErrorReason(err error) (wkpacket.ReasonCode, bool) {
+func mapSendErrorReason(err error) (wkframe.ReasonCode, bool) {
 	switch {
 	case errors.Is(err, channelcluster.ErrChannelNotFound):
-		return wkpacket.ReasonChannelNotExist, true
+		return wkframe.ReasonChannelNotExist, true
 	case errors.Is(err, channelcluster.ErrChannelDeleting):
-		return wkpacket.ReasonChannelDeleting, true
+		return wkframe.ReasonChannelDeleting, true
 	case errors.Is(err, channelcluster.ErrProtocolUpgradeRequired):
-		return wkpacket.ReasonProtocolUpgradeRequired, true
+		return wkframe.ReasonProtocolUpgradeRequired, true
 	case errors.Is(err, channelcluster.ErrIdempotencyConflict):
-		return wkpacket.ReasonIdempotencyConflict, true
+		return wkframe.ReasonIdempotencyConflict, true
 	case errors.Is(err, channelcluster.ErrMessageSeqExhausted):
-		return wkpacket.ReasonMessageSeqExhausted, true
+		return wkframe.ReasonMessageSeqExhausted, true
 	case errors.Is(err, channelcluster.ErrStaleMeta), errors.Is(err, channelcluster.ErrNotLeader):
-		return wkpacket.ReasonNodeNotMatch, true
+		return wkframe.ReasonNodeNotMatch, true
 	default:
 		return 0, false
 	}

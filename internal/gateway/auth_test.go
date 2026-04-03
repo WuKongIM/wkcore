@@ -4,13 +4,13 @@ import (
 	"testing"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
 func TestAuthenticatorStoresNegotiatedProtocolVersion(t *testing.T) {
 	auth := gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{})
 
-	result, err := auth.Authenticate(nil, &wkpacket.ConnectPacket{
+	result, err := auth.Authenticate(nil, &wkframe.ConnectPacket{
 		Version: 5,
 		UID:     "u1",
 	})

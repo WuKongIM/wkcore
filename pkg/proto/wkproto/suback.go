@@ -1,15 +1,15 @@
 package wkproto
 
 import (
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/pkg/errors"
 )
 
-func decodeSuback(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Frame, error) {
+func decodeSuback(frame wkframe.Frame, data []byte, version uint8) (wkframe.Frame, error) {
 	dec := NewDecoder(data)
 
-	subackPacket := &wkpacket.SubackPacket{}
-	subackPacket.Framer = frame.(wkpacket.Framer)
+	subackPacket := &wkframe.SubackPacket{}
+	subackPacket.Framer = frame.(wkframe.Framer)
 
 	var err error
 	// 客户端消息编号
@@ -29,19 +29,19 @@ func decodeSuback(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Fr
 	if action, err = dec.Uint8(); err != nil {
 		return nil, errors.Wrap(err, "解码Action失败！")
 	}
-	subackPacket.Action = wkpacket.Action(action)
+	subackPacket.Action = wkframe.Action(action)
 	// 原因码
 	var reasonCode byte
 	if reasonCode, err = dec.Uint8(); err != nil {
 
 		return nil, errors.Wrap(err, "解码ReasonCode失败！")
 	}
-	subackPacket.ReasonCode = wkpacket.ReasonCode(reasonCode)
+	subackPacket.ReasonCode = wkframe.ReasonCode(reasonCode)
 
 	return subackPacket, nil
 }
 
-func encodeSuback(subackPacket *wkpacket.SubackPacket, enc *Encoder, _ uint8) error {
+func encodeSuback(subackPacket *wkframe.SubackPacket, enc *Encoder, _ uint8) error {
 	// 客户端消息编号
 	enc.WriteString(subackPacket.SubNo)
 	// 频道ID
@@ -55,12 +55,12 @@ func encodeSuback(subackPacket *wkpacket.SubackPacket, enc *Encoder, _ uint8) er
 	return nil
 }
 
-func encodeSubackSize(subPacket *wkpacket.SubackPacket, _ uint8) int {
+func encodeSubackSize(subPacket *wkframe.SubackPacket, _ uint8) int {
 	var size = 0
-	size += len(subPacket.SubNo) + wkpacket.StringFixLenByteSize
-	size += len(subPacket.ChannelID) + wkpacket.StringFixLenByteSize
-	size += wkpacket.ChannelTypeByteSize
-	size += wkpacket.ActionByteSize
-	size += wkpacket.ReasonCodeByteSize
+	size += len(subPacket.SubNo) + wkframe.StringFixLenByteSize
+	size += len(subPacket.ChannelID) + wkframe.StringFixLenByteSize
+	size += wkframe.ChannelTypeByteSize
+	size += wkframe.ActionByteSize
+	size += wkframe.ReasonCodeByteSize
 	return size
 }

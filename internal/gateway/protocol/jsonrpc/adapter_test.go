@@ -9,7 +9,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
 	pkgjsonrpc "github.com/WuKongIM/WuKongIM/pkg/proto/jsonrpc"
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
 func TestAdapterDecodeReturnsReplyTokenForRequest(t *testing.T) {
@@ -46,7 +46,7 @@ func TestAdapterDecodeReturnsReplyTokenForRequest(t *testing.T) {
 	if len(tokens) != 1 || tokens[0] != "req-1" {
 		t.Fatalf("expected reply token req-1, got %v", tokens)
 	}
-	if _, ok := frames[0].(*wkpacket.PingPacket); !ok {
+	if _, ok := frames[0].(*wkframe.PingPacket); !ok {
 		t.Fatalf("expected ping packet, got %T", frames[0])
 	}
 }
@@ -55,7 +55,7 @@ func TestAdapterEncodeUsesReplyTokenAsResponseID(t *testing.T) {
 	adapter := adapterpkg.New()
 	sess := testkit.NewProtocolSession()
 
-	body, err := adapter.Encode(sess, &wkpacket.PongPacket{}, session.OutboundMeta{ReplyToken: "req-1"})
+	body, err := adapter.Encode(sess, &wkframe.PongPacket{}, session.OutboundMeta{ReplyToken: "req-1"})
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}

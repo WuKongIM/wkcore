@@ -1,14 +1,14 @@
 package wkproto
 
 import (
-	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/pkg/errors"
 )
 
-func decodeRecvack(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Frame, error) {
+func decodeRecvack(frame wkframe.Frame, data []byte, version uint8) (wkframe.Frame, error) {
 	dec := NewDecoder(data)
-	recvackPacket := &wkpacket.RecvackPacket{}
-	recvackPacket.Framer = frame.(wkpacket.Framer)
+	recvackPacket := &wkframe.RecvackPacket{}
+	recvackPacket.Framer = frame.(wkframe.Framer)
 	var err error
 	// 消息唯一ID
 	if recvackPacket.MessageID, err = dec.Int64(); err != nil {
@@ -21,11 +21,11 @@ func decodeRecvack(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.F
 	return recvackPacket, err
 }
 
-func encodeRecvack(recvackPacket *wkpacket.RecvackPacket, enc *Encoder, version uint8) error {
+func encodeRecvack(recvackPacket *wkframe.RecvackPacket, enc *Encoder, version uint8) error {
 	enc.WriteInt64(recvackPacket.MessageID)
 	return encodeMessageSeq(enc, version, recvackPacket.MessageSeq)
 }
 
-func encodeRecvackSize(_ *wkpacket.RecvackPacket, version uint8) int {
-	return wkpacket.MessageIDByteSize + messageSeqSize(version)
+func encodeRecvackSize(_ *wkframe.RecvackPacket, version uint8) int {
+	return wkframe.MessageIDByteSize + messageSeqSize(version)
 }
