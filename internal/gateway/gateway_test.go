@@ -11,7 +11,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
 	pkgjsonrpc "github.com/WuKongIM/WuKongIM/pkg/proto/jsonrpc"
-	codec "github.com/WuKongIM/WuKongIM/pkg/proto/wkproto"
+	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/gorilla/websocket"
 )

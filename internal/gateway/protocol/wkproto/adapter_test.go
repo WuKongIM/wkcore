@@ -7,7 +7,7 @@ import (
 	adapterpkg "github.com/WuKongIM/WuKongIM/internal/gateway/protocol/wkproto"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
-	codec "github.com/WuKongIM/WuKongIM/pkg/proto/wkproto"
+	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 

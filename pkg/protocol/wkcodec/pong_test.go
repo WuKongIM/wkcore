@@ -1,4 +1,4 @@
-package wkproto
+package wkcodec
 
 import (
 	"testing"
@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestPingEncodeAndDecode(t *testing.T) {
-	packet := &wkframe.PingPacket{}
+func TestPongEncodeAndDecode(t *testing.T) {
+	packet := &wkframe.PongPacket{}
 
 	codec := New()
 	// 编码
@@ -18,6 +18,6 @@ func TestPingEncodeAndDecode(t *testing.T) {
 	// 解码
 	resultPacket, _, err := codec.DecodeFrame(packetBytes, 1)
 	assert.NoError(t, err)
-	_, ok := resultPacket.(*wkframe.PingPacket)
+	_, ok := resultPacket.(*wkframe.PongPacket)
 	assert.Equal(t, true, ok)
 }

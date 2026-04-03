@@ -1,4 +1,4 @@
-package wkproto
+package wkcodec
 
 import (
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"

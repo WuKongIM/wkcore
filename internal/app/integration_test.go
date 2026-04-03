@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	codec "github.com/WuKongIM/WuKongIM/pkg/proto/wkproto"
+	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/stretchr/testify/require"
 )

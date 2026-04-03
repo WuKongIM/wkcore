@@ -3,7 +3,7 @@ package wkproto
 import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
-	codec "github.com/WuKongIM/WuKongIM/pkg/proto/wkproto"
+	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
