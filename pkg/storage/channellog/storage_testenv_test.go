@@ -1,6 +1,10 @@
 package channellog
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
+)
 
 func openTestDB(t *testing.T) *DB {
 	t.Helper()
@@ -31,5 +35,34 @@ func mustAppendPayloads(t *testing.T, store *Store, payloads []string) {
 	}
 	if _, err := store.appendPayloads(raw); err != nil {
 		t.Fatalf("appendPayloads() error = %v", err)
+	}
+}
+
+func mustAppendStoredMessages(t *testing.T, store *Store, payloads ...string) {
+	t.Helper()
+
+	raw := make([][]byte, 0, len(payloads))
+	for i, payload := range payloads {
+		encoded, err := encodeStoredMessage(storedMessage{
+			MessageID:   uint64(i + 1),
+			SenderUID:   "u1",
+			ClientMsgNo: "m" + string(rune('1'+i)),
+			PayloadHash: hashPayload([]byte(payload)),
+			Payload:     []byte(payload),
+		})
+		if err != nil {
+			t.Fatalf("encodeStoredMessage() error = %v", err)
+		}
+		raw = append(raw, encoded)
+	}
+	if _, err := store.appendPayloads(raw); err != nil {
+		t.Fatalf("appendPayloads() error = %v", err)
+	}
+}
+
+func mustStoreCheckpoint(t *testing.T, store *Store, checkpoint isr.Checkpoint) {
+	t.Helper()
+	if err := store.storeCheckpoint(checkpoint); err != nil {
+		t.Fatalf("storeCheckpoint() error = %v", err)
 	}
 }
