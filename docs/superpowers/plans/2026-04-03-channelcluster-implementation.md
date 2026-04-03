@@ -1,5 +1,10 @@
 # ChannelCluster Implementation Plan
 
+> Note (2026-04-03): This historical plan predates the channel-keyed ISR cutover.
+> For current identity rules, use `docs/superpowers/specs/2026-04-03-channel-keyed-isr-design.md`
+> and `docs/superpowers/plans/2026-04-03-channel-keyed-isr-implementation.md`.
+> Current code uses `isr.GroupKey` derived locally from `ChannelKey`; do not introduce numeric `GroupID`.
+
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build `pkg/channelcluster` as the channel-oriented data plane on top of `pkg/isr` / `pkg/multiisr`, then upgrade the access and wire layers to carry `uint64 messageSeq` safely.
@@ -204,7 +209,7 @@ type Config struct {
 }
 
 type Runtime interface {
-	Group(groupID uint64) (GroupHandle, bool)
+	Group(groupKey isr.GroupKey) (GroupHandle, bool)
 }
 
 type GroupHandle interface {
@@ -297,7 +302,7 @@ type fakeStateStore struct {
 
 Requirements:
 - `newTestCluster(t)` must create fake runtime, fake message log, fake state stores, and a deterministic `MessageIDGenerator`
-- `testMeta(...)` must build valid metadata with `GroupID`, `ChannelEpoch`, `LeaderEpoch`, replicas, ISR, and features
+- `testMeta(...)` must build valid metadata with `ChannelEpoch`, `LeaderEpoch`, replicas, ISR, and features; runtime `GroupKey` is derived locally from `ChannelKey`
 
 - [ ] **Step 4: Implement `ApplyMeta` compare-and-replace rules**
 
@@ -307,7 +312,7 @@ Implementation details:
 - reject `ChannelEpoch` rollback with `ErrStaleMeta`
 - reject `LeaderEpoch` rollback within equal `ChannelEpoch` with `ErrStaleMeta`
 - treat identical versions plus identical key fields as idempotent replay
-- treat identical versions plus any differing `GroupID/Status/Replicas/ISR/Leader/MinISR/Features` as `ErrConflictingMeta`
+- treat identical versions plus any differing `Status/Replicas/ISR/Leader/MinISR/Features` as `ErrConflictingMeta`
 - replace cache on higher `ChannelEpoch`
 - replace cache on equal `ChannelEpoch` and higher `LeaderEpoch`
 
@@ -355,7 +360,7 @@ func TestCheckpointBridgeReplaysCommittedRecordsIntoIdempotencyState(t *testing.
 func TestSnapshotBridgeRestoresStateBeforeServingRecoveredReads(t *testing.T) {
 	env := newApplyEnv(t)
 	require.NoError(t, env.snapshot.InstallSnapshot(context.Background(), isr.Snapshot{
-		GroupID:   8,
+		GroupKey:  isr.GroupKey("channel/1/YzE"),
 		Epoch:     4,
 		EndOffset: 9,
 		Payload:   []byte("snapshot"),
@@ -463,7 +468,7 @@ Validation order:
 - reject `Status == Deleting` with `ErrChannelDeleting`
 - reject `Status == Deleted` with `ErrChannelNotFound`
 - reject request-token mismatch with `ErrStaleMeta`
-- resolve local group handle by `meta.GroupID`; if missing, return `ErrStaleMeta`
+- resolve local group handle by the local `ChannelKey -> isr.GroupKey` derivation; if missing, return `ErrStaleMeta`
 - inspect `group.Status()` and return `ErrNotLeader` unless local role is an unfenced leader
 
 - [ ] **Step 4: Implement idempotency hit/conflict behavior**

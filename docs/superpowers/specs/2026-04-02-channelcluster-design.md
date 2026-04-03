@@ -1,5 +1,11 @@
 # ChannelCluster Library Design
 
+> Note (2026-04-03): The runtime identity model in this historical design is superseded by
+> `docs/superpowers/specs/2026-04-03-channel-keyed-isr-design.md`.
+> Current code uses a strong string `isr.GroupKey`, and the only business-to-runtime translation
+> is the local `ChannelKey -> GroupKey` derivation in `pkg/storage/channellog`.
+> Do not reintroduce controller-assigned numeric `GroupID`.
+
 ## 目标
 
 设计一个面向 `channel` 业务语义的集群库:
@@ -55,7 +61,6 @@ pkg/channelcluster             -> channel-specific data plane
 
 ```go
 type ChannelMeta struct {
-    GroupID      uint64
     ChannelID   string
     ChannelType uint8
 
@@ -77,7 +82,6 @@ epoch 关系固定为:
 
 - `ChannelEpoch`
   结构性元数据版本,在以下变化时递增:
-  - `GroupID`
   - `Status`
   - `Replicas`
   - `ISR`
@@ -90,16 +94,16 @@ epoch 关系固定为:
 - 允许 `ChannelEpoch` 不变而 `LeaderEpoch` 单独递增
 - 不允许 `LeaderEpoch` 倒退
 
-`GroupID` 是 `pkg/isr` / `pkg/multiisr` 中实际运行的复制组标识。
+当前实现不再把运行时复制组身份存入 `ChannelMeta`。
 
-映射规则必须固定为:
+映射规则固定为:
 
-1. `CreateChannel` 时由 control-plane 分配 `GroupID`
-2. `GroupID` 在 channel 生命周期内不可变
-3. 节点侧不得从 `ChannelID + ChannelType` 本地重算 `GroupID`
-4. 所有数据路径都必须先查询 `ChannelMeta`,再通过 `GroupID` 定位到底层 ISR group
+1. `channel` 仍是唯一业务复制单元
+2. 节点侧通过稳定的 `ChannelKey -> isr.GroupKey` 规则本地推导运行时 key
+3. 该推导规则必须在所有节点上一致且可重复
+4. 所有数据路径都必须先查询 `ChannelMeta`,再通过本地推导出的 `GroupKey` 定位到底层 ISR group
 
-这样才能避免不同节点对同一 channel 落到不同复制组。
+这样才能避免不同节点对同一 channel 落到不同复制组,同时保持 ISR 运行时对业务无感知。
 
 ### metadata 获取与失效模型
 
@@ -128,7 +132,7 @@ ApplyMeta(meta ChannelMeta)
    - 若 `meta.ChannelEpoch < local.ChannelEpoch`,返回 `ErrStaleMeta`
    - 若 `meta.ChannelEpoch == local.ChannelEpoch` 且 `meta.LeaderEpoch < local.LeaderEpoch`,返回 `ErrStaleMeta`
    - 若 `(meta.ChannelEpoch, meta.LeaderEpoch)` 与本地完全相等:
-     - 若关键字段 `GroupID/Status/Replicas/ISR/Leader/MinISR/Features` 全相等,视为幂等重放
+     - 若关键字段 `Status/Replicas/ISR/Leader/MinISR/Features` 全相等,视为幂等重放
      - 否则返回 `ErrConflictingMeta`
    - 若 `meta.ChannelEpoch > local.ChannelEpoch`,整体替换本地缓存
    - 若 `meta.ChannelEpoch == local.ChannelEpoch` 且 `meta.LeaderEpoch > local.LeaderEpoch`,按新 leader 视图替换缓存
@@ -589,7 +593,7 @@ internal/usecase/channelmeta
 进入条件:
 
 - `pkg/isr` 与 `pkg/multiisr` 已提供可用的 append/fetch/status 基础能力
-- `ChannelMeta` / `GroupID` / epoch 契约已固定
+- `ChannelMeta` / `ChannelKey -> GroupKey` 推导 / epoch 契约已固定
 
 完成条件:
 
