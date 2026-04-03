@@ -3,23 +3,23 @@ package gateway
 import (
 	"errors"
 
-	"github.com/WuKongIM/WuKongIM/pkg/msgstore/channelcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 )
 
 func mapSendErrorReason(err error) (wkframe.ReasonCode, bool) {
 	switch {
-	case errors.Is(err, channelcluster.ErrChannelNotFound):
+	case errors.Is(err, channellog.ErrChannelNotFound):
 		return wkframe.ReasonChannelNotExist, true
-	case errors.Is(err, channelcluster.ErrChannelDeleting):
+	case errors.Is(err, channellog.ErrChannelDeleting):
 		return wkframe.ReasonChannelDeleting, true
-	case errors.Is(err, channelcluster.ErrProtocolUpgradeRequired):
+	case errors.Is(err, channellog.ErrProtocolUpgradeRequired):
 		return wkframe.ReasonProtocolUpgradeRequired, true
-	case errors.Is(err, channelcluster.ErrIdempotencyConflict):
+	case errors.Is(err, channellog.ErrIdempotencyConflict):
 		return wkframe.ReasonIdempotencyConflict, true
-	case errors.Is(err, channelcluster.ErrMessageSeqExhausted):
+	case errors.Is(err, channellog.ErrMessageSeqExhausted):
 		return wkframe.ReasonMessageSeqExhausted, true
-	case errors.Is(err, channelcluster.ErrStaleMeta), errors.Is(err, channelcluster.ErrNotLeader):
+	case errors.Is(err, channellog.ErrStaleMeta), errors.Is(err, channellog.ErrNotLeader):
 		return wkframe.ReasonNodeNotMatch, true
 	default:
 		return 0, false

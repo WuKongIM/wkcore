@@ -1,4 +1,4 @@
-package channelcluster
+package channellog
 
 import (
 	"errors"

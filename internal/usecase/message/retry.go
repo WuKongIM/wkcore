@@ -4,24 +4,24 @@ import (
 	"context"
 	"errors"
 
-	"github.com/WuKongIM/WuKongIM/pkg/msgstore/channelcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 )
 
-func sendWithMetaRefreshRetry(ctx context.Context, cluster ChannelCluster, refresher MetaRefresher, req channelcluster.SendRequest) (channelcluster.SendResult, error) {
+func sendWithMetaRefreshRetry(ctx context.Context, cluster ChannelCluster, refresher MetaRefresher, req channellog.SendRequest) (channellog.SendResult, error) {
 	result, err := cluster.Send(ctx, req)
 	if !shouldRefreshAndRetry(err) || refresher == nil {
 		return result, err
 	}
 
-	meta, err := refresher.RefreshChannelMeta(ctx, channelcluster.ChannelKey{
+	meta, err := refresher.RefreshChannelMeta(ctx, channellog.ChannelKey{
 		ChannelID:   req.ChannelID,
 		ChannelType: req.ChannelType,
 	})
 	if err != nil {
-		return channelcluster.SendResult{}, err
+		return channellog.SendResult{}, err
 	}
 	if err := cluster.ApplyMeta(meta); err != nil {
-		return channelcluster.SendResult{}, err
+		return channellog.SendResult{}, err
 	}
 
 	req.ExpectedChannelEpoch = meta.ChannelEpoch
@@ -30,5 +30,5 @@ func sendWithMetaRefreshRetry(ctx context.Context, cluster ChannelCluster, refre
 }
 
 func shouldRefreshAndRetry(err error) bool {
-	return errors.Is(err, channelcluster.ErrStaleMeta) || errors.Is(err, channelcluster.ErrNotLeader)
+	return errors.Is(err, channellog.ErrStaleMeta) || errors.Is(err, channellog.ErrNotLeader)
 }

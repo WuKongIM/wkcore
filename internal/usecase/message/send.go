@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/msgstore/channelcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 )
 
 func (a *App) Send(cmd SendCommand) (SendResult, error) {
@@ -25,7 +25,7 @@ func (a *App) Send(cmd SendCommand) (SendResult, error) {
 }
 
 func (a *App) sendDurablePerson(ctx context.Context, cmd SendCommand) (SendResult, error) {
-	result, err := sendWithMetaRefreshRetry(ctx, a.cluster, a.refresher, channelcluster.SendRequest{
+	result, err := sendWithMetaRefreshRetry(ctx, a.cluster, a.refresher, channellog.SendRequest{
 		ChannelID:             cmd.ChannelID,
 		ChannelType:           cmd.ChannelType,
 		SenderUID:             cmd.SenderUID,

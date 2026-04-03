@@ -7,9 +7,9 @@ import (
 
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
-	"github.com/WuKongIM/WuKongIM/pkg/msgstore/channelcluster"
 	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -77,7 +77,7 @@ func TestGatewayWKProtoHandlerRoutesLocalPersonSend(t *testing.T) {
 
 func TestGatewayVersion5ClientGetsUpgradeRequiredOnSend(t *testing.T) {
 	handler := New(Options{
-		Messages: &fakeMessageUsecase{sendErr: channelcluster.ErrProtocolUpgradeRequired},
+		Messages: &fakeMessageUsecase{sendErr: channellog.ErrProtocolUpgradeRequired},
 	})
 	gw, err := coregateway.New(coregateway.Options{
 		Handler: handler,

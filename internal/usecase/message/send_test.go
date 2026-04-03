@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	"github.com/WuKongIM/WuKongIM/pkg/msgstore/channelcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 	"github.com/stretchr/testify/require"
 )
@@ -154,12 +154,12 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	delivery := &recordingDelivery{}
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{err: channelcluster.ErrStaleMeta},
-			{result: channelcluster.SendResult{MessageID: 201, MessageSeq: 7}},
+			{err: channellog.ErrStaleMeta},
+			{result: channellog.SendResult{MessageID: 201, MessageSeq: 7}},
 		},
 	}
 	refresher := &fakeMetaRefresher{
-		metas: []channelcluster.ChannelMeta{{
+		metas: []channellog.ChannelMeta{{
 			ChannelID:    "u2",
 			ChannelType:  wkframe.ChannelTypePerson,
 			ChannelEpoch: 11,
@@ -207,7 +207,7 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 func TestSendClusterSuccessDoesNotRequireLocalRecipient(t *testing.T) {
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{result: channelcluster.SendResult{MessageID: 301, MessageSeq: 15}},
+			{result: channellog.SendResult{MessageID: 301, MessageSeq: 15}},
 		},
 	}
 	delivery := &recordingDelivery{}
@@ -238,7 +238,7 @@ func TestSendClusterSuccessDoesNotRequireLocalRecipient(t *testing.T) {
 func TestSendReturnsProtocolUpgradeRequiredWhenClusterRejectsLegacyClient(t *testing.T) {
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{err: channelcluster.ErrProtocolUpgradeRequired},
+			{err: channellog.ErrProtocolUpgradeRequired},
 		},
 	}
 	delivery := &recordingDelivery{}
@@ -265,7 +265,7 @@ func TestSendReturnsProtocolUpgradeRequiredWhenClusterRejectsLegacyClient(t *tes
 		ProtocolVersion: wkframe.LegacyMessageSeqVersion,
 	})
 
-	require.ErrorIs(t, err, channelcluster.ErrProtocolUpgradeRequired)
+	require.ErrorIs(t, err, channellog.ErrProtocolUpgradeRequired)
 	require.Equal(t, SendResult{}, result)
 	require.Empty(t, delivery.calls)
 }
@@ -410,26 +410,26 @@ func (*fakeChannelStore) GetChannel(context.Context, string, int64) (metadb.Chan
 }
 
 type fakeChannelClusterSendReply struct {
-	result channelcluster.SendResult
+	result channellog.SendResult
 	err    error
 }
 
 type fakeChannelCluster struct {
-	appliedMetas []channelcluster.ChannelMeta
-	sendRequests []channelcluster.SendRequest
+	appliedMetas []channellog.ChannelMeta
+	sendRequests []channellog.SendRequest
 	sendReplies  []fakeChannelClusterSendReply
 	applyErr     error
 }
 
-func (f *fakeChannelCluster) ApplyMeta(meta channelcluster.ChannelMeta) error {
+func (f *fakeChannelCluster) ApplyMeta(meta channellog.ChannelMeta) error {
 	f.appliedMetas = append(f.appliedMetas, meta)
 	return f.applyErr
 }
 
-func (f *fakeChannelCluster) Send(_ context.Context, req channelcluster.SendRequest) (channelcluster.SendResult, error) {
+func (f *fakeChannelCluster) Send(_ context.Context, req channellog.SendRequest) (channellog.SendResult, error) {
 	f.sendRequests = append(f.sendRequests, req)
 	if len(f.sendReplies) == 0 {
-		return channelcluster.SendResult{}, nil
+		return channellog.SendResult{}, nil
 	}
 	reply := f.sendReplies[0]
 	f.sendReplies = f.sendReplies[1:]
@@ -437,22 +437,22 @@ func (f *fakeChannelCluster) Send(_ context.Context, req channelcluster.SendRequ
 }
 
 type fakeMetaRefresher struct {
-	keys  []channelcluster.ChannelKey
-	metas []channelcluster.ChannelMeta
+	keys  []channellog.ChannelKey
+	metas []channellog.ChannelMeta
 	errs  []error
 }
 
-func (f *fakeMetaRefresher) RefreshChannelMeta(_ context.Context, key channelcluster.ChannelKey) (channelcluster.ChannelMeta, error) {
+func (f *fakeMetaRefresher) RefreshChannelMeta(_ context.Context, key channellog.ChannelKey) (channellog.ChannelMeta, error) {
 	f.keys = append(f.keys, key)
 	if len(f.errs) > 0 {
 		err := f.errs[0]
 		f.errs = f.errs[1:]
 		if err != nil {
-			return channelcluster.ChannelMeta{}, err
+			return channellog.ChannelMeta{}, err
 		}
 	}
 	if len(f.metas) == 0 {
-		return channelcluster.ChannelMeta{}, nil
+		return channellog.ChannelMeta{}, nil
 	}
 	meta := f.metas[0]
 	f.metas = f.metas[1:]
