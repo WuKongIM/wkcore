@@ -99,6 +99,16 @@ func (c *cluster) Send(ctx context.Context, req SendRequest) (SendResult, error)
 	if meta.Features.MessageSeqFormat == MessageSeqFormatLegacyU32 && messageSeq > maxLegacyMessageSeq {
 		return SendResult{}, ErrMessageSeqExhausted
 	}
+	currentMeta, err := c.metaForKey(key)
+	if err != nil {
+		return SendResult{}, err
+	}
+	switch currentMeta.Status {
+	case ChannelStatusDeleting:
+		return SendResult{}, ErrChannelDeleting
+	case ChannelStatusDeleted:
+		return SendResult{}, ErrChannelNotFound
+	}
 
 	if req.ClientMsgNo != "" {
 		if err := store.PutIdempotency(IdempotencyKey{
