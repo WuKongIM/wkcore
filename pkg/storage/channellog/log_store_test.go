@@ -32,11 +32,25 @@ func TestDBReadScopesByGroupKeyAndBudget(t *testing.T) {
 	mustAppendPayloads(t, first, []string{"one", "two"})
 	mustAppendPayloads(t, second, []string{"zzz"})
 
-	records, err := db.Read(channelGroupKey(first.key), 0, 10, len("one")+16)
+	records, err := db.Read(channelGroupKey(first.key), 0, 10, len("one"))
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
 	if len(records) != 1 {
 		t.Fatalf("len(records) = %d, want 1", len(records))
+	}
+}
+
+func TestDBReadBudgetCountsPayloadBytesOnly(t *testing.T) {
+	db := openTestDB(t)
+	store := db.ForChannel(ChannelKey{ChannelID: "c1", ChannelType: 1})
+	mustAppendPayloads(t, store, []string{"one", "two"})
+
+	records, err := db.Read(channelGroupKey(store.key), 0, 10, len("one")+len("two"))
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("len(records) = %d, want 2", len(records))
 	}
 }

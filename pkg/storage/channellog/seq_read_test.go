@@ -43,6 +43,20 @@ func TestLoadNextRangeMsgsCapsByCommittedHW(t *testing.T) {
 	}
 }
 
+func TestLoadNextRangeMsgsTreatsZeroLimitAsUnlimited(t *testing.T) {
+	store := openTestStore(t, ChannelKey{ChannelID: "c1", ChannelType: 1})
+	mustAppendStoredMessages(t, store, "one", "two", "three")
+	mustStoreCheckpoint(t, store, isr.Checkpoint{Epoch: 1, HW: 3})
+
+	msgs, err := store.LoadNextRangeMsgs(1, 0, 0)
+	if err != nil {
+		t.Fatalf("LoadNextRangeMsgs() error = %v", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("len(msgs) = %d, want 3", len(msgs))
+	}
+}
+
 func TestLoadPrevRangeMsgsMatchesLegacyWindowSemantics(t *testing.T) {
 	store := openTestStore(t, ChannelKey{ChannelID: "c1", ChannelType: 1})
 	mustAppendStoredMessages(t, store, "one", "two", "three", "four", "five")
@@ -57,6 +71,37 @@ func TestLoadPrevRangeMsgsMatchesLegacyWindowSemantics(t *testing.T) {
 	}
 	if string(msgs[0].Payload) != "four" || string(msgs[1].Payload) != "five" {
 		t.Fatalf("payloads = [%q %q], want [four five]", msgs[0].Payload, msgs[1].Payload)
+	}
+}
+
+func TestLoadPrevRangeMsgsReturnsEmptyForCollapsedWindow(t *testing.T) {
+	store := openTestStore(t, ChannelKey{ChannelID: "c1", ChannelType: 1})
+	mustAppendStoredMessages(t, store, "one", "two", "three")
+	mustStoreCheckpoint(t, store, isr.Checkpoint{Epoch: 1, HW: 3})
+
+	msgs, err := store.LoadPrevRangeMsgs(3, 3, 10)
+	if err != nil {
+		t.Fatalf("LoadPrevRangeMsgs() error = %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("len(msgs) = %d, want 0", len(msgs))
+	}
+}
+
+func TestLoadPrevRangeMsgsTreatsZeroLimitAsUnlimited(t *testing.T) {
+	store := openTestStore(t, ChannelKey{ChannelID: "c1", ChannelType: 1})
+	mustAppendStoredMessages(t, store, "one", "two", "three", "four")
+	mustStoreCheckpoint(t, store, isr.Checkpoint{Epoch: 1, HW: 4})
+
+	msgs, err := store.LoadPrevRangeMsgs(4, 0, 0)
+	if err != nil {
+		t.Fatalf("LoadPrevRangeMsgs() error = %v", err)
+	}
+	if len(msgs) != 4 {
+		t.Fatalf("len(msgs) = %d, want 4", len(msgs))
+	}
+	if msgs[0].MessageSeq != 1 || msgs[3].MessageSeq != 4 {
+		t.Fatalf("seqs = %+v", msgs)
 	}
 }
 

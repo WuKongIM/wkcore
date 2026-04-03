@@ -53,7 +53,7 @@ func (f *fakeMessageLog) Read(_ isr.GroupKey, fromOffset uint64, limit int, maxB
 	out := make([]LogRecord, 0, limit)
 	for i := fromOffset; i < uint64(len(f.records)) && len(out) < limit; i++ {
 		record := f.records[i]
-		size := len(record.Payload)
+		size := logRecordReadSize(record.Payload)
 		if len(out) > 0 && total+size > maxBytes {
 			break
 		}

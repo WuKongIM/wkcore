@@ -213,6 +213,27 @@ func TestStoreBridgesReplicaInstallSnapshotPersistsPayloadAndOffsets(t *testing.
 	}
 }
 
+func TestISRLogStoreBridgeLEOReturnsLastKnownOffsetAfterClose(t *testing.T) {
+	db := openTestDB(t)
+	key := ChannelKey{ChannelID: "c1", ChannelType: 1}
+	store := db.ForChannel(key)
+	if _, err := store.appendPayloads([][]byte{[]byte("one"), []byte("two")}); err != nil {
+		t.Fatalf("appendPayloads() error = %v", err)
+	}
+
+	logStore := store.isrLogStore()
+	if got := logStore.LEO(); got != 2 {
+		t.Fatalf("LEO() = %d, want 2", got)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if got := logStore.LEO(); got != 2 {
+		t.Fatalf("LEO() after Close = %d, want 2", got)
+	}
+}
+
 func newStoreReplica(t testing.TB, store *Store, localNode isr.NodeID) isr.Replica {
 	t.Helper()
 

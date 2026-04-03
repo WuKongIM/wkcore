@@ -3,6 +3,7 @@ package channellog
 import (
 	"bytes"
 	"context"
+	"sync"
 
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 	"github.com/cockroachdb/pebble/v2"
@@ -10,6 +11,8 @@ import (
 
 type isrLogStoreBridge struct {
 	store *Store
+	mu    sync.Mutex
+	leo   uint64
 }
 
 type isrCheckpointStoreBridge struct {
@@ -25,7 +28,11 @@ type isrSnapshotApplierBridge struct {
 }
 
 func (s *Store) isrLogStore() isr.LogStore {
-	return &isrLogStoreBridge{store: s}
+	bridge := &isrLogStoreBridge{store: s}
+	if leo, err := s.leo(); err == nil {
+		bridge.leo = leo
+	}
+	return bridge
 }
 
 func (s *Store) isrCheckpointStore() isr.CheckpointStore {
@@ -41,11 +48,14 @@ func (s *Store) isrSnapshotApplier() isr.SnapshotApplier {
 }
 
 func (b *isrLogStoreBridge) LEO() uint64 {
-	leo, err := b.store.leo()
-	if err != nil {
-		panic(err)
+	// isr.LogStore exposes LEO without an error return. Keep using the last
+	// successful value rather than crashing the process if the store becomes
+	// unavailable later.
+	if leo, err := b.store.leo(); err == nil {
+		b.setLEO(leo)
+		return leo
 	}
-	return leo
+	return b.cachedLEO()
 }
 
 func (b *isrLogStoreBridge) Append(records []isr.Record) (uint64, error) {
@@ -53,7 +63,12 @@ func (b *isrLogStoreBridge) Append(records []isr.Record) (uint64, error) {
 	for _, record := range records {
 		payloads = append(payloads, append([]byte(nil), record.Payload...))
 	}
-	return b.store.appendPayloads(payloads)
+	base, err := b.store.appendPayloads(payloads)
+	if err != nil {
+		return 0, err
+	}
+	b.setLEO(base + uint64(len(records)))
+	return base, nil
 }
 
 func (b *isrLogStoreBridge) Read(from uint64, maxBytes int) ([]isr.Record, error) {
@@ -98,7 +113,15 @@ func (b *isrLogStoreBridge) Read(from uint64, maxBytes int) ([]isr.Record, error
 }
 
 func (b *isrLogStoreBridge) Truncate(to uint64) error {
-	return b.store.truncateOffsets(to)
+	if err := b.store.truncateOffsets(to); err != nil {
+		return err
+	}
+	if leo, err := b.store.leo(); err == nil {
+		b.setLEO(leo)
+	} else {
+		b.setLEO(to)
+	}
+	return nil
 }
 
 func (b *isrLogStoreBridge) Sync() error {
@@ -143,3 +166,15 @@ var _ isr.LogStore = (*isrLogStoreBridge)(nil)
 var _ isr.CheckpointStore = (*isrCheckpointStoreBridge)(nil)
 var _ isr.EpochHistoryStore = (*isrEpochHistoryStoreBridge)(nil)
 var _ isr.SnapshotApplier = (*isrSnapshotApplierBridge)(nil)
+
+func (b *isrLogStoreBridge) cachedLEO() uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.leo
+}
+
+func (b *isrLogStoreBridge) setLEO(leo uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.leo = leo
+}

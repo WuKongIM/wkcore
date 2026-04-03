@@ -36,7 +36,7 @@ func (s *Store) LoadNextRangeMsgs(startSeq, endSeq uint64, limit int) ([]Channel
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
-	if limit <= 0 {
+	if limit < 0 {
 		return nil, ErrInvalidArgument
 	}
 	if startSeq == 0 {
@@ -59,9 +59,9 @@ func (s *Store) LoadNextRangeMsgs(startSeq, endSeq uint64, limit int) ([]Channel
 		return nil, nil
 	}
 
-	count := int(maxSeq-startSeq) + 1
-	if count > limit {
-		count = limit
+	count := cappedReadCount(maxSeq-startSeq+1, limit)
+	if count == 0 {
+		return nil, nil
 	}
 	records, err := s.readOffsets(startSeq-1, count, math.MaxInt)
 	if err != nil {
@@ -87,7 +87,7 @@ func (s *Store) LoadPrevRangeMsgs(startSeq, endSeq uint64, limit int) ([]Channel
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
-	if startSeq == 0 || limit <= 0 {
+	if startSeq == 0 || limit < 0 {
 		return nil, ErrInvalidArgument
 	}
 	if endSeq != 0 && endSeq > startSeq {
@@ -105,23 +105,28 @@ func (s *Store) LoadPrevRangeMsgs(startSeq, endSeq uint64, limit int) ([]Channel
 		startSeq = hw
 	}
 
-	var minSeq uint64
 	maxSeq := startSeq
-	if endSeq == 0 {
-		if startSeq < uint64(limit) {
-			minSeq = 1
-		} else {
-			minSeq = startSeq - uint64(limit) + 1
-		}
-	} else if startSeq-endSeq > uint64(limit) {
-		minSeq = startSeq - uint64(limit) + 1
-	} else {
+	minSeq := uint64(1)
+	if endSeq != 0 {
 		minSeq = endSeq + 1
 	}
 
-	count := int(maxSeq-minSeq) + 1
-	if count > limit {
-		count = limit
+	if limit > 0 {
+		windowMin := uint64(1)
+		if startSeq >= uint64(limit) {
+			windowMin = startSeq - uint64(limit) + 1
+		}
+		if windowMin > minSeq {
+			minSeq = windowMin
+		}
+	}
+	if maxSeq < minSeq {
+		return nil, nil
+	}
+
+	count := cappedReadCount(maxSeq-minSeq+1, limit)
+	if count == 0 {
+		return nil, nil
 	}
 	return s.LoadNextRangeMsgs(minSeq, maxSeq, count)
 }
@@ -178,4 +183,19 @@ func decodeChannelMessage(record LogRecord) (ChannelMessage, error) {
 		ClientMsgNo: message.ClientMsgNo,
 		Payload:     append([]byte(nil), message.Payload...),
 	}, nil
+}
+
+func cappedReadCount(span uint64, limit int) int {
+	if span == 0 {
+		return 0
+	}
+
+	maxCount := int(span)
+	if span > uint64(math.MaxInt) {
+		maxCount = math.MaxInt
+	}
+	if limit == 0 || limit > maxCount {
+		return maxCount
+	}
+	return limit
 }

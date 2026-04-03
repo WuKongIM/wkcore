@@ -134,7 +134,7 @@ func (db *DB) readGroupOffsets(groupKey isr.GroupKey, fromOffset uint64, limit i
 			return nil, err
 		}
 		payload := append([]byte(nil), iter.Value()...)
-		size := len(payload) + 16
+		size := logRecordReadSize(payload)
 		if len(out) > 0 && total+size > maxBytes {
 			break
 		}
@@ -145,4 +145,8 @@ func (db *DB) readGroupOffsets(groupKey isr.GroupKey, fromOffset uint64, limit i
 		total += size
 	}
 	return out, nil
+}
+
+func logRecordReadSize(payload []byte) int {
+	return len(payload)
 }

@@ -18,7 +18,9 @@ func (db *DB) Close() error {
 	if db == nil || db.db == nil {
 		return nil
 	}
-	return db.db.Close()
+	pdb := db.db
+	db.db = nil
+	return pdb.Close()
 }
 
 func (db *DB) ForChannel(key ChannelKey) *Store {
