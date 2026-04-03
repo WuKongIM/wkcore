@@ -7,24 +7,24 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
-func openTestDB(t *testing.T) *DB {
-	t.Helper()
+func openTestDB(tb testing.TB) *DB {
+	tb.Helper()
 
-	db, err := Open(t.TempDir())
+	db, err := Open(tb.TempDir())
 	if err != nil {
-		t.Fatalf("Open() error = %v", err)
+		tb.Fatalf("Open() error = %v", err)
 	}
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		if err := db.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
+			tb.Fatalf("Close() error = %v", err)
 		}
 	})
 	return db
 }
 
-func openTestStore(t *testing.T, key ChannelKey) *Store {
-	t.Helper()
-	return openTestDB(t).ForChannel(key)
+func openTestStore(tb testing.TB, key ChannelKey) *Store {
+	tb.Helper()
+	return openTestDB(tb).ForChannel(key)
 }
 
 func mustAppendPayloads(t *testing.T, store *Store, payloads []string) {
