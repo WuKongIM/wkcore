@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
 )
 
 // Compile-time interface assertion.

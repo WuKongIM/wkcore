@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
 	"github.com/cockroachdb/pebble/v2"
 	"go.etcd.io/raft/v3/raftpb"
 )

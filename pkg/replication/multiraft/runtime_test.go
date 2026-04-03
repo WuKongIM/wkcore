@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
 )
 
 func TestNewValidatesRequiredOptions(t *testing.T) {

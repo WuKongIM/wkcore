@@ -1,6 +1,6 @@
 package wkcluster
 
-import "github.com/WuKongIM/WuKongIM/pkg/consensus/multiraft"
+import "github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
 
 type NodeInfo struct {
 	NodeID multiraft.NodeID

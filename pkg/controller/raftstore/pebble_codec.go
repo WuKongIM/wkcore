@@ -3,7 +3,8 @@ package raftstore
 import "encoding/binary"
 
 // Key layout:
-//   [keyPrefixGroup (1B)] [groupID (8B)] [type (1B)] [optional: index (8B)]
+//
+//	[keyPrefixGroup (1B)] [groupID (8B)] [type (1B)] [optional: index (8B)]
 //
 // The prefix byte scopes all per-group keys so they sort together.
 // The type byte distinguishes metadata sub-keys (hard state, applied index,
