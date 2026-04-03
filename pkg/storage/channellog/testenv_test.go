@@ -29,14 +29,14 @@ func (f *fakeGroupHandle) Status() isr.ReplicaState {
 }
 
 type fakeRuntime struct {
-	groups map[uint64]*fakeGroupHandle
+	groups map[isr.GroupKey]*fakeGroupHandle
 }
 
-func (f *fakeRuntime) Group(groupID uint64) (GroupHandle, bool) {
+func (f *fakeRuntime) Group(groupKey isr.GroupKey) (GroupHandle, bool) {
 	if f == nil {
 		return nil, false
 	}
-	group, ok := f.groups[groupID]
+	group, ok := f.groups[groupKey]
 	return group, ok
 }
 
@@ -44,7 +44,7 @@ type fakeMessageLog struct {
 	records []LogRecord
 }
 
-func (f *fakeMessageLog) Read(_ uint64, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
+func (f *fakeMessageLog) Read(_ isr.GroupKey, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
 	if limit <= 0 || fromOffset >= uint64(len(f.records)) {
 		return nil, nil
 	}
@@ -128,9 +128,8 @@ func newTestCluster() *cluster {
 	return got.(*cluster)
 }
 
-func testMeta(channelID string, channelType uint8, groupID, channelEpoch, leaderEpoch uint64) ChannelMeta {
+func testMeta(channelID string, channelType uint8, channelEpoch, leaderEpoch uint64) ChannelMeta {
 	return ChannelMeta{
-		GroupID:      groupID,
 		ChannelID:    channelID,
 		ChannelType:  channelType,
 		ChannelEpoch: channelEpoch,

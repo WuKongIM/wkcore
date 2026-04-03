@@ -44,7 +44,7 @@ func (c *cluster) Status(key ChannelKey) (ChannelRuntimeStatus, error) {
 		return ChannelRuntimeStatus{}, ErrStaleMeta
 	}
 
-	group, ok := c.cfg.Runtime.Group(meta.GroupID)
+	group, ok := c.cfg.Runtime.Group(channelGroupKey(key))
 	if !ok {
 		return ChannelRuntimeStatus{}, ErrStaleMeta
 	}
@@ -86,8 +86,7 @@ func cloneMeta(meta ChannelMeta) ChannelMeta {
 }
 
 func metaEqual(a, b ChannelMeta) bool {
-	return a.GroupID == b.GroupID &&
-		a.ChannelID == b.ChannelID &&
+	return a.ChannelID == b.ChannelID &&
 		a.ChannelType == b.ChannelType &&
 		a.ChannelEpoch == b.ChannelEpoch &&
 		a.LeaderEpoch == b.LeaderEpoch &&

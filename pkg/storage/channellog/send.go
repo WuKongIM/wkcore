@@ -14,6 +14,7 @@ func (c *cluster) Send(ctx context.Context, req SendRequest) (SendResult, error)
 		ChannelID:   req.ChannelID,
 		ChannelType: req.ChannelType,
 	}
+	groupKey := channelGroupKey(key)
 
 	meta, err := c.metaForKey(key)
 	if err != nil {
@@ -32,7 +33,7 @@ func (c *cluster) Send(ctx context.Context, req SendRequest) (SendResult, error)
 		return SendResult{}, ErrProtocolUpgradeRequired
 	}
 
-	group, ok := c.cfg.Runtime.Group(meta.GroupID)
+	group, ok := c.cfg.Runtime.Group(groupKey)
 	if !ok {
 		return SendResult{}, ErrStaleMeta
 	}
@@ -60,7 +61,7 @@ func (c *cluster) Send(ctx context.Context, req SendRequest) (SendResult, error)
 			return SendResult{}, err
 		}
 		if ok {
-			match, err := c.idempotentPayloadMatches(meta.GroupID, entry.Offset, req.Payload)
+			match, err := c.idempotentPayloadMatches(groupKey, entry.Offset, req.Payload)
 			if err != nil {
 				return SendResult{}, err
 			}
@@ -144,8 +145,8 @@ func (c *cluster) metaForKey(key ChannelKey) (ChannelMeta, error) {
 	return meta, nil
 }
 
-func (c *cluster) idempotentPayloadMatches(groupID, offset uint64, payload []byte) (bool, error) {
-	records, err := c.cfg.Log.Read(groupID, offset, 1, len(payload)+1024)
+func (c *cluster) idempotentPayloadMatches(groupKey isr.GroupKey, offset uint64, payload []byte) (bool, error) {
+	records, err := c.cfg.Log.Read(groupKey, offset, 1, len(payload)+1024)
 	if err != nil {
 		return false, err
 	}

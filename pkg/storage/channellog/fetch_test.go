@@ -85,7 +85,7 @@ func newFetchEnv(t *testing.T) *fetchEnv {
 	}
 	group := &fakeGroupHandle{
 		state: isr.ReplicaState{
-			GroupID:        7,
+			GroupKey:       channelGroupKey(ChannelKey{ChannelID: "c1", ChannelType: 1}),
 			Role:           isr.RoleLeader,
 			Epoch:          9,
 			Leader:         1,
@@ -95,7 +95,9 @@ func newFetchEnv(t *testing.T) *fetchEnv {
 	}
 	got, err := New(Config{
 		Runtime: &fakeRuntime{
-			groups: map[uint64]*fakeGroupHandle{7: group},
+			groups: map[isr.GroupKey]*fakeGroupHandle{
+				channelGroupKey(ChannelKey{ChannelID: "c1", ChannelType: 1}): group,
+			},
 		},
 		Log:        log,
 		States:     &fakeStateStoreFactory{},
@@ -105,7 +107,7 @@ func newFetchEnv(t *testing.T) *fetchEnv {
 		t.Fatalf("New() error = %v", err)
 	}
 	c := got.(*cluster)
-	meta := testMeta("c1", 1, 7, 3, 9)
+	meta := testMeta("c1", 1, 3, 9)
 	if err := c.ApplyMeta(meta); err != nil {
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}

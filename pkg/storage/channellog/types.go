@@ -36,7 +36,6 @@ type ChannelKey struct {
 }
 
 type ChannelMeta struct {
-	GroupID      uint64
 	ChannelID    string
 	ChannelType  uint8
 	ChannelEpoch uint64
@@ -116,7 +115,7 @@ type LogRecord struct {
 }
 
 type MessageLog interface {
-	Read(groupID uint64, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error)
+	Read(groupKey isr.GroupKey, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error)
 }
 
 type ChannelStateStore interface {
@@ -135,7 +134,7 @@ type MessageIDGenerator interface {
 }
 
 type Runtime interface {
-	Group(groupID uint64) (GroupHandle, bool)
+	Group(groupKey isr.GroupKey) (GroupHandle, bool)
 }
 
 type GroupHandle interface {

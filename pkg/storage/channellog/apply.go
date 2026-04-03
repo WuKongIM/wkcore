@@ -19,26 +19,26 @@ type committingStateStore interface {
 }
 
 type checkpointBridge struct {
-	base    isr.CheckpointStore
-	log     MessageLog
-	key     ChannelKey
-	state   ChannelStateStore
-	groupID uint64
-	prevHW  uint64
+	base     isr.CheckpointStore
+	log      MessageLog
+	key      ChannelKey
+	state    ChannelStateStore
+	groupKey isr.GroupKey
+	prevHW   uint64
 }
 
-func newCheckpointBridge(base isr.CheckpointStore, log MessageLog, key ChannelKey, state ChannelStateStore, groupID uint64) (*checkpointBridge, error) {
+func newCheckpointBridge(base isr.CheckpointStore, log MessageLog, key ChannelKey, state ChannelStateStore, groupKey isr.GroupKey) (*checkpointBridge, error) {
 	checkpoint, err := base.Load()
 	if err != nil && !errors.Is(err, isr.ErrEmptyState) {
 		return nil, err
 	}
 	return &checkpointBridge{
-		base:    base,
-		log:     log,
-		key:     key,
-		state:   state,
-		groupID: groupID,
-		prevHW:  checkpoint.HW,
+		base:     base,
+		log:      log,
+		key:      key,
+		state:    state,
+		groupKey: groupKey,
+		prevHW:   checkpoint.HW,
 	}, nil
 }
 
@@ -76,7 +76,7 @@ func (b *checkpointBridge) readCommittedBatch(nextHW uint64) ([]appliedMessage, 
 		return nil, nil
 	}
 
-	records, err := b.log.Read(b.groupID, b.prevHW, int(nextHW-b.prevHW), math.MaxInt)
+	records, err := b.log.Read(b.groupKey, b.prevHW, int(nextHW-b.prevHW), math.MaxInt)
 	if err != nil {
 		return nil, err
 	}
