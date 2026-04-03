@@ -34,14 +34,32 @@ func (f *fakeRuntime) Group(groupID uint64) (GroupHandle, bool) {
 	return group, ok
 }
 
-type fakeMessageLog struct{}
+type fakeMessageLog struct {
+	records []LogRecord
+}
 
-func (f *fakeMessageLog) Read(uint64, uint64, int, int) ([]LogRecord, error) {
-	return nil, nil
+func (f *fakeMessageLog) Read(_ uint64, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
+	if limit <= 0 || fromOffset >= uint64(len(f.records)) {
+		return nil, nil
+	}
+
+	total := 0
+	out := make([]LogRecord, 0, limit)
+	for i := fromOffset; i < uint64(len(f.records)) && len(out) < limit; i++ {
+		record := f.records[i]
+		size := len(record.Payload)
+		if len(out) > 0 && total+size > maxBytes {
+			break
+		}
+		out = append(out, record)
+		total += size
+	}
+	return out, nil
 }
 
 type fakeStateStore struct {
-	idempotency map[IdempotencyKey]IdempotencyEntry
+	idempotency   map[IdempotencyKey]IdempotencyEntry
+	restoreCalled bool
 }
 
 func (f *fakeStateStore) PutIdempotency(key IdempotencyKey, entry IdempotencyEntry) error {
@@ -62,6 +80,7 @@ func (f *fakeStateStore) Snapshot(uint64) ([]byte, error) {
 }
 
 func (f *fakeStateStore) Restore([]byte) error {
+	f.restoreCalled = true
 	return nil
 }
 
