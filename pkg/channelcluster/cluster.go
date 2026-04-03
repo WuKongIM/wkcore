@@ -1,7 +1,6 @@
 package channelcluster
 
 import (
-	"context"
 	"sync"
 	"time"
 )
@@ -33,8 +32,4 @@ func New(cfg Config) (Cluster, error) {
 		cfg:   cfg,
 		metas: make(map[ChannelKey]ChannelMeta),
 	}, nil
-}
-
-func (c *cluster) Fetch(context.Context, FetchRequest) (FetchResult, error) {
-	return FetchResult{}, errNotImplemented
 }
