@@ -7,13 +7,13 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
-	"github.com/WuKongIM/WuKongIM/pkg/wktransport"
+	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
 	"go.etcd.io/raft/v3/raftpb"
 )
 
 func TestRaftTransport_Send(t *testing.T) {
 	// Start a server that captures raft messages
-	srv := wktransport.NewServer()
+	srv := nodetransport.NewServer()
 	var receivedBody []byte
 	done := make(chan struct{})
 	srv.Handle(msgTypeRaft, func(_ net.Conn, body []byte) {
@@ -26,9 +26,9 @@ func TestRaftTransport_Send(t *testing.T) {
 	defer srv.Stop()
 
 	d := NewStaticDiscovery([]NodeConfig{{NodeID: 2, Addr: srv.Listener().Addr().String()}})
-	pool := wktransport.NewPool(d, 2, 5*time.Second)
+	pool := nodetransport.NewPool(d, 2, 5*time.Second)
 	defer pool.Close()
-	client := wktransport.NewClient(pool)
+	client := nodetransport.NewClient(pool)
 	defer client.Stop()
 
 	rt := &raftTransport{client: client}
@@ -66,9 +66,9 @@ func TestRaftTransport_Send(t *testing.T) {
 
 func TestRaftTransport_CtxCancel(t *testing.T) {
 	d := NewStaticDiscovery([]NodeConfig{})
-	pool := wktransport.NewPool(d, 2, 5*time.Second)
+	pool := nodetransport.NewPool(d, 2, 5*time.Second)
 	defer pool.Close()
-	client := wktransport.NewClient(pool)
+	client := nodetransport.NewClient(pool)
 	defer client.Stop()
 
 	rt := &raftTransport{client: client}

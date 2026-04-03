@@ -1,13 +1,13 @@
-package wktransport
+package nodetransport
 
 import "errors"
 
 var (
-	ErrStopped        = errors.New("wktransport: stopped")
-	ErrTimeout        = errors.New("wktransport: request timeout")
-	ErrNodeNotFound   = errors.New("wktransport: node not found")
-	ErrMsgTooLarge    = errors.New("wktransport: message too large")
-	ErrInvalidMsgType = errors.New("wktransport: invalid message type 0")
+	ErrStopped        = errors.New("nodetransport: stopped")
+	ErrTimeout        = errors.New("nodetransport: request timeout")
+	ErrNodeNotFound   = errors.New("nodetransport: node not found")
+	ErrMsgTooLarge    = errors.New("nodetransport: message too large")
+	ErrInvalidMsgType = errors.New("nodetransport: invalid message type 0")
 )
 
 const (

@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// Raft message types used when registering with wktransport.Server.
+// Raft message types used when registering with nodetransport.Server.
 const (
 	msgTypeRaft uint8 = 1
 )

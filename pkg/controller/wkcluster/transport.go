@@ -4,12 +4,12 @@ import (
 	"context"
 
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
-	"github.com/WuKongIM/WuKongIM/pkg/wktransport"
+	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
 )
 
-// raftTransport adapts wktransport.Client to multiraft.Transport.
+// raftTransport adapts nodetransport.Client to multiraft.Transport.
 type raftTransport struct {
-	client *wktransport.Client
+	client *nodetransport.Client
 }
 
 func (t *raftTransport) Send(ctx context.Context, batch []multiraft.Envelope) error {

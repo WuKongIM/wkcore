@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/wktransport"
+	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
 )
 
 func TestStaticDiscovery_Resolve(t *testing.T) {
@@ -22,8 +22,8 @@ func TestStaticDiscovery_Resolve(t *testing.T) {
 	}
 
 	_, err = d.Resolve(99)
-	if !errors.Is(err, wktransport.ErrNodeNotFound) {
-		t.Fatalf("expected wktransport.ErrNodeNotFound, got: %v", err)
+	if !errors.Is(err, nodetransport.ErrNodeNotFound) {
+		t.Fatalf("expected nodetransport.ErrNodeNotFound, got: %v", err)
 	}
 }
 

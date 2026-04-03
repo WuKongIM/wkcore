@@ -1,4 +1,4 @@
-package wktransport
+package nodetransport
 
 import (
 	"context"
@@ -34,7 +34,7 @@ func NewServer() *Server {
 // Panics if msgType is 0, 0xFE, or 0xFF (reserved).
 func (s *Server) Handle(msgType uint8, h MessageHandler) {
 	if msgType == 0 || msgType == MsgTypeRPCRequest || msgType == MsgTypeRPCResponse {
-		panic("wktransport: reserved message type")
+		panic("nodetransport: reserved message type")
 	}
 	s.mu.Lock()
 	s.handlers[msgType] = h
@@ -191,7 +191,7 @@ func encodeRPCResponse(requestID uint64, errCode uint8, data []byte) []byte {
 // decodeRPCResponse decodes [requestID:8][errCode:1][data:N].
 func decodeRPCResponse(body []byte) (requestID uint64, errCode uint8, data []byte, err error) {
 	if len(body) < 9 {
-		return 0, 0, nil, fmt.Errorf("wktransport: rpc response body too short: %d", len(body))
+		return 0, 0, nil, fmt.Errorf("nodetransport: rpc response body too short: %d", len(body))
 	}
 	requestID = binary.BigEndian.Uint64(body[0:8])
 	errCode = body[8]

@@ -1,4 +1,4 @@
-package wktransport
+package nodetransport
 
 import (
 	"context"
@@ -157,7 +157,7 @@ func (c *Client) readLoop(key uint64, conn net.Conn) {
 			ch := v.(chan rpcResponse)
 			var resp rpcResponse
 			if errCode != 0 {
-				resp.err = fmt.Errorf("wktransport: remote handler error: %s", data)
+				resp.err = fmt.Errorf("nodetransport: remote handler error: %s", data)
 				resp.body = data
 			} else {
 				resp.body = data

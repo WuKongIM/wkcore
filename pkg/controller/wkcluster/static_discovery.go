@@ -1,6 +1,6 @@
 package wkcluster
 
-import "github.com/WuKongIM/WuKongIM/pkg/wktransport"
+import "github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
 
 type StaticDiscovery struct {
 	nodes map[uint64]NodeInfo
@@ -25,7 +25,7 @@ func (s *StaticDiscovery) GetNodes() []NodeInfo {
 func (s *StaticDiscovery) Resolve(nodeID uint64) (string, error) {
 	n, ok := s.nodes[nodeID]
 	if !ok {
-		return "", wktransport.ErrNodeNotFound
+		return "", nodetransport.ErrNodeNotFound
 	}
 	return n.Addr, nil
 }

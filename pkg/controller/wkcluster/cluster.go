@@ -9,17 +9,17 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
-	"github.com/WuKongIM/WuKongIM/pkg/wktransport"
+	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
 	raft "go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 )
 
 type Cluster struct {
 	cfg        Config
-	server     *wktransport.Server
-	raftPool   *wktransport.Pool
-	raftClient *wktransport.Client
-	fwdClient  *wktransport.Client
+	server     *nodetransport.Server
+	raftPool   *nodetransport.Pool
+	raftClient *nodetransport.Client
+	fwdClient  *nodetransport.Client
 	runtime    *multiraft.Runtime
 	router     *Router
 	discovery  *StaticDiscovery
@@ -39,7 +39,7 @@ func (c *Cluster) Start() error {
 	c.discovery = NewStaticDiscovery(c.cfg.Nodes)
 
 	// 2. Server
-	c.server = wktransport.NewServer()
+	c.server = nodetransport.NewServer()
 	c.server.Handle(msgTypeRaft, c.handleRaftMessage)
 	c.server.HandleRPC(c.handleForwardRPC)
 	if err := c.server.Start(c.cfg.ListenAddr); err != nil {
@@ -47,9 +47,9 @@ func (c *Cluster) Start() error {
 	}
 
 	// 3. Pools + Clients
-	c.raftPool = wktransport.NewPool(c.discovery, c.cfg.PoolSize, c.cfg.DialTimeout)
-	c.raftClient = wktransport.NewClient(c.raftPool)
-	c.fwdClient = wktransport.NewClient(c.raftPool)
+	c.raftPool = nodetransport.NewPool(c.discovery, c.cfg.PoolSize, c.cfg.DialTimeout)
+	c.raftClient = nodetransport.NewClient(c.raftPool)
+	c.fwdClient = nodetransport.NewClient(c.raftPool)
 
 	// 4. Runtime
 	var err error
@@ -156,7 +156,7 @@ func (c *Cluster) handleRaftMessage(_ net.Conn, body []byte) {
 // Propose submits a command to the specified group, automatically handling leader forwarding.
 func (c *Cluster) Propose(ctx context.Context, groupID multiraft.GroupID, cmd []byte) error {
 	if c.stopped.Load() {
-		return wktransport.ErrStopped
+		return nodetransport.ErrStopped
 	}
 	const maxRetries = 3
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -205,9 +205,9 @@ func (c *Cluster) IsLocal(nodeID multiraft.NodeID) bool {
 	return c.router.IsLocal(nodeID)
 }
 
-// Server returns the underlying wktransport.Server, allowing business layer
+// Server returns the underlying nodetransport.Server, allowing business layer
 // to register additional handlers on the shared listener.
-func (c *Cluster) Server() *wktransport.Server {
+func (c *Cluster) Server() *nodetransport.Server {
 	return c.server
 }
 

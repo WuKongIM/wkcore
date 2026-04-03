@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
-	"github.com/WuKongIM/WuKongIM/pkg/wktransport"
+	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
 )
 
 func (c *Cluster) forwardToLeader(ctx context.Context, leaderID multiraft.NodeID, groupID multiraft.GroupID, cmd []byte) error {
@@ -24,7 +24,7 @@ func (c *Cluster) forwardToLeader(ctx context.Context, leaderID multiraft.NodeID
 	case errCodeNotLeader:
 		return ErrNotLeader
 	case errCodeTimeout:
-		return wktransport.ErrTimeout
+		return nodetransport.ErrTimeout
 	case errCodeNoGroup:
 		return ErrGroupNotFound
 	default:

@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/wktransport"
+	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
 )
 
 func TestForwardToLeader_RoundTrip(t *testing.T) {
 	// Server echoes the forward payload back with errCodeOK
-	srv := wktransport.NewServer()
+	srv := nodetransport.NewServer()
 	srv.HandleRPC(func(ctx context.Context, body []byte) ([]byte, error) {
 		groupID, cmd, err := decodeForwardPayload(body)
 		if err != nil {
@@ -25,9 +25,9 @@ func TestForwardToLeader_RoundTrip(t *testing.T) {
 	defer srv.Stop()
 
 	d := NewStaticDiscovery([]NodeConfig{{NodeID: 2, Addr: srv.Listener().Addr().String()}})
-	pool := wktransport.NewPool(d, 2, 5*time.Second)
+	pool := nodetransport.NewPool(d, 2, 5*time.Second)
 	defer pool.Close()
-	client := wktransport.NewClient(pool)
+	client := nodetransport.NewClient(pool)
 	defer client.Stop()
 
 	c := &Cluster{fwdClient: client}
@@ -42,7 +42,7 @@ func TestForwardToLeader_RoundTrip(t *testing.T) {
 }
 
 func TestForwardToLeader_NotLeader(t *testing.T) {
-	srv := wktransport.NewServer()
+	srv := nodetransport.NewServer()
 	srv.HandleRPC(func(ctx context.Context, body []byte) ([]byte, error) {
 		return encodeForwardResp(errCodeNotLeader, nil), nil
 	})
@@ -52,9 +52,9 @@ func TestForwardToLeader_NotLeader(t *testing.T) {
 	defer srv.Stop()
 
 	d := NewStaticDiscovery([]NodeConfig{{NodeID: 2, Addr: srv.Listener().Addr().String()}})
-	pool := wktransport.NewPool(d, 2, 5*time.Second)
+	pool := nodetransport.NewPool(d, 2, 5*time.Second)
 	defer pool.Close()
-	client := wktransport.NewClient(pool)
+	client := nodetransport.NewClient(pool)
 	defer client.Stop()
 
 	c := &Cluster{fwdClient: client}
