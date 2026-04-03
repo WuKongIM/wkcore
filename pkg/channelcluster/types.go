@@ -36,27 +36,28 @@ type ChannelKey struct {
 }
 
 type ChannelMeta struct {
-	GroupID       uint64
-	ChannelID     string
-	ChannelType   uint8
-	ChannelEpoch  uint64
-	LeaderEpoch   uint64
-	Replicas      []NodeID
-	ISR           []NodeID
-	Leader        NodeID
-	MinISR        int
-	Status        ChannelStatus
-	Features      ChannelFeatures
+	GroupID      uint64
+	ChannelID    string
+	ChannelType  uint8
+	ChannelEpoch uint64
+	LeaderEpoch  uint64
+	Replicas     []NodeID
+	ISR          []NodeID
+	Leader       NodeID
+	MinISR       int
+	Status       ChannelStatus
+	Features     ChannelFeatures
 }
 
 type SendRequest struct {
-	ChannelID            string
-	ChannelType          uint8
-	SenderUID            string
-	ClientMsgNo          string
-	Payload              []byte
-	ExpectedChannelEpoch uint64
-	ExpectedLeaderEpoch  uint64
+	ChannelID             string
+	ChannelType           uint8
+	SenderUID             string
+	ClientMsgNo           string
+	Payload               []byte
+	SupportsMessageSeqU64 bool
+	ExpectedChannelEpoch  uint64
+	ExpectedLeaderEpoch   uint64
 }
 
 type SendResult struct {

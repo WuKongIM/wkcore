@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
+	"github.com/WuKongIM/WuKongIM/pkg/channelcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/stretchr/testify/require"
 )
@@ -98,6 +99,75 @@ func TestSendMessageReturnsInternalServerErrorWhenUsecaseFails(t *testing.T) {
 
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 	require.JSONEq(t, `{"error":"boom"}`, rec.Body.String())
+}
+
+func TestSendMessageMapsSemanticErrorsToHTTPStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		body   string
+	}{
+		{
+			name:   "channel not found",
+			err:    channelcluster.ErrChannelNotFound,
+			status: http.StatusNotFound,
+			body:   `{"error":"channel not found"}`,
+		},
+		{
+			name:   "channel deleting",
+			err:    channelcluster.ErrChannelDeleting,
+			status: http.StatusConflict,
+			body:   `{"error":"channel deleting"}`,
+		},
+		{
+			name:   "protocol upgrade required",
+			err:    channelcluster.ErrProtocolUpgradeRequired,
+			status: http.StatusUpgradeRequired,
+			body:   `{"error":"protocol upgrade required"}`,
+		},
+		{
+			name:   "idempotency conflict",
+			err:    channelcluster.ErrIdempotencyConflict,
+			status: http.StatusConflict,
+			body:   `{"error":"idempotency conflict"}`,
+		},
+		{
+			name:   "message seq exhausted",
+			err:    channelcluster.ErrMessageSeqExhausted,
+			status: http.StatusConflict,
+			body:   `{"error":"message seq exhausted"}`,
+		},
+		{
+			name:   "stale meta",
+			err:    channelcluster.ErrStaleMeta,
+			status: http.StatusServiceUnavailable,
+			body:   `{"error":"retry required"}`,
+		},
+		{
+			name:   "not leader",
+			err:    channelcluster.ErrNotLeader,
+			status: http.StatusServiceUnavailable,
+			body:   `{"error":"retry required"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := New(Options{
+				Messages: &recordingMessageUsecase{err: tt.err},
+			})
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/messages/send", bytes.NewBufferString(`{"sender_uid":"u1","channel_id":"u2","channel_type":1,"payload":"aGk="}`))
+			req.Header.Set("Content-Type", "application/json")
+
+			srv.Engine().ServeHTTP(rec, req)
+
+			require.Equal(t, tt.status, rec.Code)
+			require.JSONEq(t, tt.body, rec.Body.String())
+		})
+	}
 }
 
 type recordingMessageUsecase struct {

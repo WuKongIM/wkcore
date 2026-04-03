@@ -28,6 +28,9 @@ func (c *cluster) Send(ctx context.Context, req SendRequest) (SendResult, error)
 	case ChannelStatusDeleted:
 		return SendResult{}, ErrChannelNotFound
 	}
+	if meta.Features.MessageSeqFormat == MessageSeqFormatU64 && !req.SupportsMessageSeqU64 {
+		return SendResult{}, ErrProtocolUpgradeRequired
+	}
 
 	group, ok := c.cfg.Runtime.Group(meta.GroupID)
 	if !ok {

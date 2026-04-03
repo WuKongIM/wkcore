@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
+	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/gin-gonic/gin"
 )
 
@@ -44,12 +45,17 @@ func (s *Server) handleSendMessage(c *gin.Context) {
 	}
 
 	result, err := s.messages.Send(message.SendCommand{
-		SenderUID:   req.SenderUID,
-		ChannelID:   req.ChannelID,
-		ChannelType: req.ChannelType,
-		Payload:     payload,
+		SenderUID:       req.SenderUID,
+		ChannelID:       req.ChannelID,
+		ChannelType:     req.ChannelType,
+		Payload:         payload,
+		ProtocolVersion: wkpacket.LatestVersion,
 	})
 	if err != nil {
+		if status, msg, ok := mapSendError(err); ok {
+			writeJSONError(c, status, msg)
+			return
+		}
 		writeJSONError(c, http.StatusInternalServerError, err.Error())
 		return
 	}

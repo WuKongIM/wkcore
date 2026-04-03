@@ -11,6 +11,7 @@ import (
 	gatewaysession "github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
+	"github.com/WuKongIM/WuKongIM/pkg/channelcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	"github.com/stretchr/testify/require"
@@ -120,6 +121,73 @@ func TestHandlerOnFrameSendMapsCommandAndWritesSendack(t *testing.T) {
 	require.Equal(t, "reply-1", write.meta.ReplyToken)
 }
 
+func TestHandlerOnFrameSendMapsChannelclusterErrorsToSendack(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		reason wkpacket.ReasonCode
+	}{
+		{
+			name:   "channel deleting",
+			err:    channelcluster.ErrChannelDeleting,
+			reason: wkpacket.ReasonChannelDeleting,
+		},
+		{
+			name:   "protocol upgrade required",
+			err:    channelcluster.ErrProtocolUpgradeRequired,
+			reason: wkpacket.ReasonProtocolUpgradeRequired,
+		},
+		{
+			name:   "idempotency conflict",
+			err:    channelcluster.ErrIdempotencyConflict,
+			reason: wkpacket.ReasonIdempotencyConflict,
+		},
+		{
+			name:   "message seq exhausted",
+			err:    channelcluster.ErrMessageSeqExhausted,
+			reason: wkpacket.ReasonMessageSeqExhausted,
+		},
+		{
+			name:   "stale meta",
+			err:    channelcluster.ErrStaleMeta,
+			reason: wkpacket.ReasonNodeNotMatch,
+		},
+		{
+			name:   "not leader",
+			err:    channelcluster.ErrNotLeader,
+			reason: wkpacket.ReasonNodeNotMatch,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sender := newOptionRecordingSession(1, "tcp")
+			sender.SetValue(coregateway.SessionValueUID, "u1")
+			handler := New(Options{
+				Messages: &fakeMessageUsecase{sendErr: tt.err},
+			})
+
+			ctx := &coregateway.Context{Session: sender, Listener: "tcp", ReplyToken: "reply-2"}
+			pkt := &wkpacket.SendPacket{
+				ChannelID:   "u2",
+				ChannelType: wkpacket.ChannelTypePerson,
+				ClientSeq:   13,
+				ClientMsgNo: "m4",
+			}
+
+			require.NoError(t, handler.OnFrame(ctx, pkt))
+			require.Len(t, sender.Writes(), 1)
+
+			ack := requireSendackPacket(t, sender.Writes()[0].frame)
+			require.Equal(t, tt.reason, ack.ReasonCode)
+			require.Zero(t, ack.MessageID)
+			require.Zero(t, ack.MessageSeq)
+			require.Equal(t, uint64(13), ack.ClientSeq)
+			require.Equal(t, "m4", ack.ClientMsgNo)
+		})
+	}
+}
+
 func TestHandlerOnFrameRecvackRoutesToMessageUsecase(t *testing.T) {
 	msgs := &fakeMessageUsecase{}
 	handler := New(Options{Messages: msgs})
@@ -151,7 +219,6 @@ func TestNewSharesOnlineRegistryWithInjectedMessageApp(t *testing.T) {
 	msgApp := message.New(message.Options{
 		IdentityStore: &fakeIdentityStore{},
 		ChannelStore:  &fakeChannelStore{},
-		ClusterPort:   &fakeClusterPort{},
 		Now:           func() time.Time { return fixedGatewayNow },
 	})
 	handler := New(Options{
@@ -292,7 +359,5 @@ type fakeChannelStore struct{}
 func (*fakeChannelStore) GetChannel(context.Context, string, int64) (wkdb.Channel, error) {
 	return wkdb.Channel{}, nil
 }
-
-type fakeClusterPort struct{}
 
 var _ online.Registry = (*online.MemoryRegistry)(nil)

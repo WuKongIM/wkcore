@@ -16,23 +16,32 @@ func mapSendCommand(ctx *coregateway.Context, pkt *wkpacket.SendPacket) (message
 		return message.SendCommand{}, ErrUnauthenticatedSession
 	}
 
+	protocolVersion := uint8(wkpacket.LatestVersion)
+	if sessionVersion, ok := ctx.Session.Value(coregateway.SessionValueProtocolVersion).(uint8); ok && sessionVersion != 0 {
+		protocolVersion = sessionVersion
+	}
+
 	if pkt == nil {
-		return message.SendCommand{SenderUID: senderUID}, nil
+		return message.SendCommand{
+			SenderUID:       senderUID,
+			ProtocolVersion: protocolVersion,
+		}, nil
 	}
 
 	return message.SendCommand{
-		Framer:      pkt.Framer,
-		Setting:     pkt.Setting,
-		MsgKey:      pkt.MsgKey,
-		Expire:      pkt.Expire,
-		SenderUID:   senderUID,
-		ClientSeq:   pkt.ClientSeq,
-		ClientMsgNo: pkt.ClientMsgNo,
-		StreamNo:    pkt.StreamNo,
-		ChannelID:   pkt.ChannelID,
-		ChannelType: pkt.ChannelType,
-		Topic:       pkt.Topic,
-		Payload:     pkt.Payload,
+		Framer:          pkt.Framer,
+		Setting:         pkt.Setting,
+		MsgKey:          pkt.MsgKey,
+		Expire:          pkt.Expire,
+		SenderUID:       senderUID,
+		ClientSeq:       pkt.ClientSeq,
+		ClientMsgNo:     pkt.ClientMsgNo,
+		StreamNo:        pkt.StreamNo,
+		ChannelID:       pkt.ChannelID,
+		ChannelType:     pkt.ChannelType,
+		Topic:           pkt.Topic,
+		Payload:         pkt.Payload,
+		ProtocolVersion: protocolVersion,
 	}, nil
 }
 

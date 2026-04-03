@@ -160,6 +160,10 @@ const (
 	ReasonNotSupportChannelType // 不支持的频道类型
 	ReasonDisband               // 频道已解散
 	ReasonSendBan               // 发送被封禁
+	ReasonChannelDeleting       // 频道删除中
+	ReasonProtocolUpgradeRequired
+	ReasonIdempotencyConflict
+	ReasonMessageSeqExhausted
 )
 
 func (r ReasonCode) String() string {
@@ -216,6 +220,14 @@ func (r ReasonCode) String() string {
 		return "ReasonNotSupportChannelType"
 	case ReasonSendBan:
 		return "ReasonSendBan"
+	case ReasonChannelDeleting:
+		return "ReasonChannelDeleting"
+	case ReasonProtocolUpgradeRequired:
+		return "ReasonProtocolUpgradeRequired"
+	case ReasonIdempotencyConflict:
+		return "ReasonIdempotencyConflict"
+	case ReasonMessageSeqExhausted:
+		return "ReasonMessageSeqExhausted"
 	}
 	return fmt.Sprintf("UNKNOWN[%d]", r)
 }
@@ -300,28 +312,28 @@ type Channel struct {
 }
 
 const (
-	SettingByteSize         = 1 // setting固定大小
-	StringFixLenByteSize    = 2 // 字符串可变大小
-	ClientSeqByteSize       = 4 // clientSeq的大小
-	ChannelTypeByteSize     = 1 // channelType的大小
-	VersionByteSize         = 1 // version的大小
-	DeviceFlagByteSize      = 1
-	ClientTimestampByteSize = 8
-	TimeDiffByteSize        = 8
-	ReasonCodeByteSize      = 1
-	MessageIDByteSize       = 8
+	SettingByteSize          = 1 // setting固定大小
+	StringFixLenByteSize     = 2 // 字符串可变大小
+	ClientSeqByteSize        = 4 // clientSeq的大小
+	ChannelTypeByteSize      = 1 // channelType的大小
+	VersionByteSize          = 1 // version的大小
+	DeviceFlagByteSize       = 1
+	ClientTimestampByteSize  = 8
+	TimeDiffByteSize         = 8
+	ReasonCodeByteSize       = 1
+	MessageIDByteSize        = 8
 	MessageSeqLegacyByteSize = 4
 	MessageSeqU64ByteSize    = 8
 	MessageSeqByteSize       = MessageSeqU64ByteSize
-	TimestampByteSize       = 4
-	BigTimestampByteSize    = 8
-	ActionByteSize          = 1
-	StreamIdByteSize        = 8
-	StreamFlagByteSize      = 1
-	ExpireByteSize          = 4
-	NodeIdByteSize          = 8
-	ChunkIDByteSize         = 8
-	EndReasonByteSize       = 1
+	TimestampByteSize        = 4
+	BigTimestampByteSize     = 8
+	ActionByteSize           = 1
+	StreamIdByteSize         = 8
+	StreamFlagByteSize       = 1
+	ExpireByteSize           = 4
+	NodeIdByteSize           = 8
+	ChunkIDByteSize          = 8
+	EndReasonByteSize        = 1
 )
 
 const (

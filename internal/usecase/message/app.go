@@ -15,7 +15,8 @@ var ErrUnauthenticatedSender = errors.New("usecase/message: unauthenticated send
 type Options struct {
 	IdentityStore IdentityStore
 	ChannelStore  ChannelStore
-	ClusterPort   ClusterPort
+	ClusterPort   any
+	MetaRefresher MetaRefresher
 	Online        online.Registry
 	Delivery      online.Delivery
 	Sequence      sequence.Allocator
@@ -25,7 +26,8 @@ type Options struct {
 type App struct {
 	identities IdentityStore
 	channels   ChannelStore
-	cluster    ClusterPort
+	cluster    ChannelCluster
+	refresher  MetaRefresher
 	online     online.Registry
 	delivery   online.Delivery
 	sequence   sequence.Allocator
@@ -33,6 +35,8 @@ type App struct {
 }
 
 func New(opts Options) *App {
+	cluster, _ := opts.ClusterPort.(ChannelCluster)
+
 	if opts.Online == nil {
 		opts.Online = online.NewRegistry()
 	}
@@ -49,7 +53,8 @@ func New(opts Options) *App {
 	return &App{
 		identities: opts.IdentityStore,
 		channels:   opts.ChannelStore,
-		cluster:    opts.ClusterPort,
+		cluster:    cluster,
+		refresher:  opts.MetaRefresher,
 		online:     opts.Online,
 		delivery:   opts.Delivery,
 		sequence:   opts.Sequence,
@@ -71,5 +76,3 @@ type IdentityStore interface {
 type ChannelStore interface {
 	GetChannel(ctx context.Context, channelID string, channelType int64) (wkdb.Channel, error)
 }
-
-type ClusterPort interface{}

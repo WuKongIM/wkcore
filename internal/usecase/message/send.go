@@ -1,8 +1,10 @@
 package message
 
 import (
+	"context"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/pkg/channelcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 )
 
@@ -15,6 +17,40 @@ func (a *App) Send(cmd SendCommand) (SendResult, error) {
 		return SendResult{Reason: wkpacket.ReasonNotSupportChannelType}, nil
 	}
 
+	if a.cluster != nil {
+		return a.sendDurablePerson(context.Background(), cmd)
+	}
+
+	return a.sendLocalPerson(cmd)
+}
+
+func (a *App) sendDurablePerson(ctx context.Context, cmd SendCommand) (SendResult, error) {
+	result, err := sendWithMetaRefreshRetry(ctx, a.cluster, a.refresher, channelcluster.SendRequest{
+		ChannelID:             cmd.ChannelID,
+		ChannelType:           cmd.ChannelType,
+		SenderUID:             cmd.SenderUID,
+		ClientMsgNo:           cmd.ClientMsgNo,
+		Payload:               cmd.Payload,
+		SupportsMessageSeqU64: supportsMessageSeqU64(cmd.ProtocolVersion),
+		ExpectedChannelEpoch:  cmd.ExpectedChannelEpoch,
+		ExpectedLeaderEpoch:   cmd.ExpectedLeaderEpoch,
+	})
+	if err != nil {
+		return SendResult{}, err
+	}
+
+	sendResult := SendResult{
+		MessageID:  int64(result.MessageID),
+		MessageSeq: result.MessageSeq,
+		Reason:     wkpacket.ReasonSuccess,
+	}
+
+	// Durable ack follows the replicated write; local fanout is best-effort.
+	_ = a.deliverLocalPerson(cmd, sendResult.MessageID, sendResult.MessageSeq)
+	return sendResult, nil
+}
+
+func (a *App) sendLocalPerson(cmd SendCommand) (SendResult, error) {
 	target := resolveLocalPersonTarget(cmd)
 	recipients := a.online.ConnectionsByUID(target.RecipientUID)
 	if len(recipients) == 0 {
@@ -23,9 +59,7 @@ func (a *App) Send(cmd SendCommand) (SendResult, error) {
 
 	msgID := a.sequence.NextMessageID()
 	msgSeq := uint64(a.sequence.NextChannelSequence(target.SequenceKey))
-	recv := buildPersonRecvPacket(cmd, msgID, msgSeq, a.now())
-
-	if err := a.delivery.Deliver(recipients, recv); err != nil {
+	if err := a.deliverLocalPerson(cmd, msgID, msgSeq); err != nil {
 		return SendResult{
 			MessageID:  msgID,
 			MessageSeq: msgSeq,
@@ -38,6 +72,15 @@ func (a *App) Send(cmd SendCommand) (SendResult, error) {
 		MessageSeq: msgSeq,
 		Reason:     wkpacket.ReasonSuccess,
 	}, nil
+}
+
+func (a *App) deliverLocalPerson(cmd SendCommand, msgID int64, msgSeq uint64) error {
+	recipients := a.online.ConnectionsByUID(cmd.ChannelID)
+	if len(recipients) == 0 {
+		return nil
+	}
+
+	return a.delivery.Deliver(recipients, buildPersonRecvPacket(cmd, msgID, msgSeq, a.now()))
 }
 
 type localPersonTarget struct {
@@ -73,4 +116,8 @@ func buildPersonRecvPacket(cmd SendCommand, msgID int64, msgSeq uint64, now time
 		Payload:     cmd.Payload,
 		ClientSeq:   cmd.ClientSeq,
 	}
+}
+
+func supportsMessageSeqU64(version uint8) bool {
+	return version == 0 || version > wkpacket.LegacyMessageSeqVersion
 }

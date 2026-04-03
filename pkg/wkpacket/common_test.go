@@ -36,3 +36,21 @@ func TestSettingFlags(t *testing.T) {
 		t.Fatal("expected SettingTopic to remain set")
 	}
 }
+
+func TestChannelclusterReasonCodesHaveStableNames(t *testing.T) {
+	tests := []struct {
+		reason ReasonCode
+		name   string
+	}{
+		{ReasonChannelDeleting, "ReasonChannelDeleting"},
+		{ReasonProtocolUpgradeRequired, "ReasonProtocolUpgradeRequired"},
+		{ReasonIdempotencyConflict, "ReasonIdempotencyConflict"},
+		{ReasonMessageSeqExhausted, "ReasonMessageSeqExhausted"},
+	}
+
+	for _, tt := range tests {
+		if got := tt.reason.String(); got != tt.name {
+			t.Fatalf("%v.String() = %q, want %q", tt.reason, got, tt.name)
+		}
+	}
+}

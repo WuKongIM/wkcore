@@ -7,6 +7,7 @@ import (
 
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
+	"github.com/WuKongIM/WuKongIM/pkg/channelcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
 	codec "github.com/WuKongIM/WuKongIM/pkg/wkproto"
 	"github.com/stretchr/testify/require"
@@ -74,6 +75,46 @@ func TestGatewayWKProtoHandlerRoutesLocalPersonSend(t *testing.T) {
 	require.Equal(t, ack.MessageSeq, recv.MessageSeq)
 }
 
+func TestGatewayVersion5ClientGetsUpgradeRequiredOnSend(t *testing.T) {
+	handler := New(Options{
+		Messages: &fakeMessageUsecase{sendErr: channelcluster.ErrProtocolUpgradeRequired},
+	})
+	gw, err := coregateway.New(coregateway.Options{
+		Handler: handler,
+		Authenticator: coregateway.NewWKProtoAuthenticator(coregateway.WKProtoAuthOptions{
+			TokenAuthOn: false,
+		}),
+		Listeners: []coregateway.ListenerOptions{
+			binding.TCPWKProto(gatewayTestListenerName, "127.0.0.1:0"),
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, gw.Start())
+	t.Cleanup(func() { _ = gw.Stop() })
+
+	conn := dialGateway(t, gw, gatewayTestListenerName)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	connack := connectWKProtoClientVersion(t, conn, gatewayTestSenderUID, wkpacket.LegacyMessageSeqVersion)
+	require.Equal(t, wkpacket.ReasonSuccess, connack.ReasonCode)
+	require.Equal(t, uint8(wkpacket.LegacyMessageSeqVersion), connack.ServerVersion)
+
+	sendWKProtoFrameVersion(t, conn, &wkpacket.SendPacket{
+		ChannelID:   gatewayTestRecipientUID,
+		ChannelType: wkpacket.ChannelTypePerson,
+		Payload:     []byte(gatewayTestPayload),
+		ClientSeq:   1,
+		ClientMsgNo: gatewayTestClientMsgNo,
+	}, wkpacket.LegacyMessageSeqVersion)
+
+	ack := readSendackPacketVersion(t, conn, wkpacket.LegacyMessageSeqVersion)
+	require.Equal(t, wkpacket.ReasonProtocolUpgradeRequired, ack.ReasonCode)
+	require.Zero(t, ack.MessageID)
+	require.Zero(t, ack.MessageSeq)
+	require.Equal(t, uint64(1), ack.ClientSeq)
+	require.Equal(t, gatewayTestClientMsgNo, ack.ClientMsgNo)
+}
+
 func dialGateway(t *testing.T, gw *coregateway.Gateway, listener string) net.Conn {
 	t.Helper()
 
@@ -84,16 +125,21 @@ func dialGateway(t *testing.T, gw *coregateway.Gateway, listener string) net.Con
 
 func connectWKProtoClient(t *testing.T, conn net.Conn, uid string) *wkpacket.ConnackPacket {
 	t.Helper()
+	return connectWKProtoClientVersion(t, conn, uid, wkpacket.LatestVersion)
+}
 
-	sendWKProtoFrame(t, conn, &wkpacket.ConnectPacket{
-		Version:         wkpacket.LatestVersion,
+func connectWKProtoClientVersion(t *testing.T, conn net.Conn, uid string, version uint8) *wkpacket.ConnackPacket {
+	t.Helper()
+
+	sendWKProtoFrameVersion(t, conn, &wkpacket.ConnectPacket{
+		Version:         version,
 		UID:             uid,
 		DeviceID:        uid + "-device",
 		DeviceFlag:      wkpacket.APP,
 		ClientTimestamp: time.Now().UnixMilli(),
-	})
+	}, wkpacket.LatestVersion)
 
-	frame := readWKProtoFrame(t, conn)
+	frame := readWKProtoFrameVersion(t, conn, wkpacket.LatestVersion)
 	connack, ok := frame.(*wkpacket.ConnackPacket)
 	require.True(t, ok, "expected *wkpacket.ConnackPacket, got %T", frame)
 	return connack
@@ -101,8 +147,13 @@ func connectWKProtoClient(t *testing.T, conn net.Conn, uid string) *wkpacket.Con
 
 func sendWKProtoFrame(t *testing.T, conn net.Conn, frame wkpacket.Frame) {
 	t.Helper()
+	sendWKProtoFrameVersion(t, conn, frame, wkpacket.LatestVersion)
+}
 
-	payload, err := codec.New().EncodeFrame(frame, wkpacket.LatestVersion)
+func sendWKProtoFrameVersion(t *testing.T, conn net.Conn, frame wkpacket.Frame, version uint8) {
+	t.Helper()
+
+	payload, err := codec.New().EncodeFrame(frame, version)
 	require.NoError(t, err)
 
 	_, err = conn.Write(payload)
@@ -111,21 +162,31 @@ func sendWKProtoFrame(t *testing.T, conn net.Conn, frame wkpacket.Frame) {
 
 func readWKProtoFrame(t *testing.T, conn net.Conn) wkpacket.Frame {
 	t.Helper()
+	return readWKProtoFrameVersion(t, conn, wkpacket.LatestVersion)
+}
+
+func readWKProtoFrameVersion(t *testing.T, conn net.Conn, version uint8) wkpacket.Frame {
+	t.Helper()
 
 	require.NoError(t, conn.SetReadDeadline(time.Now().Add(gatewayReadTimeout)))
 	defer func() {
 		_ = conn.SetReadDeadline(time.Time{})
 	}()
 
-	frame, err := codec.New().DecodePacketWithConn(conn, wkpacket.LatestVersion)
+	frame, err := codec.New().DecodePacketWithConn(conn, version)
 	require.NoError(t, err)
 	return frame
 }
 
 func readSendackPacket(t *testing.T, conn net.Conn) *wkpacket.SendackPacket {
 	t.Helper()
+	return readSendackPacketVersion(t, conn, wkpacket.LatestVersion)
+}
 
-	frame := readWKProtoFrame(t, conn)
+func readSendackPacketVersion(t *testing.T, conn net.Conn, version uint8) *wkpacket.SendackPacket {
+	t.Helper()
+
+	frame := readWKProtoFrameVersion(t, conn, version)
 	ack, ok := frame.(*wkpacket.SendackPacket)
 	require.True(t, ok, "expected *wkpacket.SendackPacket, got %T", frame)
 	return ack

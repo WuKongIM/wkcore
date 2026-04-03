@@ -91,6 +91,24 @@ func TestSendReturnsErrChannelDeleting(t *testing.T) {
 	}
 }
 
+func TestSendReturnsErrProtocolUpgradeRequiredForLegacyClientOnU64Channel(t *testing.T) {
+	env := newSendEnv(t)
+	meta := env.meta
+	meta.ChannelEpoch++
+	meta.Features.MessageSeqFormat = MessageSeqFormatU64
+	if err := env.cluster.ApplyMeta(meta); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+
+	req := testSendRequest()
+	req.SupportsMessageSeqU64 = false
+
+	_, err := env.cluster.Send(context.Background(), req)
+	if !errors.Is(err, ErrProtocolUpgradeRequired) {
+		t.Fatalf("expected ErrProtocolUpgradeRequired, got %v", err)
+	}
+}
+
 func TestSendReturnsErrMessageSeqExhaustedAtLegacyLimit(t *testing.T) {
 	env := newSendEnv(t)
 	env.group.state.HW = maxLegacyMessageSeq
