@@ -1,4 +1,4 @@
-package wkstore
+package metastore
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metafsm"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
 )
 
@@ -33,7 +34,7 @@ func TestMemoryBackedGroupAppliesProposalToWKDB(t *testing.T) {
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "group become leader")
 
-	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(metadb.User{
+	fut, err := rt.Propose(ctx, groupID, metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:         "u1",
 		Token:       "t1",
 		DeviceFlag:  1,
@@ -78,7 +79,7 @@ func TestMemoryBackedGroupDoesNotRecoverDeletedSlotDataAfterOpenGroup(t *testing
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "group become leader")
 
-	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(metadb.User{
+	fut, err := rt.Propose(ctx, groupID, metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "t1",
 	}))
@@ -138,7 +139,7 @@ func TestMemoryBackedGroupReopensWithRecoveredMembership(t *testing.T) {
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "group become leader")
 
-	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(metadb.User{
+	fut, err := rt.Propose(ctx, groupID, metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "before-reopen",
 	}))
@@ -167,7 +168,7 @@ func TestMemoryBackedGroupReopensWithRecoveredMembership(t *testing.T) {
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "reopened group become leader")
 
-	fut, err = reopenRT.Propose(ctx, groupID, EncodeUpsertUserCommand(metadb.User{
+	fut, err = reopenRT.Propose(ctx, groupID, metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "after-reopen",
 	}))
@@ -214,7 +215,7 @@ func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "group become leader")
 
-	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(metadb.User{
+	fut, err := rt.Propose(ctx, groupID, metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "before-reopen",
 	}))
@@ -251,7 +252,7 @@ func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "reopened group become leader")
 
-	fut, err = reopenRT.Propose(ctx, groupID, EncodeUpsertUserCommand(metadb.User{
+	fut, err = reopenRT.Propose(ctx, groupID, metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "after-reopen",
 	}))
@@ -298,7 +299,7 @@ func TestPebbleBackedGroupDoesNotRecoverDeletedBusinessStateWithoutSnapshot(t *t
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "group become leader")
 
-	fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(metadb.User{
+	fut, err := rt.Propose(ctx, groupID, metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "t1",
 	}))

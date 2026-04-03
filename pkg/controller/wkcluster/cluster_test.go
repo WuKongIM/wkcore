@@ -8,16 +8,17 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/controller/wkcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkstore"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metafsm"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metastore"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
 )
 
 // testNode bundles a cluster, store, and storage resources for testing.
 type testNode struct {
 	cluster *wkcluster.Cluster
-	store   *wkstore.Store
+	store   *metastore.Store
 	db      *metadb.DB
 	raftDB  *raftstorage.DB
 	nodeID  multiraft.NodeID
@@ -62,7 +63,7 @@ func startSingleNode(t testing.TB, groupCount int) *testNode {
 		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
 			return raftDB.ForGroup(uint64(groupID)), nil
 		},
-		NewStateMachine: wkstore.NewStateMachineFactory(db),
+		NewStateMachine: metafsm.NewStateMachineFactory(db),
 		Nodes:           []wkcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
 		Groups:          groups,
 	}
@@ -81,7 +82,7 @@ func startSingleNode(t testing.TB, groupCount int) *testNode {
 
 	return &testNode{
 		cluster: c,
-		store:   wkstore.New(c, db),
+		store:   metastore.New(c, db),
 		db:      db,
 		raftDB:  raftDB,
 		nodeID:  1,
@@ -138,7 +139,7 @@ func startThreeNodes(t testing.TB, groupCount int) []*testNode {
 			NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
 				return raftDB.ForGroup(uint64(groupID)), nil
 			},
-			NewStateMachine: wkstore.NewStateMachineFactory(db),
+			NewStateMachine: metafsm.NewStateMachineFactory(db),
 			Nodes:           nodes,
 			Groups:          groups,
 		}
@@ -157,7 +158,7 @@ func startThreeNodes(t testing.TB, groupCount int) []*testNode {
 
 		testNodes[i] = &testNode{
 			cluster: c,
-			store:   wkstore.New(c, db),
+			store:   metastore.New(c, db),
 			db:      db,
 			raftDB:  raftDB,
 			nodeID:  multiraft.NodeID(i + 1),

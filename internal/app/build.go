@@ -10,9 +10,10 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/runtime/sequence"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/pkg/controller/wkcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/controller/wkstore"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metafsm"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metastore"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
 )
 
@@ -51,7 +52,7 @@ func build(cfg Config) (_ *App, err error) {
 		return nil, fmt.Errorf("app: create cluster: %w", err)
 	}
 
-	app.store = wkstore.New(app.cluster, app.db)
+	app.store = metastore.New(app.cluster, app.db)
 	onlineRegistry := online.NewRegistry()
 	sequenceAllocator := &sequence.MemoryAllocator{}
 	app.messageApp = message.New(message.Options{
@@ -92,7 +93,7 @@ func (c ClusterConfig) runtimeConfig(db *metadb.DB, raftDB *raftstorage.DB, node
 		ListenAddr:      c.ListenAddr,
 		GroupCount:      c.GroupCount,
 		NewStorage:      newStorageFactory(raftDB),
-		NewStateMachine: wkstore.NewStateMachineFactory(db),
+		NewStateMachine: metafsm.NewStateMachineFactory(db),
 		Nodes:           c.runtimeNodes(),
 		Groups:          c.runtimeGroups(),
 		ForwardTimeout:  c.ForwardTimeout,

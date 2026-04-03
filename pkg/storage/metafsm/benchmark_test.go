@@ -1,4 +1,4 @@
-package wkstore
+package metafsm
 
 import (
 	"context"

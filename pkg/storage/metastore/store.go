@@ -1,10 +1,11 @@
-package wkstore
+package metastore
 
 import (
 	"context"
 
 	"github.com/WuKongIM/WuKongIM/pkg/controller/wkcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metafsm"
 )
 
 // Store provides business-level distributed storage APIs
@@ -21,7 +22,7 @@ func New(cluster *wkcluster.Cluster, db *metadb.DB) *Store {
 
 func (s *Store) CreateChannel(ctx context.Context, channelID string, channelType int64) error {
 	groupID := s.cluster.SlotForKey(channelID)
-	cmd := EncodeUpsertChannelCommand(metadb.Channel{
+	cmd := metafsm.EncodeUpsertChannelCommand(metadb.Channel{
 		ChannelID:   channelID,
 		ChannelType: channelType,
 	})
@@ -30,7 +31,7 @@ func (s *Store) CreateChannel(ctx context.Context, channelID string, channelType
 
 func (s *Store) UpdateChannel(ctx context.Context, channelID string, channelType int64, ban int64) error {
 	groupID := s.cluster.SlotForKey(channelID)
-	cmd := EncodeUpsertChannelCommand(metadb.Channel{
+	cmd := metafsm.EncodeUpsertChannelCommand(metadb.Channel{
 		ChannelID:   channelID,
 		ChannelType: channelType,
 		Ban:         ban,
@@ -40,7 +41,7 @@ func (s *Store) UpdateChannel(ctx context.Context, channelID string, channelType
 
 func (s *Store) DeleteChannel(ctx context.Context, channelID string, channelType int64) error {
 	groupID := s.cluster.SlotForKey(channelID)
-	cmd := EncodeDeleteChannelCommand(channelID, channelType)
+	cmd := metafsm.EncodeDeleteChannelCommand(channelID, channelType)
 	return s.cluster.Propose(ctx, groupID, cmd)
 }
 
@@ -51,7 +52,7 @@ func (s *Store) GetChannel(ctx context.Context, channelID string, channelType in
 
 func (s *Store) UpsertUser(ctx context.Context, u metadb.User) error {
 	groupID := s.cluster.SlotForKey(u.UID)
-	cmd := EncodeUpsertUserCommand(u)
+	cmd := metafsm.EncodeUpsertUserCommand(u)
 	return s.cluster.Propose(ctx, groupID, cmd)
 }
 
