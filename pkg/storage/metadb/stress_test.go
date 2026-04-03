@@ -85,7 +85,7 @@ func requireStressEnabled(t *testing.T, cfg stressConfig) {
 	t.Helper()
 
 	if !cfg.Enabled {
-		t.Skip("set WKDB_STRESS=1 to enable wkdb stress tests")
+		t.Skip("set WKDB_STRESS=1 to enable metadb stress tests")
 	}
 }
 

@@ -1,6 +1,7 @@
 # `pkg/` Package Naming Design
 
 **Date:** 2026-04-03
+**Status:** Implemented on branch `pkg-package-naming`
 
 ## Overview
 

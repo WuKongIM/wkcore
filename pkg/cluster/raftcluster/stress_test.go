@@ -42,7 +42,7 @@ func loadStressConfig(t *testing.T) stressConfig {
 func requireStressEnabled(t *testing.T, cfg stressConfig) {
 	t.Helper()
 	if !cfg.Enabled {
-		t.Skip("set WKCLUSTER_STRESS=1 to enable wkcluster stress tests")
+		t.Skip("set WKCLUSTER_STRESS=1 to enable raftcluster stress tests")
 	}
 }
 

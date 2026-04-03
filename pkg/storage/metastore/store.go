@@ -9,7 +9,7 @@ import (
 )
 
 // Store provides business-level distributed storage APIs
-// built on top of wkcluster's generic Propose mechanism.
+// built on top of raftcluster's generic Propose mechanism.
 type Store struct {
 	cluster *raftcluster.Cluster
 	db      *metadb.DB

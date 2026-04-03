@@ -36,16 +36,24 @@ internal/
   gateway/               通用网关基础设施：transport、protocol、session、core
 
 pkg/
-  multiraft/             Multi-Raft 基础库
-  raftstore/             Raft 存储实现
-  wkcluster/             集群路由与转发
-  wkdb/                  业务数据存储
-  wkstore/               状态机与 store 适配
-  wkproto/               协议对象与编解码
-  wkpacket/              包级协议模型
-  wktransport/           传输层抽象
-  jsonrpc/               JSON-RPC 协议支持
-  wkutil/                通用工具
+  replication/           复制与一致性运行时
+    isr/                 单 group ISR 复制库
+    isrnode/             多 ISR group 的节点内运行时
+    multiraft/           Multi-Raft 基础库
+  transport/             节点间传输抽象
+    nodetransport/       节点间 transport / RPC
+  protocol/              协议对象与编解码
+    wkframe/             WuKong frame/object 模型
+    wkcodec/             WuKong 二进制协议编解码
+    wkjsonrpc/           JSON-RPC schema 与 frame bridge
+  storage/               元数据、Raft 持久化与消息日志
+    metadb/              业务元数据存储
+    raftstorage/         Raft 存储实现
+    metastore/           分布式元数据 facade
+    metafsm/             元数据状态机与命令编解码
+    channellog/          Channel 消息日志与元数据 facade
+  cluster/               集群运行时
+    raftcluster/         集群路由、转发与发现
 
 docs/
   superpowers/           设计文档与实施计划

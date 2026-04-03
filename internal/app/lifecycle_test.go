@@ -403,7 +403,7 @@ func TestStopWaitsForInFlightStart(t *testing.T) {
 func TestStopJoinsCleanupErrors(t *testing.T) {
 	errGateway := errors.New("gateway stop")
 	errRaft := errors.New("raft close")
-	errWKDB := errors.New("wkdb close")
+	errMetaDB := errors.New("metadb close")
 
 	app := &App{
 		started:   atomicBool(true),
@@ -417,14 +417,14 @@ func TestStopJoinsCleanupErrors(t *testing.T) {
 			return errRaft
 		},
 		closeWKDBFn: func() error {
-			return errWKDB
+			return errMetaDB
 		},
 	}
 
 	joinedErr := app.Stop()
 	require.ErrorIs(t, joinedErr, errGateway)
 	require.ErrorIs(t, joinedErr, errRaft)
-	require.ErrorIs(t, joinedErr, errWKDB)
+	require.ErrorIs(t, joinedErr, errMetaDB)
 }
 
 func testConfig(t *testing.T) Config {

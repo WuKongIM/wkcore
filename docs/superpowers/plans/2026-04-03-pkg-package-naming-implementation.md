@@ -1,5 +1,7 @@
 # Pkg Package Naming Implementation Plan
 
+**Status:** Completed on branch `pkg-package-naming`
+
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Rename `pkg/` packages to the approved role-based names, split `wkstore` into `metastore` and `metafsm`, and update all imports/tests/docs without changing runtime behavior.

@@ -16,7 +16,7 @@ type MessageHandler func(conn net.Conn, body []byte)
 
 // RPCHandler processes an inbound RPC request and returns a response body.
 // The ctx passed by the Server is context.Background(). The handler is responsible
-// for applying its own timeout (e.g., wkcluster wraps with forwardTimeout).
+// for applying its own timeout (e.g., raftcluster wraps with forwardTimeout).
 type RPCHandler func(ctx context.Context, body []byte) ([]byte, error)
 
 // Discovery resolves a NodeID to a network address.

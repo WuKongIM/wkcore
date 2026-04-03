@@ -86,7 +86,7 @@ func (m *stateMachine) Snapshot(ctx context.Context) (multiraft.Snapshot, error)
 	}, nil
 }
 
-// NewStateMachineFactory returns a factory function suitable for wkcluster.Config.NewStateMachine.
+// NewStateMachineFactory returns a factory function suitable for raftcluster.Config.NewStateMachine.
 func NewStateMachineFactory(db *metadb.DB) func(groupID multiraft.GroupID) (multiraft.StateMachine, error) {
 	return func(groupID multiraft.GroupID) (multiraft.StateMachine, error) {
 		return NewStateMachine(db, uint64(groupID))
