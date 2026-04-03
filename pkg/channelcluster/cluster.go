@@ -2,11 +2,15 @@ package channelcluster
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
 type cluster struct {
 	cfg Config
+
+	mu    sync.RWMutex
+	metas map[ChannelKey]ChannelMeta
 }
 
 func New(cfg Config) (Cluster, error) {
@@ -25,11 +29,10 @@ func New(cfg Config) (Cluster, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &cluster{cfg: cfg}, nil
-}
-
-func (c *cluster) ApplyMeta(ChannelMeta) error {
-	return errNotImplemented
+	return &cluster{
+		cfg:   cfg,
+		metas: make(map[ChannelKey]ChannelMeta),
+	}, nil
 }
 
 func (c *cluster) Send(context.Context, SendRequest) (SendResult, error) {
@@ -38,8 +41,4 @@ func (c *cluster) Send(context.Context, SendRequest) (SendResult, error) {
 
 func (c *cluster) Fetch(context.Context, FetchRequest) (FetchResult, error) {
 	return FetchResult{}, errNotImplemented
-}
-
-func (c *cluster) Status(ChannelKey) (ChannelRuntimeStatus, error) {
-	return ChannelRuntimeStatus{}, errNotImplemented
 }
