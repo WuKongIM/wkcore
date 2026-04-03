@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiraft"
 	raft "go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 )

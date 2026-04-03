@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/WuKongIM/WuKongIM/pkg/channelcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/msgstore/channelcluster"
 )
 
 func mapSendError(err error) (int, string, bool) {

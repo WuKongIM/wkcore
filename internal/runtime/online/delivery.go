@@ -1,6 +1,6 @@
 package online
 
-import "github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+import "github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 
 type LocalDelivery struct{}
 

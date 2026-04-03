@@ -3,8 +3,8 @@ package wkproto
 import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
-	codec "github.com/WuKongIM/WuKongIM/pkg/wkproto"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	codec "github.com/WuKongIM/WuKongIM/pkg/proto/wkproto"
 )
 
 const Name = "wkproto"

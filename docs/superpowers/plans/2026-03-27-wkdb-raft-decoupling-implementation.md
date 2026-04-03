@@ -6,7 +6,7 @@
 
 **Architecture:** Build the new packages first so the repository always has a working `multiraft.Storage` and `multiraft.StateMachine` implementation during the migration. `raftstore` will directly implement `multiraft.Storage` with an in-memory backend only, while `wkfsm` will directly implement `multiraft.StateMachine` on top of `wkdb` slot-scoped business storage and reuse `wkdb` snapshot import/export without owning any Raft persistence.
 
-**Tech Stack:** Go 1.23, `go.etcd.io/raft/v3/raftpb`, `github.com/WuKongIM/WuKongIM/pkg/multiraft`, `github.com/WuKongIM/WuKongIM/pkg/controller/wkdb`, Go testing
+**Tech Stack:** Go 1.23, `go.etcd.io/raft/v3/raftpb`, `github.com/WuKongIM/WuKongIM/pkg/consensus/multiraft`, `github.com/WuKongIM/WuKongIM/pkg/controller/wkdb`, Go testing
 
 ---
 

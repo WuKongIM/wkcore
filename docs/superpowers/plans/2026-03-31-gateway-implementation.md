@@ -445,7 +445,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/core"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 )
 
 func TestServerDeliversDecodedFramesToHandler(t *testing.T) {
@@ -630,7 +630,7 @@ import (
 
 	adapterpkg "github.com/WuKongIM/WuKongIM/internal/gateway/protocol/wkproto"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 )
 
 func TestAdapterDecodeReturnsZeroUntilFrameIsComplete(t *testing.T) {
@@ -712,8 +712,8 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/protocol"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
-	"github.com/WuKongIM/WuKongIM/pkg/jsonrpc"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/jsonrpc"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 )
 
 func TestAdapterDecodeReturnsReplyTokenForRequest(t *testing.T) {

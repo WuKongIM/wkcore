@@ -7,7 +7,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
 	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 )
 
 type noopHandler struct{}

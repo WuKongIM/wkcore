@@ -5,7 +5,7 @@ import (
 
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 )
 
 func onlineConnFromContext(ctx *coregateway.Context, now time.Time) (online.OnlineConn, error) {

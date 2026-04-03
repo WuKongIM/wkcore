@@ -7,9 +7,9 @@ import (
 
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
-	"github.com/WuKongIM/WuKongIM/pkg/channelcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
-	codec "github.com/WuKongIM/WuKongIM/pkg/wkproto"
+	"github.com/WuKongIM/WuKongIM/pkg/msgstore/channelcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	codec "github.com/WuKongIM/WuKongIM/pkg/proto/wkproto"
 	"github.com/stretchr/testify/require"
 )
 

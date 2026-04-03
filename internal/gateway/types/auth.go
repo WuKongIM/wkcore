@@ -1,6 +1,6 @@
 package types
 
-import "github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+import "github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 
 type Authenticator interface {
 	Authenticate(ctx *Context, connect *wkpacket.ConnectPacket) (*AuthResult, error)

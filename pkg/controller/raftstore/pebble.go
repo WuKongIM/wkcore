@@ -7,7 +7,7 @@ import (
 	"math"
 	"sync"
 
-	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiraft"
 	"github.com/cockroachdb/pebble/v2"
 	raft "go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"

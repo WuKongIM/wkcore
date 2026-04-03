@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/WuKongIM/WuKongIM/pkg/channelcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/msgstore/channelcluster"
 )
 
 func sendWithMetaRefreshRetry(ctx context.Context, cluster ChannelCluster, refresher MetaRefresher, req channelcluster.SendRequest) (channelcluster.SendResult, error) {

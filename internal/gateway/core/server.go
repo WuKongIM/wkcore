@@ -11,7 +11,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/transport"
 	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 )
 
 var (

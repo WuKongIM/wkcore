@@ -306,7 +306,7 @@ package wkproto
 import (
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -346,7 +346,7 @@ Expected: FAIL to compile because codec code still references `wkproto` packet d
 // pkg/wkproto/protocol.go
 package wkproto
 
-import "github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+import "github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 
 type Protocol interface {
 	DecodeFrame(data []byte, version uint8) (wkpacket.Frame, int, error)
@@ -362,7 +362,7 @@ type PacketEncodeFunc func(frame wkpacket.Frame, version uint8) ([]byte, error)
 // pkg/wkproto/common.go
 package wkproto
 
-import "github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+import "github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 
 func ToFixHeaderUint8(f wkpacket.Frame) uint8 {
 	typeAndFlags := encodeBool(f.GetDUP())<<3 |
@@ -386,7 +386,7 @@ func FramerFromUint8(v uint8) wkpacket.Framer {
 // pkg/wkproto/connect.go
 package wkproto
 
-import "github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+import "github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 
 func decodeConnect(frame wkpacket.Frame, data []byte, version uint8) (wkpacket.Frame, error) {
 	dec := NewDecoder(data)
@@ -440,7 +440,7 @@ package jsonrpc
 import (
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 	"github.com/stretchr/testify/require"
 )
 
@@ -483,7 +483,7 @@ Expected: FAIL because `jsonrpc` still depends on `wkproto` shared types.
 // pkg/jsonrpc/types.go
 package jsonrpc
 
-import "github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+import "github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 
 func (h Header) toProtoInternal() *wkpacket.Framer {
 	return &wkpacket.Framer{
@@ -525,7 +525,7 @@ func (p ConnectParams) ToProto() *wkpacket.ConnectPacket {
 // pkg/jsonrpc/codec.go
 package jsonrpc
 
-import "github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+import "github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 
 func ToFrame(packet interface{}) (wkpacket.Frame, string, error) {
 	switch p := packet.(type) {
@@ -575,8 +575,8 @@ Expected: only intentional codec references remain, or no matches.
 ```go
 // Example of the final desired direction:
 import (
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
-	"github.com/WuKongIM/WuKongIM/pkg/wkproto"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkproto"
 )
 
 var frame wkpacket.Frame

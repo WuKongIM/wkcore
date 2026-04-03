@@ -3,8 +3,8 @@ package gateway
 import (
 	"errors"
 
-	"github.com/WuKongIM/WuKongIM/pkg/channelcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/msgstore/channelcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 )
 
 func mapSendErrorReason(err error) (wkpacket.ReasonCode, bool) {

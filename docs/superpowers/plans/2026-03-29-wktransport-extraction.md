@@ -1748,7 +1748,7 @@ package wkcluster
 import (
 	"context"
 
-	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/wktransport"
 )
 
@@ -1786,7 +1786,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/wktransport"
 	"go.etcd.io/raft/v3/raftpb"
 )
@@ -1874,7 +1874,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/wktransport"
 )
 
@@ -2040,7 +2040,7 @@ import (
 	"net"
 	"sync/atomic"
 
-	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/controller/raftstore"
 	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
 	"github.com/WuKongIM/WuKongIM/pkg/wkfsm"

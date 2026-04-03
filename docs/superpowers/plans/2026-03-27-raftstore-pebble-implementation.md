@@ -6,7 +6,7 @@
 
 **Architecture:** Introduce `raftstore.DB` as the lifecycle owner of one Pebble instance per process and expose `ForGroup(group)` views that implement `multiraft.Storage` through stable binary key prefixes. Keep `multiraft` runtime ordering unchanged, preserve the existing in-memory backend, and add integration tests that prove clean reopen works while explicitly documenting the current “no business-state rebuild without snapshot” limitation.
 
-**Tech Stack:** Go 1.23, Pebble (`github.com/cockroachdb/pebble`), `go.etcd.io/raft/v3/raftpb`, `github.com/WuKongIM/WuKongIM/pkg/multiraft`, `github.com/WuKongIM/WuKongIM/pkg/wkfsm`, Go testing
+**Tech Stack:** Go 1.23, Pebble (`github.com/cockroachdb/pebble`), `go.etcd.io/raft/v3/raftpb`, `github.com/WuKongIM/WuKongIM/pkg/consensus/multiraft`, `github.com/WuKongIM/WuKongIM/pkg/wkfsm`, Go testing
 
 ---
 

@@ -10,9 +10,9 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
-	pkgjsonrpc "github.com/WuKongIM/WuKongIM/pkg/jsonrpc"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
-	codec "github.com/WuKongIM/WuKongIM/pkg/wkproto"
+	pkgjsonrpc "github.com/WuKongIM/WuKongIM/pkg/proto/jsonrpc"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
+	codec "github.com/WuKongIM/WuKongIM/pkg/proto/wkproto"
 	"github.com/gorilla/websocket"
 )
 

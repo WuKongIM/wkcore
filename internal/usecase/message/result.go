@@ -1,6 +1,6 @@
 package message
 
-import "github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+import "github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 
 type SendResult struct {
 	MessageID  int64

@@ -5,7 +5,7 @@ import (
 
 	gnettransport "github.com/WuKongIM/WuKongIM/internal/gateway/transport/gnet"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/transport/stdnet"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 )
 
 type registryTestHandler struct{}

@@ -9,8 +9,8 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/protocol"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
-	pkgjsonrpc "github.com/WuKongIM/WuKongIM/pkg/jsonrpc"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	pkgjsonrpc "github.com/WuKongIM/WuKongIM/pkg/proto/jsonrpc"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 )
 
 const Name = "jsonrpc"

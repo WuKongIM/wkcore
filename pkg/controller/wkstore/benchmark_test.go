@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/controller/wkdb"
-	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
 )
 
 func BenchmarkApplySingle(b *testing.B) {

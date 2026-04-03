@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiraft"
 )
 
 const (

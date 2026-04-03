@@ -4,7 +4,7 @@ import (
 	"time"
 
 	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 )
 
 type Authenticator = gatewaytypes.Authenticator
@@ -87,9 +87,9 @@ func NewWKProtoAuthenticator(opts WKProtoAuthOptions) Authenticator {
 		return &AuthResult{
 			Connack: connack,
 			SessionValues: map[string]any{
-				SessionValueUID:         connect.UID,
-				SessionValueDeviceFlag:  connect.DeviceFlag,
-				SessionValueDeviceLevel: deviceLevel,
+				SessionValueUID:             connect.UID,
+				SessionValueDeviceFlag:      connect.DeviceFlag,
+				SessionValueDeviceLevel:     deviceLevel,
 				SessionValueProtocolVersion: serverVersion,
 			},
 		}, nil

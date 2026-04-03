@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/channelcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/msgstore/channelcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 )
 
 func (a *App) Send(cmd SendCommand) (SendResult, error) {

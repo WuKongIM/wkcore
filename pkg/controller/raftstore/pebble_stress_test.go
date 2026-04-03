@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiraft"
 	"go.etcd.io/raft/v3/raftpb"
 )
 

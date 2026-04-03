@@ -3,7 +3,7 @@ package gateway
 import (
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 )
 
 func mapSendCommand(ctx *coregateway.Context, pkt *wkpacket.SendPacket) (message.SendCommand, error) {

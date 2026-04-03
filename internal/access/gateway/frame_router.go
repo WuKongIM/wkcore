@@ -3,7 +3,7 @@ package gateway
 import (
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 )
 
 func (h *Handler) OnFrame(ctx *coregateway.Context, frame wkpacket.Frame) error {

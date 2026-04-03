@@ -4,7 +4,7 @@ import (
 	"sync"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 )
 
 type FakeProtocol struct {

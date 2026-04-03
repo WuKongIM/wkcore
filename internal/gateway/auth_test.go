@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
-	"github.com/WuKongIM/WuKongIM/pkg/wkpacket"
+	"github.com/WuKongIM/WuKongIM/pkg/proto/wkpacket"
 )
 
 func TestAuthenticatorStoresNegotiatedProtocolVersion(t *testing.T) {

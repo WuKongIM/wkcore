@@ -3,7 +3,7 @@ package wkcluster
 import (
 	"hash/crc32"
 
-	"github.com/WuKongIM/WuKongIM/pkg/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiraft"
 )
 
 type Router struct {

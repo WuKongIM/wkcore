@@ -5,7 +5,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/sequence"
-	"github.com/WuKongIM/WuKongIM/pkg/channelcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/msgstore/channelcluster"
 )
 
 type OnlineRegistry = online.Registry
