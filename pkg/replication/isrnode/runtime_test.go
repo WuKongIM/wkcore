@@ -1,12 +1,12 @@
-package multiisr_test
+package isrnode_test
 
 import (
 	"context"
 	"errors"
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiisr"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isrnode"
 )
 
 func TestAppendChecksLeaseSynchronouslyBeforeReplicaAppend(t *testing.T) {
@@ -45,7 +45,7 @@ func TestEnsureGroupReturnsErrTooManyGroups(t *testing.T) {
 	env := newTestEnvWithOptions(t, withMaxGroups(1))
 	mustEnsure(t, env.runtime, testMeta(41, 1, 1, []isr.NodeID{1, 2}))
 	err := env.runtime.EnsureGroup(testMeta(42, 1, 1, []isr.NodeID{1, 2}))
-	if !errors.Is(err, multiisr.ErrTooManyGroups) {
+	if !errors.Is(err, isrnode.ErrTooManyGroups) {
 		t.Fatalf("expected ErrTooManyGroups, got %v", err)
 	}
 }
@@ -56,7 +56,7 @@ func TestEnsureGroupRejectsDuplicateActiveGroup(t *testing.T) {
 
 	mustEnsure(t, env.runtime, meta)
 	err := env.runtime.EnsureGroup(meta)
-	if !errors.Is(err, multiisr.ErrGroupExists) {
+	if !errors.Is(err, isrnode.ErrGroupExists) {
 		t.Fatalf("expected ErrGroupExists, got %v", err)
 	}
 }

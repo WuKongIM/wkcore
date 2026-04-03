@@ -1,4 +1,4 @@
-package multiisr
+package isrnode
 
 import (
 	"testing"

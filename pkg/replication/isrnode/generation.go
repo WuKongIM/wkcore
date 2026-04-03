@@ -1,4 +1,4 @@
-package multiisr
+package isrnode
 
 func (r *runtime) allocateGeneration(groupID uint64) (uint64, error) {
 	current, err := r.cfg.GenerationStore.Load(groupID)

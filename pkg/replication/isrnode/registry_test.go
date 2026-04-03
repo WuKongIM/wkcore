@@ -1,10 +1,10 @@
-package multiisr_test
+package isrnode_test
 
 import (
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiisr"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isrnode"
 )
 
 func TestEnsureGroupStoresNextGenerationBeforeReplicaCreation(t *testing.T) {
@@ -28,7 +28,7 @@ func TestRemoveGroupLeavesTombstoneThatDropsLateEnvelope(t *testing.T) {
 	mustEnsure(t, env.runtime, meta)
 	mustRemove(t, env.runtime, meta.GroupID)
 
-	env.transport.deliver(multiisr.Envelope{GroupID: 9, Generation: 1, Epoch: 1, Kind: multiisr.MessageKindAck})
+	env.transport.deliver(isrnode.Envelope{GroupID: 9, Generation: 1, Epoch: 1, Kind: isrnode.MessageKindAck})
 	if env.factory.replicas[0].applyFetchCalls != 0 {
 		t.Fatalf("late envelope should be dropped")
 	}

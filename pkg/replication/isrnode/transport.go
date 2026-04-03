@@ -1,4 +1,4 @@
-package multiisr
+package isrnode
 
 import (
 	"bytes"
@@ -59,7 +59,7 @@ func decodeFetchResponsePayload(data []byte) (fetchResponsePayload, error) {
 		return fetchResponsePayload{}, err
 	}
 	if version != fetchResponseCodecVersion1 {
-		return fetchResponsePayload{}, errors.New("multiisr: unknown fetch response codec version")
+		return fetchResponsePayload{}, errors.New("isrnode: unknown fetch response codec version")
 	}
 
 	var truncateFlag byte
@@ -103,7 +103,7 @@ func decodeFetchResponsePayload(data []byte) (fetchResponsePayload, error) {
 		})
 	}
 	if rd.Len() != 0 {
-		return fetchResponsePayload{}, errors.New("multiisr: trailing fetch response payload bytes")
+		return fetchResponsePayload{}, errors.New("isrnode: trailing fetch response payload bytes")
 	}
 	return payload, nil
 }

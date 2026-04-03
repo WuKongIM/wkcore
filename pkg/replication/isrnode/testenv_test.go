@@ -1,4 +1,4 @@
-package multiisr_test
+package isrnode_test
 
 import (
 	"context"
@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/consensus/multiisr"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isrnode"
 )
 
 type testEnv struct {
-	runtime     multiisr.Runtime
+	runtime     isrnode.Runtime
 	generations *fakeGenerationStore
 	factory     *fakeReplicaFactory
 	transport   *fakeTransport
@@ -23,7 +23,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	return newTestEnvWithOptions(t)
 }
 
-type testEnvOption func(*multiisr.Config)
+type testEnvOption func(*isrnode.Config)
 
 func newTestEnvWithOptions(t *testing.T, opts ...testEnvOption) *testEnv {
 	t.Helper()
@@ -34,13 +34,13 @@ func newTestEnvWithOptions(t *testing.T, opts ...testEnvOption) *testEnv {
 	transport := &fakeTransport{}
 	sessions := &fakePeerSessionManager{}
 
-	cfg := multiisr.Config{
+	cfg := isrnode.Config{
 		LocalNode:       1,
 		ReplicaFactory:  factory,
 		GenerationStore: generations,
 		Transport:       transport,
 		PeerSessions:    sessions,
-		Tombstones: multiisr.TombstonePolicy{
+		Tombstones: isrnode.TombstonePolicy{
 			TombstoneTTL: 30 * time.Second,
 		},
 		Now: clock.Now,
@@ -49,7 +49,7 @@ func newTestEnvWithOptions(t *testing.T, opts ...testEnvOption) *testEnv {
 		opt(&cfg)
 	}
 
-	rt, err := multiisr.New(cfg)
+	rt, err := isrnode.New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -65,7 +65,7 @@ func newTestEnvWithOptions(t *testing.T, opts ...testEnvOption) *testEnv {
 }
 
 func withMaxGroups(n int) testEnvOption {
-	return func(cfg *multiisr.Config) {
+	return func(cfg *isrnode.Config) {
 		cfg.Limits.MaxGroups = n
 	}
 }
@@ -81,21 +81,21 @@ func testMeta(groupID, epoch uint64, leader isr.NodeID, replicas []isr.NodeID) i
 	}
 }
 
-func mustEnsure(t *testing.T, rt multiisr.Runtime, meta isr.GroupMeta) {
+func mustEnsure(t *testing.T, rt isrnode.Runtime, meta isr.GroupMeta) {
 	t.Helper()
 	if err := rt.EnsureGroup(meta); err != nil {
 		t.Fatalf("EnsureGroup(%d) error = %v", meta.GroupID, err)
 	}
 }
 
-func mustRemove(t *testing.T, rt multiisr.Runtime, groupID uint64) {
+func mustRemove(t *testing.T, rt isrnode.Runtime, groupID uint64) {
 	t.Helper()
 	if err := rt.RemoveGroup(groupID); err != nil {
 		t.Fatalf("RemoveGroup(%d) error = %v", groupID, err)
 	}
 }
 
-func mustGroup(t *testing.T, rt multiisr.Runtime, groupID uint64) multiisr.GroupHandle {
+func mustGroup(t *testing.T, rt isrnode.Runtime, groupID uint64) isrnode.GroupHandle {
 	t.Helper()
 	group, ok := rt.Group(groupID)
 	if !ok {
@@ -153,7 +153,7 @@ func newFakeReplicaFactory() *fakeReplicaFactory {
 	return &fakeReplicaFactory{}
 }
 
-func (f *fakeReplicaFactory) New(cfg multiisr.GroupConfig) (isr.Replica, error) {
+func (f *fakeReplicaFactory) New(cfg isrnode.GroupConfig) (isr.Replica, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -240,20 +240,20 @@ func (r *fakeReplica) Status() isr.ReplicaState {
 
 type fakeTransport struct {
 	mu      sync.Mutex
-	handler func(multiisr.Envelope)
+	handler func(isrnode.Envelope)
 }
 
-func (t *fakeTransport) Send(peer isr.NodeID, env multiisr.Envelope) error {
+func (t *fakeTransport) Send(peer isr.NodeID, env isrnode.Envelope) error {
 	return nil
 }
 
-func (t *fakeTransport) RegisterHandler(fn func(multiisr.Envelope)) {
+func (t *fakeTransport) RegisterHandler(fn func(isrnode.Envelope)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.handler = fn
 }
 
-func (t *fakeTransport) deliver(env multiisr.Envelope) {
+func (t *fakeTransport) deliver(env isrnode.Envelope) {
 	t.mu.Lock()
 	handler := t.handler
 	t.mu.Unlock()
@@ -264,17 +264,17 @@ func (t *fakeTransport) deliver(env multiisr.Envelope) {
 
 type fakePeerSessionManager struct{}
 
-func (m *fakePeerSessionManager) Session(peer isr.NodeID) multiisr.PeerSession {
+func (m *fakePeerSessionManager) Session(peer isr.NodeID) isrnode.PeerSession {
 	return &fakePeerSession{}
 }
 
 type fakePeerSession struct{}
 
-func (s *fakePeerSession) Send(env multiisr.Envelope) error {
+func (s *fakePeerSession) Send(env isrnode.Envelope) error {
 	return nil
 }
 
-func (s *fakePeerSession) TryBatch(env multiisr.Envelope) bool {
+func (s *fakePeerSession) TryBatch(env isrnode.Envelope) bool {
 	return false
 }
 
@@ -282,8 +282,8 @@ func (s *fakePeerSession) Flush() error {
 	return nil
 }
 
-func (s *fakePeerSession) Backpressure() multiisr.BackpressureState {
-	return multiisr.BackpressureState{}
+func (s *fakePeerSession) Backpressure() isrnode.BackpressureState {
+	return isrnode.BackpressureState{}
 }
 
 func (s *fakePeerSession) Close() error {

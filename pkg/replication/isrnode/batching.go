@@ -1,4 +1,4 @@
-package multiisr
+package isrnode
 
 func (r *runtime) sendEnvelope(env Envelope) error {
 	trackInflight := env.Kind == MessageKindFetchRequest
