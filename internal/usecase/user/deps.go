@@ -1,0 +1,31 @@
+package user
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+)
+
+var (
+	ErrUserStoreRequired   = errors.New("usecase/user: user store required")
+	ErrDeviceStoreRequired = errors.New("usecase/user: device store required")
+)
+
+type UserStore interface {
+	GetUser(ctx context.Context, uid string) (metadb.User, error)
+	UpsertUser(ctx context.Context, u metadb.User) error
+}
+
+type DeviceStore interface {
+	UpsertDevice(ctx context.Context, d metadb.Device) error
+}
+
+type Options struct {
+	Users     UserStore
+	Devices   DeviceStore
+	Online    online.Registry
+	AfterFunc func(time.Duration, func())
+}
