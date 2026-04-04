@@ -291,10 +291,9 @@ func TestHandlerOnFramePingIsNoop(t *testing.T) {
 }
 
 func TestNewSharesOnlineRegistryWithInjectedMessageApp(t *testing.T) {
-	msgApp := message.New(message.Options{
-		IdentityStore: &fakeIdentityStore{},
-		ChannelStore:  &fakeChannelStore{},
-		Now:           func() time.Time { return fixedGatewayNow },
+	msgApp := newClusterBackedMessageApp(channellog.SendResult{
+		MessageID:  88,
+		MessageSeq: 9,
 	})
 	handler := New(Options{
 		Messages: msgApp,
@@ -444,6 +443,28 @@ type fakeChannelStore struct{}
 
 func (*fakeChannelStore) GetChannel(context.Context, string, int64) (metadb.Channel, error) {
 	return metadb.Channel{}, nil
+}
+
+type fakeChannelCluster struct {
+	result channellog.SendResult
+	err    error
+}
+
+func (f *fakeChannelCluster) ApplyMeta(channellog.ChannelMeta) error {
+	return nil
+}
+
+func (f *fakeChannelCluster) Send(context.Context, channellog.SendRequest) (channellog.SendResult, error) {
+	return f.result, f.err
+}
+
+func newClusterBackedMessageApp(result channellog.SendResult) *message.App {
+	return message.New(message.Options{
+		IdentityStore: &fakeIdentityStore{},
+		ChannelStore:  &fakeChannelStore{},
+		Cluster:       &fakeChannelCluster{result: result},
+		Now:           func() time.Time { return fixedGatewayNow },
+	})
 }
 
 var _ online.Registry = (*online.MemoryRegistry)(nil)

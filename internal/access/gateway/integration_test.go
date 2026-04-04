@@ -24,8 +24,13 @@ const (
 	gatewayReadTimeout      = 2 * time.Second
 )
 
-func TestGatewayWKProtoHandlerRoutesLocalPersonSend(t *testing.T) {
-	handler := New(Options{})
+func TestGatewayWKProtoHandlerRoutesDurablePersonSend(t *testing.T) {
+	handler := New(Options{
+		Messages: newClusterBackedMessageApp(channellog.SendResult{
+			MessageID:  88,
+			MessageSeq: 9,
+		}),
+	})
 	gw, err := coregateway.New(coregateway.Options{
 		Handler: handler,
 		Authenticator: coregateway.NewWKProtoAuthenticator(coregateway.WKProtoAuthOptions{
@@ -64,8 +69,8 @@ func TestGatewayWKProtoHandlerRoutesLocalPersonSend(t *testing.T) {
 	require.Equal(t, wkframe.ReasonSuccess, ack.ReasonCode)
 	require.Equal(t, clientSeq, ack.ClientSeq)
 	require.Equal(t, gatewayTestClientMsgNo, ack.ClientMsgNo)
-	require.NotZero(t, ack.MessageID)
-	require.NotZero(t, ack.MessageSeq)
+	require.Equal(t, int64(88), ack.MessageID)
+	require.Equal(t, uint64(9), ack.MessageSeq)
 
 	recv := readRecvPacket(t, recipientConn)
 	require.Equal(t, gatewayTestSenderUID, recv.FromUID)

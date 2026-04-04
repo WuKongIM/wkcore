@@ -13,11 +13,19 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 	"github.com/stretchr/testify/require"
 )
 
 func TestAPIServerSendMessageWithRealMessageApp(t *testing.T) {
-	msgApp := message.New(message.Options{})
+	msgApp := message.New(message.Options{
+		IdentityStore: &fakeIdentityStore{},
+		ChannelStore:  &fakeChannelStore{},
+		Cluster: &fakeChannelCluster{
+			result: channellog.SendResult{MessageID: 66, MessageSeq: 7},
+		},
+	})
 	require.NoError(t, msgApp.OnlineRegistry().Register(online.OnlineConn{
 		SessionID: 2,
 		UID:       "u2",
@@ -63,7 +71,32 @@ func TestAPIServerSendMessageWithRealMessageApp(t *testing.T) {
 		Reason     uint8  `json:"reason"`
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
-	require.NotZero(t, got.MessageID)
-	require.NotZero(t, got.MessageSeq)
+	require.Equal(t, int64(66), got.MessageID)
+	require.Equal(t, uint64(7), got.MessageSeq)
 	require.Equal(t, uint8(wkframe.ReasonSuccess), got.Reason)
+}
+
+type fakeIdentityStore struct{}
+
+func (*fakeIdentityStore) GetUser(context.Context, string) (metadb.User, error) {
+	return metadb.User{}, nil
+}
+
+type fakeChannelStore struct{}
+
+func (*fakeChannelStore) GetChannel(context.Context, string, int64) (metadb.Channel, error) {
+	return metadb.Channel{}, nil
+}
+
+type fakeChannelCluster struct {
+	result channellog.SendResult
+	err    error
+}
+
+func (*fakeChannelCluster) ApplyMeta(channellog.ChannelMeta) error {
+	return nil
+}
+
+func (f *fakeChannelCluster) Send(context.Context, channellog.SendRequest) (channellog.SendResult, error) {
+	return f.result, f.err
 }
