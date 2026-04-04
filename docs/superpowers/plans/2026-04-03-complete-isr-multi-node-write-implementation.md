@@ -240,7 +240,7 @@ func (s *Store) UpsertChannelRuntimeMeta(ctx context.Context, meta metadb.Channe
 Run: `go test ./pkg/storage/metadb ./pkg/storage/metafsm ./pkg/storage/metastore -run 'Test.*ChannelRuntimeMeta|TestStateMachine' -v`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add pkg/storage/metadb pkg/storage/metafsm pkg/storage/metastore
@@ -661,7 +661,7 @@ git commit -m "feat: use request-scoped durable send contexts"
 - Create: `pkg/storage/channellog/multinode_integration_test.go`
 - Create: `internal/app/multinode_integration_test.go`
 
-- [ ] **Step 1: Write the failing three-node `channellog` integration test**
+- [x] **Step 1: Write the failing three-node `channellog` integration test**
 
 ```go
 func TestThreeNodeClusterSendCommitsBeforeAckAndSurvivesFollowerRestart(t *testing.T) {
@@ -673,12 +673,12 @@ func TestThreeNodeClusterSendCommitsBeforeAckAndSurvivesFollowerRestart(t *testi
 }
 ```
 
-- [ ] **Step 2: Run the package-level integration test**
+- [x] **Step 2: Run the package-level integration test**
 
 Run: `go test ./pkg/storage/channellog -run 'TestThreeNodeClusterSendCommitsBeforeAckAndSurvivesFollowerRestart' -v`
 Expected: FAIL until the full data plane is wired.
 
-- [ ] **Step 3: Write the failing three-app integration test**
+- [x] **Step 3: Write the failing three-app integration test**
 
 ```go
 func TestThreeNodeAppGatewaySendUsesDurableCommit(t *testing.T) {
@@ -688,15 +688,24 @@ func TestThreeNodeAppGatewaySendUsesDurableCommit(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4: Run the app integration test**
+- [x] **Step 4: Run the app integration test**
 
 Run: `go test ./internal/app -run 'TestThreeNodeAppGatewaySendUsesDurableCommit' -v`
 Expected: FAIL until app-level wiring is complete.
 
-- [ ] **Step 5: Make both pass and run the final verification batch**
+- [x] **Step 5: Make both pass and run the final verification batch**
 
 Run: `go test ./pkg/storage/channellog ./pkg/replication/isrnode ./pkg/replication/isrnodetransport ./pkg/transport/nodetransport ./pkg/storage/metadb ./pkg/storage/metafsm ./pkg/storage/metastore ./internal/usecase/message ./internal/access/gateway ./internal/access/api ./internal/app -count=1`
 Expected: PASS
+
+Execution notes:
+- reviewer found and fix applied: `channelMetaSync` now tracks locally applied groups before `cluster.ApplyMeta`, so `Stop()` can clean up runtime state even when cluster meta apply fails mid-flight
+- stability fix applied: `isrnode` now schedules delayed follower replication retry after send failures, instead of stopping after a single automatic retry
+- harness stabilization applied: the three-app integration test refreshes channel metadata on the elected leader first, then followers, closing the leader-not-ready startup window in the test harness
+- verification run on 2026-04-04:
+  - `go test ./pkg/storage/channellog ./pkg/replication/isrnode ./pkg/replication/isrnodetransport ./pkg/transport/nodetransport ./pkg/storage/metadb ./pkg/storage/metafsm ./pkg/storage/metastore ./internal/usecase/message ./internal/access/gateway ./internal/access/api ./internal/app -count=1`
+  - `go test ./internal/app -run 'TestThreeNodeAppGatewaySendUsesDurableCommit' -count=3`
+  - both passed
 
 - [ ] **Step 6: Commit**
 
@@ -718,4 +727,3 @@ Because this harness does not cleanly allow the plan-document-reviewer delegatio
 ## Execution Handoff
 
 Plan complete and saved to `docs/superpowers/plans/2026-04-03-complete-isr-multi-node-write-implementation.md`. Ready to execute?
-

@@ -28,6 +28,86 @@ func TestManyGroupsToSamePeerReuseOneSession(t *testing.T) {
 	}
 }
 
+func TestReplicationRequestPopulatesFetchRequestEnvelope(t *testing.T) {
+	env := newSessionTestEnv(t)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(27, 4, 1, []isr.NodeID{1, 2}))
+
+	replica := env.factory.replicas[0]
+	replica.mu.Lock()
+	replica.state.LEO = 6
+	replica.state.Epoch = 4
+	replica.mu.Unlock()
+
+	env.runtime.enqueueReplication(testGroupKey(27), 2)
+	env.runtime.runScheduler()
+
+	session := env.sessions.session(2)
+	if session.sendCount() != 1 {
+		t.Fatalf("expected one fetch request send, got %d", session.sendCount())
+	}
+	if session.last.Kind != MessageKindFetchRequest {
+		t.Fatalf("last kind = %v, want fetch request", session.last.Kind)
+	}
+	if session.last.FetchRequest == nil {
+		t.Fatal("expected fetch request payload")
+	}
+	if session.last.FetchRequest.GroupKey != testGroupKey(27) {
+		t.Fatalf("FetchRequest.GroupKey = %q, want %q", session.last.FetchRequest.GroupKey, testGroupKey(27))
+	}
+	if session.last.FetchRequest.ReplicaID != 1 {
+		t.Fatalf("FetchRequest.ReplicaID = %d, want 1", session.last.FetchRequest.ReplicaID)
+	}
+	if session.last.FetchRequest.FetchOffset != 6 {
+		t.Fatalf("FetchRequest.FetchOffset = %d, want 6", session.last.FetchRequest.FetchOffset)
+	}
+	if session.last.FetchRequest.OffsetEpoch != 4 {
+		t.Fatalf("FetchRequest.OffsetEpoch = %d, want 4", session.last.FetchRequest.OffsetEpoch)
+	}
+	if session.last.FetchRequest.MaxBytes <= 0 {
+		t.Fatalf("FetchRequest.MaxBytes = %d, want > 0", session.last.FetchRequest.MaxBytes)
+	}
+}
+
+func TestReplicationSendErrorRetriesOnceWithoutNewWork(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.AutoRunScheduler = true
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(28, 4, 1, []isr.NodeID{1, 2}))
+
+	session := env.sessions.session(2)
+	session.enqueueSendErrors(context.DeadlineExceeded)
+
+	env.runtime.enqueueReplication(testGroupKey(28), 2)
+	env.runtime.runScheduler()
+
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("expected failed replication to be retried once automatically, got %d sends", got)
+	}
+}
+
+func TestReplicationSendErrorKeepsRetryingUntilSuccessWithoutNewWork(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.AutoRunScheduler = true
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(29, 4, 1, []isr.NodeID{1, 2}))
+
+	session := env.sessions.session(2)
+	session.enqueueSendErrors(context.DeadlineExceeded, context.DeadlineExceeded)
+
+	env.runtime.enqueueReplication(testGroupKey(29), 2)
+	env.runtime.runScheduler()
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := session.sendCount(); got >= 3 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	t.Fatalf("expected failed replication to keep retrying until success, got %d sends", session.sendCount())
+}
+
 func TestInboundEnvelopeDemuxRequiresMatchingGeneration(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(23, 1, 1, []isr.NodeID{1, 2}))
@@ -42,17 +122,13 @@ func TestFetchResponseDropsStaleEpoch(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(24, 3, 1, []isr.NodeID{1, 2}))
 
-	payload := mustEncodeFetchResponsePayload(t, fetchResponsePayload{
-		LeaderHW: 5,
-		Records:  []isr.Record{{Payload: []byte("stale"), SizeBytes: 5}},
-	})
 	env.transport.deliver(Envelope{
-		Peer:       2,
-		GroupKey:   testGroupKey(24),
-		Generation: 1,
-		Epoch:      2,
-		Kind:       MessageKindFetchResponse,
-		Payload:    payload,
+		Peer:          2,
+		GroupKey:      testGroupKey(24),
+		Generation:    1,
+		Epoch:         2,
+		Kind:          MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{LeaderHW: 5, Records: []isr.Record{{Payload: []byte("stale"), SizeBytes: 5}}},
 	})
 	if env.factory.replicas[0].applyFetchCalls != 0 {
 		t.Fatalf("stale epoch response should be dropped")
@@ -64,18 +140,17 @@ func TestFetchResponseDecodesPayloadIntoApplyFetch(t *testing.T) {
 	mustEnsureLocal(t, env.runtime, testMetaLocal(25, 4, 1, []isr.NodeID{1, 2}))
 
 	truncateTo := uint64(7)
-	payload := mustEncodeFetchResponsePayload(t, fetchResponsePayload{
-		LeaderHW:   11,
-		TruncateTo: &truncateTo,
-		Records:    []isr.Record{{Payload: []byte("ok"), SizeBytes: 2}},
-	})
 	env.transport.deliver(Envelope{
 		Peer:       2,
 		GroupKey:   testGroupKey(25),
 		Generation: 1,
 		Epoch:      4,
 		Kind:       MessageKindFetchResponse,
-		Payload:    payload,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW:   11,
+			TruncateTo: &truncateTo,
+			Records:    []isr.Record{{Payload: []byte("ok"), SizeBytes: 2}},
+		},
 	})
 
 	if env.factory.replicas[0].applyFetchCalls != 1 {
@@ -93,16 +168,51 @@ func TestFetchResponseDecodesPayloadIntoApplyFetch(t *testing.T) {
 	}
 }
 
-func TestFetchResponsePayloadUsesVersionedBinaryCodec(t *testing.T) {
-	payload := mustEncodeFetchResponsePayload(t, fetchResponsePayload{
-		LeaderHW: 3,
-		Records:  []isr.Record{{Payload: []byte("x"), SizeBytes: 1}},
-	})
-	if len(payload) == 0 {
-		t.Fatalf("expected encoded payload")
+func TestServeFetchReturnsReplicaFetchResult(t *testing.T) {
+	env := newSessionTestEnv(t)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(26, 5, 1, []isr.NodeID{1, 2}))
+
+	truncateTo := uint64(9)
+	env.factory.replicas[0].fetchResult = isr.FetchResult{
+		Epoch:      5,
+		HW:         11,
+		TruncateTo: &truncateTo,
+		Records: []isr.Record{
+			{Payload: []byte("a"), SizeBytes: 1},
+			{Payload: []byte("bc"), SizeBytes: 2},
+		},
 	}
-	if payload[0] != fetchResponseCodecVersion1 {
-		t.Fatalf("expected codec version byte %d, got %d", fetchResponseCodecVersion1, payload[0])
+
+	resp, err := env.runtime.ServeFetch(context.Background(), FetchRequestEnvelope{
+		GroupKey:    testGroupKey(26),
+		Epoch:       5,
+		Generation:  1,
+		ReplicaID:   2,
+		FetchOffset: 7,
+		OffsetEpoch: 4,
+		MaxBytes:    1024,
+	})
+	if err != nil {
+		t.Fatalf("ServeFetch() error = %v", err)
+	}
+	if env.factory.replicas[0].fetchCalls != 1 {
+		t.Fatalf("expected replica.Fetch to be called once")
+	}
+	gotReq := env.factory.replicas[0].lastFetch
+	if gotReq.GroupKey != testGroupKey(26) || gotReq.FetchOffset != 7 || gotReq.OffsetEpoch != 4 || gotReq.MaxBytes != 1024 {
+		t.Fatalf("unexpected fetch request: %+v", gotReq)
+	}
+	if resp.GroupKey != testGroupKey(26) || resp.Epoch != 5 || resp.Generation != 1 {
+		t.Fatalf("unexpected response envelope metadata: %+v", resp)
+	}
+	if resp.TruncateTo == nil || *resp.TruncateTo != truncateTo {
+		t.Fatalf("unexpected TruncateTo: %+v", resp.TruncateTo)
+	}
+	if resp.LeaderHW != 11 {
+		t.Fatalf("expected LeaderHW 11, got %d", resp.LeaderHW)
+	}
+	if len(resp.Records) != 2 || string(resp.Records[1].Payload) != "bc" {
+		t.Fatalf("unexpected response records: %+v", resp.Records)
 	}
 }
 
@@ -215,6 +325,11 @@ type sessionReplica struct {
 	state           isr.ReplicaState
 	applyFetchCalls int
 	lastApplyFetch  isr.ApplyFetchRequest
+	applyFetchErr   error
+	fetchCalls      int
+	lastFetch       isr.FetchRequest
+	fetchResult     isr.FetchResult
+	fetchErr        error
 }
 
 func (r *sessionReplica) ApplyMeta(meta isr.GroupMeta) error {
@@ -241,14 +356,18 @@ func (r *sessionReplica) Append(ctx context.Context, batch []isr.Record) (isr.Co
 	return isr.CommitResult{}, nil
 }
 func (r *sessionReplica) Fetch(ctx context.Context, req isr.FetchRequest) (isr.FetchResult, error) {
-	return isr.FetchResult{}, nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fetchCalls++
+	r.lastFetch = req
+	return r.fetchResult, r.fetchErr
 }
 func (r *sessionReplica) ApplyFetch(ctx context.Context, req isr.ApplyFetchRequest) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.applyFetchCalls++
 	r.lastApplyFetch = req
-	return nil
+	return r.applyFetchErr
 }
 func (r *sessionReplica) Status() isr.ReplicaState {
 	r.mu.Lock()
@@ -324,6 +443,9 @@ func (m *sessionPeerSessionManager) session(peer isr.NodeID) *trackingPeerSessio
 type trackingPeerSession struct {
 	mu           sync.Mutex
 	sends        int
+	last         Envelope
+	sendErr      error
+	sendErrs     []error
 	backpressure BackpressureState
 }
 
@@ -331,7 +453,13 @@ func (s *trackingPeerSession) Send(env Envelope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sends++
-	return nil
+	s.last = env
+	if len(s.sendErrs) > 0 {
+		err := s.sendErrs[0]
+		s.sendErrs = append([]error(nil), s.sendErrs[1:]...)
+		return err
+	}
+	return s.sendErr
 }
 
 func (s *trackingPeerSession) TryBatch(env Envelope) bool {
@@ -364,11 +492,14 @@ func (s *trackingPeerSession) setBackpressure(state BackpressureState) {
 	s.backpressure = state
 }
 
-func mustEncodeFetchResponsePayload(t *testing.T, payload fetchResponsePayload) []byte {
-	t.Helper()
-	data, err := encodeFetchResponsePayload(payload)
-	if err != nil {
-		t.Fatalf("encodeFetchResponsePayload() error = %v", err)
-	}
-	return data
+func (s *trackingPeerSession) setSendErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sendErr = err
+}
+
+func (s *trackingPeerSession) enqueueSendErrors(errs ...error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sendErrs = append(s.sendErrs, errs...)
 }

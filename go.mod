@@ -3,6 +3,7 @@ module github.com/WuKongIM/WuKongIM
 go 1.23
 
 require (
+	github.com/bwmarrin/snowflake v0.3.0
 	github.com/cockroachdb/pebble/v2 v2.1.4
 	github.com/gin-gonic/gin v1.10.0
 	github.com/google/uuid v1.3.0

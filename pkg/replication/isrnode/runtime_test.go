@@ -41,6 +41,39 @@ func TestRuntimeReconcileFlowEnsureApplyRemoveEnsure(t *testing.T) {
 	}
 }
 
+func TestEnsureGroupPromotesLocalLeaderReplica(t *testing.T) {
+	env := newTestEnv(t)
+
+	mustEnsure(t, env.runtime, testMeta(32, 1, 1, []isr.NodeID{1, 2}))
+
+	if got := mustGroup(t, env.runtime, 32).Status().Role; got != isr.RoleLeader {
+		t.Fatalf("expected RoleLeader, got %v", got)
+	}
+}
+
+func TestApplyMetaTransitionsReplicaRoleWithLeadershipChanges(t *testing.T) {
+	env := newTestEnv(t)
+
+	mustEnsure(t, env.runtime, testMeta(33, 1, 2, []isr.NodeID{1, 2}))
+	if got := mustGroup(t, env.runtime, 33).Status().Role; got != isr.RoleFollower {
+		t.Fatalf("expected initial RoleFollower, got %v", got)
+	}
+
+	if err := env.runtime.ApplyMeta(testMeta(33, 2, 1, []isr.NodeID{1, 2})); err != nil {
+		t.Fatalf("ApplyMeta() promote leader error = %v", err)
+	}
+	if got := mustGroup(t, env.runtime, 33).Status().Role; got != isr.RoleLeader {
+		t.Fatalf("expected promoted RoleLeader, got %v", got)
+	}
+
+	if err := env.runtime.ApplyMeta(testMeta(33, 3, 2, []isr.NodeID{1, 2})); err != nil {
+		t.Fatalf("ApplyMeta() demote follower error = %v", err)
+	}
+	if got := mustGroup(t, env.runtime, 33).Status().Role; got != isr.RoleFollower {
+		t.Fatalf("expected demoted RoleFollower, got %v", got)
+	}
+}
+
 func TestEnsureGroupReturnsErrTooManyGroups(t *testing.T) {
 	env := newTestEnvWithOptions(t, withMaxGroups(1))
 	mustEnsure(t, env.runtime, testMeta(41, 1, 1, []isr.NodeID{1, 2}))
@@ -58,5 +91,61 @@ func TestEnsureGroupRejectsDuplicateActiveGroup(t *testing.T) {
 	err := env.runtime.EnsureGroup(meta)
 	if !errors.Is(err, isrnode.ErrGroupExists) {
 		t.Fatalf("expected ErrGroupExists, got %v", err)
+	}
+}
+
+func TestServeFetchRejectsUnknownGeneration(t *testing.T) {
+	env := newTestEnv(t)
+	mustEnsure(t, env.runtime, testMeta(44, 1, 1, []isr.NodeID{1, 2}))
+
+	_, err := env.runtime.(isrnode.FetchService).ServeFetch(context.Background(), isrnode.FetchRequestEnvelope{
+		GroupKey:    testGroupKey(44),
+		Epoch:       1,
+		Generation:  99,
+		ReplicaID:   2,
+		FetchOffset: 0,
+		MaxBytes:    1 << 20,
+	})
+	if !errors.Is(err, isrnode.ErrGenerationMismatch) {
+		t.Fatalf("expected ErrGenerationMismatch, got %v", err)
+	}
+	if env.factory.replicas[0].fetchCalls != 0 {
+		t.Fatalf("expected fetch to be rejected before replica.Fetch")
+	}
+}
+
+func TestServeFetchRejectsUnknownGroup(t *testing.T) {
+	env := newTestEnv(t)
+
+	_, err := env.runtime.(isrnode.FetchService).ServeFetch(context.Background(), isrnode.FetchRequestEnvelope{
+		GroupKey:    testGroupKey(45),
+		Epoch:       1,
+		Generation:  1,
+		ReplicaID:   2,
+		FetchOffset: 0,
+		MaxBytes:    1 << 20,
+	})
+	if !errors.Is(err, isrnode.ErrGroupNotFound) {
+		t.Fatalf("expected ErrGroupNotFound, got %v", err)
+	}
+}
+
+func TestServeFetchRejectsStaleEpoch(t *testing.T) {
+	env := newTestEnv(t)
+	mustEnsure(t, env.runtime, testMeta(46, 3, 1, []isr.NodeID{1, 2}))
+
+	_, err := env.runtime.(isrnode.FetchService).ServeFetch(context.Background(), isrnode.FetchRequestEnvelope{
+		GroupKey:    testGroupKey(46),
+		Epoch:       2,
+		Generation:  1,
+		ReplicaID:   2,
+		FetchOffset: 0,
+		MaxBytes:    1 << 20,
+	})
+	if !errors.Is(err, isr.ErrStaleMeta) {
+		t.Fatalf("expected ErrStaleMeta, got %v", err)
+	}
+	if env.factory.replicas[0].fetchCalls != 0 {
+		t.Fatalf("expected stale epoch to be rejected before replica.Fetch")
 	}
 }

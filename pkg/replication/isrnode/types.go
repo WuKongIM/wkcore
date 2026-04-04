@@ -39,6 +39,9 @@ type Envelope struct {
 	RequestID  uint64
 	Kind       MessageKind
 	Payload    []byte
+
+	FetchRequest  *FetchRequestEnvelope
+	FetchResponse *FetchResponseEnvelope
 }
 
 type TombstonePolicy struct {
@@ -58,7 +61,31 @@ type GroupHandle interface {
 	Append(ctx context.Context, records []isr.Record) (isr.CommitResult, error)
 }
 
+type FetchRequestEnvelope struct {
+	GroupKey    isr.GroupKey
+	Epoch       uint64
+	Generation  uint64
+	ReplicaID   isr.NodeID
+	FetchOffset uint64
+	OffsetEpoch uint64
+	MaxBytes    int
+}
+
+type FetchResponseEnvelope struct {
+	GroupKey   isr.GroupKey
+	Epoch      uint64
+	Generation uint64
+	TruncateTo *uint64
+	LeaderHW   uint64
+	Records    []isr.Record
+}
+
+type FetchService interface {
+	ServeFetch(ctx context.Context, req FetchRequestEnvelope) (FetchResponseEnvelope, error)
+}
+
 type Runtime interface {
+	FetchService
 	EnsureGroup(meta isr.GroupMeta) error
 	RemoveGroup(groupKey isr.GroupKey) error
 	ApplyMeta(meta isr.GroupMeta) error
@@ -98,12 +125,13 @@ type PeerSession interface {
 }
 
 type Config struct {
-	LocalNode       isr.NodeID
-	ReplicaFactory  ReplicaFactory
-	GenerationStore GenerationStore
-	Transport       Transport
-	PeerSessions    PeerSessionManager
-	Limits          Limits
-	Tombstones      TombstonePolicy
-	Now             func() time.Time
+	LocalNode        isr.NodeID
+	ReplicaFactory   ReplicaFactory
+	GenerationStore  GenerationStore
+	Transport        Transport
+	PeerSessions     PeerSessionManager
+	AutoRunScheduler bool
+	Limits           Limits
+	Tombstones       TombstonePolicy
+	Now              func() time.Time
 }

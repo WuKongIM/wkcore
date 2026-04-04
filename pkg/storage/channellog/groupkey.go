@@ -14,3 +14,7 @@ func channelGroupKey(key ChannelKey) isr.GroupKey {
 		base64.RawURLEncoding.EncodeToString([]byte(key.ChannelID)),
 	))
 }
+
+func GroupKeyForChannel(key ChannelKey) isr.GroupKey {
+	return channelGroupKey(key)
+}

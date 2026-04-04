@@ -1,6 +1,7 @@
 package isrnode
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -40,17 +41,16 @@ func TestFetchResponseDrainsQueuedReplicationForPeer(t *testing.T) {
 		t.Fatalf("expected queued request before response, got %d", got)
 	}
 
-	payload := mustEncodeFetchResponsePayload(t, fetchResponsePayload{
-		LeaderHW: 9,
-		Records:  []isr.Record{{Payload: []byte("r1"), SizeBytes: 2}},
-	})
 	env.transport.deliver(Envelope{
 		Peer:       2,
 		GroupKey:   testGroupKey(71),
 		Generation: 1,
 		Epoch:      3,
 		Kind:       MessageKindFetchResponse,
-		Payload:    payload,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 9,
+			Records:  []isr.Record{{Payload: []byte("r1"), SizeBytes: 2}},
+		},
 	})
 
 	if got := env.sessions.session(2).sendCount(); got != 2 {
@@ -58,6 +58,89 @@ func TestFetchResponseDrainsQueuedReplicationForPeer(t *testing.T) {
 	}
 	if got := env.runtime.queuedPeerRequests(2); got != 0 {
 		t.Fatalf("expected peer queue drained, got %d", got)
+	}
+}
+
+func TestFetchResponseApplyErrorKeepsPeerInflightAndQueuedReplication(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Limits.MaxFetchInflightPeer = 1
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(81, 3, 1, []isr.NodeID{1, 2}))
+	mustEnsureLocal(t, env.runtime, testMetaLocal(82, 3, 1, []isr.NodeID{1, 2}))
+	mustEnsureLocal(t, env.runtime, testMetaLocal(83, 3, 1, []isr.NodeID{1, 2}))
+
+	env.factory.replicas[0].applyFetchErr = isr.ErrCorruptState
+
+	env.runtime.enqueueReplication(testGroupKey(81), 2)
+	env.runtime.enqueueReplication(testGroupKey(82), 2)
+	env.runtime.runScheduler()
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("expected queued request before failed response, got %d", got)
+	}
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		GroupKey:   testGroupKey(81),
+		Generation: 1,
+		Epoch:      3,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 9,
+			Records:  []isr.Record{{Payload: []byte("r1"), SizeBytes: 2}},
+		},
+	})
+
+	if got := env.sessions.session(2).sendCount(); got != 1 {
+		t.Fatalf("apply failure should not drain queued send, got %d sends", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("apply failure should keep queued request, got %d", got)
+	}
+
+	env.runtime.enqueueReplication(testGroupKey(83), 2)
+	env.runtime.runScheduler()
+
+	if got := env.sessions.session(2).sendCount(); got != 1 {
+		t.Fatalf("apply failure should keep peer inflight, got %d sends", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 2 {
+		t.Fatalf("expected later replication to remain queued, got %d", got)
+	}
+}
+
+func TestDrainPeerQueueSendErrorRequeuesReplication(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Limits.MaxFetchInflightPeer = 1
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(84, 3, 1, []isr.NodeID{1, 2}))
+	mustEnsureLocal(t, env.runtime, testMetaLocal(85, 3, 1, []isr.NodeID{1, 2}))
+
+	env.runtime.enqueueReplication(testGroupKey(84), 2)
+	env.runtime.enqueueReplication(testGroupKey(85), 2)
+	env.runtime.runScheduler()
+
+	session := env.sessions.session(2)
+	session.setSendErr(errors.New("boom"))
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		GroupKey:   testGroupKey(84),
+		Generation: 1,
+		Epoch:      3,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 9,
+			Records:  []isr.Record{{Payload: []byte("r1"), SizeBytes: 2}},
+		},
+	})
+
+	session.setSendErr(nil)
+	env.runtime.runScheduler()
+
+	if got := session.sendCount(); got != 3 {
+		t.Fatalf("expected queued replication to retry after drain send error, got %d sends", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 0 {
+		t.Fatalf("expected peer queue drained after retry, got %d", got)
 	}
 }
 

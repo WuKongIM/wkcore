@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -36,6 +37,44 @@ func TestStateMachineEncodeUpsertCommands(t *testing.T) {
 	}
 	if cc.channel.ChannelID != "c1" || cc.channel.ChannelType != 1 || cc.channel.Ban != 1 {
 		t.Fatalf("decoded channel = %+v", cc.channel)
+	}
+
+	metaCmd := EncodeUpsertChannelRuntimeMetaCommand(metadb.ChannelRuntimeMeta{
+		ChannelID:    "c1",
+		ChannelType:  1,
+		ChannelEpoch: 3,
+		LeaderEpoch:  2,
+		Replicas:     []uint64{3, 1, 2},
+		ISR:          []uint64{2, 1},
+		Leader:       1,
+		MinISR:       2,
+		Status:       3,
+		Features:     9,
+		LeaseUntilMS: 1700000000000,
+	})
+	decoded, err = decodeCommand(metaCmd)
+	if err != nil {
+		t.Fatalf("decodeCommand(runtime_meta) error = %v", err)
+	}
+	mc, ok := decoded.(*upsertChannelRuntimeMetaCmd)
+	if !ok {
+		t.Fatalf("decodeCommand(runtime_meta) type = %T, want *upsertChannelRuntimeMetaCmd", decoded)
+	}
+	wantMeta := metadb.ChannelRuntimeMeta{
+		ChannelID:    "c1",
+		ChannelType:  1,
+		ChannelEpoch: 3,
+		LeaderEpoch:  2,
+		Replicas:     []uint64{1, 2, 3},
+		ISR:          []uint64{1, 2},
+		Leader:       1,
+		MinISR:       2,
+		Status:       3,
+		Features:     9,
+		LeaseUntilMS: 1700000000000,
+	}
+	if !reflect.DeepEqual(mc.meta, wantMeta) {
+		t.Fatalf("decoded runtime meta = %#v, want %#v", mc.meta, wantMeta)
 	}
 }
 
@@ -98,6 +137,121 @@ func TestStateMachineApplyUpsertsUserAndChannel(t *testing.T) {
 	}
 	if gotChannel.Ban != 9 {
 		t.Fatalf("updated channel = %#v", gotChannel)
+	}
+}
+
+func TestStateMachineApplyUpsertsAndDeletesChannelRuntimeMeta(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	sm := mustNewStateMachine(t, db, 11)
+
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    "c-meta",
+		ChannelType:  4,
+		ChannelEpoch: 7,
+		LeaderEpoch:  5,
+		Replicas:     []uint64{3, 2, 1},
+		ISR:          []uint64{2, 1},
+		Leader:       2,
+		MinISR:       2,
+		Status:       4,
+		Features:     12,
+		LeaseUntilMS: 1700000001234,
+	}
+
+	result, err := sm.Apply(ctx, multiraft.Command{
+		GroupID: 11,
+		Index:   1,
+		Term:    1,
+		Data:    EncodeUpsertChannelRuntimeMetaCommand(meta),
+	})
+	if err != nil {
+		t.Fatalf("Apply(upsert runtime meta) error = %v", err)
+	}
+	if string(result) != ApplyResultOK {
+		t.Fatalf("Apply(upsert runtime meta) result = %q, want %q", result, ApplyResultOK)
+	}
+
+	got, err := db.ForSlot(11).GetChannelRuntimeMeta(ctx, meta.ChannelID, meta.ChannelType)
+	if err != nil {
+		t.Fatalf("GetChannelRuntimeMeta() error = %v", err)
+	}
+	want := meta
+	want.Replicas = []uint64{1, 2, 3}
+	want.ISR = []uint64{1, 2}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("stored runtime meta = %#v, want %#v", got, want)
+	}
+
+	if _, err := sm.Apply(ctx, multiraft.Command{
+		GroupID: 11,
+		Index:   2,
+		Term:    1,
+		Data:    EncodeDeleteChannelRuntimeMetaCommand(meta.ChannelID, meta.ChannelType),
+	}); err != nil {
+		t.Fatalf("Apply(delete runtime meta) error = %v", err)
+	}
+
+	_, err = db.ForSlot(11).GetChannelRuntimeMeta(ctx, meta.ChannelID, meta.ChannelType)
+	if !errors.Is(err, metadb.ErrNotFound) {
+		t.Fatalf("GetChannelRuntimeMeta() err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestStateMachineRejectsIncompleteChannelRuntimeMetaCommand(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	sm := mustNewStateMachine(t, db, 11)
+
+	cmd := make([]byte, 0, headerSize+32)
+	cmd = append(cmd, commandVersion, cmdTypeUpsertChannelRuntimeMeta)
+	cmd = appendStringTLVField(cmd, tagRuntimeMetaChannelID, "partial-meta")
+	cmd = appendInt64TLVField(cmd, tagRuntimeMetaChannelType, 1)
+
+	_, err := sm.Apply(ctx, multiraft.Command{
+		GroupID: 11,
+		Index:   1,
+		Term:    1,
+		Data:    cmd,
+	})
+	if !errors.Is(err, metadb.ErrCorruptValue) {
+		t.Fatalf("Apply(incomplete runtime meta) err = %v, want ErrCorruptValue", err)
+	}
+}
+
+func TestStateMachineRejectsIncompleteDeleteChannelRuntimeMetaCommand(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	sm := mustNewStateMachine(t, db, 11)
+
+	cmd := make([]byte, 0, headerSize+32)
+	cmd = append(cmd, commandVersion, cmdTypeDeleteChannelRuntimeMeta)
+	cmd = appendStringTLVField(cmd, tagRuntimeMetaChannelID, "partial-delete")
+
+	_, err := sm.Apply(ctx, multiraft.Command{
+		GroupID: 11,
+		Index:   1,
+		Term:    1,
+		Data:    cmd,
+	})
+	if !errors.Is(err, metadb.ErrCorruptValue) {
+		t.Fatalf("Apply(incomplete delete runtime meta) err = %v, want ErrCorruptValue", err)
+	}
+}
+
+func TestStateMachineRejectsDeleteChannelRuntimeMetaWithEmptyChannelID(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	sm := mustNewStateMachine(t, db, 11)
+
+	_, err := sm.Apply(ctx, multiraft.Command{
+		GroupID: 11,
+		Index:   1,
+		Term:    1,
+		Data:    EncodeDeleteChannelRuntimeMetaCommand("", 1),
+	})
+	if !errors.Is(err, metadb.ErrInvalidArgument) {
+		t.Fatalf("Apply(delete runtime meta with empty channel id) err = %v, want ErrInvalidArgument", err)
 	}
 }
 
@@ -193,6 +347,58 @@ func TestStateMachineSnapshotIsSlotScoped(t *testing.T) {
 	_, err = restoreDB.ForSlot(12).GetUser(ctx, "u1")
 	if !errors.Is(err, metadb.ErrNotFound) {
 		t.Fatalf("GetUser(slot12) err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestStateMachineSnapshotRestoreIncludesChannelRuntimeMeta(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	sm := mustNewStateMachine(t, db, 11)
+
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    "snap-meta",
+		ChannelType:  8,
+		ChannelEpoch: 4,
+		LeaderEpoch:  2,
+		Replicas:     []uint64{3, 1, 2},
+		ISR:          []uint64{2, 1},
+		Leader:       1,
+		MinISR:       2,
+		Status:       3,
+		Features:     15,
+		LeaseUntilMS: 1700000005678,
+	}
+
+	if _, err := sm.Apply(ctx, multiraft.Command{
+		GroupID: 11,
+		Index:   1,
+		Term:    1,
+		Data:    EncodeUpsertChannelRuntimeMetaCommand(meta),
+	}); err != nil {
+		t.Fatalf("Apply(runtime meta) error = %v", err)
+	}
+
+	snap, err := sm.Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+
+	restoreDB := openTestDB(t)
+	restoreSM := mustNewStateMachine(t, restoreDB, 11)
+	if err := restoreSM.Restore(ctx, snap); err != nil {
+		t.Fatalf("Restore() error = %v", err)
+	}
+
+	got, err := restoreDB.ForSlot(11).GetChannelRuntimeMeta(ctx, meta.ChannelID, meta.ChannelType)
+	if err != nil {
+		t.Fatalf("GetChannelRuntimeMeta() error = %v", err)
+	}
+
+	want := meta
+	want.Replicas = []uint64{1, 2, 3}
+	want.ISR = []uint64{1, 2}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("restored runtime meta = %#v, want %#v", got, want)
 	}
 }
 

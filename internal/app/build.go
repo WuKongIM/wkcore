@@ -2,15 +2,20 @@ package app
 
 import (
 	"fmt"
+	"time"
 
 	accessapi "github.com/WuKongIM/WuKongIM/internal/access/api"
 	accessgateway "github.com/WuKongIM/WuKongIM/internal/access/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
+	"github.com/WuKongIM/WuKongIM/internal/runtime/messageid"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/sequence"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isrnode"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metafsm"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metastore"
@@ -30,6 +35,10 @@ func build(cfg Config) (_ *App, err error) {
 		if app.raftDB != nil {
 			_ = app.raftDB.Close()
 			app.raftDB = nil
+		}
+		if app.channelLogDB != nil {
+			_ = app.channelLogDB.Close()
+			app.channelLogDB = nil
 		}
 		if app.db != nil {
 			_ = app.db.Close()
@@ -52,13 +61,63 @@ func build(cfg Config) (_ *App, err error) {
 		return nil, fmt.Errorf("app: create cluster: %w", err)
 	}
 
+	app.channelLogDB, err = channellog.Open(cfg.Storage.ChannelLogPath)
+	if err != nil {
+		return nil, fmt.Errorf("app: open channel log db: %w", err)
+	}
+
+	messageIDs, err := messageid.NewSnowflakeGenerator(cfg.Node.ID)
+	if err != nil {
+		return nil, fmt.Errorf("app: create message id generator: %w", err)
+	}
+
+	app.isrTransport = newISRTransportBridge()
+	app.replicaFactory = newChannelReplicaFactory(app.channelLogDB, isr.NodeID(cfg.Node.ID), nil)
+	app.isrRuntime, err = isrnode.New(isrnode.Config{
+		LocalNode:        isr.NodeID(cfg.Node.ID),
+		ReplicaFactory:   app.replicaFactory,
+		GenerationStore:  newMemoryGenerationStore(),
+		Transport:        app.isrTransport,
+		PeerSessions:     app.isrTransport,
+		AutoRunScheduler: true,
+		Limits: isrnode.Limits{
+			MaxFetchInflightPeer: 1,
+			MaxSnapshotInflight:  1,
+		},
+		Tombstones: isrnode.TombstonePolicy{
+			TombstoneTTL: time.Minute,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("app: create isr runtime: %w", err)
+	}
+
+	app.channelLog, err = channellog.New(channellog.Config{
+		Runtime:    newChannelLogRuntimeAdapter(app.isrRuntime),
+		Log:        app.channelLogDB,
+		States:     app.channelLogDB.StateStoreFactory(),
+		MessageIDs: messageIDs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("app: create channel log cluster: %w", err)
+	}
+
 	app.store = metastore.New(app.cluster, app.db)
+	app.channelMetaSync = &channelMetaSync{
+		source:          app.store,
+		runtime:         app.isrRuntime,
+		cluster:         app.channelLog,
+		replicaFactory:  app.replicaFactory,
+		localNode:       cfg.Node.ID,
+		refreshInterval: time.Second,
+	}
 	onlineRegistry := online.NewRegistry()
 	sequenceAllocator := &sequence.MemoryAllocator{}
 	app.messageApp = message.New(message.Options{
 		IdentityStore: app.store,
 		ChannelStore:  app.store,
-		ClusterPort:   app.cluster,
+		ClusterPort:   app.channelLog,
+		MetaRefresher: app.channelMetaSync,
 		Online:        onlineRegistry,
 		Delivery:      online.LocalDelivery{},
 		Sequence:      sequenceAllocator,

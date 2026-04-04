@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -21,6 +22,10 @@ func mapSendError(err error) (int, string, bool) {
 		return http.StatusConflict, "message seq exhausted", true
 	case errors.Is(err, channellog.ErrStaleMeta), errors.Is(err, channellog.ErrNotLeader):
 		return http.StatusServiceUnavailable, "retry required", true
+	case errors.Is(err, context.Canceled):
+		return http.StatusRequestTimeout, "request canceled", true
+	case errors.Is(err, context.DeadlineExceeded):
+		return http.StatusRequestTimeout, "request timeout", true
 	default:
 		return 0, "", false
 	}

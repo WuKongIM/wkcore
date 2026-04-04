@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
@@ -21,6 +22,8 @@ func mapSendErrorReason(err error) (wkframe.ReasonCode, bool) {
 		return wkframe.ReasonMessageSeqExhausted, true
 	case errors.Is(err, channellog.ErrStaleMeta), errors.Is(err, channellog.ErrNotLeader):
 		return wkframe.ReasonNodeNotMatch, true
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return wkframe.ReasonSystemError, true
 	default:
 		return 0, false
 	}

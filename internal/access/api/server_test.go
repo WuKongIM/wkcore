@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -59,6 +60,46 @@ func TestSendMessageMapsJSONToUsecaseCommand(t *testing.T) {
 	require.Equal(t, "u2", msgs.calls[0].ChannelID)
 	require.Equal(t, uint8(wkframe.ChannelTypePerson), msgs.calls[0].ChannelType)
 	require.Equal(t, []byte("hi"), msgs.calls[0].Payload)
+}
+
+func TestSendMessagePropagatesHTTPRequestContext(t *testing.T) {
+	type ctxKey string
+
+	msgs := &recordingMessageUsecase{}
+	srv := New(Options{Messages: msgs})
+
+	reqCtx := context.WithValue(context.Background(), ctxKey("request"), "api-send")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/messages/send", bytes.NewBufferString(`{"sender_uid":"u1","channel_id":"u2","channel_type":1,"payload":"aGk="}`)).WithContext(reqCtx)
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, msgs.sendContexts, 1)
+	require.Same(t, reqCtx, msgs.sendContexts[0])
+}
+
+func TestSendMessageReturnsCanceledRequestContextError(t *testing.T) {
+	msgs := &recordingMessageUsecase{
+		sendFn: func(ctx context.Context, _ message.SendCommand) (message.SendResult, error) {
+			return message.SendResult{}, ctx.Err()
+		},
+	}
+	srv := New(Options{Messages: msgs})
+
+	reqCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/messages/send", bytes.NewBufferString(`{"sender_uid":"u1","channel_id":"u2","channel_type":1,"payload":"aGk="}`)).WithContext(reqCtx)
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusRequestTimeout, rec.Code)
+	require.JSONEq(t, `{"error":"request canceled"}`, rec.Body.String())
+	require.Len(t, msgs.sendContexts, 1)
+	require.Same(t, reqCtx, msgs.sendContexts[0])
 }
 
 func TestSendMessageRejectsInvalidBase64Payload(t *testing.T) {
@@ -171,12 +212,18 @@ func TestSendMessageMapsSemanticErrorsToHTTPStatus(t *testing.T) {
 }
 
 type recordingMessageUsecase struct {
-	calls  []message.SendCommand
-	result message.SendResult
-	err    error
+	calls        []message.SendCommand
+	sendContexts []context.Context
+	sendFn       func(context.Context, message.SendCommand) (message.SendResult, error)
+	result       message.SendResult
+	err          error
 }
 
-func (r *recordingMessageUsecase) Send(cmd message.SendCommand) (message.SendResult, error) {
+func (r *recordingMessageUsecase) Send(ctx context.Context, cmd message.SendCommand) (message.SendResult, error) {
+	r.sendContexts = append(r.sendContexts, ctx)
 	r.calls = append(r.calls, cmd)
+	if r.sendFn != nil {
+		return r.sendFn(ctx, cmd)
+	}
 	return r.result, r.err
 }

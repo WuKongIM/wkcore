@@ -11,6 +11,7 @@ const (
 	recordKindSecondaryIndex byte = 0x02
 	wrappedValueTag          byte = 0x0A
 	valueTypeInt             byte = 0x03
+	valueTypeUint            byte = 0x04
 	valueTypeBytes           byte = 0x06
 
 	keyspaceState byte = 0x10
@@ -70,6 +71,15 @@ func encodeChannelIDIndexPrefix(slot uint64, channelID string) []byte {
 	key := make([]byte, 0, 40)
 	key = encodeIndexPrefix(slot, ChannelTable.ID, channelIndexIDChannelID)
 	key = appendKeyString(key, channelID)
+	return key
+}
+
+func encodeChannelRuntimeMetaPrimaryKey(slot uint64, channelID string, channelType int64, familyID uint16) []byte {
+	key := make([]byte, 0, 64)
+	key = encodeStatePrefix(slot, ChannelRuntimeMetaTable.ID)
+	key = appendKeyString(key, channelID)
+	key = appendKeyInt64Ordered(key, channelType)
+	key = binary.AppendUvarint(key, uint64(familyID))
 	return key
 }
 
@@ -248,6 +258,161 @@ func decodeChannelIndexValue(key, value []byte) (int64, error) {
 	return decodeZigZagInt64(raw), nil
 }
 
+func encodeChannelRuntimeMetaFamilyValue(meta ChannelRuntimeMeta, key []byte) []byte {
+	payload := make([]byte, 0, 128)
+	payload = appendUint64Value(payload, channelRuntimeMetaColumnIDChannelEpoch, 0, meta.ChannelEpoch)
+	payload = appendUint64Value(payload, channelRuntimeMetaColumnIDLeaderEpoch, channelRuntimeMetaColumnIDChannelEpoch, meta.LeaderEpoch)
+	payload = appendRawBytesValue(payload, channelRuntimeMetaColumnIDReplicas, channelRuntimeMetaColumnIDLeaderEpoch, encodeUint64Slice(meta.Replicas))
+	payload = appendRawBytesValue(payload, channelRuntimeMetaColumnIDISR, channelRuntimeMetaColumnIDReplicas, encodeUint64Slice(meta.ISR))
+	payload = appendUint64Value(payload, channelRuntimeMetaColumnIDLeader, channelRuntimeMetaColumnIDISR, meta.Leader)
+	payload = appendIntValue(payload, channelRuntimeMetaColumnIDMinISR, channelRuntimeMetaColumnIDLeader, meta.MinISR)
+	payload = appendUint64Value(payload, channelRuntimeMetaColumnIDStatus, channelRuntimeMetaColumnIDMinISR, uint64(meta.Status))
+	payload = appendUint64Value(payload, channelRuntimeMetaColumnIDFeatures, channelRuntimeMetaColumnIDStatus, meta.Features)
+	payload = appendIntValue(payload, channelRuntimeMetaColumnIDLeaseUntilMS, channelRuntimeMetaColumnIDFeatures, meta.LeaseUntilMS)
+	return wrapFamilyValue(key, payload)
+}
+
+func decodeChannelRuntimeMetaFamilyValue(key, value []byte) (ChannelRuntimeMeta, error) {
+	_, payload, err := decodeWrappedValue(key, value)
+	if err != nil {
+		return ChannelRuntimeMeta{}, err
+	}
+
+	var (
+		meta            ChannelRuntimeMeta
+		colID           uint16
+		haveEpoch       bool
+		haveLeaderEpoch bool
+		haveReplicas    bool
+		haveISR         bool
+		haveLeader      bool
+		haveMinISR      bool
+		haveStatus      bool
+		haveFeatures    bool
+		haveLeaseUntil  bool
+	)
+
+	for len(payload) > 0 {
+		tag := payload[0]
+		payload = payload[1:]
+
+		delta := uint16(tag >> 4)
+		valueType := tag & 0x0f
+		if delta == 0 {
+			return ChannelRuntimeMeta{}, fmt.Errorf("%w: zero column delta", ErrCorruptValue)
+		}
+		colID += delta
+
+		switch valueType {
+		case valueTypeBytes:
+			length, n := binary.Uvarint(payload)
+			if n <= 0 {
+				return ChannelRuntimeMeta{}, fmt.Errorf("metadb: invalid bytes length")
+			}
+			payload = payload[n:]
+			if uint64(len(payload)) < length {
+				return ChannelRuntimeMeta{}, fmt.Errorf("metadb: bytes payload truncated")
+			}
+			raw := append([]byte(nil), payload[:length]...)
+			payload = payload[length:]
+
+			switch colID {
+			case channelRuntimeMetaColumnIDReplicas:
+				meta.Replicas, err = decodeUint64Slice(raw)
+				if err != nil {
+					return ChannelRuntimeMeta{}, err
+				}
+				haveReplicas = true
+			case channelRuntimeMetaColumnIDISR:
+				meta.ISR, err = decodeUint64Slice(raw)
+				if err != nil {
+					return ChannelRuntimeMeta{}, err
+				}
+				haveISR = true
+			default:
+				return ChannelRuntimeMeta{}, fmt.Errorf("%w: invalid bytes column %d", ErrCorruptValue, colID)
+			}
+		case valueTypeInt:
+			raw, n := binary.Uvarint(payload)
+			if n <= 0 {
+				return ChannelRuntimeMeta{}, fmt.Errorf("metadb: invalid int payload")
+			}
+			payload = payload[n:]
+
+			switch colID {
+			case channelRuntimeMetaColumnIDMinISR:
+				meta.MinISR = decodeZigZagInt64(raw)
+				haveMinISR = true
+			case channelRuntimeMetaColumnIDLeaseUntilMS:
+				meta.LeaseUntilMS = decodeZigZagInt64(raw)
+				haveLeaseUntil = true
+			default:
+				return ChannelRuntimeMeta{}, fmt.Errorf("%w: invalid int column %d", ErrCorruptValue, colID)
+			}
+		case valueTypeUint:
+			raw, n := binary.Uvarint(payload)
+			if n <= 0 {
+				return ChannelRuntimeMeta{}, fmt.Errorf("metadb: invalid uint payload")
+			}
+			payload = payload[n:]
+
+			switch colID {
+			case channelRuntimeMetaColumnIDChannelEpoch:
+				meta.ChannelEpoch = raw
+				haveEpoch = true
+			case channelRuntimeMetaColumnIDLeaderEpoch:
+				meta.LeaderEpoch = raw
+				haveLeaderEpoch = true
+			case channelRuntimeMetaColumnIDLeader:
+				meta.Leader = raw
+				haveLeader = true
+			case channelRuntimeMetaColumnIDStatus:
+				if raw > uint64(^uint8(0)) {
+					return ChannelRuntimeMeta{}, fmt.Errorf("%w: invalid status %d", ErrCorruptValue, raw)
+				}
+				meta.Status = uint8(raw)
+				haveStatus = true
+			case channelRuntimeMetaColumnIDFeatures:
+				meta.Features = raw
+				haveFeatures = true
+			default:
+				return ChannelRuntimeMeta{}, fmt.Errorf("%w: invalid uint column %d", ErrCorruptValue, colID)
+			}
+		default:
+			return ChannelRuntimeMeta{}, fmt.Errorf("metadb: unsupported value type %d", valueType)
+		}
+	}
+
+	if !haveEpoch {
+		return ChannelRuntimeMeta{}, fmt.Errorf("%w: missing uint column %d", ErrCorruptValue, channelRuntimeMetaColumnIDChannelEpoch)
+	}
+	if !haveLeaderEpoch {
+		return ChannelRuntimeMeta{}, fmt.Errorf("%w: missing uint column %d", ErrCorruptValue, channelRuntimeMetaColumnIDLeaderEpoch)
+	}
+	if !haveReplicas {
+		return ChannelRuntimeMeta{}, fmt.Errorf("%w: missing bytes column %d", ErrCorruptValue, channelRuntimeMetaColumnIDReplicas)
+	}
+	if !haveISR {
+		return ChannelRuntimeMeta{}, fmt.Errorf("%w: missing bytes column %d", ErrCorruptValue, channelRuntimeMetaColumnIDISR)
+	}
+	if !haveLeader {
+		return ChannelRuntimeMeta{}, fmt.Errorf("%w: missing uint column %d", ErrCorruptValue, channelRuntimeMetaColumnIDLeader)
+	}
+	if !haveMinISR {
+		return ChannelRuntimeMeta{}, fmt.Errorf("%w: missing int column %d", ErrCorruptValue, channelRuntimeMetaColumnIDMinISR)
+	}
+	if !haveStatus {
+		return ChannelRuntimeMeta{}, fmt.Errorf("%w: missing uint column %d", ErrCorruptValue, channelRuntimeMetaColumnIDStatus)
+	}
+	if !haveFeatures {
+		return ChannelRuntimeMeta{}, fmt.Errorf("%w: missing uint column %d", ErrCorruptValue, channelRuntimeMetaColumnIDFeatures)
+	}
+	if !haveLeaseUntil {
+		return ChannelRuntimeMeta{}, fmt.Errorf("%w: missing int column %d", ErrCorruptValue, channelRuntimeMetaColumnIDLeaseUntilMS)
+	}
+	return normalizeChannelRuntimeMeta(meta), nil
+}
+
 func wrapFamilyValue(key, payload []byte) []byte {
 	value := make([]byte, 5+len(payload))
 	value[4] = wrappedValueTag
@@ -356,10 +521,25 @@ func appendBytesValue(dst []byte, columnID, prevColumnID uint16, value string) [
 	return dst
 }
 
+func appendRawBytesValue(dst []byte, columnID, prevColumnID uint16, value []byte) []byte {
+	delta := columnID - prevColumnID
+	dst = append(dst, encodeValueTag(delta, valueTypeBytes))
+	dst = binary.AppendUvarint(dst, uint64(len(value)))
+	dst = append(dst, value...)
+	return dst
+}
+
 func appendIntValue(dst []byte, columnID, prevColumnID uint16, value int64) []byte {
 	delta := columnID - prevColumnID
 	dst = append(dst, encodeValueTag(delta, valueTypeInt))
 	dst = binary.AppendUvarint(dst, encodeZigZagInt64(value))
+	return dst
+}
+
+func appendUint64Value(dst []byte, columnID, prevColumnID uint16, value uint64) []byte {
+	delta := columnID - prevColumnID
+	dst = append(dst, encodeValueTag(delta, valueTypeUint))
+	dst = binary.AppendUvarint(dst, value)
 	return dst
 }
 
@@ -411,4 +591,29 @@ func encodeZigZagInt64(v int64) uint64 {
 
 func decodeZigZagInt64(v uint64) int64 {
 	return int64(v>>1) ^ -int64(v&1)
+}
+
+func encodeUint64Slice(values []uint64) []byte {
+	if len(values) == 0 {
+		return nil
+	}
+	buf := make([]byte, 8*len(values))
+	for i, value := range values {
+		binary.BigEndian.PutUint64(buf[i*8:], value)
+	}
+	return buf
+}
+
+func decodeUint64Slice(data []byte) ([]uint64, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	if len(data)%8 != 0 {
+		return nil, fmt.Errorf("%w: malformed uint64 slice", ErrCorruptValue)
+	}
+	values := make([]uint64, len(data)/8)
+	for i := range values {
+		values[i] = binary.BigEndian.Uint64(data[i*8:])
+	}
+	return values, nil
 }

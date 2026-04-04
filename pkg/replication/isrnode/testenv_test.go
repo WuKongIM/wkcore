@@ -185,9 +185,12 @@ type fakeReplica struct {
 	mu              sync.Mutex
 	state           isr.ReplicaState
 	appendErr       error
+	fetchErr        error
+	fetchResult     isr.FetchResult
 	metaCalls       []isr.GroupMeta
 	appendCalls     int
 	applyFetchCalls int
+	fetchCalls      int
 	tombstoned      bool
 }
 
@@ -202,11 +205,25 @@ func (r *fakeReplica) ApplyMeta(meta isr.GroupMeta) error {
 }
 
 func (r *fakeReplica) BecomeLeader(meta isr.GroupMeta) error {
-	return r.ApplyMeta(meta)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.metaCalls = append(r.metaCalls, meta)
+	r.state.GroupKey = meta.GroupKey
+	r.state.Epoch = meta.Epoch
+	r.state.Leader = meta.Leader
+	r.state.Role = isr.RoleLeader
+	return nil
 }
 
 func (r *fakeReplica) BecomeFollower(meta isr.GroupMeta) error {
-	return r.ApplyMeta(meta)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.metaCalls = append(r.metaCalls, meta)
+	r.state.GroupKey = meta.GroupKey
+	r.state.Epoch = meta.Epoch
+	r.state.Leader = meta.Leader
+	r.state.Role = isr.RoleFollower
+	return nil
 }
 
 func (r *fakeReplica) Tombstone() error {
@@ -229,7 +246,10 @@ func (r *fakeReplica) Append(ctx context.Context, batch []isr.Record) (isr.Commi
 }
 
 func (r *fakeReplica) Fetch(ctx context.Context, req isr.FetchRequest) (isr.FetchResult, error) {
-	return isr.FetchResult{}, nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fetchCalls++
+	return r.fetchResult, r.fetchErr
 }
 
 func (r *fakeReplica) ApplyFetch(ctx context.Context, req isr.ApplyFetchRequest) error {

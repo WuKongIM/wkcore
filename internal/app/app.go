@@ -9,39 +9,55 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isrnode"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metastore"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
+	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
 )
 
 type App struct {
 	cfg Config
 
-	db             *metadb.DB
-	raftDB         *raftstorage.DB
-	cluster        *raftcluster.Cluster
-	store          *metastore.Store
-	messageApp     *message.App
-	api            *accessapi.Server
-	gatewayHandler *accessgateway.Handler
-	gateway        *gateway.Gateway
+	db              *metadb.DB
+	raftDB          *raftstorage.DB
+	channelLogDB    *channellog.DB
+	cluster         *raftcluster.Cluster
+	isrRuntime      isrnode.Runtime
+	channelLog      channellog.Cluster
+	channelMetaSync *channelMetaSync
+	store           *metastore.Store
+	messageApp      *message.App
+	api             *accessapi.Server
+	gatewayHandler  *accessgateway.Handler
+	gateway         *gateway.Gateway
 
-	stopOnce  sync.Once
-	lifecycle sync.Mutex
-	started   atomic.Bool
-	stopped   atomic.Bool
-	clusterOn atomic.Bool
-	apiOn     atomic.Bool
-	gatewayOn atomic.Bool
+	isrTransport    *isrTransportBridge
+	replicaFactory  *channelReplicaFactory
+	dataPlanePool   *nodetransport.Pool
+	dataPlaneClient *nodetransport.Client
 
-	startClusterFn func() error
-	startAPIFn     func() error
-	startGatewayFn func() error
-	stopAPIFn      func() error
-	stopGatewayFn  func() error
-	stopClusterFn  func()
-	closeRaftDBFn  func() error
-	closeWKDBFn    func() error
+	stopOnce      sync.Once
+	lifecycle     sync.Mutex
+	started       atomic.Bool
+	stopped       atomic.Bool
+	clusterOn     atomic.Bool
+	channelMetaOn atomic.Bool
+	apiOn         atomic.Bool
+	gatewayOn     atomic.Bool
+
+	startClusterFn         func() error
+	startChannelMetaSyncFn func() error
+	startAPIFn             func() error
+	startGatewayFn         func() error
+	stopAPIFn              func() error
+	stopGatewayFn          func() error
+	stopChannelMetaSyncFn  func() error
+	stopClusterFn          func()
+	closeChannelLogDBFn    func() error
+	closeRaftDBFn          func() error
+	closeWKDBFn            func() error
 }
 
 func New(cfg Config) (*App, error) {
@@ -67,6 +83,27 @@ func (a *App) Cluster() *raftcluster.Cluster {
 		return nil
 	}
 	return a.cluster
+}
+
+func (a *App) ChannelLogDB() *channellog.DB {
+	if a == nil {
+		return nil
+	}
+	return a.channelLogDB
+}
+
+func (a *App) ISRRuntime() isrnode.Runtime {
+	if a == nil {
+		return nil
+	}
+	return a.isrRuntime
+}
+
+func (a *App) ChannelLog() channellog.Cluster {
+	if a == nil {
+		return nil
+	}
+	return a.channelLog
 }
 
 func (a *App) Store() *metastore.Store {

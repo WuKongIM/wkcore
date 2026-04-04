@@ -116,7 +116,7 @@ func (r *runtime) queueSnapshotChunk(groupKey isr.GroupKey, bytes int64) {
 	}
 	g.enqueueSnapshot(bytes)
 	g.markSnapshot()
-	r.scheduler.enqueue(groupKey)
+	r.enqueueScheduler(groupKey)
 }
 
 func (r *runtime) processSnapshot(groupKey isr.GroupKey) {
@@ -150,7 +150,7 @@ func (r *runtime) completeSnapshot(groupKey isr.GroupKey) {
 		if exists {
 			g.markSnapshot()
 		}
-		r.scheduler.enqueue(nextGroupKey)
+		r.enqueueScheduler(nextGroupKey)
 	}
 }
 

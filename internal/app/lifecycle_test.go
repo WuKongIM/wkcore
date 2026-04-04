@@ -49,6 +49,20 @@ func TestNewBuildsOptionalAPIServerWhenConfigured(t *testing.T) {
 	require.NotNil(t, app.API())
 }
 
+func TestNewBuildsChannelLogDataPlane(t *testing.T) {
+	cfg := testConfig(t)
+
+	app, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, app.Stop())
+	})
+
+	require.NotNil(t, app.ChannelLogDB())
+	require.NotNil(t, app.ISRRuntime())
+	require.NotNil(t, app.ChannelLog())
+}
+
 func TestNewReturnsConfigErrorsBeforeOpeningResources(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Node.ID = 0
@@ -70,13 +84,15 @@ func TestAccessorsExposeBuiltRuntime(t *testing.T) {
 	app, err := New(cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		require.NoError(t, app.RaftDB().Close())
-		require.NoError(t, app.DB().Close())
+		require.NoError(t, app.Stop())
 	})
 
 	require.Same(t, app.db, app.DB())
 	require.Same(t, app.raftDB, app.RaftDB())
 	require.Same(t, app.cluster, app.Cluster())
+	require.Same(t, app.channelLogDB, app.ChannelLogDB())
+	require.Same(t, app.isrRuntime, app.ISRRuntime())
+	require.Same(t, app.channelLog, app.ChannelLog())
 	require.Same(t, app.store, app.Store())
 	require.Same(t, app.messageApp, app.Message())
 	require.Same(t, app.gatewayHandler, app.GatewayHandler())
@@ -128,10 +144,15 @@ func TestStartStartsAPIAfterGatewayWhenEnabled(t *testing.T) {
 	var calls []string
 
 	app := &App{
-		cluster: &raftcluster.Cluster{},
-		gateway: &gateway.Gateway{},
+		cluster:         &raftcluster.Cluster{},
+		channelMetaSync: &channelMetaSync{},
+		gateway:         &gateway.Gateway{},
 		startClusterFn: func() error {
 			calls = append(calls, "cluster.start")
+			return nil
+		},
+		startChannelMetaSyncFn: func() error {
+			calls = append(calls, "meta.start")
 			return nil
 		},
 		startAPIFn: func() error {
@@ -145,7 +166,32 @@ func TestStartStartsAPIAfterGatewayWhenEnabled(t *testing.T) {
 	}
 
 	require.NoError(t, app.Start())
-	require.Equal(t, []string{"cluster.start", "gateway.start", "api.start"}, calls)
+	require.Equal(t, []string{"cluster.start", "meta.start", "gateway.start", "api.start"}, calls)
+}
+
+func TestStartStartsChannelMetaSyncAfterClusterBeforeGateway(t *testing.T) {
+	var calls []string
+
+	app := &App{
+		cluster:         &raftcluster.Cluster{},
+		channelMetaSync: &channelMetaSync{},
+		gateway:         &gateway.Gateway{},
+		startClusterFn: func() error {
+			calls = append(calls, "cluster.start")
+			return nil
+		},
+		startChannelMetaSyncFn: func() error {
+			calls = append(calls, "meta.start")
+			return nil
+		},
+		startGatewayFn: func() error {
+			calls = append(calls, "gateway.start")
+			return nil
+		},
+	}
+
+	require.NoError(t, app.Start())
+	require.Equal(t, []string{"cluster.start", "meta.start", "gateway.start"}, calls)
 }
 
 func TestStartRollsBackClusterWhenGatewayStartFails(t *testing.T) {
@@ -221,15 +267,24 @@ func TestStopStopsGatewayBeforeClosingStorage(t *testing.T) {
 	var calls []string
 
 	app := &App{
-		started:   atomicBool(true),
-		clusterOn: atomicBool(true),
-		gatewayOn: atomicBool(true),
+		started:       atomicBool(true),
+		clusterOn:     atomicBool(true),
+		gatewayOn:     atomicBool(true),
+		channelMetaOn: atomicBool(true),
 		stopGatewayFn: func() error {
 			calls = append(calls, "gateway.stop")
 			return nil
 		},
+		stopChannelMetaSyncFn: func() error {
+			calls = append(calls, "meta.stop")
+			return nil
+		},
 		stopClusterFn: func() {
 			calls = append(calls, "cluster.stop")
+		},
+		closeChannelLogDBFn: func() error {
+			calls = append(calls, "channellog.close")
+			return nil
 		},
 		closeRaftDBFn: func() error {
 			calls = append(calls, "raft.close")
@@ -242,7 +297,7 @@ func TestStopStopsGatewayBeforeClosingStorage(t *testing.T) {
 	}
 
 	require.NoError(t, app.Stop())
-	require.Equal(t, []string{"gateway.stop", "cluster.stop", "raft.close", "metadb.close"}, calls)
+	require.Equal(t, []string{"gateway.stop", "meta.stop", "cluster.stop", "channellog.close", "raft.close", "metadb.close"}, calls)
 	require.False(t, app.started.Load())
 }
 
@@ -250,10 +305,11 @@ func TestStopStopsAPIBeforeGatewayAndClusterClose(t *testing.T) {
 	var calls []string
 
 	app := &App{
-		started:   atomicBool(true),
-		clusterOn: atomicBool(true),
-		apiOn:     atomicBool(true),
-		gatewayOn: atomicBool(true),
+		started:       atomicBool(true),
+		clusterOn:     atomicBool(true),
+		apiOn:         atomicBool(true),
+		gatewayOn:     atomicBool(true),
+		channelMetaOn: atomicBool(true),
 		stopGatewayFn: func() error {
 			calls = append(calls, "gateway.stop")
 			return nil
@@ -262,8 +318,16 @@ func TestStopStopsAPIBeforeGatewayAndClusterClose(t *testing.T) {
 			calls = append(calls, "api.stop")
 			return nil
 		},
+		stopChannelMetaSyncFn: func() error {
+			calls = append(calls, "meta.stop")
+			return nil
+		},
 		stopClusterFn: func() {
 			calls = append(calls, "cluster.stop")
+		},
+		closeChannelLogDBFn: func() error {
+			calls = append(calls, "channellog.close")
+			return nil
 		},
 		closeRaftDBFn: func() error {
 			calls = append(calls, "raft.close")
@@ -276,7 +340,7 @@ func TestStopStopsAPIBeforeGatewayAndClusterClose(t *testing.T) {
 	}
 
 	require.NoError(t, app.Stop())
-	require.Equal(t, []string{"api.stop", "gateway.stop", "cluster.stop", "raft.close", "metadb.close"}, calls)
+	require.Equal(t, []string{"api.stop", "gateway.stop", "meta.stop", "cluster.stop", "channellog.close", "raft.close", "metadb.close"}, calls)
 }
 
 func TestStopIsIdempotent(t *testing.T) {

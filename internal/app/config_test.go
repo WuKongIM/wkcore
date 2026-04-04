@@ -40,6 +40,14 @@ func TestConfigApplyDefaultsDerivesStoragePathsFromDataDir(t *testing.T) {
 	require.NoError(t, cfg.ApplyDefaultsAndValidate())
 	require.Equal(t, "/tmp/wukong-node-1/data", cfg.Storage.DBPath)
 	require.Equal(t, "/tmp/wukong-node-1/raft", cfg.Storage.RaftPath)
+	require.Equal(t, "/tmp/wukong-node-1/channellog", cfg.Storage.ChannelLogPath)
+}
+
+func TestConfigRejectsNodeIDSnowflakeOverflow(t *testing.T) {
+	cfg := validConfig()
+	cfg.Node.ID = 1024
+
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
 func TestConfigValidateRejectsMismatchedGroupCount(t *testing.T) {
@@ -61,6 +69,13 @@ func TestConfigValidateRejectsAliasedSharedStoragePaths(t *testing.T) {
 	cfg := validConfig()
 	cfg.Storage.DBPath = "/tmp/wukong-node-1/data"
 	cfg.Storage.RaftPath = "/tmp/wukong-node-1/data/"
+
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
+}
+
+func TestConfigValidateRejectsSharedChannelLogPath(t *testing.T) {
+	cfg := validConfig()
+	cfg.Storage.ChannelLogPath = "/tmp/wukong-node-1/data"
 
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }

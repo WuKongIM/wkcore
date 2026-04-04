@@ -1,8 +1,9 @@
 package metadb
 
 const (
-	TableIDUser    uint32 = 1
-	TableIDChannel uint32 = 2
+	TableIDUser               uint32 = 1
+	TableIDChannel            uint32 = 2
+	TableIDChannelRuntimeMeta uint32 = 3
 
 	maxKeyStringLen = 1<<16 - 1
 )
@@ -26,11 +27,29 @@ const (
 	channelColumnIDBan       uint16 = 3
 )
 
+const (
+	channelRuntimeMetaPrimaryFamilyID      uint16 = 0
+	channelRuntimeMetaPrimaryIndexID       uint16 = 1
+	channelRuntimeMetaColumnIDChannelID    uint16 = 1
+	channelRuntimeMetaColumnIDType         uint16 = 2
+	channelRuntimeMetaColumnIDChannelEpoch uint16 = 3
+	channelRuntimeMetaColumnIDLeaderEpoch  uint16 = 4
+	channelRuntimeMetaColumnIDReplicas     uint16 = 5
+	channelRuntimeMetaColumnIDISR          uint16 = 6
+	channelRuntimeMetaColumnIDLeader       uint16 = 7
+	channelRuntimeMetaColumnIDMinISR       uint16 = 8
+	channelRuntimeMetaColumnIDStatus       uint16 = 9
+	channelRuntimeMetaColumnIDFeatures     uint16 = 10
+	channelRuntimeMetaColumnIDLeaseUntilMS uint16 = 11
+)
+
 type ColumnType int
 
 const (
 	ColumnString ColumnType = iota + 1
 	ColumnInt64
+	ColumnUint64
+	ColumnBytes
 )
 
 type ColumnDesc struct {
@@ -120,5 +139,48 @@ var ChannelTable = &TableDesc{
 			Unique:    false,
 			ColumnIDs: []uint16{channelColumnIDChannelID},
 		},
+	},
+}
+
+var ChannelRuntimeMetaTable = &TableDesc{
+	ID:   TableIDChannelRuntimeMeta,
+	Name: "channel_runtime_meta",
+	Columns: []ColumnDesc{
+		{ID: channelRuntimeMetaColumnIDChannelID, Name: "channel_id", Type: ColumnString},
+		{ID: channelRuntimeMetaColumnIDType, Name: "channel_type", Type: ColumnInt64},
+		{ID: channelRuntimeMetaColumnIDChannelEpoch, Name: "channel_epoch", Type: ColumnUint64},
+		{ID: channelRuntimeMetaColumnIDLeaderEpoch, Name: "leader_epoch", Type: ColumnUint64},
+		{ID: channelRuntimeMetaColumnIDReplicas, Name: "replicas", Type: ColumnBytes},
+		{ID: channelRuntimeMetaColumnIDISR, Name: "isr", Type: ColumnBytes},
+		{ID: channelRuntimeMetaColumnIDLeader, Name: "leader", Type: ColumnUint64},
+		{ID: channelRuntimeMetaColumnIDMinISR, Name: "min_isr", Type: ColumnInt64},
+		{ID: channelRuntimeMetaColumnIDStatus, Name: "status", Type: ColumnUint64},
+		{ID: channelRuntimeMetaColumnIDFeatures, Name: "features", Type: ColumnUint64},
+		{ID: channelRuntimeMetaColumnIDLeaseUntilMS, Name: "lease_until_ms", Type: ColumnInt64},
+	},
+	Families: []ColumnFamilyDesc{
+		{
+			ID:   channelRuntimeMetaPrimaryFamilyID,
+			Name: "primary",
+			ColumnIDs: []uint16{
+				channelRuntimeMetaColumnIDChannelEpoch,
+				channelRuntimeMetaColumnIDLeaderEpoch,
+				channelRuntimeMetaColumnIDReplicas,
+				channelRuntimeMetaColumnIDISR,
+				channelRuntimeMetaColumnIDLeader,
+				channelRuntimeMetaColumnIDMinISR,
+				channelRuntimeMetaColumnIDStatus,
+				channelRuntimeMetaColumnIDFeatures,
+				channelRuntimeMetaColumnIDLeaseUntilMS,
+			},
+			DefaultColumnID: channelRuntimeMetaColumnIDChannelEpoch,
+		},
+	},
+	PrimaryIndex: IndexDesc{
+		ID:        channelRuntimeMetaPrimaryIndexID,
+		Name:      "pk_channel_runtime_meta",
+		Unique:    true,
+		Primary:   true,
+		ColumnIDs: []uint16{channelRuntimeMetaColumnIDChannelID, channelRuntimeMetaColumnIDType},
 	},
 }

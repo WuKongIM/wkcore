@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metafsm"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMemoryBackedGroupAppliesProposalToWKDB(t *testing.T) {
@@ -270,6 +273,200 @@ func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 	if got.Token != "after-reopen" {
 		t.Fatalf("stored user = %#v", got)
 	}
+}
+
+func TestStoreUpsertAndGetChannelRuntimeMeta(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	bizDB := openTestDBAt(t, filepath.Join(root, "biz"))
+	raftDB := openTestRaftDBAt(t, filepath.Join(root, "raft"))
+
+	cluster, err := raftcluster.NewCluster(raftcluster.Config{
+		NodeID:     1,
+		ListenAddr: "127.0.0.1:0",
+		GroupCount: 1,
+		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
+			return raftDB.ForGroup(uint64(groupID)), nil
+		},
+		NewStateMachine: metafsm.NewStateMachineFactory(bizDB),
+		Nodes:           []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
+		Groups: []raftcluster.GroupConfig{{
+			GroupID: 1,
+			Peers:   []multiraft.NodeID{1},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewCluster() error = %v", err)
+	}
+	t.Cleanup(cluster.Stop)
+	if err := cluster.Start(); err != nil {
+		t.Fatalf("cluster.Start() error = %v", err)
+	}
+
+	waitForCondition(t, func() bool {
+		_, err := cluster.LeaderOf(1)
+		return err == nil
+	}, "cluster leader elected")
+
+	store := New(cluster, bizDB)
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    "store-meta",
+		ChannelType:  9,
+		ChannelEpoch: 11,
+		LeaderEpoch:  6,
+		Replicas:     []uint64{3, 1, 2},
+		ISR:          []uint64{2, 1},
+		Leader:       1,
+		MinISR:       2,
+		Status:       5,
+		Features:     33,
+		LeaseUntilMS: 1700000004321,
+	}
+
+	if err := store.UpsertChannelRuntimeMeta(ctx, meta); err != nil {
+		t.Fatalf("UpsertChannelRuntimeMeta() error = %v", err)
+	}
+
+	got, err := store.GetChannelRuntimeMeta(ctx, meta.ChannelID, meta.ChannelType)
+	if err != nil {
+		t.Fatalf("GetChannelRuntimeMeta() error = %v", err)
+	}
+
+	want := meta
+	want.Replicas = []uint64{1, 2, 3}
+	want.ISR = []uint64{1, 2}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("stored runtime meta = %#v, want %#v", got, want)
+	}
+}
+
+func TestStoreListChannelRuntimeMeta(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	bizDB := openTestDBAt(t, filepath.Join(root, "biz"))
+	raftDB := openTestRaftDBAt(t, filepath.Join(root, "raft"))
+
+	cluster, err := raftcluster.NewCluster(raftcluster.Config{
+		NodeID:     1,
+		ListenAddr: "127.0.0.1:0",
+		GroupCount: 2,
+		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
+			return raftDB.ForGroup(uint64(groupID)), nil
+		},
+		NewStateMachine: metafsm.NewStateMachineFactory(bizDB),
+		Nodes:           []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
+		Groups: []raftcluster.GroupConfig{
+			{GroupID: 1, Peers: []multiraft.NodeID{1}},
+			{GroupID: 2, Peers: []multiraft.NodeID{1}},
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(cluster.Stop)
+	require.NoError(t, cluster.Start())
+
+	waitForCondition(t, func() bool {
+		_, err1 := cluster.LeaderOf(1)
+		_, err2 := cluster.LeaderOf(2)
+		return err1 == nil && err2 == nil
+	}, "cluster leader elected")
+
+	store := New(cluster, bizDB)
+	first := metadb.ChannelRuntimeMeta{
+		ChannelID:    "store-list-1",
+		ChannelType:  1,
+		ChannelEpoch: 11,
+		LeaderEpoch:  6,
+		Replicas:     []uint64{1, 2},
+		ISR:          []uint64{1, 2},
+		Leader:       1,
+		MinISR:       1,
+		Status:       2,
+		Features:     1,
+		LeaseUntilMS: 1700000000111,
+	}
+	second := metadb.ChannelRuntimeMeta{
+		ChannelID:    "store-list-2",
+		ChannelType:  1,
+		ChannelEpoch: 12,
+		LeaderEpoch:  7,
+		Replicas:     []uint64{1, 3},
+		ISR:          []uint64{1, 3},
+		Leader:       1,
+		MinISR:       1,
+		Status:       2,
+		Features:     2,
+		LeaseUntilMS: 1700000000222,
+	}
+
+	require.NoError(t, store.UpsertChannelRuntimeMeta(ctx, first))
+	require.NoError(t, store.UpsertChannelRuntimeMeta(ctx, second))
+
+	got, err := store.ListChannelRuntimeMeta(ctx)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []metadb.ChannelRuntimeMeta{first, second}, got)
+}
+
+func TestStoreGetChannelRuntimeMetaReadsAuthoritativeRemoteSlot(t *testing.T) {
+	ctx := context.Background()
+	nodes := startTwoNodeShardedStores(t)
+
+	channelID := findChannelIDForSlot(t, nodes[0].cluster, 2, "remote-runtime")
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    channelID,
+		ChannelType:  1,
+		ChannelEpoch: 21,
+		LeaderEpoch:  8,
+		Replicas:     []uint64{1, 2},
+		ISR:          []uint64{1, 2},
+		Leader:       2,
+		MinISR:       1,
+		Status:       2,
+		Features:     7,
+		LeaseUntilMS: 1700000000999,
+	}
+	require.NoError(t, nodes[1].db.ForSlot(2).UpsertChannelRuntimeMeta(ctx, meta))
+
+	got, err := nodes[0].store.GetChannelRuntimeMeta(ctx, meta.ChannelID, meta.ChannelType)
+	require.NoError(t, err)
+	require.Equal(t, meta, got)
+}
+
+func TestStoreListChannelRuntimeMetaReadsAuthoritativeAllSlots(t *testing.T) {
+	ctx := context.Background()
+	nodes := startTwoNodeShardedStores(t)
+
+	first := metadb.ChannelRuntimeMeta{
+		ChannelID:    findChannelIDForSlot(t, nodes[0].cluster, 1, "slot-one"),
+		ChannelType:  1,
+		ChannelEpoch: 31,
+		LeaderEpoch:  11,
+		Replicas:     []uint64{1},
+		ISR:          []uint64{1},
+		Leader:       1,
+		MinISR:       1,
+		Status:       2,
+		Features:     1,
+		LeaseUntilMS: 1700000001111,
+	}
+	second := metadb.ChannelRuntimeMeta{
+		ChannelID:    findChannelIDForSlot(t, nodes[0].cluster, 2, "slot-two"),
+		ChannelType:  1,
+		ChannelEpoch: 32,
+		LeaderEpoch:  12,
+		Replicas:     []uint64{2},
+		ISR:          []uint64{2},
+		Leader:       2,
+		MinISR:       1,
+		Status:       2,
+		Features:     2,
+		LeaseUntilMS: 1700000002222,
+	}
+	require.NoError(t, nodes[0].db.ForSlot(1).UpsertChannelRuntimeMeta(ctx, first))
+	require.NoError(t, nodes[1].db.ForSlot(2).UpsertChannelRuntimeMeta(ctx, second))
+
+	got, err := nodes[0].store.ListChannelRuntimeMeta(ctx)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []metadb.ChannelRuntimeMeta{first, second}, got)
 }
 
 func TestPebbleBackedGroupDoesNotRecoverDeletedBusinessStateWithoutSnapshot(t *testing.T) {
