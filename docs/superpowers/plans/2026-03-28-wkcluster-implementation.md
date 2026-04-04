@@ -1790,7 +1790,7 @@ git commit -m "feat(wkcluster): add Cluster lifecycle and Channel CRUD API"
 **Files:**
 - Create: `wkcluster/cluster_test.go`
 
-- [ ] **Step 1: Write single-node integration test**
+- [ ] **Step 1: Write single-node cluster integration test**
 
 ```go
 package wkcluster

@@ -352,7 +352,7 @@ Also add an app-level integration test:
 - `TestAppStartAcceptsWKProtoConnectionAndStopsCleanly`
 
 The integration test should:
-- build a temp-dir single-node config
+- build a temp-dir single-node cluster config
 - call `New` then `Start`
 - dial `Gateway().ListenerAddr("tcp-wkproto")`
 - send a `ConnectPacket`
@@ -544,4 +544,4 @@ git commit -m "test: verify app bootstrap integration"
 - Keep `internal/app` thin. If a helper starts looking like business logic, move it back down to the correct package.
 - Do not let `cmd` create `wkcluster.Config.NewStorage` or `wkcluster.Config.NewStateMachine`. That translation belongs in `internal/app`.
 - Do not widen `internal/service` behavior in this plan beyond adding the dependency seam needed by `app`.
-- Prefer one deterministic single-node integration test first. Multi-node process assembly can come in a follow-up after the bootstrap path is stable.
+- Prefer one deterministic single-node cluster integration test first. Multi-node process assembly can come in a follow-up after the bootstrap path is stable.

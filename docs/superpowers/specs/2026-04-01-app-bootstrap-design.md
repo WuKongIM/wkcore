@@ -440,4 +440,4 @@ The first implementation should stay conservative:
 - inject `wkstore` and cluster-facing collaborators through `service.Options`
 - avoid introducing a generic runtime framework
 
-If later work adds single-node mode, it should be modeled as an additional configuration pathway inside `app.Config`, not as a separate bootstrap architecture.
+If later work needs a single-node cluster bootstrap path, it should be modeled as an additional configuration pathway inside `app.Config`, not as a separate bootstrap architecture.

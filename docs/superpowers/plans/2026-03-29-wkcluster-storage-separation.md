@@ -571,7 +571,7 @@ Key changes:
 2. Each test function that creates a Config must supply `NewStorage`/`NewStateMachine` factories
 3. Each test function that calls `c.CreateChannel` etc. must create a `wkstore.Store` and use it
 
-Replace the single-node test setup pattern. For each single-node test:
+Replace the single-node cluster test setup pattern. For each single-node cluster test:
 
 ```go
 // Before (old pattern):

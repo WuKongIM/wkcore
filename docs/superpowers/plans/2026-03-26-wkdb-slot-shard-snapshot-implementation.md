@@ -529,7 +529,7 @@ Expected: FAIL because the wkdb-backed adapters are not wired into an end-to-end
 
 Implementation details:
 - use `wkdb.NewRaftStorage(...)` and `wkdb.NewStateMachine(...)` directly from the test
-- prefer a single-node bootstrap to keep the scenario deterministic
+- prefer a single-node cluster bootstrap to keep the scenario deterministic
 - verify both snapshot restore and post-restore reads
 
 - [ ] **Step 4: Re-run the targeted test and confirm it passes**
