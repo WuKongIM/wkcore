@@ -18,6 +18,11 @@ type committingStateStore interface {
 	CommitCommitted(checkpoint isr.Checkpoint, batch []appliedMessage) error
 }
 
+type atomicCheckpointStateStore interface {
+	ChannelStateStore
+	CommitCommittedWithCheckpoint(checkpoint isr.Checkpoint, batch []appliedMessage) error
+}
+
 type checkpointBridge struct {
 	base     isr.CheckpointStore
 	log      MessageLog
@@ -52,6 +57,13 @@ func (b *checkpointBridge) Store(checkpoint isr.Checkpoint) error {
 		return err
 	}
 	if len(batch) > 0 {
+		if store, ok := b.state.(atomicCheckpointStateStore); ok {
+			if err := store.CommitCommittedWithCheckpoint(checkpoint, batch); err != nil {
+				return err
+			}
+			b.prevHW = checkpoint.HW
+			return nil
+		}
 		if store, ok := b.state.(committingStateStore); ok {
 			if err := store.CommitCommitted(checkpoint, batch); err != nil {
 				return err

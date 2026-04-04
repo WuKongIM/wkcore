@@ -66,6 +66,34 @@ func (b *WriteBatch) DeleteChannel(slot uint64, channelID string, channelType in
 	return b.batch.Delete(indexKey, nil)
 }
 
+// UpsertChannelRuntimeMeta encodes and stages a runtime metadata write into the batch.
+func (b *WriteBatch) UpsertChannelRuntimeMeta(slot uint64, meta ChannelRuntimeMeta) error {
+	if err := validateSlot(slot); err != nil {
+		return err
+	}
+	if err := validateChannelRuntimeMeta(meta); err != nil {
+		return err
+	}
+
+	meta = normalizeChannelRuntimeMeta(meta)
+
+	key := encodeChannelRuntimeMetaPrimaryKey(slot, meta.ChannelID, meta.ChannelType, channelRuntimeMetaPrimaryFamilyID)
+	value := encodeChannelRuntimeMetaFamilyValue(meta, key)
+	return b.batch.Set(key, value, nil)
+}
+
+// DeleteChannelRuntimeMeta removes the runtime metadata record for a channel.
+func (b *WriteBatch) DeleteChannelRuntimeMeta(slot uint64, channelID string, channelType int64) error {
+	if err := validateSlot(slot); err != nil {
+		return err
+	}
+	if err := validateChannelRuntimeMetaChannelID(channelID); err != nil {
+		return err
+	}
+	key := encodeChannelRuntimeMetaPrimaryKey(slot, channelID, channelType, channelRuntimeMetaPrimaryFamilyID)
+	return b.batch.Delete(key, nil)
+}
+
 // Commit atomically writes all staged operations with a single fsync.
 func (b *WriteBatch) Commit() error {
 	b.db.mu.Lock()

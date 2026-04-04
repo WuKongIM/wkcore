@@ -11,7 +11,8 @@ import (
 func TestForwardToLeader_RoundTrip(t *testing.T) {
 	// Server echoes the forward payload back with errCodeOK
 	srv := nodetransport.NewServer()
-	srv.HandleRPC(func(ctx context.Context, body []byte) ([]byte, error) {
+	mux := nodetransport.NewRPCMux()
+	mux.Handle(rpcServiceForward, func(ctx context.Context, body []byte) ([]byte, error) {
 		groupID, cmd, err := decodeForwardPayload(body)
 		if err != nil {
 			return nil, err
@@ -19,6 +20,7 @@ func TestForwardToLeader_RoundTrip(t *testing.T) {
 		_ = groupID
 		return encodeForwardResp(errCodeOK, cmd), nil
 	})
+	srv.HandleRPCMux(mux)
 	if err := srv.Start("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
 	}
@@ -43,9 +45,11 @@ func TestForwardToLeader_RoundTrip(t *testing.T) {
 
 func TestForwardToLeader_NotLeader(t *testing.T) {
 	srv := nodetransport.NewServer()
-	srv.HandleRPC(func(ctx context.Context, body []byte) ([]byte, error) {
+	mux := nodetransport.NewRPCMux()
+	mux.Handle(rpcServiceForward, func(ctx context.Context, body []byte) ([]byte, error) {
 		return encodeForwardResp(errCodeNotLeader, nil), nil
 	})
+	srv.HandleRPCMux(mux)
 	if err := srv.Start("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
 	}

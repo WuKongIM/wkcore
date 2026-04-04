@@ -17,6 +17,7 @@ import (
 type Cluster struct {
 	cfg        Config
 	server     *nodetransport.Server
+	rpcMux     *nodetransport.RPCMux
 	raftPool   *nodetransport.Pool
 	raftClient *nodetransport.Client
 	fwdClient  *nodetransport.Client
@@ -31,7 +32,10 @@ func NewCluster(cfg Config) (*Cluster, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	return &Cluster{cfg: cfg}, nil
+	return &Cluster{
+		cfg:    cfg,
+		rpcMux: nodetransport.NewRPCMux(),
+	}, nil
 }
 
 func (c *Cluster) Start() error {
@@ -41,7 +45,8 @@ func (c *Cluster) Start() error {
 	// 2. Server
 	c.server = nodetransport.NewServer()
 	c.server.Handle(msgTypeRaft, c.handleRaftMessage)
-	c.server.HandleRPC(c.handleForwardRPC)
+	c.rpcMux.Handle(rpcServiceForward, c.handleForwardRPC)
+	c.server.HandleRPCMux(c.rpcMux)
 	if err := c.server.Start(c.cfg.ListenAddr); err != nil {
 		return fmt.Errorf("start server: %w", err)
 	}
@@ -211,7 +216,45 @@ func (c *Cluster) Server() *nodetransport.Server {
 	return c.server
 }
 
+// RPCMux exposes the shared node RPC service multiplexer used for registering
+// additional RPC services on the cluster listener without replacing the
+// existing forwarding handler.
+func (c *Cluster) RPCMux() *nodetransport.RPCMux {
+	return c.rpcMux
+}
+
 // Discovery returns the cluster's Discovery instance for creating business pools.
 func (c *Cluster) Discovery() Discovery {
 	return c.discovery
+}
+
+// RPCService issues an RPC request to the given node using the shared cluster transport.
+func (c *Cluster) RPCService(ctx context.Context, nodeID multiraft.NodeID, groupID multiraft.GroupID, serviceID uint8, payload []byte) ([]byte, error) {
+	if c.stopped.Load() {
+		return nil, nodetransport.ErrStopped
+	}
+	if c.fwdClient == nil {
+		return nil, ErrNotStarted
+	}
+	return c.fwdClient.RPCService(ctx, uint64(nodeID), uint64(groupID), serviceID, payload)
+}
+
+// GroupIDs returns the configured control-plane group ids.
+func (c *Cluster) GroupIDs() []multiraft.GroupID {
+	groupIDs := make([]multiraft.GroupID, 0, len(c.cfg.Groups))
+	for _, group := range c.cfg.Groups {
+		groupIDs = append(groupIDs, group.GroupID)
+	}
+	return groupIDs
+}
+
+// PeersForGroup returns the configured peers for a control-plane group.
+func (c *Cluster) PeersForGroup(groupID multiraft.GroupID) []multiraft.NodeID {
+	for _, group := range c.cfg.Groups {
+		if group.GroupID != groupID {
+			continue
+		}
+		return append([]multiraft.NodeID(nil), group.Peers...)
+	}
+	return nil
 }

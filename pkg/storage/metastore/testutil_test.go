@@ -2,15 +2,19 @@ package metastore
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metafsm"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -137,4 +141,94 @@ func waitForCondition(t testing.TB, fn func() bool, msg string) {
 		time.Sleep(testPollInterval)
 	}
 	t.Fatalf("condition not satisfied before timeout: %s", msg)
+}
+
+type testStoreNode struct {
+	cluster *raftcluster.Cluster
+	store   *Store
+	db      *metadb.DB
+	raftDB  *raftstorage.DB
+	nodeID  multiraft.NodeID
+}
+
+func startTwoNodeShardedStores(t testing.TB) []*testStoreNode {
+	t.Helper()
+
+	listeners := make([]net.Listener, 2)
+	for i := range 2 {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen %d: %v", i+1, err)
+		}
+		listeners[i] = ln
+	}
+
+	nodes := make([]raftcluster.NodeConfig, 2)
+	for i := range 2 {
+		nodes[i] = raftcluster.NodeConfig{
+			NodeID: multiraft.NodeID(i + 1),
+			Addr:   listeners[i].Addr().String(),
+		}
+		_ = listeners[i].Close()
+	}
+
+	groups := []raftcluster.GroupConfig{
+		{GroupID: 1, Peers: []multiraft.NodeID{1}},
+		{GroupID: 2, Peers: []multiraft.NodeID{2}},
+	}
+
+	out := make([]*testStoreNode, 2)
+	for i := range 2 {
+		dir := filepath.Join(t.TempDir(), fmt.Sprintf("n%d", i+1))
+		db := openTestDBAt(t, filepath.Join(dir, "biz"))
+		raftDB := openTestRaftDBAt(t, filepath.Join(dir, "raft"))
+
+		cluster, err := raftcluster.NewCluster(raftcluster.Config{
+			NodeID:     multiraft.NodeID(i + 1),
+			ListenAddr: nodes[i].Addr,
+			GroupCount: 2,
+			NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
+				return raftDB.ForGroup(uint64(groupID)), nil
+			},
+			NewStateMachine: metafsm.NewStateMachineFactory(db),
+			Nodes:           nodes,
+			Groups:          groups,
+		})
+		if err != nil {
+			t.Fatalf("NewCluster(node=%d) error = %v", i+1, err)
+		}
+		require.NoError(t, cluster.Start())
+		t.Cleanup(cluster.Stop)
+
+		out[i] = &testStoreNode{
+			cluster: cluster,
+			store:   New(cluster, db),
+			db:      db,
+			raftDB:  raftDB,
+			nodeID:  multiraft.NodeID(i + 1),
+		}
+	}
+
+	for groupID := uint64(1); groupID <= 2; groupID++ {
+		leaderNode := out[groupID-1]
+		waitForCondition(t, func() bool {
+			leaderID, err := leaderNode.cluster.LeaderOf(multiraft.GroupID(groupID))
+			return err == nil && leaderID == multiraft.NodeID(groupID)
+		}, fmt.Sprintf("group %d leader elected on expected node", groupID))
+	}
+
+	return out
+}
+
+func findChannelIDForSlot(t testing.TB, cluster *raftcluster.Cluster, slot uint64, prefix string) string {
+	t.Helper()
+
+	for i := 0; i < 10_000; i++ {
+		channelID := fmt.Sprintf("%s-%d", prefix, i)
+		if uint64(cluster.SlotForKey(channelID)) == slot {
+			return channelID
+		}
+	}
+	t.Fatalf("no channel id found for slot %d", slot)
+	return ""
 }

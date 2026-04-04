@@ -8,9 +8,11 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
 )
 
+const rpcServiceForward uint8 = 1
+
 func (c *Cluster) forwardToLeader(ctx context.Context, leaderID multiraft.NodeID, groupID multiraft.GroupID, cmd []byte) error {
 	payload := encodeForwardPayload(uint64(groupID), cmd)
-	resp, err := c.fwdClient.RPC(ctx, uint64(leaderID), uint64(groupID), payload)
+	resp, err := c.fwdClient.RPCService(ctx, uint64(leaderID), uint64(groupID), rpcServiceForward, payload)
 	if err != nil {
 		return err
 	}

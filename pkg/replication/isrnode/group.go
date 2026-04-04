@@ -32,6 +32,10 @@ func (g *group) ID() isr.GroupKey {
 	return g.id
 }
 
+func (g *group) Meta() isr.GroupMeta {
+	return g.metaSnapshot()
+}
+
 func (g *group) Status() isr.ReplicaState {
 	return g.replica.Status()
 }

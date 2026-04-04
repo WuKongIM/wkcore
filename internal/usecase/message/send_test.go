@@ -18,7 +18,7 @@ var fixedSendNow = time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
 func TestSendRejectsUnauthenticatedSender(t *testing.T) {
 	app := New(Options{Now: fixedNowFn})
 
-	result, err := app.Send(SendCommand{
+	result, err := app.Send(context.Background(), SendCommand{
 		ChannelID:   "u2",
 		ChannelType: wkframe.ChannelTypePerson,
 		Payload:     []byte("hi"),
@@ -31,7 +31,7 @@ func TestSendRejectsUnauthenticatedSender(t *testing.T) {
 func TestSendReturnsUnsupportedChannelType(t *testing.T) {
 	app := New(Options{Now: fixedNowFn})
 
-	result, err := app.Send(SendCommand{
+	result, err := app.Send(context.Background(), SendCommand{
 		SenderUID:   "u1",
 		ChannelID:   "group-1",
 		ChannelType: wkframe.ChannelTypeGroup,
@@ -63,7 +63,7 @@ func TestSendDeliversLocalPersonMessage(t *testing.T) {
 		Sequence: seq,
 	})
 
-	result, err := app.Send(SendCommand{
+	result, err := app.Send(context.Background(), SendCommand{
 		SenderUID:   "u1",
 		ChannelID:   "u2",
 		ChannelType: wkframe.ChannelTypePerson,
@@ -98,7 +98,7 @@ func TestSendReturnsUserNotOnNodeWhenRecipientOffline(t *testing.T) {
 		Online: &fakeRegistry{},
 	})
 
-	result, err := app.Send(SendCommand{
+	result, err := app.Send(context.Background(), SendCommand{
 		SenderUID:   "u1",
 		ChannelID:   "u2",
 		ChannelType: wkframe.ChannelTypePerson,
@@ -128,7 +128,7 @@ func TestSendReturnsSystemErrorWhenDeliveryFails(t *testing.T) {
 		Sequence: &recordingSequenceAllocator{messageID: 101, sequence: 5},
 	})
 
-	result, err := app.Send(SendCommand{
+	result, err := app.Send(context.Background(), SendCommand{
 		SenderUID:   "u1",
 		ChannelID:   "u2",
 		ChannelType: wkframe.ChannelTypePerson,
@@ -174,7 +174,7 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 		Delivery:      delivery,
 	})
 
-	result, err := app.Send(SendCommand{
+	result, err := app.Send(context.Background(), SendCommand{
 		SenderUID:   "u1",
 		ChannelID:   "u2",
 		ChannelType: wkframe.ChannelTypePerson,
@@ -204,6 +204,76 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	require.Equal(t, []byte("hi"), recv.Payload)
 }
 
+func TestSendDurablePersonPropagatesRequestContextToClusterAndMetaRefresh(t *testing.T) {
+	type ctxKey string
+
+	cluster := &fakeChannelCluster{
+		sendReplies: []fakeChannelClusterSendReply{
+			{err: channellog.ErrStaleMeta},
+			{result: channellog.SendResult{MessageID: 401, MessageSeq: 19}},
+		},
+	}
+	refresher := &fakeMetaRefresher{
+		metas: []channellog.ChannelMeta{{
+			ChannelID:    "u2",
+			ChannelType:  wkframe.ChannelTypePerson,
+			ChannelEpoch: 12,
+			LeaderEpoch:  4,
+		}},
+	}
+	app := New(Options{
+		Now:           fixedNowFn,
+		ClusterPort:   cluster,
+		MetaRefresher: refresher,
+	})
+
+	ctx := context.WithValue(context.Background(), ctxKey("request"), "durable-send")
+	result, err := app.Send(ctx, SendCommand{
+		SenderUID:   "u1",
+		ChannelID:   "u2",
+		ChannelType: wkframe.ChannelTypePerson,
+		ClientMsgNo: "m9",
+		Payload:     []byte("hi"),
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+	require.Len(t, cluster.sendContexts, 2)
+	require.Same(t, ctx, cluster.sendContexts[0])
+	require.Same(t, ctx, cluster.sendContexts[1])
+	require.Len(t, refresher.refreshContexts, 1)
+	require.Same(t, ctx, refresher.refreshContexts[0])
+}
+
+func TestSendDurablePersonReturnsContextCanceled(t *testing.T) {
+	cluster := &fakeChannelCluster{
+		sendFn: func(ctx context.Context, _ channellog.SendRequest) (channellog.SendResult, error) {
+			<-ctx.Done()
+			return channellog.SendResult{}, ctx.Err()
+		},
+	}
+	app := New(Options{
+		Now:         fixedNowFn,
+		ClusterPort: cluster,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := app.Send(ctx, SendCommand{
+		SenderUID:   "u1",
+		ChannelID:   "u2",
+		ChannelType: wkframe.ChannelTypePerson,
+		ClientMsgNo: "m10",
+		Payload:     []byte("hi"),
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, SendResult{}, result)
+	require.Len(t, cluster.sendContexts, 1)
+	require.Same(t, ctx, cluster.sendContexts[0])
+}
+
 func TestSendClusterSuccessDoesNotRequireLocalRecipient(t *testing.T) {
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
@@ -218,7 +288,7 @@ func TestSendClusterSuccessDoesNotRequireLocalRecipient(t *testing.T) {
 		Delivery:    delivery,
 	})
 
-	result, err := app.Send(SendCommand{
+	result, err := app.Send(context.Background(), SendCommand{
 		SenderUID:   "u1",
 		ChannelID:   "u2",
 		ChannelType: wkframe.ChannelTypePerson,
@@ -255,7 +325,7 @@ func TestSendReturnsProtocolUpgradeRequiredWhenClusterRejectsLegacyClient(t *tes
 		Delivery: delivery,
 	})
 
-	result, err := app.Send(SendCommand{
+	result, err := app.Send(context.Background(), SendCommand{
 		SenderUID:       "u1",
 		ChannelID:       "u2",
 		ChannelType:     wkframe.ChannelTypePerson,
@@ -417,7 +487,9 @@ type fakeChannelClusterSendReply struct {
 type fakeChannelCluster struct {
 	appliedMetas []channellog.ChannelMeta
 	sendRequests []channellog.SendRequest
+	sendContexts []context.Context
 	sendReplies  []fakeChannelClusterSendReply
+	sendFn       func(context.Context, channellog.SendRequest) (channellog.SendResult, error)
 	applyErr     error
 }
 
@@ -426,8 +498,12 @@ func (f *fakeChannelCluster) ApplyMeta(meta channellog.ChannelMeta) error {
 	return f.applyErr
 }
 
-func (f *fakeChannelCluster) Send(_ context.Context, req channellog.SendRequest) (channellog.SendResult, error) {
+func (f *fakeChannelCluster) Send(ctx context.Context, req channellog.SendRequest) (channellog.SendResult, error) {
+	f.sendContexts = append(f.sendContexts, ctx)
 	f.sendRequests = append(f.sendRequests, req)
+	if f.sendFn != nil {
+		return f.sendFn(ctx, req)
+	}
 	if len(f.sendReplies) == 0 {
 		return channellog.SendResult{}, nil
 	}
@@ -437,13 +513,15 @@ func (f *fakeChannelCluster) Send(_ context.Context, req channellog.SendRequest)
 }
 
 type fakeMetaRefresher struct {
-	keys  []channellog.ChannelKey
-	metas []channellog.ChannelMeta
-	errs  []error
+	keys            []channellog.ChannelKey
+	refreshContexts []context.Context
+	metas           []channellog.ChannelMeta
+	errs            []error
 }
 
-func (f *fakeMetaRefresher) RefreshChannelMeta(_ context.Context, key channellog.ChannelKey) (channellog.ChannelMeta, error) {
+func (f *fakeMetaRefresher) RefreshChannelMeta(ctx context.Context, key channellog.ChannelKey) (channellog.ChannelMeta, error) {
 	f.keys = append(f.keys, key)
+	f.refreshContexts = append(f.refreshContexts, ctx)
 	if len(f.errs) > 0 {
 		err := f.errs[0]
 		f.errs = f.errs[1:]

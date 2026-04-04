@@ -11,6 +11,7 @@ const (
 	keyspaceCheckpoint byte = 0x11
 	keyspaceHistory    byte = 0x12
 	keyspaceSnapshot   byte = 0x13
+	keyspaceState      byte = 0x14
 )
 
 func encodeGroupPrefix(keyspace byte, groupKey isr.GroupKey) []byte {
@@ -47,6 +48,40 @@ func encodeSnapshotKey(groupKey isr.GroupKey) []byte {
 	return encodeGroupPrefix(keyspaceSnapshot, groupKey)
 }
 
+func encodeIdempotencyPrefix(groupKey isr.GroupKey) []byte {
+	return encodeGroupPrefix(keyspaceState, groupKey)
+}
+
+func encodeIdempotencyKey(groupKey isr.GroupKey, key IdempotencyKey) []byte {
+	encoded := encodeIdempotencyPrefix(groupKey)
+	encoded = appendKeyString(encoded, key.SenderUID)
+	encoded = appendKeyString(encoded, key.ClientMsgNo)
+	return encoded
+}
+
+func decodeIdempotencyKey(raw []byte, prefix []byte) (IdempotencyKey, error) {
+	if len(raw) < len(prefix) || string(raw[:len(prefix)]) != string(prefix) {
+		return IdempotencyKey{}, ErrCorruptValue
+	}
+
+	rest := raw[len(prefix):]
+	senderUID, rest, err := decodeKeyString(rest)
+	if err != nil {
+		return IdempotencyKey{}, err
+	}
+	clientMsgNo, rest, err := decodeKeyString(rest)
+	if err != nil {
+		return IdempotencyKey{}, err
+	}
+	if len(rest) != 0 {
+		return IdempotencyKey{}, ErrCorruptValue
+	}
+	return IdempotencyKey{
+		SenderUID:   senderUID,
+		ClientMsgNo: clientMsgNo,
+	}, nil
+}
+
 func decodeLogRecordOffset(key []byte, prefix []byte) (uint64, error) {
 	if len(key) != len(prefix)+8 {
 		return 0, ErrCorruptValue
@@ -67,4 +102,22 @@ func keyUpperBound(prefix []byte) []byte {
 		return upper[:i+1]
 	}
 	return nil
+}
+
+func appendKeyString(dst []byte, value string) []byte {
+	dst = binary.AppendUvarint(dst, uint64(len(value)))
+	dst = append(dst, value...)
+	return dst
+}
+
+func decodeKeyString(src []byte) (string, []byte, error) {
+	length, n := binary.Uvarint(src)
+	if n <= 0 {
+		return "", nil, ErrCorruptValue
+	}
+	src = src[n:]
+	if uint64(len(src)) < length {
+		return "", nil, ErrCorruptValue
+	}
+	return string(src[:length]), src[length:], nil
 }

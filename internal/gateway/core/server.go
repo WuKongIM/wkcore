@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -70,6 +71,9 @@ type sessionState struct {
 
 	closeOnce sync.Once
 	closedCh  chan struct{}
+
+	requestContext       context.Context
+	cancelRequestContext context.CancelFunc
 
 	lastActivity atomic.Int64
 }
@@ -295,6 +299,7 @@ func (s *Server) onOpen(listener *listenerRuntime, conn transport.Conn) error {
 		},
 		closedCh: make(chan struct{}),
 	}
+	state.requestContext, state.cancelRequestContext = context.WithCancel(context.Background())
 	state.setAuthRequired(listener.options.Protocol == "wkproto" && s.options.Authenticator != nil)
 	if !state.requiresAuth() {
 		state.setAuthenticated(true)
@@ -428,7 +433,7 @@ func (s *Server) handleAuthFrame(state *sessionState, replyToken string, frame w
 		return true, nil
 	}
 
-	ctx := s.dispatcher.context(state, replyToken, state.closeReason())
+	ctx := s.dispatcher.context(state, replyToken, state.closeReason(), nil)
 	result, err := s.options.Authenticator.Authenticate(ctx, connect)
 	if err != nil {
 		if writeErr := s.writeImmediateFrame(state, &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonSystemError}); writeErr != nil {
@@ -737,6 +742,9 @@ func (st *sessionState) close(reason gatewaytypes.CloseReason, err error) {
 	}
 
 	st.closeOnce.Do(func() {
+		if st.cancelRequestContext != nil {
+			st.cancelRequestContext()
+		}
 		st.setCloseReason(reason)
 		st.server.unregisterState(st)
 		if err != nil && st.openWasDispatched() {

@@ -8,7 +8,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 )
 
-func (a *App) Send(cmd SendCommand) (SendResult, error) {
+func (a *App) Send(ctx context.Context, cmd SendCommand) (SendResult, error) {
 	if cmd.SenderUID == "" {
 		return SendResult{}, ErrUnauthenticatedSender
 	}
@@ -18,7 +18,7 @@ func (a *App) Send(cmd SendCommand) (SendResult, error) {
 	}
 
 	if a.cluster != nil {
-		return a.sendDurablePerson(context.Background(), cmd)
+		return a.sendDurablePerson(ctx, cmd)
 	}
 
 	return a.sendLocalPerson(cmd)

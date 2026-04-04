@@ -1,6 +1,8 @@
 package types
 
 import (
+	"context"
+
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
@@ -14,13 +16,14 @@ type Handler interface {
 }
 
 type Context struct {
-	Session     session.Session
-	Listener    string
-	Network     string
-	Transport   string
-	Protocol    string
-	CloseReason CloseReason
-	ReplyToken  string
+	Session        session.Session
+	Listener       string
+	Network        string
+	Transport      string
+	Protocol       string
+	CloseReason    CloseReason
+	ReplyToken     string
+	RequestContext context.Context
 }
 
 func (ctx *Context) WriteFrame(frame wkframe.Frame) error {

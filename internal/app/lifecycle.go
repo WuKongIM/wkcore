@@ -4,9 +4,17 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isrnodetransport"
+	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
 )
 
-const apiStopTimeout = 5 * time.Second
+const (
+	apiStopTimeout              = 5 * time.Second
+	defaultDataPlaneDialTimeout = 5 * time.Second
+)
 
 func (a *App) Start() error {
 	if a == nil || a.cluster == nil || a.gateway == nil {
@@ -25,7 +33,16 @@ func (a *App) Start() error {
 		return err
 	}
 	a.clusterOn.Store(true)
+	if a.channelMetaSync != nil || a.startChannelMetaSyncFn != nil {
+		if err := a.startChannelMetaSync(); err != nil {
+			_ = a.stopClusterWithError()
+			a.started.Store(false)
+			return err
+		}
+		a.channelMetaOn.Store(true)
+	}
 	if err := a.startGateway(); err != nil {
+		_ = a.stopChannelMetaSync()
 		_ = a.stopClusterWithError()
 		a.started.Store(false)
 		return err
@@ -33,6 +50,7 @@ func (a *App) Start() error {
 	a.gatewayOn.Store(true)
 	if err := a.startAPI(); err != nil {
 		_ = a.stopGateway()
+		_ = a.stopChannelMetaSync()
 		_ = a.stopClusterWithError()
 		a.started.Store(false)
 		return err
@@ -57,7 +75,9 @@ func (a *App) Stop() error {
 		err = errors.Join(
 			a.stopAPI(),
 			a.stopGateway(),
+			a.stopChannelMetaSync(),
 			a.stopClusterWithError(),
+			a.closeChannelLogDB(),
 			a.closeRaftDB(),
 			a.closeWKDB(),
 		)
@@ -85,6 +105,59 @@ func (a *App) startGateway() error {
 	return a.gateway.Start()
 }
 
+func (a *App) startChannelMetaSync() error {
+	if a.startChannelMetaSyncFn != nil {
+		return a.startChannelMetaSyncFn()
+	}
+	if a.channelMetaSync == nil {
+		return nil
+	}
+	if a.cluster == nil || a.isrTransport == nil || a.isrRuntime == nil {
+		return ErrNotBuilt
+	}
+	if a.dataPlanePool == nil || a.dataPlaneClient == nil {
+		discovery := raftcluster.NewStaticDiscovery(a.cfg.Cluster.runtimeNodes())
+		poolSize := a.cfg.Cluster.PoolSize
+		if poolSize <= 0 {
+			poolSize = 1
+		}
+		dialTimeout := a.cfg.Cluster.DialTimeout
+		if dialTimeout <= 0 {
+			dialTimeout = defaultDataPlaneDialTimeout
+		}
+		a.dataPlanePool = nodetransport.NewPool(discovery, poolSize, dialTimeout)
+		a.dataPlaneClient = nodetransport.NewClient(a.dataPlanePool)
+		adapter, err := isrnodetransport.New(isrnodetransport.Options{
+			LocalNode:    isr.NodeID(a.cfg.Node.ID),
+			Client:       a.dataPlaneClient,
+			RPCMux:       a.cluster.RPCMux(),
+			FetchService: a.isrRuntime,
+			RPCTimeout:   a.cfg.Cluster.DataPlaneRPCTimeout,
+		})
+		if err != nil {
+			a.dataPlaneClient.Stop()
+			a.dataPlaneClient = nil
+			a.dataPlanePool.Close()
+			a.dataPlanePool = nil
+			return err
+		}
+		a.isrTransport.Bind(adapter)
+	}
+	if err := a.channelMetaSync.Start(); err != nil {
+		if a.dataPlaneClient != nil {
+			a.dataPlaneClient.Stop()
+			a.dataPlaneClient = nil
+		}
+		if a.dataPlanePool != nil {
+			a.dataPlanePool.Close()
+			a.dataPlanePool = nil
+		}
+		a.isrTransport.Unbind()
+		return err
+	}
+	return nil
+}
+
 func (a *App) startAPI() error {
 	if a.startAPIFn != nil {
 		return a.startAPIFn()
@@ -106,6 +179,32 @@ func (a *App) stopGateway() error {
 		return nil
 	}
 	return a.gateway.Stop()
+}
+
+func (a *App) stopChannelMetaSync() error {
+	if !a.channelMetaOn.Swap(false) {
+		return nil
+	}
+	if a.stopChannelMetaSyncFn != nil {
+		return a.stopChannelMetaSyncFn()
+	}
+
+	var err error
+	if a.channelMetaSync != nil {
+		err = errors.Join(err, a.channelMetaSync.Stop())
+	}
+	if a.dataPlaneClient != nil {
+		a.dataPlaneClient.Stop()
+		a.dataPlaneClient = nil
+	}
+	if a.dataPlanePool != nil {
+		a.dataPlanePool.Close()
+		a.dataPlanePool = nil
+	}
+	if a.isrTransport != nil {
+		a.isrTransport.Unbind()
+	}
+	return err
 }
 
 func (a *App) stopAPI() error {
@@ -150,6 +249,16 @@ func (a *App) closeRaftDB() error {
 		return nil
 	}
 	return a.raftDB.Close()
+}
+
+func (a *App) closeChannelLogDB() error {
+	if a.closeChannelLogDBFn != nil {
+		return a.closeChannelLogDBFn()
+	}
+	if a.channelLogDB == nil {
+		return nil
+	}
+	return a.channelLogDB.Close()
 }
 
 func (a *App) closeWKDB() error {

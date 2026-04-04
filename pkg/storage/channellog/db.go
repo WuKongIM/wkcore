@@ -59,3 +59,7 @@ func (db *DB) ForChannel(key ChannelKey) *Store {
 	db.stores[key] = store
 	return store
 }
+
+func (db *DB) StateStoreFactory() StateStoreFactory {
+	return &stateStoreFactory{db: db}
+}

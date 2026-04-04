@@ -1,6 +1,8 @@
 package core
 
 import (
+	"context"
+
 	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
@@ -24,42 +26,53 @@ func (d dispatcher) sessionOpen(state *sessionState) error {
 	if d.handler == nil {
 		return nil
 	}
-	return d.handler.OnSessionOpen(d.context(state, "", state.closeReason()))
+	return d.handler.OnSessionOpen(d.context(state, "", state.closeReason(), nil))
 }
 
 func (d dispatcher) frame(state *sessionState, replyToken string, frame wkframe.Frame) error {
 	if d.handler == nil {
 		return nil
 	}
-	return d.handler.OnFrame(d.context(state, replyToken, state.closeReason()), frame)
+	ctx, cancel := d.requestContext(state)
+	defer cancel()
+	return d.handler.OnFrame(d.context(state, replyToken, state.closeReason(), ctx), frame)
 }
 
 func (d dispatcher) sessionError(state *sessionState, reason gatewaytypes.CloseReason, err error) {
 	if d.handler == nil || err == nil {
 		return
 	}
-	d.handler.OnSessionError(d.context(state, "", reason), err)
+	d.handler.OnSessionError(d.context(state, "", reason, nil), err)
 }
 
 func (d dispatcher) sessionClose(state *sessionState) error {
 	if d.handler == nil {
 		return nil
 	}
-	return d.handler.OnSessionClose(d.context(state, "", state.closeReason()))
+	return d.handler.OnSessionClose(d.context(state, "", state.closeReason(), nil))
 }
 
-func (d dispatcher) context(state *sessionState, replyToken string, reason gatewaytypes.CloseReason) *gatewaytypes.Context {
+func (d dispatcher) context(state *sessionState, replyToken string, reason gatewaytypes.CloseReason, requestContext context.Context) *gatewaytypes.Context {
 	if state == nil || state.listener == nil {
-		return &gatewaytypes.Context{CloseReason: reason, ReplyToken: replyToken}
+		return &gatewaytypes.Context{CloseReason: reason, ReplyToken: replyToken, RequestContext: requestContext}
 	}
 
 	return &gatewaytypes.Context{
-		Session:     state.session,
-		Listener:    state.listener.options.Name,
-		Network:     state.listener.options.Network,
-		Transport:   state.listener.options.Transport,
-		Protocol:    state.listener.options.Protocol,
-		CloseReason: reason,
-		ReplyToken:  replyToken,
+		Session:        state.session,
+		Listener:       state.listener.options.Name,
+		Network:        state.listener.options.Network,
+		Transport:      state.listener.options.Transport,
+		Protocol:       state.listener.options.Protocol,
+		CloseReason:    reason,
+		ReplyToken:     replyToken,
+		RequestContext: requestContext,
 	}
+}
+
+func (d dispatcher) requestContext(state *sessionState) (context.Context, context.CancelFunc) {
+	parent := context.Background()
+	if state != nil && state.requestContext != nil {
+		parent = state.requestContext
+	}
+	return context.WithCancel(parent)
 }

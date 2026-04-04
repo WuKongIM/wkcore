@@ -17,7 +17,11 @@ type Store struct {
 
 // New creates a Store.
 func New(cluster *raftcluster.Cluster, db *metadb.DB) *Store {
-	return &Store{cluster: cluster, db: db}
+	store := &Store{cluster: cluster, db: db}
+	if cluster != nil && cluster.RPCMux() != nil {
+		cluster.RPCMux().Handle(runtimeMetaRPCServiceID, store.handleRuntimeMetaRPC)
+	}
+	return store
 }
 
 func (s *Store) CreateChannel(ctx context.Context, channelID string, channelType int64) error {
@@ -48,6 +52,33 @@ func (s *Store) DeleteChannel(ctx context.Context, channelID string, channelType
 func (s *Store) GetChannel(ctx context.Context, channelID string, channelType int64) (metadb.Channel, error) {
 	groupID := s.cluster.SlotForKey(channelID)
 	return s.db.ForSlot(uint64(groupID)).GetChannel(ctx, channelID, channelType)
+}
+
+func (s *Store) UpsertChannelRuntimeMeta(ctx context.Context, meta metadb.ChannelRuntimeMeta) error {
+	groupID := s.cluster.SlotForKey(meta.ChannelID)
+	cmd := metafsm.EncodeUpsertChannelRuntimeMetaCommand(meta)
+	return s.cluster.Propose(ctx, groupID, cmd)
+}
+
+func (s *Store) GetChannelRuntimeMeta(ctx context.Context, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error) {
+	groupID := s.cluster.SlotForKey(channelID)
+	return s.getChannelRuntimeMetaAuthoritative(ctx, groupID, channelID, channelType)
+}
+
+func (s *Store) ListChannelRuntimeMeta(ctx context.Context) ([]metadb.ChannelRuntimeMeta, error) {
+	if s.cluster == nil {
+		return s.db.ListChannelRuntimeMeta(ctx)
+	}
+
+	metas := make([]metadb.ChannelRuntimeMeta, 0, 16)
+	for _, groupID := range s.cluster.GroupIDs() {
+		groupMetas, err := s.listChannelRuntimeMetaAuthoritative(ctx, groupID)
+		if err != nil {
+			return nil, err
+		}
+		metas = append(metas, groupMetas...)
+	}
+	return metas, nil
 }
 
 func (s *Store) UpsertUser(ctx context.Context, u metadb.User) error {

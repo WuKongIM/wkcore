@@ -83,6 +83,10 @@ func (c *Client) RPC(ctx context.Context, nodeID NodeID, shardKey uint64, payloa
 	}
 }
 
+func (c *Client) RPCService(ctx context.Context, nodeID NodeID, shardKey uint64, serviceID uint8, payload []byte) ([]byte, error) {
+	return c.RPC(ctx, nodeID, shardKey, encodeRPCServicePayload(serviceID, payload))
+}
+
 // Stop cancels all pending RPCs and waits for goroutines to exit.
 func (c *Client) Stop() {
 	close(c.stopCh)

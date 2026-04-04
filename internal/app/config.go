@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
+	"github.com/WuKongIM/WuKongIM/internal/runtime/messageid"
 )
 
 type Config struct {
@@ -23,22 +24,24 @@ type NodeConfig struct {
 }
 
 type StorageConfig struct {
-	DBPath   string
-	RaftPath string
+	DBPath         string
+	RaftPath       string
+	ChannelLogPath string
 }
 
 type ClusterConfig struct {
-	ListenAddr     string
-	GroupCount     uint32
-	Nodes          []NodeConfigRef
-	Groups         []GroupConfig
-	ForwardTimeout time.Duration
-	PoolSize       int
-	TickInterval   time.Duration
-	RaftWorkers    int
-	ElectionTick   int
-	HeartbeatTick  int
-	DialTimeout    time.Duration
+	ListenAddr          string
+	GroupCount          uint32
+	Nodes               []NodeConfigRef
+	Groups              []GroupConfig
+	ForwardTimeout      time.Duration
+	PoolSize            int
+	TickInterval        time.Duration
+	RaftWorkers         int
+	ElectionTick        int
+	HeartbeatTick       int
+	DialTimeout         time.Duration
+	DataPlaneRPCTimeout time.Duration
 }
 
 type NodeConfigRef struct {
@@ -69,6 +72,9 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	if c.Node.ID == 0 {
 		return fmt.Errorf("%w: node id must be set", ErrInvalidConfig)
 	}
+	if c.Node.ID > messageid.MaxNodeID {
+		return fmt.Errorf("%w: node id %d exceeds snowflake max %d", ErrInvalidConfig, c.Node.ID, messageid.MaxNodeID)
+	}
 	if c.Node.DataDir == "" {
 		return fmt.Errorf("%w: node data dir must be set", ErrInvalidConfig)
 	}
@@ -94,6 +100,9 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	if c.Storage.RaftPath == "" {
 		c.Storage.RaftPath = filepath.Join(c.Node.DataDir, "raft")
 	}
+	if c.Storage.ChannelLogPath == "" {
+		c.Storage.ChannelLogPath = filepath.Join(c.Node.DataDir, "channellog")
+	}
 
 	dbPath, err := normalizeStoragePath(c.Storage.DBPath)
 	if err != nil {
@@ -103,8 +112,15 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	if err != nil {
 		return fmt.Errorf("%w: normalize raft path: %v", ErrInvalidConfig, err)
 	}
+	channelLogPath, err := normalizeStoragePath(c.Storage.ChannelLogPath)
+	if err != nil {
+		return fmt.Errorf("%w: normalize channel log path: %v", ErrInvalidConfig, err)
+	}
 	if dbPath == raftPath {
 		return fmt.Errorf("%w: storage db path and raft path must differ", ErrInvalidConfig)
+	}
+	if dbPath == channelLogPath || raftPath == channelLogPath {
+		return fmt.Errorf("%w: channel log path must differ from db and raft paths", ErrInvalidConfig)
 	}
 
 	if c.Cluster.GroupCount == 0 {

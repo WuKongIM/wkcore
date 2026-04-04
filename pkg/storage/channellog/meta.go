@@ -36,6 +36,13 @@ func (c *cluster) ApplyMeta(meta ChannelMeta) error {
 	}
 }
 
+func (c *cluster) RemoveMeta(key ChannelKey) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.metas, key)
+	return nil
+}
+
 func (c *cluster) Status(key ChannelKey) (ChannelRuntimeStatus, error) {
 	c.mu.RLock()
 	meta, ok := c.metas[key]

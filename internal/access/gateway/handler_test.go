@@ -81,7 +81,12 @@ func TestHandlerOnFrameSendMapsCommandAndWritesSendack(t *testing.T) {
 		},
 	})
 
-	ctx := &coregateway.Context{Session: sender, Listener: "tcp", ReplyToken: "reply-1"}
+	ctx := &coregateway.Context{
+		Session:        sender,
+		Listener:       "tcp",
+		ReplyToken:     "reply-1",
+		RequestContext: context.Background(),
+	}
 	pkt := &wkframe.SendPacket{
 		Framer:      wkframe.Framer{RedDot: true},
 		Setting:     1,
@@ -119,6 +124,71 @@ func TestHandlerOnFrameSendMapsCommandAndWritesSendack(t *testing.T) {
 	require.Equal(t, uint64(13), ack.ClientSeq)
 	require.Equal(t, "m4", ack.ClientMsgNo)
 	require.Equal(t, "reply-1", write.meta.ReplyToken)
+}
+
+func TestHandlerOnFrameSendPropagatesRequestContext(t *testing.T) {
+	type ctxKey string
+
+	sender := newOptionRecordingSession(1, "tcp")
+	sender.SetValue(coregateway.SessionValueUID, "u1")
+	msgs := &fakeMessageUsecase{}
+	handler := New(Options{Messages: msgs})
+
+	reqCtx := context.WithValue(context.Background(), ctxKey("request"), "gateway-send")
+	ctx := &coregateway.Context{
+		Session:        sender,
+		Listener:       "tcp",
+		ReplyToken:     "reply-ctx",
+		RequestContext: reqCtx,
+	}
+	pkt := &wkframe.SendPacket{
+		ChannelID:   "u2",
+		ChannelType: wkframe.ChannelTypePerson,
+		ClientSeq:   33,
+		ClientMsgNo: "ctx-1",
+	}
+
+	require.NoError(t, handler.OnFrame(ctx, pkt))
+	require.Len(t, msgs.sendContexts, 1)
+	require.Equal(t, "gateway-send", msgs.sendContexts[0].Value(ctxKey("request")))
+	_, ok := msgs.sendContexts[0].Deadline()
+	require.True(t, ok)
+}
+
+func TestHandlerOnFrameSendMapsCanceledRequestContextToSendack(t *testing.T) {
+	sender := newOptionRecordingSession(1, "tcp")
+	sender.SetValue(coregateway.SessionValueUID, "u1")
+	msgs := &fakeMessageUsecase{
+		sendFn: func(ctx context.Context, _ message.SendCommand) (message.SendResult, error) {
+			return message.SendResult{}, ctx.Err()
+		},
+	}
+	handler := New(Options{Messages: msgs})
+
+	reqCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ctx := &coregateway.Context{
+		Session:        sender,
+		Listener:       "tcp",
+		ReplyToken:     "reply-canceled",
+		RequestContext: reqCtx,
+	}
+
+	err := handler.OnFrame(ctx, &wkframe.SendPacket{
+		ChannelID:   "u2",
+		ChannelType: wkframe.ChannelTypePerson,
+		ClientSeq:   34,
+		ClientMsgNo: "ctx-canceled",
+	})
+
+	require.NoError(t, err)
+	require.Len(t, sender.Writes(), 1)
+	ack := requireSendackPacket(t, sender.Writes()[0].frame)
+	require.Equal(t, wkframe.ReasonSystemError, ack.ReasonCode)
+	require.Equal(t, uint64(34), ack.ClientSeq)
+	require.Equal(t, "ctx-canceled", ack.ClientMsgNo)
+	require.Len(t, msgs.sendContexts, 1)
+	require.ErrorIs(t, msgs.sendContexts[0].Err(), context.Canceled)
 }
 
 func TestHandlerOnFrameSendMapsChannelclusterErrorsToSendack(t *testing.T) {
@@ -167,7 +237,12 @@ func TestHandlerOnFrameSendMapsChannelclusterErrorsToSendack(t *testing.T) {
 				Messages: &fakeMessageUsecase{sendErr: tt.err},
 			})
 
-			ctx := &coregateway.Context{Session: sender, Listener: "tcp", ReplyToken: "reply-2"}
+			ctx := &coregateway.Context{
+				Session:        sender,
+				Listener:       "tcp",
+				ReplyToken:     "reply-2",
+				RequestContext: context.Background(),
+			}
 			pkt := &wkframe.SendPacket{
 				ChannelID:   "u2",
 				ChannelType: wkframe.ChannelTypePerson,
@@ -239,7 +314,11 @@ func TestNewSharesOnlineRegistryWithInjectedMessageApp(t *testing.T) {
 	require.NoError(t, handler.OnSessionOpen(&coregateway.Context{Session: sender, Listener: "tcp"}))
 	require.NoError(t, handler.OnSessionOpen(&coregateway.Context{Session: recipient, Listener: "tcp"}))
 
-	err := handler.OnFrame(&coregateway.Context{Session: sender, Listener: "tcp"}, &wkframe.SendPacket{
+	err := handler.OnFrame(&coregateway.Context{
+		Session:        sender,
+		Listener:       "tcp",
+		RequestContext: context.Background(),
+	}, &wkframe.SendPacket{
 		ChannelID:   "u2",
 		ChannelType: wkframe.ChannelTypePerson,
 		Payload:     []byte("hi"),
@@ -270,8 +349,9 @@ func newAuthedContext(t *testing.T, sessionID uint64, uid string) *coregateway.C
 	sess.SetValue(coregateway.SessionValueDeviceLevel, wkframe.DeviceLevelMaster)
 
 	return &coregateway.Context{
-		Session:  sess,
-		Listener: "tcp",
+		Session:        sess,
+		Listener:       "tcp",
+		RequestContext: context.Background(),
 	}
 }
 
@@ -293,6 +373,8 @@ func requireRecvPacket(t *testing.T, frame wkframe.Frame) *wkframe.RecvPacket {
 
 type fakeMessageUsecase struct {
 	sendCommands    []message.SendCommand
+	sendContexts    []context.Context
+	sendFn          func(context.Context, message.SendCommand) (message.SendResult, error)
 	sendResult      message.SendResult
 	sendErr         error
 	recvAckCalls    int
@@ -300,8 +382,12 @@ type fakeMessageUsecase struct {
 	recvAckErr      error
 }
 
-func (f *fakeMessageUsecase) Send(cmd message.SendCommand) (message.SendResult, error) {
+func (f *fakeMessageUsecase) Send(ctx context.Context, cmd message.SendCommand) (message.SendResult, error) {
+	f.sendContexts = append(f.sendContexts, ctx)
 	f.sendCommands = append(f.sendCommands, cmd)
+	if f.sendFn != nil {
+		return f.sendFn(ctx, cmd)
+	}
 	return f.sendResult, f.sendErr
 }
 

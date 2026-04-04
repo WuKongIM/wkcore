@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -11,27 +12,35 @@ import (
 
 var ErrUnsupportedFrame = errors.New("access/gateway: unsupported frame")
 var ErrUnauthenticatedSession = errors.New("access/gateway: unauthenticated session")
+var ErrMissingRequestContext = errors.New("access/gateway: missing request context")
+
+const defaultSendTimeout = 10 * time.Second
 
 type MessageUsecase interface {
-	Send(cmd message.SendCommand) (message.SendResult, error)
+	Send(ctx context.Context, cmd message.SendCommand) (message.SendResult, error)
 	RecvAck(cmd message.RecvAckCommand) error
 }
 
 type Options struct {
-	Online   online.Registry
-	Messages MessageUsecase
-	Now      func() time.Time
+	Online      online.Registry
+	Messages    MessageUsecase
+	Now         func() time.Time
+	SendTimeout time.Duration
 }
 
 type Handler struct {
-	online   online.Registry
-	messages MessageUsecase
-	now      func() time.Time
+	online      online.Registry
+	messages    MessageUsecase
+	now         func() time.Time
+	sendTimeout time.Duration
 }
 
 func New(opts Options) *Handler {
 	if opts.Now == nil {
 		opts.Now = time.Now
+	}
+	if opts.SendTimeout <= 0 {
+		opts.SendTimeout = defaultSendTimeout
 	}
 	if opts.Online == nil {
 		if provider, ok := opts.Messages.(interface{ OnlineRegistry() online.Registry }); ok {
@@ -49,9 +58,10 @@ func New(opts Options) *Handler {
 	}
 
 	return &Handler{
-		online:   opts.Online,
-		messages: opts.Messages,
-		now:      opts.Now,
+		online:      opts.Online,
+		messages:    opts.Messages,
+		now:         opts.Now,
+		sendTimeout: opts.SendTimeout,
 	}
 }
 

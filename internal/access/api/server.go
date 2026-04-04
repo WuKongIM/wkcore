@@ -14,7 +14,7 @@ import (
 var ErrListenAddrRequired = errors.New("access/api: listen address required")
 
 type MessageUsecase interface {
-	Send(cmd message.SendCommand) (message.SendResult, error)
+	Send(ctx context.Context, cmd message.SendCommand) (message.SendResult, error)
 }
 
 type Options struct {

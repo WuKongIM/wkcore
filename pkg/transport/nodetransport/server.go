@@ -48,6 +48,13 @@ func (s *Server) HandleRPC(h RPCHandler) {
 	s.mu.Unlock()
 }
 
+func (s *Server) HandleRPCMux(mux *RPCMux) {
+	if mux == nil {
+		panic("nodetransport: nil rpc mux")
+	}
+	s.HandleRPC(mux.HandleRPC)
+}
+
 // Start begins listening on addr.
 func (s *Server) Start(addr string) error {
 	ln, err := net.Listen("tcp", addr)

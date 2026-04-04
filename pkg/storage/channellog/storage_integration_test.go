@@ -31,8 +31,15 @@ func TestClusterWithRealStoreSendFetchAndSeqReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Send() error = %v", err)
 	}
+	duplicate, err := cluster.Send(context.Background(), realStoreSendRequest(key, "one"))
+	if err != nil {
+		t.Fatalf("duplicate Send() error = %v", err)
+	}
 	if first.MessageSeq != 1 || second.MessageSeq != 2 {
 		t.Fatalf("send results = first:%+v second:%+v", first, second)
+	}
+	if duplicate != first {
+		t.Fatalf("duplicate send result = %+v, want %+v", duplicate, first)
 	}
 
 	result, err := cluster.Fetch(context.Background(), FetchRequest{
@@ -63,6 +70,26 @@ func TestClusterWithRealStoreSendFetchAndSeqReads(t *testing.T) {
 	}
 	if msgs[0].MessageSeq != 1 || msgs[1].MessageSeq != 2 {
 		t.Fatalf("store seqs = %+v", msgs)
+	}
+
+	stateStore, err := db.StateStoreFactory().ForChannel(key)
+	if err != nil {
+		t.Fatalf("StateStoreFactory().ForChannel() error = %v", err)
+	}
+	entry, ok, err := stateStore.GetIdempotency(IdempotencyKey{
+		ChannelID:   key.ChannelID,
+		ChannelType: key.ChannelType,
+		SenderUID:   "u1",
+		ClientMsgNo: "msg-one",
+	})
+	if err != nil {
+		t.Fatalf("GetIdempotency() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected persisted idempotency entry")
+	}
+	if entry.MessageSeq != 1 || entry.Offset != 0 {
+		t.Fatalf("idempotency entry = %+v", entry)
 	}
 }
 
@@ -144,7 +171,7 @@ func newRealStoreCluster(t testing.TB, db *DB, key ChannelKey, replica isr.Repli
 			},
 		},
 		Log:        db,
-		States:     &fakeStateStoreFactory{},
+		States:     db.StateStoreFactory(),
 		MessageIDs: &fakeMessageIDGenerator{},
 	})
 	if err != nil {
@@ -163,6 +190,7 @@ func realStoreSendRequest(key ChannelKey, payload string) SendRequest {
 		ChannelID:   key.ChannelID,
 		ChannelType: key.ChannelType,
 		SenderUID:   "u1",
+		ClientMsgNo: "msg-" + payload,
 		Payload:     []byte(payload),
 	}
 }

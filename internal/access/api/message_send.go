@@ -44,7 +44,7 @@ func (s *Server) handleSendMessage(c *gin.Context) {
 		return
 	}
 
-	result, err := s.messages.Send(message.SendCommand{
+	result, err := s.messages.Send(c.Request.Context(), message.SendCommand{
 		SenderUID:       req.SenderUID,
 		ChannelID:       req.ChannelID,
 		ChannelType:     req.ChannelType,
