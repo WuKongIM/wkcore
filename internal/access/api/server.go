@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
+	"github.com/WuKongIM/WuKongIM/internal/usecase/user"
 	"github.com/gin-gonic/gin"
 )
 
@@ -17,9 +18,14 @@ type MessageUsecase interface {
 	Send(ctx context.Context, cmd message.SendCommand) (message.SendResult, error)
 }
 
+type UserUsecase interface {
+	UpdateToken(ctx context.Context, cmd user.UpdateTokenCommand) error
+}
+
 type Options struct {
 	ListenAddr string
 	Messages   MessageUsecase
+	Users      UserUsecase
 }
 
 type Server struct {
@@ -30,6 +36,7 @@ type Server struct {
 	listenAddr string
 	addr       string
 	messages   MessageUsecase
+	users      UserUsecase
 	started    bool
 }
 
@@ -42,6 +49,7 @@ func New(opts Options) *Server {
 		engine:     engine,
 		listenAddr: opts.ListenAddr,
 		messages:   opts.Messages,
+		users:      opts.Users,
 	}
 	srv.registerRoutes()
 	return srv

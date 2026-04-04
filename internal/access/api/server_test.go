@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
+	"github.com/WuKongIM/WuKongIM/internal/usecase/user"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 	"github.com/stretchr/testify/require"
@@ -211,6 +212,68 @@ func TestSendMessageMapsSemanticErrorsToHTTPStatus(t *testing.T) {
 	}
 }
 
+func TestUpdateTokenMapsJSONToUsecaseCommand(t *testing.T) {
+	users := &recordingUserUsecase{}
+	srv := New(Options{Users: users})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/user/token", bytes.NewBufferString(`{"uid":"u1","token":"t1","device_flag":0,"device_level":1}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"status":200}`, rec.Body.String())
+	require.Len(t, users.calls, 1)
+	require.Equal(t, user.UpdateTokenCommand{
+		UID:         "u1",
+		Token:       "t1",
+		DeviceFlag:  wkframe.APP,
+		DeviceLevel: wkframe.DeviceLevelMaster,
+	}, users.calls[0])
+}
+
+func TestUpdateTokenRejectsInvalidJSONWithLegacyEnvelope(t *testing.T) {
+	srv := New(Options{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/user/token", bytes.NewBufferString(`{"uid":`))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"msg":"invalid request","status":400}`, rec.Body.String())
+}
+
+func TestUpdateTokenReturnsLegacyValidationErrorEnvelope(t *testing.T) {
+	users := &recordingUserUsecase{err: errors.New("uid不能为空！")}
+	srv := New(Options{Users: users})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/user/token", bytes.NewBufferString(`{"uid":"","token":"t1","device_flag":0,"device_level":1}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"msg":"uid不能为空！","status":400}`, rec.Body.String())
+}
+
+func TestUpdateTokenReturnsLegacyBusinessErrorEnvelope(t *testing.T) {
+	users := &recordingUserUsecase{err: errors.New("db busy")}
+	srv := New(Options{Users: users})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/user/token", bytes.NewBufferString(`{"uid":"u1","token":"t1","device_flag":0,"device_level":1}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"msg":"db busy","status":400}`, rec.Body.String())
+}
+
 type recordingMessageUsecase struct {
 	calls        []message.SendCommand
 	sendContexts []context.Context
@@ -226,4 +289,14 @@ func (r *recordingMessageUsecase) Send(ctx context.Context, cmd message.SendComm
 		return r.sendFn(ctx, cmd)
 	}
 	return r.result, r.err
+}
+
+type recordingUserUsecase struct {
+	calls []user.UpdateTokenCommand
+	err   error
+}
+
+func (r *recordingUserUsecase) UpdateToken(_ context.Context, cmd user.UpdateTokenCommand) error {
+	r.calls = append(r.calls, cmd)
+	return r.err
 }
