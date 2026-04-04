@@ -274,6 +274,19 @@ func TestUpdateTokenReturnsLegacyBusinessErrorEnvelope(t *testing.T) {
 	require.JSONEq(t, `{"msg":"db busy","status":400}`, rec.Body.String())
 }
 
+func TestUpdateTokenReturnsLegacyMissingUserUsecaseEnvelope(t *testing.T) {
+	srv := New(Options{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/user/token", bytes.NewBufferString(`{"uid":"u1","token":"t1","device_flag":0,"device_level":1}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"msg":"user usecase not configured","status":400}`, rec.Body.String())
+}
+
 type recordingMessageUsecase struct {
 	calls        []message.SendCommand
 	sendContexts []context.Context
