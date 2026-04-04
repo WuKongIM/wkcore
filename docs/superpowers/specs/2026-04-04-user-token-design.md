@@ -233,7 +233,7 @@ Dependencies:
 
 - user store facade:
   - `GetUser(ctx, uid)`
-  - `UpsertUser(ctx, user)`
+  - `CreateUser(ctx, user)`
 - device store facade:
   - `GetDevice(ctx, uid, deviceFlag)`
   - `UpsertDevice(ctx, device)`
@@ -248,7 +248,7 @@ Dependencies:
 
 1. validate command
 2. read user by `uid`
-3. if user does not exist, create a minimal user-existence record
+3. if user does not exist, create a minimal user-existence record using create-only semantics
 4. upsert device record keyed by `uid + device_flag` with:
    - `uid`
    - `device_flag`
@@ -435,7 +435,8 @@ Add tests for:
 - no compatibility is promised for any stale single-record token data that may already exist in a dev data directory
 - the "ensure user exists" path is exact:
   - first call `GetUser(ctx, uid)`
-  - only when it returns `metadb.ErrNotFound`, call `UpsertUser(ctx, metadb.User{UID: uid})`
+  - only when it returns `metadb.ErrNotFound`, call `CreateUser(ctx, metadb.User{UID: uid})`
+  - if `CreateUser` returns `metadb.ErrAlreadyExists`, treat that as a benign concurrent create and continue
   - if the user already exists, do not write `User` again
   - this avoids zeroing or overwriting existing `User` fields while the schema still contains `token`, `device_flag`, and `device_level`
 

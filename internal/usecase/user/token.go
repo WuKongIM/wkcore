@@ -9,6 +9,11 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 )
 
+const (
+	updateTokenCloseDelay = 10 * time.Second
+	updateTokenKickReason = "账号在其他设备上登录"
+)
+
 func (a *App) UpdateToken(ctx context.Context, cmd UpdateTokenCommand) error {
 	if err := cmd.Validate(); err != nil {
 		return err
@@ -49,9 +54,9 @@ func (a *App) UpdateToken(ctx context.Context, cmd UpdateTokenCommand) error {
 		sess := conn.Session
 		_ = sess.WriteFrame(&wkframe.DisconnectPacket{
 			ReasonCode: wkframe.ReasonConnectKick,
-			Reason:     "账号在其他设备上登录",
+			Reason:     updateTokenKickReason,
 		})
-		a.afterFunc(10*time.Second, func() { _ = sess.Close() })
+		a.afterFunc(updateTokenCloseDelay, func() { _ = sess.Close() })
 	}
 	return nil
 }

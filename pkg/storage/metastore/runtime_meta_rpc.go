@@ -18,14 +18,6 @@ const (
 	runtimeMetaRPCList = "list"
 )
 
-const (
-	runtimeMetaRPCStatusOK        = "ok"
-	runtimeMetaRPCStatusNotLeader = "not_leader"
-	runtimeMetaRPCStatusNoLeader  = "no_leader"
-	runtimeMetaRPCStatusNoGroup   = "no_group"
-	runtimeMetaRPCStatusNotFound  = "not_found"
-)
-
 type runtimeMetaRPCRequest struct {
 	Op          string `json:"op"`
 	GroupID     uint64 `json:"group_id"`
@@ -40,14 +32,16 @@ type runtimeMetaRPCResponse struct {
 	Metas    []metadb.ChannelRuntimeMeta `json:"metas,omitempty"`
 }
 
+func (r runtimeMetaRPCResponse) rpcStatus() string {
+	return r.Status
+}
+
+func (r runtimeMetaRPCResponse) rpcLeaderID() uint64 {
+	return r.LeaderID
+}
+
 func (s *Store) getChannelRuntimeMetaAuthoritative(ctx context.Context, groupID multiraft.GroupID, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error) {
-	if s.cluster == nil {
-		return s.db.ForSlot(uint64(groupID)).GetChannelRuntimeMeta(ctx, channelID, channelType)
-	}
-	if s.singleLocalPeerGroup(groupID) {
-		return s.db.ForSlot(uint64(groupID)).GetChannelRuntimeMeta(ctx, channelID, channelType)
-	}
-	if leaderID, err := s.cluster.LeaderOf(groupID); err == nil && s.cluster.IsLocal(leaderID) {
+	if s.shouldServeGroupLocally(groupID) {
 		return s.db.ForSlot(uint64(groupID)).GetChannelRuntimeMeta(ctx, channelID, channelType)
 	}
 
@@ -70,14 +64,7 @@ func (s *Store) listChannelRuntimeMetaAuthoritative(ctx context.Context, groupID
 	if s.cluster == nil {
 		return s.db.ListChannelRuntimeMeta(ctx)
 	}
-	if s.singleLocalPeerGroup(groupID) {
-		metas, err := s.db.ListChannelRuntimeMeta(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return filterChannelRuntimeMetaByGroup(s.cluster, groupID, metas), nil
-	}
-	if leaderID, err := s.cluster.LeaderOf(groupID); err == nil && s.cluster.IsLocal(leaderID) {
+	if s.shouldServeGroupLocally(groupID) {
 		metas, err := s.db.ListChannelRuntimeMeta(ctx)
 		if err != nil {
 			return nil, err
@@ -96,71 +83,11 @@ func (s *Store) listChannelRuntimeMetaAuthoritative(ctx context.Context, groupID
 }
 
 func (s *Store) callRuntimeMetaRPC(ctx context.Context, groupID multiraft.GroupID, req runtimeMetaRPCRequest) (runtimeMetaRPCResponse, error) {
-	if s.cluster == nil {
-		return runtimeMetaRPCResponse{}, fmt.Errorf("metastore: cluster not configured")
-	}
-
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return runtimeMetaRPCResponse{}, err
 	}
-
-	peers := s.cluster.PeersForGroup(groupID)
-	if len(peers) == 0 {
-		return runtimeMetaRPCResponse{}, raftcluster.ErrGroupNotFound
-	}
-
-	tried := make(map[multiraft.NodeID]struct{}, len(peers))
-	candidates := append([]multiraft.NodeID(nil), peers...)
-	var lastErr error
-
-	for len(candidates) > 0 {
-		peer := candidates[0]
-		candidates = candidates[1:]
-		if _, ok := tried[peer]; ok {
-			continue
-		}
-		tried[peer] = struct{}{}
-
-		body, err := s.cluster.RPCService(ctx, peer, groupID, runtimeMetaRPCServiceID, payload)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		resp, err := decodeRuntimeMetaRPCResponse(body)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		switch resp.Status {
-		case runtimeMetaRPCStatusOK, runtimeMetaRPCStatusNotFound:
-			return resp, nil
-		case runtimeMetaRPCStatusNotLeader:
-			if resp.LeaderID != 0 {
-				leaderID := multiraft.NodeID(resp.LeaderID)
-				if _, ok := tried[leaderID]; !ok {
-					candidates = append([]multiraft.NodeID{leaderID}, candidates...)
-				}
-				continue
-			}
-		case runtimeMetaRPCStatusNoLeader:
-			lastErr = raftcluster.ErrNoLeader
-			continue
-		case runtimeMetaRPCStatusNoGroup:
-			lastErr = raftcluster.ErrGroupNotFound
-			continue
-		default:
-			lastErr = fmt.Errorf("metastore: unexpected runtime meta rpc status %q", resp.Status)
-			continue
-		}
-	}
-
-	if lastErr != nil {
-		return runtimeMetaRPCResponse{}, lastErr
-	}
-	return runtimeMetaRPCResponse{}, raftcluster.ErrNoLeader
+	return callAuthoritativeRPC(ctx, s, groupID, runtimeMetaRPCServiceID, payload, decodeRuntimeMetaRPCResponse)
 }
 
 func (s *Store) handleRuntimeMetaRPC(ctx context.Context, body []byte) ([]byte, error) {
@@ -170,30 +97,26 @@ func (s *Store) handleRuntimeMetaRPC(ctx context.Context, body []byte) ([]byte, 
 	}
 
 	groupID := multiraft.GroupID(req.GroupID)
-	leaderID, err := s.cluster.LeaderOf(groupID)
-	switch {
-	case errors.Is(err, raftcluster.ErrGroupNotFound):
-		return encodeRuntimeMetaRPCResponse(runtimeMetaRPCResponse{Status: runtimeMetaRPCStatusNoGroup})
-	case err != nil:
-		return encodeRuntimeMetaRPCResponse(runtimeMetaRPCResponse{Status: runtimeMetaRPCStatusNoLeader})
-	case !s.cluster.IsLocal(leaderID):
+	if statusBody, handled, err := s.handleAuthoritativeRPC(groupID, func(status string, leaderID uint64) ([]byte, error) {
 		return encodeRuntimeMetaRPCResponse(runtimeMetaRPCResponse{
-			Status:   runtimeMetaRPCStatusNotLeader,
-			LeaderID: uint64(leaderID),
+			Status:   status,
+			LeaderID: leaderID,
 		})
+	}); handled || err != nil {
+		return statusBody, err
 	}
 
 	switch req.Op {
 	case runtimeMetaRPCGet:
 		meta, err := s.db.ForSlot(uint64(groupID)).GetChannelRuntimeMeta(ctx, req.ChannelID, req.ChannelType)
 		if errors.Is(err, metadb.ErrNotFound) {
-			return encodeRuntimeMetaRPCResponse(runtimeMetaRPCResponse{Status: runtimeMetaRPCStatusNotFound})
+			return encodeRuntimeMetaRPCResponse(runtimeMetaRPCResponse{Status: rpcStatusNotFound})
 		}
 		if err != nil {
 			return nil, err
 		}
 		return encodeRuntimeMetaRPCResponse(runtimeMetaRPCResponse{
-			Status: runtimeMetaRPCStatusOK,
+			Status: rpcStatusOK,
 			Meta:   &meta,
 		})
 	case runtimeMetaRPCList:
@@ -202,7 +125,7 @@ func (s *Store) handleRuntimeMetaRPC(ctx context.Context, body []byte) ([]byte, 
 			return nil, err
 		}
 		return encodeRuntimeMetaRPCResponse(runtimeMetaRPCResponse{
-			Status: runtimeMetaRPCStatusOK,
+			Status: rpcStatusOK,
 			Metas:  filterChannelRuntimeMetaByGroup(s.cluster, groupID, metas),
 		})
 	default:

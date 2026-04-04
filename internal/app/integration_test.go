@@ -1,8 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net"
+	"net/http"
 	"testing"
 	"time"
 
@@ -132,6 +135,50 @@ func TestAppStartWiresMessageSendThroughDurableChannelLog(t *testing.T) {
 	require.Len(t, fetch.Messages, 1)
 	require.Equal(t, uint64(1), fetch.Messages[0].MessageSeq)
 	require.Equal(t, []byte("hello durable"), fetch.Messages[0].Payload)
+}
+
+func TestAppStartServesLegacyUserTokenEndpoint(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Cluster.ListenAddr = "127.0.0.1:0"
+	cfg.API.ListenAddr = "127.0.0.1:0"
+
+	app, err := New(cfg)
+	require.NoError(t, err)
+
+	require.NoError(t, app.Start())
+	t.Cleanup(func() {
+		require.NoError(t, app.Stop())
+	})
+	require.Eventually(t, func() bool {
+		_, err := app.Cluster().LeaderOf(1)
+		return err == nil
+	}, 3*time.Second, 50*time.Millisecond)
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+app.API().Addr()+"/user/token", bytes.NewBufferString(`{"uid":"token-user","token":"token-1","device_flag":1,"device_level":1}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.JSONEq(t, `{"status":200}`, string(body))
+
+	gotUser, err := app.Store().GetUser(context.Background(), "token-user")
+	require.NoError(t, err)
+	require.Equal(t, "token-user", gotUser.UID)
+
+	gotDevice, err := app.Store().GetDevice(context.Background(), "token-user", 1)
+	require.NoError(t, err)
+	require.Equal(t, metadb.Device{
+		UID:         "token-user",
+		DeviceFlag:  1,
+		Token:       "token-1",
+		DeviceLevel: 1,
+	}, gotDevice)
 }
 
 func sendAppWKProtoFrame(t *testing.T, conn net.Conn, frame wkframe.Frame) {

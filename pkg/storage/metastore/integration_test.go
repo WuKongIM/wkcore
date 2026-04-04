@@ -340,6 +340,62 @@ func TestStoreUpsertAndGetChannelRuntimeMeta(t *testing.T) {
 	}
 }
 
+func TestStoreCreateUserAndUpsertDevice(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	bizDB := openTestDBAt(t, filepath.Join(root, "biz"))
+	raftDB := openTestRaftDBAt(t, filepath.Join(root, "raft"))
+
+	cluster, err := raftcluster.NewCluster(raftcluster.Config{
+		NodeID:     1,
+		ListenAddr: "127.0.0.1:0",
+		GroupCount: 1,
+		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
+			return raftDB.ForGroup(uint64(groupID)), nil
+		},
+		NewStateMachine: metafsm.NewStateMachineFactory(bizDB),
+		Nodes:           []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
+		Groups: []raftcluster.GroupConfig{{
+			GroupID: 1,
+			Peers:   []multiraft.NodeID{1},
+		}},
+	})
+	require.NoError(t, err)
+	t.Cleanup(cluster.Stop)
+	require.NoError(t, cluster.Start())
+
+	waitForCondition(t, func() bool {
+		_, err := cluster.LeaderOf(1)
+		return err == nil
+	}, "cluster leader elected")
+
+	store := New(cluster, bizDB)
+	require.NoError(t, store.CreateUser(ctx, metadb.User{UID: "u1"}))
+
+	gotUser, err := store.GetUser(ctx, "u1")
+	require.NoError(t, err)
+	require.Equal(t, "u1", gotUser.UID)
+
+	err = store.CreateUser(ctx, metadb.User{UID: "u1", Token: "overwrite-attempt"})
+	require.ErrorIs(t, err, metadb.ErrAlreadyExists)
+
+	require.NoError(t, store.UpsertDevice(ctx, metadb.Device{
+		UID:         "u1",
+		DeviceFlag:  2,
+		Token:       "web-token",
+		DeviceLevel: 1,
+	}))
+
+	gotDevice, err := store.GetDevice(ctx, "u1", 2)
+	require.NoError(t, err)
+	require.Equal(t, metadb.Device{
+		UID:         "u1",
+		DeviceFlag:  2,
+		Token:       "web-token",
+		DeviceLevel: 1,
+	}, gotDevice)
+}
+
 func TestStoreListChannelRuntimeMeta(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -429,6 +485,61 @@ func TestStoreGetChannelRuntimeMetaReadsAuthoritativeRemoteSlot(t *testing.T) {
 	got, err := nodes[0].store.GetChannelRuntimeMeta(ctx, meta.ChannelID, meta.ChannelType)
 	require.NoError(t, err)
 	require.Equal(t, meta, got)
+}
+
+func TestStoreGetUserReadsAuthoritativeRemoteSlot(t *testing.T) {
+	ctx := context.Background()
+	nodes := startTwoNodeShardedStores(t)
+
+	uid := findUIDForSlot(t, nodes[0].cluster, 2, "remote-user")
+	require.NoError(t, nodes[1].db.ForSlot(2).CreateUser(ctx, metadb.User{
+		UID:         uid,
+		Token:       "remote-token",
+		DeviceFlag:  3,
+		DeviceLevel: 7,
+	}))
+
+	got, err := nodes[0].store.GetUser(ctx, uid)
+	require.NoError(t, err)
+	require.Equal(t, metadb.User{
+		UID:         uid,
+		Token:       "remote-token",
+		DeviceFlag:  3,
+		DeviceLevel: 7,
+	}, got)
+}
+
+func TestStoreGetDeviceReadsAuthoritativeRemoteSlot(t *testing.T) {
+	ctx := context.Background()
+	nodes := startTwoNodeShardedStores(t)
+
+	uid := findUIDForSlot(t, nodes[0].cluster, 2, "remote-device")
+	require.NoError(t, nodes[1].db.ForSlot(2).UpsertDevice(ctx, metadb.Device{
+		UID:         uid,
+		DeviceFlag:  5,
+		Token:       "device-token",
+		DeviceLevel: 1,
+	}))
+
+	got, err := nodes[0].store.GetDevice(ctx, uid, 5)
+	require.NoError(t, err)
+	require.Equal(t, metadb.Device{
+		UID:         uid,
+		DeviceFlag:  5,
+		Token:       "device-token",
+		DeviceLevel: 1,
+	}, got)
+}
+
+func TestStoreCreateUserReturnsAlreadyExistsForAuthoritativeRemoteSlot(t *testing.T) {
+	ctx := context.Background()
+	nodes := startTwoNodeShardedStores(t)
+
+	uid := findUIDForSlot(t, nodes[0].cluster, 2, "remote-create")
+	require.NoError(t, nodes[1].db.ForSlot(2).CreateUser(ctx, metadb.User{UID: uid}))
+
+	err := nodes[0].store.CreateUser(ctx, metadb.User{UID: uid})
+	require.ErrorIs(t, err, metadb.ErrAlreadyExists)
 }
 
 func TestStoreListChannelRuntimeMetaReadsAuthoritativeAllSlots(t *testing.T) {

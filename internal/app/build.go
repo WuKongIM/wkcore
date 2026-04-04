@@ -10,6 +10,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/runtime/messageid"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
+	userusecase "github.com/WuKongIM/WuKongIM/internal/usecase/user"
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isrnode"
@@ -119,10 +120,16 @@ func build(cfg Config) (_ *App, err error) {
 		Online:        onlineRegistry,
 		Delivery:      online.LocalDelivery{},
 	})
+	userApp := userusecase.New(userusecase.Options{
+		Users:   app.store,
+		Devices: app.store,
+		Online:  onlineRegistry,
+	})
 	if cfg.API.ListenAddr != "" {
 		app.api = accessapi.New(accessapi.Options{
 			ListenAddr: cfg.API.ListenAddr,
 			Messages:   app.messageApp,
+			Users:      userApp,
 		})
 	}
 	app.gatewayHandler = accessgateway.New(accessgateway.Options{

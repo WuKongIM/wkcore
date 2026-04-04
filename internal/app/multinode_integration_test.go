@@ -1,9 +1,12 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -86,6 +89,53 @@ func TestThreeNodeAppGatewaySendUsesDurableCommit(t *testing.T) {
 	}
 }
 
+func TestThreeNodeAppUserTokenEndpointPersistsThroughClusterForwarding(t *testing.T) {
+	harness := newThreeNodeAppHarness(t)
+	leaderID := harness.waitForStableLeader(t, 1)
+
+	targetNodeID := leaderID%3 + 1
+	require.NotEqual(t, leaderID, targetNodeID)
+	target := harness.apps[targetNodeID]
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		"http://"+target.API().Addr()+"/user/token",
+		bytes.NewBufferString(`{"uid":"multi-token-user","token":"token-cluster","device_flag":1,"device_level":1}`),
+	)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.JSONEq(t, `{"status":200}`, string(body))
+
+	for _, app := range harness.orderedApps() {
+		app := app
+		require.Eventually(t, func() bool {
+			gotUser, err := app.DB().ForSlot(1).GetUser(context.Background(), "multi-token-user")
+			return err == nil && gotUser == (metadb.User{UID: "multi-token-user"})
+		}, 5*time.Second, 20*time.Millisecond)
+	}
+
+	for _, app := range harness.orderedApps() {
+		app := app
+		require.Eventually(t, func() bool {
+			gotDevice, err := app.DB().ForSlot(1).GetDevice(context.Background(), "multi-token-user", 1)
+			return err == nil && gotDevice == (metadb.Device{
+				UID:         "multi-token-user",
+				DeviceFlag:  1,
+				Token:       "token-cluster",
+				DeviceLevel: 1,
+			})
+		}, 5*time.Second, 20*time.Millisecond)
+	}
+}
+
 type threeNodeAppHarness struct {
 	apps map[uint64]*App
 }
@@ -95,6 +145,7 @@ func newThreeNodeAppHarness(t *testing.T) *threeNodeAppHarness {
 
 	clusterAddrs := reserveTestTCPAddrs(t, 3)
 	gatewayAddrs := reserveTestTCPAddrs(t, 3)
+	apiAddrs := reserveTestTCPAddrs(t, 3)
 	clusterNodes := make([]NodeConfigRef, 0, 3)
 	for i := 0; i < 3; i++ {
 		clusterNodes = append(clusterNodes, NodeConfigRef{
@@ -125,6 +176,7 @@ func newThreeNodeAppHarness(t *testing.T) *threeNodeAppHarness {
 		cfg.Cluster.ForwardTimeout = 2 * time.Second
 		cfg.Cluster.DialTimeout = 2 * time.Second
 		cfg.Cluster.PoolSize = 1
+		cfg.API.ListenAddr = apiAddrs[nodeID]
 		cfg.Gateway.Listeners = []gateway.ListenerOptions{
 			binding.TCPWKProto("tcp-wkproto", gatewayAddrs[nodeID]),
 		}

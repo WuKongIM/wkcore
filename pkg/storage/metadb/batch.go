@@ -1,14 +1,13 @@
 package metadb
 
-import (
-	"github.com/cockroachdb/pebble/v2"
-)
+import "github.com/cockroachdb/pebble/v2"
 
 // WriteBatch accumulates multiple writes into a single pebble batch,
 // committing them atomically with one fsync in Commit.
 type WriteBatch struct {
-	db    *DB
-	batch *pebble.Batch
+	db              *DB
+	batch           *pebble.Batch
+	writtenUserKeys map[string]struct{}
 }
 
 // NewWriteBatch creates a new WriteBatch. The caller must call Close
@@ -18,6 +17,37 @@ func (db *DB) NewWriteBatch() *WriteBatch {
 		db:    db,
 		batch: db.db.NewBatch(),
 	}
+}
+
+// CreateUser encodes and stages a create-only user write into the batch.
+// If the user already exists in the database or earlier in the same indexed
+// batch, the existing record is preserved and the operation becomes a no-op.
+func (b *WriteBatch) CreateUser(slot uint64, u User) error {
+	if err := validateSlot(slot); err != nil {
+		return err
+	}
+	if err := validateUser(u); err != nil {
+		return err
+	}
+
+	key := encodeUserPrimaryKey(slot, u.UID, userPrimaryFamilyID)
+	if b.userKeyWritten(key) {
+		return nil
+	}
+	exists, err := b.db.hasKey(key)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+
+	value := encodeUserFamilyValue(u.Token, u.DeviceFlag, u.DeviceLevel, key)
+	if err := b.batch.Set(key, value, nil); err != nil {
+		return err
+	}
+	b.markUserKeyWritten(key)
+	return nil
 }
 
 // UpsertUser encodes and stages a user write into the batch.
@@ -32,7 +62,11 @@ func (b *WriteBatch) UpsertUser(slot uint64, u User) error {
 
 	key := encodeUserPrimaryKey(slot, u.UID, userPrimaryFamilyID)
 	value := encodeUserFamilyValue(u.Token, u.DeviceFlag, u.DeviceLevel, key)
-	return b.batch.Set(key, value, nil)
+	if err := b.batch.Set(key, value, nil); err != nil {
+		return err
+	}
+	b.markUserKeyWritten(key)
+	return nil
 }
 
 // UpsertDevice encodes and stages a device write into the batch.
@@ -122,4 +156,19 @@ func (b *WriteBatch) Close() {
 	if b.batch != nil {
 		_ = b.batch.Close()
 	}
+}
+
+func (b *WriteBatch) markUserKeyWritten(key []byte) {
+	if b.writtenUserKeys == nil {
+		b.writtenUserKeys = make(map[string]struct{}, 1)
+	}
+	b.writtenUserKeys[string(key)] = struct{}{}
+}
+
+func (b *WriteBatch) userKeyWritten(key []byte) bool {
+	if b.writtenUserKeys == nil {
+		return false
+	}
+	_, ok := b.writtenUserKeys[string(key)]
+	return ok
 }

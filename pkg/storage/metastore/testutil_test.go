@@ -232,3 +232,16 @@ func findChannelIDForSlot(t testing.TB, cluster *raftcluster.Cluster, slot uint6
 	t.Fatalf("no channel id found for slot %d", slot)
 	return ""
 }
+
+func findUIDForSlot(t testing.TB, cluster *raftcluster.Cluster, slot uint64, prefix string) string {
+	t.Helper()
+
+	for i := 0; i < 10_000; i++ {
+		uid := fmt.Sprintf("%s-%d", prefix, i)
+		if uint64(cluster.SlotForKey(uid)) == slot {
+			return uid
+		}
+	}
+	t.Fatalf("no uid found for slot %d", slot)
+	return ""
+}

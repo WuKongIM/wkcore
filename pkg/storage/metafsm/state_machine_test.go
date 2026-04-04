@@ -76,6 +76,32 @@ func TestStateMachineEncodeUpsertCommands(t *testing.T) {
 	if !reflect.DeepEqual(mc.meta, wantMeta) {
 		t.Fatalf("decoded runtime meta = %#v, want %#v", mc.meta, wantMeta)
 	}
+
+	createUserData := EncodeCreateUserCommand(metadb.User{UID: "u-create", Token: "create-token", DeviceFlag: 4, DeviceLevel: 8})
+	decoded, err = decodeCommand(createUserData)
+	if err != nil {
+		t.Fatalf("decodeCommand(create_user) error = %v", err)
+	}
+	cuc, ok := decoded.(*createUserCmd)
+	if !ok {
+		t.Fatalf("decodeCommand(create_user) type = %T, want *createUserCmd", decoded)
+	}
+	if cuc.user.UID != "u-create" || cuc.user.Token != "create-token" || cuc.user.DeviceFlag != 4 || cuc.user.DeviceLevel != 8 {
+		t.Fatalf("decoded create user = %+v", cuc.user)
+	}
+
+	deviceData := EncodeUpsertDeviceCommand(metadb.Device{UID: "u-device", DeviceFlag: 6, Token: "device-token", DeviceLevel: 9})
+	decoded, err = decodeCommand(deviceData)
+	if err != nil {
+		t.Fatalf("decodeCommand(device) error = %v", err)
+	}
+	dc, ok := decoded.(*upsertDeviceCmd)
+	if !ok {
+		t.Fatalf("decodeCommand(device) type = %T, want *upsertDeviceCmd", decoded)
+	}
+	if dc.device.UID != "u-device" || dc.device.DeviceFlag != 6 || dc.device.Token != "device-token" || dc.device.DeviceLevel != 9 {
+		t.Fatalf("decoded device = %+v", dc.device)
+	}
 }
 
 func TestStateMachineApplyUpsertsUserAndChannel(t *testing.T) {
@@ -195,6 +221,67 @@ func TestStateMachineApplyUpsertsAndDeletesChannelRuntimeMeta(t *testing.T) {
 	_, err = db.ForSlot(11).GetChannelRuntimeMeta(ctx, meta.ChannelID, meta.ChannelType)
 	if !errors.Is(err, metadb.ErrNotFound) {
 		t.Fatalf("GetChannelRuntimeMeta() err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestStateMachineApplyCreateUserAndUpsertDevice(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	sm := mustNewStateMachine(t, db, 11)
+
+	result, err := sm.Apply(ctx, multiraft.Command{
+		GroupID: 11,
+		Index:   1,
+		Term:    1,
+		Data:    EncodeCreateUserCommand(metadb.User{UID: "u1", Token: "create-token", DeviceFlag: 1, DeviceLevel: 2}),
+	})
+	if err != nil {
+		t.Fatalf("Apply(create user) error = %v", err)
+	}
+	if string(result) != ApplyResultOK {
+		t.Fatalf("Apply(create user) result = %q, want %q", result, ApplyResultOK)
+	}
+
+	gotUser, err := db.ForSlot(11).GetUser(ctx, "u1")
+	if err != nil {
+		t.Fatalf("GetUser() error = %v", err)
+	}
+	if gotUser.Token != "create-token" || gotUser.DeviceFlag != 1 || gotUser.DeviceLevel != 2 {
+		t.Fatalf("created user = %#v", gotUser)
+	}
+
+	if _, err := sm.Apply(ctx, multiraft.Command{
+		GroupID: 11,
+		Index:   2,
+		Term:    1,
+		Data:    EncodeCreateUserCommand(metadb.User{UID: "u1", Token: "overwrite-attempt", DeviceFlag: 9, DeviceLevel: 9}),
+	}); err != nil {
+		t.Fatalf("Apply(duplicate create user) error = %v", err)
+	}
+
+	gotUser, err = db.ForSlot(11).GetUser(ctx, "u1")
+	if err != nil {
+		t.Fatalf("GetUser() after duplicate create error = %v", err)
+	}
+	if gotUser.Token != "create-token" || gotUser.DeviceFlag != 1 || gotUser.DeviceLevel != 2 {
+		t.Fatalf("user after duplicate create = %#v", gotUser)
+	}
+
+	if _, err := sm.Apply(ctx, multiraft.Command{
+		GroupID: 11,
+		Index:   3,
+		Term:    1,
+		Data:    EncodeUpsertDeviceCommand(metadb.Device{UID: "u1", DeviceFlag: 1, Token: "app-token", DeviceLevel: 5}),
+	}); err != nil {
+		t.Fatalf("Apply(upsert device) error = %v", err)
+	}
+
+	gotDevice, err := db.ForSlot(11).GetDevice(ctx, "u1", 1)
+	if err != nil {
+		t.Fatalf("GetDevice() error = %v", err)
+	}
+	if gotDevice.Token != "app-token" || gotDevice.DeviceLevel != 5 {
+		t.Fatalf("stored device = %#v", gotDevice)
 	}
 }
 
@@ -559,6 +646,63 @@ func TestApplyBatchAtomicity(t *testing.T) {
 	_, err = db.ForSlot(11).GetUser(ctx, "u-atomic")
 	if !errors.Is(err, metadb.ErrNotFound) {
 		t.Fatalf("GetUser(u-atomic) err = %v, want ErrNotFound (no partial writes)", err)
+	}
+}
+
+func TestApplyBatchCreateUserPreservesFirstWriteWithinBatch(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	bsm, ok := mustNewStateMachine(t, db, 11).(multiraft.BatchStateMachine)
+	if !ok {
+		t.Fatal("state machine does not implement multiraft.BatchStateMachine")
+	}
+
+	cmds := []multiraft.Command{
+		{GroupID: 11, Index: 1, Term: 1, Data: EncodeCreateUserCommand(metadb.User{UID: "u-atomic", Token: "first"})},
+		{GroupID: 11, Index: 2, Term: 1, Data: EncodeCreateUserCommand(metadb.User{UID: "u-atomic", Token: "second"})},
+	}
+
+	results, err := bsm.ApplyBatch(ctx, cmds)
+	if err != nil {
+		t.Fatalf("ApplyBatch() error = %v", err)
+	}
+	if len(results) != 2 || string(results[0]) != ApplyResultOK || string(results[1]) != ApplyResultOK {
+		t.Fatalf("ApplyBatch() results = %q", results)
+	}
+
+	got, err := db.ForSlot(11).GetUser(ctx, "u-atomic")
+	if err != nil {
+		t.Fatalf("GetUser() error = %v", err)
+	}
+	if got.Token != "first" {
+		t.Fatalf("stored user = %#v", got)
+	}
+}
+
+func TestApplyBatchCreateUserDoesNotOverwritePriorUpsertWithinBatch(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	bsm, ok := mustNewStateMachine(t, db, 11).(multiraft.BatchStateMachine)
+	if !ok {
+		t.Fatal("state machine does not implement multiraft.BatchStateMachine")
+	}
+
+	cmds := []multiraft.Command{
+		{GroupID: 11, Index: 1, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u-upsert", Token: "upserted", DeviceFlag: 7, DeviceLevel: 8})},
+		{GroupID: 11, Index: 2, Term: 1, Data: EncodeCreateUserCommand(metadb.User{UID: "u-upsert", Token: "created", DeviceFlag: 1, DeviceLevel: 2})},
+	}
+
+	_, err := bsm.ApplyBatch(ctx, cmds)
+	if err != nil {
+		t.Fatalf("ApplyBatch() error = %v", err)
+	}
+
+	got, err := db.ForSlot(11).GetUser(ctx, "u-upsert")
+	if err != nil {
+		t.Fatalf("GetUser() error = %v", err)
+	}
+	if got.Token != "upserted" || got.DeviceFlag != 7 || got.DeviceLevel != 8 {
+		t.Fatalf("stored user = %#v", got)
 	}
 }
 

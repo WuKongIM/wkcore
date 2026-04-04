@@ -2,6 +2,7 @@ package metastore
 
 import (
 	"context"
+	"errors"
 
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
@@ -20,6 +21,7 @@ func New(cluster *raftcluster.Cluster, db *metadb.DB) *Store {
 	store := &Store{cluster: cluster, db: db}
 	if cluster != nil && cluster.RPCMux() != nil {
 		cluster.RPCMux().Handle(runtimeMetaRPCServiceID, store.handleRuntimeMetaRPC)
+		cluster.RPCMux().Handle(identityRPCServiceID, store.handleIdentityRPC)
 	}
 	return store
 }
@@ -87,7 +89,32 @@ func (s *Store) UpsertUser(ctx context.Context, u metadb.User) error {
 	return s.cluster.Propose(ctx, groupID, cmd)
 }
 
+// CreateUser returns ErrAlreadyExists when the authoritative slot already has
+// the uid. Under concurrent duplicate creates, the replicated apply path
+// treats the later create as a benign no-op to avoid failing the raft group.
+func (s *Store) CreateUser(ctx context.Context, u metadb.User) error {
+	groupID := s.cluster.SlotForKey(u.UID)
+	if _, err := s.getUserAuthoritative(ctx, groupID, u.UID); err == nil {
+		return metadb.ErrAlreadyExists
+	} else if err != nil && !errors.Is(err, metadb.ErrNotFound) {
+		return err
+	}
+	cmd := metafsm.EncodeCreateUserCommand(u)
+	return s.cluster.Propose(ctx, groupID, cmd)
+}
+
 func (s *Store) GetUser(ctx context.Context, uid string) (metadb.User, error) {
 	groupID := s.cluster.SlotForKey(uid)
-	return s.db.ForSlot(uint64(groupID)).GetUser(ctx, uid)
+	return s.getUserAuthoritative(ctx, groupID, uid)
+}
+
+func (s *Store) UpsertDevice(ctx context.Context, d metadb.Device) error {
+	groupID := s.cluster.SlotForKey(d.UID)
+	cmd := metafsm.EncodeUpsertDeviceCommand(d)
+	return s.cluster.Propose(ctx, groupID, cmd)
+}
+
+func (s *Store) GetDevice(ctx context.Context, uid string, deviceFlag int64) (metadb.Device, error) {
+	groupID := s.cluster.SlotForKey(uid)
+	return s.getDeviceAuthoritative(ctx, groupID, uid, deviceFlag)
 }

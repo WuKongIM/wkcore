@@ -27,12 +27,20 @@ const (
 	cmdTypeDeleteChannel            uint8 = 3
 	cmdTypeUpsertChannelRuntimeMeta uint8 = 4
 	cmdTypeDeleteChannelRuntimeMeta uint8 = 5
+	cmdTypeCreateUser               uint8 = 6
+	cmdTypeUpsertDevice             uint8 = 7
 
 	// User field tags.
 	tagUserUID         uint8 = 1
 	tagUserToken       uint8 = 2
 	tagUserDeviceFlag  uint8 = 3
 	tagUserDeviceLevel uint8 = 4
+
+	// Device field tags.
+	tagDeviceUID   uint8 = 1
+	tagDeviceFlag  uint8 = 2
+	tagDeviceToken uint8 = 3
+	tagDeviceLevel uint8 = 4
 
 	// Channel field tags.
 	tagChannelID   uint8 = 1
@@ -80,6 +88,8 @@ var commandDecoders = map[uint8]commandDecoder{
 	cmdTypeDeleteChannel:            decodeDeleteChannel,
 	cmdTypeUpsertChannelRuntimeMeta: decodeUpsertChannelRuntimeMeta,
 	cmdTypeDeleteChannelRuntimeMeta: decodeDeleteChannelRuntimeMeta,
+	cmdTypeCreateUser:               decodeCreateUser,
+	cmdTypeUpsertDevice:             decodeUpsertDevice,
 }
 
 // --- UpsertUser ---
@@ -90,6 +100,26 @@ type upsertUserCmd struct {
 
 func (c *upsertUserCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
 	return wb.UpsertUser(slot, c.user)
+}
+
+// --- CreateUser ---
+
+type createUserCmd struct {
+	user metadb.User
+}
+
+func (c *createUserCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
+	return wb.CreateUser(slot, c.user)
+}
+
+// --- UpsertDevice ---
+
+type upsertDeviceCmd struct {
+	device metadb.Device
+}
+
+func (c *upsertDeviceCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
+	return wb.UpsertDevice(slot, c.device)
 }
 
 // --- UpsertChannel ---
@@ -136,6 +166,15 @@ func (c *deleteChannelRuntimeMetaCmd) apply(wb *metadb.WriteBatch, slot uint64) 
 
 // EncodeUpsertUserCommand encodes a User into a binary command.
 func EncodeUpsertUserCommand(u metadb.User) []byte {
+	return encodeUserCommand(cmdTypeUpsertUser, u)
+}
+
+// EncodeCreateUserCommand encodes a create-only User command.
+func EncodeCreateUserCommand(u metadb.User) []byte {
+	return encodeUserCommand(cmdTypeCreateUser, u)
+}
+
+func encodeUserCommand(cmdType uint8, u metadb.User) []byte {
 	uidLen := len(u.UID)
 	tokenLen := len(u.Token)
 	// header + 2 string fields + 2 int64 fields
@@ -150,13 +189,39 @@ func EncodeUpsertUserCommand(u metadb.User) []byte {
 
 	buf[off] = commandVersion
 	off++
-	buf[off] = cmdTypeUpsertUser
+	buf[off] = cmdType
 	off++
 
 	off = putStringField(buf, off, tagUserUID, u.UID)
 	off = putStringField(buf, off, tagUserToken, u.Token)
 	off = putInt64Field(buf, off, tagUserDeviceFlag, u.DeviceFlag)
 	_ = putInt64Field(buf, off, tagUserDeviceLevel, u.DeviceLevel)
+
+	return buf
+}
+
+// EncodeUpsertDeviceCommand encodes a Device into a binary command.
+func EncodeUpsertDeviceCommand(d metadb.Device) []byte {
+	uidLen := len(d.UID)
+	tokenLen := len(d.Token)
+	size := headerSize +
+		tlvOverhead + uidLen +
+		tlvOverhead + 8 +
+		tlvOverhead + tokenLen +
+		tlvOverhead + 8
+
+	buf := make([]byte, size)
+	off := 0
+
+	buf[off] = commandVersion
+	off++
+	buf[off] = cmdTypeUpsertDevice
+	off++
+
+	off = putStringField(buf, off, tagDeviceUID, d.UID)
+	off = putInt64Field(buf, off, tagDeviceFlag, d.DeviceFlag)
+	off = putStringField(buf, off, tagDeviceToken, d.Token)
+	_ = putInt64Field(buf, off, tagDeviceLevel, d.DeviceLevel)
 
 	return buf
 }
@@ -248,12 +313,28 @@ func decodeCommand(data []byte) (command, error) {
 }
 
 func decodeUpsertUser(data []byte) (command, error) {
+	u, err := decodeUser(data)
+	if err != nil {
+		return nil, err
+	}
+	return &upsertUserCmd{user: u}, nil
+}
+
+func decodeCreateUser(data []byte) (command, error) {
+	u, err := decodeUser(data)
+	if err != nil {
+		return nil, err
+	}
+	return &createUserCmd{user: u}, nil
+}
+
+func decodeUser(data []byte) (metadb.User, error) {
 	var u metadb.User
 	off := 0
 	for off < len(data) {
 		tag, value, n, err := readTLV(data[off:])
 		if err != nil {
-			return nil, err
+			return metadb.User{}, err
 		}
 		off += n
 		switch tag {
@@ -263,19 +344,58 @@ func decodeUpsertUser(data []byte) (command, error) {
 			u.Token = string(value)
 		case tagUserDeviceFlag:
 			if len(value) != 8 {
-				return nil, fmt.Errorf("%w: bad DeviceFlag length", metadb.ErrCorruptValue)
+				return metadb.User{}, fmt.Errorf("%w: bad DeviceFlag length", metadb.ErrCorruptValue)
 			}
 			u.DeviceFlag = int64(binary.BigEndian.Uint64(value))
 		case tagUserDeviceLevel:
 			if len(value) != 8 {
-				return nil, fmt.Errorf("%w: bad DeviceLevel length", metadb.ErrCorruptValue)
+				return metadb.User{}, fmt.Errorf("%w: bad DeviceLevel length", metadb.ErrCorruptValue)
 			}
 			u.DeviceLevel = int64(binary.BigEndian.Uint64(value))
 		default:
 			// Unknown tag — skip for forward compatibility.
 		}
 	}
-	return &upsertUserCmd{user: u}, nil
+	return u, nil
+}
+
+func decodeUpsertDevice(data []byte) (command, error) {
+	d, err := decodeDevice(data)
+	if err != nil {
+		return nil, err
+	}
+	return &upsertDeviceCmd{device: d}, nil
+}
+
+func decodeDevice(data []byte) (metadb.Device, error) {
+	var d metadb.Device
+	off := 0
+	for off < len(data) {
+		tag, value, n, err := readTLV(data[off:])
+		if err != nil {
+			return metadb.Device{}, err
+		}
+		off += n
+		switch tag {
+		case tagDeviceUID:
+			d.UID = string(value)
+		case tagDeviceFlag:
+			if len(value) != 8 {
+				return metadb.Device{}, fmt.Errorf("%w: bad DeviceFlag length", metadb.ErrCorruptValue)
+			}
+			d.DeviceFlag = int64(binary.BigEndian.Uint64(value))
+		case tagDeviceToken:
+			d.Token = string(value)
+		case tagDeviceLevel:
+			if len(value) != 8 {
+				return metadb.Device{}, fmt.Errorf("%w: bad DeviceLevel length", metadb.ErrCorruptValue)
+			}
+			d.DeviceLevel = int64(binary.BigEndian.Uint64(value))
+		default:
+			// Unknown tag — skip for forward compatibility.
+		}
+	}
+	return d, nil
 }
 
 func decodeUpsertChannel(data []byte) (command, error) {
