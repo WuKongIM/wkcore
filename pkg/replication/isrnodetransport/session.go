@@ -70,7 +70,7 @@ func (s *peerSession) Send(env isrnode.Envelope) error {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), defaultRPCTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), s.adapter.rpcTimeout)
 	defer cancel()
 
 	// V1 intentionally serializes one in-flight fetch RPC per peer, so a single

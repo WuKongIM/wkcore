@@ -30,17 +30,18 @@ type StorageConfig struct {
 }
 
 type ClusterConfig struct {
-	ListenAddr     string
-	GroupCount     uint32
-	Nodes          []NodeConfigRef
-	Groups         []GroupConfig
-	ForwardTimeout time.Duration
-	PoolSize       int
-	TickInterval   time.Duration
-	RaftWorkers    int
-	ElectionTick   int
-	HeartbeatTick  int
-	DialTimeout    time.Duration
+	ListenAddr          string
+	GroupCount          uint32
+	Nodes               []NodeConfigRef
+	Groups              []GroupConfig
+	ForwardTimeout      time.Duration
+	PoolSize            int
+	TickInterval        time.Duration
+	RaftWorkers         int
+	ElectionTick        int
+	HeartbeatTick       int
+	DialTimeout         time.Duration
+	DataPlaneRPCTimeout time.Duration
 }
 
 type NodeConfigRef struct {

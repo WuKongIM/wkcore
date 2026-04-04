@@ -164,6 +164,14 @@ func TestConfigAllowsDisabledAPIWhenListenAddrEmpty(t *testing.T) {
 	require.Equal(t, "", cfg.API.ListenAddr)
 }
 
+func TestConfigPreservesExplicitDataPlaneRPCTimeout(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cluster.DataPlaneRPCTimeout = 250 * time.Millisecond
+
+	require.NoError(t, cfg.ApplyDefaultsAndValidate())
+	require.Equal(t, 250*time.Millisecond, cfg.Cluster.DataPlaneRPCTimeout)
+}
+
 func validConfig() Config {
 	return Config{
 		Node: NodeConfig{

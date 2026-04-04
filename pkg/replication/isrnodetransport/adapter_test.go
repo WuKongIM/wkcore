@@ -2,10 +2,12 @@ package isrnodetransport
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isrnode"
 	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
 )
@@ -130,6 +132,117 @@ func TestPeerSessionReportsHardBackpressureWhileRPCInFlight(t *testing.T) {
 	}
 }
 
+func TestPeerSessionUsesConfiguredRPCTimeout(t *testing.T) {
+	server := nodetransport.NewServer()
+	mux := nodetransport.NewRPCMux()
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	mux.Handle(RPCServiceFetch, func(ctx context.Context, body []byte) ([]byte, error) {
+		started <- struct{}{}
+		<-release
+		return encodeFetchResponse(isrnode.FetchResponseEnvelope{
+			GroupKey:   "g-timeout",
+			Epoch:      3,
+			Generation: 7,
+			LeaderHW:   9,
+		})
+	})
+	server.HandleRPCMux(mux)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("server.Start() error = %v", err)
+	}
+	defer func() {
+		close(release)
+		server.Stop()
+	}()
+
+	client := nodetransport.NewClient(nodetransport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{2: server.Listener().Addr().String()},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter := newAdapterWithTestTimeout(t, client, 25*time.Millisecond)
+	session := adapter.SessionManager().Session(2)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- session.Send(fetchRequestEnvelopeForTest("g-timeout"))
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for rpc handler to block")
+	}
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("session.Send() error = %v, want context deadline exceeded", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected configured rpc timeout to abort fetch request")
+	}
+}
+
+func TestPeerSessionSendReturnsErrStoppedWhenClientStops(t *testing.T) {
+	server := nodetransport.NewServer()
+	mux := nodetransport.NewRPCMux()
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	mux.Handle(RPCServiceFetch, func(ctx context.Context, body []byte) ([]byte, error) {
+		started <- struct{}{}
+		<-release
+		return encodeFetchResponse(isrnode.FetchResponseEnvelope{
+			GroupKey:   "g-stop",
+			Epoch:      3,
+			Generation: 7,
+			LeaderHW:   9,
+		})
+	})
+	server.HandleRPCMux(mux)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("server.Start() error = %v", err)
+	}
+	defer func() {
+		close(release)
+		server.Stop()
+	}()
+
+	client := nodetransport.NewClient(nodetransport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{2: server.Listener().Addr().String()},
+	}, 1, time.Second))
+
+	adapter := newAdapterWithTestTimeout(t, client, time.Second)
+	session := adapter.SessionManager().Session(2)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- session.Send(fetchRequestEnvelopeForTest("g-stop"))
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for rpc handler to block")
+	}
+
+	client.Stop()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, nodetransport.ErrStopped) {
+			t.Fatalf("session.Send() error = %v, want ErrStopped", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected client.Stop to abort pending fetch rpc")
+	}
+
+	if state := session.Backpressure(); state.Level != isrnode.BackpressureNone {
+		t.Fatalf("Backpressure().Level after stop = %v, want none", state.Level)
+	}
+}
+
 type staticDiscovery struct {
 	addrs map[uint64]string
 }
@@ -146,4 +259,45 @@ type fetchServiceFunc func(context.Context, isrnode.FetchRequestEnvelope) (isrno
 
 func (f fetchServiceFunc) ServeFetch(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
 	return f(ctx, req)
+}
+
+func newAdapterWithTestTimeout(t *testing.T, client *nodetransport.Client, timeout time.Duration) *Adapter {
+	t.Helper()
+
+	opts := Options{
+		LocalNode:  1,
+		Client:     client,
+		RPCMux:     nodetransport.NewRPCMux(),
+		RPCTimeout: timeout,
+		FetchService: fetchServiceFunc(func(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
+			return isrnode.FetchResponseEnvelope{}, nil
+		}),
+	}
+
+	adapter, err := New(opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	return adapter
+}
+
+func fetchRequestEnvelopeForTest(groupKey string) isrnode.Envelope {
+	key := isr.GroupKey(groupKey)
+	return isrnode.Envelope{
+		Peer:       2,
+		GroupKey:   key,
+		Epoch:      3,
+		Generation: 7,
+		RequestID:  1,
+		Kind:       isrnode.MessageKindFetchRequest,
+		FetchRequest: &isrnode.FetchRequestEnvelope{
+			GroupKey:    key,
+			Epoch:       3,
+			Generation:  7,
+			ReplicaID:   1,
+			FetchOffset: 11,
+			OffsetEpoch: 3,
+			MaxBytes:    4096,
+		},
+	}
 }

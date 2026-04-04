@@ -132,6 +132,7 @@ func (a *App) startChannelMetaSync() error {
 			Client:       a.dataPlaneClient,
 			RPCMux:       a.cluster.RPCMux(),
 			FetchService: a.isrRuntime,
+			RPCTimeout:   a.cfg.Cluster.DataPlaneRPCTimeout,
 		})
 		if err != nil {
 			a.dataPlaneClient.Stop()

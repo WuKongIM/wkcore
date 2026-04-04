@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	defaultFetchMaxBytes            = 1 << 20
-	followerReplicationPollInterval = 10 * time.Millisecond
+	defaultFetchMaxBytes                 = 1 << 20
+	defaultFollowerReplicationRetryDelay = 10 * time.Millisecond
 )
 
 type runtime struct {
@@ -53,6 +53,9 @@ func New(cfg Config) (Runtime, error) {
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.FollowerReplicationRetryInterval <= 0 {
+		cfg.FollowerReplicationRetryInterval = defaultFollowerReplicationRetryDelay
 	}
 	r := &runtime{
 		cfg:              cfg,
@@ -148,10 +151,10 @@ func (r *runtime) ApplyMeta(meta isr.GroupMeta) error {
 	if !ok {
 		return ErrGroupNotFound
 	}
-	g.setMeta(meta)
 	if err := applyReplicaMeta(g.replica, r.cfg.LocalNode, meta); err != nil {
 		return err
 	}
+	g.setMeta(meta)
 	if meta.Leader != r.cfg.LocalNode {
 		r.retryReplication(meta.GroupKey, meta.Leader, true)
 	}
@@ -215,7 +218,7 @@ func (r *runtime) enqueueScheduler(groupKey isr.GroupKey) {
 }
 
 func (r *runtime) scheduleFollowerReplication(groupKey isr.GroupKey, leader isr.NodeID) {
-	time.AfterFunc(followerReplicationPollInterval, func() {
+	time.AfterFunc(r.cfg.FollowerReplicationRetryInterval, func() {
 		r.retryReplication(groupKey, leader, false)
 		r.enqueueScheduler(groupKey)
 	})

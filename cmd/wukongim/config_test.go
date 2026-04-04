@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -70,4 +71,45 @@ func TestLoadConfigParsesJSONFileIntoAppConfig(t *testing.T) {
 func TestLoadConfigRejectsMissingConfigPath(t *testing.T) {
 	_, err := loadConfig("")
 	require.ErrorContains(t, err, "config path")
+}
+
+func TestLoadConfigParsesDataPlaneRPCTimeout(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "node-1")
+	configPath := filepath.Join(t.TempDir(), "wukongim.json")
+
+	payload := map[string]any{
+		"node": map[string]any{
+			"id":      1,
+			"dataDir": dataDir,
+		},
+		"cluster": map[string]any{
+			"listenAddr":          "127.0.0.1:7000",
+			"dataPlaneRPCTimeout": "250ms",
+			"nodes": []map[string]any{
+				{"id": 1, "addr": "127.0.0.1:7000"},
+			},
+			"groups": []map[string]any{
+				{"id": 1, "peers": []uint64{1}},
+			},
+		},
+		"gateway": map[string]any{
+			"listeners": []map[string]any{
+				{
+					"name":      "tcp-wkproto",
+					"network":   "tcp",
+					"address":   "127.0.0.1:5100",
+					"transport": "stdnet",
+					"protocol":  "wkproto",
+				},
+			},
+		},
+	}
+
+	body, err := json.Marshal(payload)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, body, 0o644))
+
+	cfg, err := loadConfig(configPath)
+	require.NoError(t, err)
+	require.Equal(t, 250*time.Millisecond, cfg.Cluster.DataPlaneRPCTimeout)
 }

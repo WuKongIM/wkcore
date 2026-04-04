@@ -57,6 +57,7 @@ type Limits struct {
 
 type GroupHandle interface {
 	ID() isr.GroupKey
+	Meta() isr.GroupMeta
 	Status() isr.ReplicaState
 	Append(ctx context.Context, records []isr.Record) (isr.CommitResult, error)
 }
@@ -125,13 +126,14 @@ type PeerSession interface {
 }
 
 type Config struct {
-	LocalNode        isr.NodeID
-	ReplicaFactory   ReplicaFactory
-	GenerationStore  GenerationStore
-	Transport        Transport
-	PeerSessions     PeerSessionManager
-	AutoRunScheduler bool
-	Limits           Limits
-	Tombstones       TombstonePolicy
-	Now              func() time.Time
+	LocalNode                        isr.NodeID
+	ReplicaFactory                   ReplicaFactory
+	GenerationStore                  GenerationStore
+	Transport                        Transport
+	PeerSessions                     PeerSessionManager
+	AutoRunScheduler                 bool
+	FollowerReplicationRetryInterval time.Duration
+	Limits                           Limits
+	Tombstones                       TombstonePolicy
+	Now                              func() time.Time
 }

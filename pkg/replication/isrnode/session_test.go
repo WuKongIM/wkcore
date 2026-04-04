@@ -108,6 +108,47 @@ func TestReplicationSendErrorKeepsRetryingUntilSuccessWithoutNewWork(t *testing.
 	t.Fatalf("expected failed replication to keep retrying until success, got %d sends", session.sendCount())
 }
 
+func TestReplicationRetryIntervalUsesConfigOverride(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.AutoRunScheduler = true
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(30, 4, 1, []isr.NodeID{1, 2}))
+
+	session := env.sessions.session(2)
+	session.enqueueSendErrors(context.DeadlineExceeded, context.DeadlineExceeded)
+
+	env.runtime.enqueueReplication(testGroupKey(30), 2)
+	env.runtime.runScheduler()
+
+	time.Sleep(30 * time.Millisecond)
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("expected only the immediate retry before custom interval elapses, got %d sends", got)
+	}
+}
+
+func TestApplyMetaFailureLeavesCachedGroupMetaUnchanged(t *testing.T) {
+	env := newSessionTestEnv(t)
+	initial := testMetaLocal(31, 1, 2, []isr.NodeID{1, 2})
+	mustEnsureLocal(t, env.runtime, initial)
+
+	replica := env.factory.replicas[0]
+	replica.becomeLeaderErr = context.DeadlineExceeded
+
+	err := env.runtime.ApplyMeta(testMetaLocal(31, 2, 1, []isr.NodeID{1, 2}))
+	if err == nil {
+		t.Fatal("expected ApplyMeta to fail")
+	}
+
+	meta := env.runtime.groups[testGroupKey(31)].metaSnapshot()
+	if meta.Epoch != initial.Epoch || meta.Leader != initial.Leader {
+		t.Fatalf("cached meta changed on failure: %+v", meta)
+	}
+	if state := replica.Status(); state.Role != isr.RoleFollower || state.Epoch != initial.Epoch || state.Leader != initial.Leader {
+		t.Fatalf("replica state changed on failure: %+v", state)
+	}
+}
+
 func TestInboundEnvelopeDemuxRequiresMatchingGeneration(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(23, 1, 1, []isr.NodeID{1, 2}))
@@ -330,19 +371,48 @@ type sessionReplica struct {
 	lastFetch       isr.FetchRequest
 	fetchResult     isr.FetchResult
 	fetchErr        error
+	applyMetaErr    error
+	becomeLeaderErr error
+	becomeFollowErr error
 }
 
 func (r *sessionReplica) ApplyMeta(meta isr.GroupMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.applyMetaErr != nil {
+		return r.applyMetaErr
+	}
 	r.state.GroupKey = meta.GroupKey
 	r.state.Epoch = meta.Epoch
 	r.state.Leader = meta.Leader
 	return nil
 }
 
-func (r *sessionReplica) BecomeLeader(meta isr.GroupMeta) error   { return r.ApplyMeta(meta) }
-func (r *sessionReplica) BecomeFollower(meta isr.GroupMeta) error { return r.ApplyMeta(meta) }
+func (r *sessionReplica) BecomeLeader(meta isr.GroupMeta) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.becomeLeaderErr != nil {
+		return r.becomeLeaderErr
+	}
+	r.state.GroupKey = meta.GroupKey
+	r.state.Epoch = meta.Epoch
+	r.state.Leader = meta.Leader
+	r.state.Role = isr.RoleLeader
+	return nil
+}
+
+func (r *sessionReplica) BecomeFollower(meta isr.GroupMeta) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.becomeFollowErr != nil {
+		return r.becomeFollowErr
+	}
+	r.state.GroupKey = meta.GroupKey
+	r.state.Epoch = meta.Epoch
+	r.state.Leader = meta.Leader
+	r.state.Role = isr.RoleFollower
+	return nil
+}
 func (r *sessionReplica) Tombstone() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

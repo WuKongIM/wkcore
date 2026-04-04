@@ -31,17 +31,18 @@ type wireStorageConfig struct {
 }
 
 type wireClusterConfig struct {
-	ListenAddr     string              `json:"listenAddr"`
-	GroupCount     uint32              `json:"groupCount"`
-	Nodes          []wireNodeConfigRef `json:"nodes"`
-	Groups         []wireGroupConfig   `json:"groups"`
-	ForwardTimeout string              `json:"forwardTimeout"`
-	PoolSize       int                 `json:"poolSize"`
-	TickInterval   string              `json:"tickInterval"`
-	RaftWorkers    int                 `json:"raftWorkers"`
-	ElectionTick   int                 `json:"electionTick"`
-	HeartbeatTick  int                 `json:"heartbeatTick"`
-	DialTimeout    string              `json:"dialTimeout"`
+	ListenAddr          string              `json:"listenAddr"`
+	GroupCount          uint32              `json:"groupCount"`
+	Nodes               []wireNodeConfigRef `json:"nodes"`
+	Groups              []wireGroupConfig   `json:"groups"`
+	ForwardTimeout      string              `json:"forwardTimeout"`
+	PoolSize            int                 `json:"poolSize"`
+	TickInterval        string              `json:"tickInterval"`
+	RaftWorkers         int                 `json:"raftWorkers"`
+	ElectionTick        int                 `json:"electionTick"`
+	HeartbeatTick       int                 `json:"heartbeatTick"`
+	DialTimeout         string              `json:"dialTimeout"`
+	DataPlaneRPCTimeout string              `json:"dataPlaneRPCTimeout"`
 }
 
 type wireNodeConfigRef struct {
@@ -111,6 +112,10 @@ func (c wireConfig) toAppConfig() (app.Config, error) {
 	if err != nil {
 		return app.Config{}, err
 	}
+	dataPlaneRPCTimeout, err := parseDuration("cluster.dataPlaneRPCTimeout", c.Cluster.DataPlaneRPCTimeout)
+	if err != nil {
+		return app.Config{}, err
+	}
 	idleTimeout, err := parseDuration("gateway.defaultSession.idleTimeout", c.Gateway.DefaultSession.IdleTimeout)
 	if err != nil {
 		return app.Config{}, err
@@ -131,17 +136,18 @@ func (c wireConfig) toAppConfig() (app.Config, error) {
 			RaftPath: c.Storage.RaftPath,
 		},
 		Cluster: app.ClusterConfig{
-			ListenAddr:     c.Cluster.ListenAddr,
-			GroupCount:     c.Cluster.GroupCount,
-			Nodes:          make([]app.NodeConfigRef, 0, len(c.Cluster.Nodes)),
-			Groups:         make([]app.GroupConfig, 0, len(c.Cluster.Groups)),
-			ForwardTimeout: forwardTimeout,
-			PoolSize:       c.Cluster.PoolSize,
-			TickInterval:   tickInterval,
-			RaftWorkers:    c.Cluster.RaftWorkers,
-			ElectionTick:   c.Cluster.ElectionTick,
-			HeartbeatTick:  c.Cluster.HeartbeatTick,
-			DialTimeout:    dialTimeout,
+			ListenAddr:          c.Cluster.ListenAddr,
+			GroupCount:          c.Cluster.GroupCount,
+			Nodes:               make([]app.NodeConfigRef, 0, len(c.Cluster.Nodes)),
+			Groups:              make([]app.GroupConfig, 0, len(c.Cluster.Groups)),
+			ForwardTimeout:      forwardTimeout,
+			PoolSize:            c.Cluster.PoolSize,
+			TickInterval:        tickInterval,
+			RaftWorkers:         c.Cluster.RaftWorkers,
+			ElectionTick:        c.Cluster.ElectionTick,
+			HeartbeatTick:       c.Cluster.HeartbeatTick,
+			DialTimeout:         dialTimeout,
+			DataPlaneRPCTimeout: dataPlaneRPCTimeout,
 		},
 		API: app.APIConfig{
 			ListenAddr: c.API.ListenAddr,

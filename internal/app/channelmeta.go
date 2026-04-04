@@ -205,6 +205,7 @@ func (s *channelMetaSync) Start() error {
 	}
 	if err != nil {
 		cancel()
+		err = errors.Join(err, s.cleanupAppliedLocal())
 		s.mu.Lock()
 		s.cancel = nil
 		s.done = nil
@@ -313,7 +314,13 @@ func (s *channelMetaSync) apply(meta metadb.ChannelRuntimeMeta) (channellog.Chan
 		s.replicaFactory.Register(key)
 	}
 	runtimeMeta := projectISRGroupMeta(key, meta)
-	if _, ok := s.runtime.Group(runtimeMeta.GroupKey); ok {
+	handle, runtimeExists := s.runtime.Group(runtimeMeta.GroupKey)
+	hadAppliedLocal := s.hasAppliedLocalKey(key)
+	var previousMeta isr.GroupMeta
+	if runtimeExists {
+		previousMeta = handle.Meta()
+	}
+	if runtimeExists {
 		if err := s.runtime.ApplyMeta(runtimeMeta); err != nil {
 			return channellog.ChannelMeta{}, err
 		}
@@ -326,12 +333,19 @@ func (s *channelMetaSync) apply(meta metadb.ChannelRuntimeMeta) (channellog.Chan
 	s.storeAppliedLocalKey(key)
 	channelMeta := projectChannelMeta(meta)
 	if err := s.cluster.ApplyMeta(channelMeta); err != nil {
+		if rollbackErr := s.rollbackClusterApplyFailure(key, previousMeta, runtimeExists, hadAppliedLocal); rollbackErr != nil {
+			return channellog.ChannelMeta{}, errors.Join(err, rollbackErr)
+		}
 		return channellog.ChannelMeta{}, err
 	}
 	return channelMeta, nil
 }
 
 func projectISRGroupMeta(key channellog.ChannelKey, meta metadb.ChannelRuntimeMeta) isr.GroupMeta {
+	var leaseUntil time.Time
+	if meta.LeaseUntilMS > 0 {
+		leaseUntil = time.UnixMilli(meta.LeaseUntilMS).UTC()
+	}
 	return isr.GroupMeta{
 		GroupKey:   channellog.GroupKeyForChannel(key),
 		Epoch:      meta.LeaderEpoch,
@@ -339,7 +353,7 @@ func projectISRGroupMeta(key channellog.ChannelKey, meta metadb.ChannelRuntimeMe
 		Replicas:   projectNodeIDs(meta.Replicas),
 		ISR:        projectNodeIDs(meta.ISR),
 		MinISR:     int(meta.MinISR),
-		LeaseUntil: time.UnixMilli(meta.LeaseUntilMS).UTC(),
+		LeaseUntil: leaseUntil,
 	}
 }
 
@@ -404,6 +418,41 @@ func (s *channelMetaSync) storeAppliedLocalKey(key channellog.ChannelKey) {
 		s.appliedLocal = make(map[channellog.ChannelKey]struct{})
 	}
 	s.appliedLocal[key] = struct{}{}
+}
+
+func (s *channelMetaSync) hasAppliedLocalKey(key channellog.ChannelKey) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.appliedLocal[key]
+	return ok
+}
+
+func (s *channelMetaSync) deleteAppliedLocalKey(key channellog.ChannelKey) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.appliedLocal) == 0 {
+		return
+	}
+	delete(s.appliedLocal, key)
+	if len(s.appliedLocal) == 0 {
+		s.appliedLocal = nil
+	}
+}
+
+func (s *channelMetaSync) rollbackClusterApplyFailure(key channellog.ChannelKey, previousMeta isr.GroupMeta, runtimeExists, hadAppliedLocal bool) error {
+	var err error
+	if runtimeExists {
+		err = s.runtime.ApplyMeta(previousMeta)
+	} else {
+		err = s.removeLocal(key)
+	}
+	if err != nil {
+		return err
+	}
+	if !hadAppliedLocal {
+		s.deleteAppliedLocalKey(key)
+	}
+	return nil
 }
 
 func (s *channelMetaSync) removeLocal(key channellog.ChannelKey) error {

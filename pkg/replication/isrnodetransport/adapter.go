@@ -18,12 +18,14 @@ type Options struct {
 	Client       *nodetransport.Client
 	RPCMux       *nodetransport.RPCMux
 	FetchService isrnode.FetchService
+	RPCTimeout   time.Duration
 }
 
 type Adapter struct {
 	localNode    isr.NodeID
 	client       *nodetransport.Client
 	fetchService isrnode.FetchService
+	rpcTimeout   time.Duration
 
 	mu      sync.RWMutex
 	handler func(isrnode.Envelope)
@@ -46,11 +48,15 @@ func New(opts Options) (*Adapter, error) {
 	if opts.FetchService == nil {
 		return nil, fmt.Errorf("isrnodetransport: fetch service must be set")
 	}
+	if opts.RPCTimeout <= 0 {
+		opts.RPCTimeout = defaultRPCTimeout
+	}
 
 	adapter := &Adapter{
 		localNode:    opts.LocalNode,
 		client:       opts.Client,
 		fetchService: opts.FetchService,
+		rpcTimeout:   opts.RPCTimeout,
 	}
 	adapter.sessions = newSessionManager(adapter)
 	opts.RPCMux.Handle(RPCServiceFetch, adapter.handleRPC)
