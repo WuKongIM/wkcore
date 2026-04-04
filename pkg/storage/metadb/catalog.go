@@ -4,6 +4,7 @@ const (
 	TableIDUser               uint32 = 1
 	TableIDChannel            uint32 = 2
 	TableIDChannelRuntimeMeta uint32 = 3
+	TableIDDevice             uint32 = 4
 
 	maxKeyStringLen = 1<<16 - 1
 )
@@ -41,6 +42,16 @@ const (
 	channelRuntimeMetaColumnIDStatus       uint16 = 9
 	channelRuntimeMetaColumnIDFeatures     uint16 = 10
 	channelRuntimeMetaColumnIDLeaseUntilMS uint16 = 11
+)
+
+const (
+	devicePrimaryFamilyID uint16 = 0
+	devicePrimaryIndexID  uint16 = 1
+
+	deviceColumnIDUID         uint16 = 1
+	deviceColumnIDDeviceFlag  uint16 = 2
+	deviceColumnIDToken       uint16 = 3
+	deviceColumnIDDeviceLevel uint16 = 4
 )
 
 type ColumnType int
@@ -182,5 +193,31 @@ var ChannelRuntimeMetaTable = &TableDesc{
 		Unique:    true,
 		Primary:   true,
 		ColumnIDs: []uint16{channelRuntimeMetaColumnIDChannelID, channelRuntimeMetaColumnIDType},
+	},
+}
+
+var DeviceTable = &TableDesc{
+	ID:   TableIDDevice,
+	Name: "device",
+	Columns: []ColumnDesc{
+		{ID: deviceColumnIDUID, Name: "uid", Type: ColumnString},
+		{ID: deviceColumnIDDeviceFlag, Name: "device_flag", Type: ColumnInt64},
+		{ID: deviceColumnIDToken, Name: "token", Type: ColumnString},
+		{ID: deviceColumnIDDeviceLevel, Name: "device_level", Type: ColumnInt64},
+	},
+	Families: []ColumnFamilyDesc{
+		{
+			ID:              devicePrimaryFamilyID,
+			Name:            "primary",
+			ColumnIDs:       []uint16{deviceColumnIDToken, deviceColumnIDDeviceLevel},
+			DefaultColumnID: deviceColumnIDToken,
+		},
+	},
+	PrimaryIndex: IndexDesc{
+		ID:        devicePrimaryIndexID,
+		Name:      "pk_device",
+		Unique:    true,
+		Primary:   true,
+		ColumnIDs: []uint16{deviceColumnIDUID, deviceColumnIDDeviceFlag},
 	},
 }

@@ -83,6 +83,15 @@ func encodeChannelRuntimeMetaPrimaryKey(slot uint64, channelID string, channelTy
 	return key
 }
 
+func encodeDevicePrimaryKey(slot uint64, uid string, deviceFlag int64, familyID uint16) []byte {
+	key := make([]byte, 0, 48)
+	key = encodeStatePrefix(slot, DeviceTable.ID)
+	key = appendKeyString(key, uid)
+	key = appendKeyInt64Ordered(key, deviceFlag)
+	key = binary.AppendUvarint(key, uint64(familyID))
+	return key
+}
+
 func encodeUserFamilyValue(token string, deviceFlag, deviceLevel int64, key []byte) []byte {
 	payload := make([]byte, 0, 32)
 	payload = appendBytesValue(payload, userColumnIDToken, 0, token)
@@ -170,6 +179,86 @@ func decodeUserFamilyValue(key, value []byte) (string, int64, int64, error) {
 		return "", 0, 0, fmt.Errorf("%w: missing int column %d", ErrCorruptValue, userColumnIDDeviceLevel)
 	}
 	return token, deviceFlag, deviceLevel, nil
+}
+
+func encodeDeviceFamilyValue(token string, deviceLevel int64, key []byte) []byte {
+	payload := make([]byte, 0, 24)
+	payload = appendBytesValue(payload, deviceColumnIDToken, 0, token)
+	payload = appendIntValue(payload, deviceColumnIDDeviceLevel, deviceColumnIDToken, deviceLevel)
+	return wrapFamilyValue(key, payload)
+}
+
+func decodeDeviceFamilyValue(key, value []byte) (string, int64, error) {
+	_, payload, err := decodeWrappedValue(key, value)
+	if err != nil {
+		return "", 0, err
+	}
+
+	var (
+		token       string
+		deviceLevel int64
+		colID       uint16
+		haveToken   bool
+		haveLevel   bool
+	)
+
+	for len(payload) > 0 {
+		tag := payload[0]
+		payload = payload[1:]
+
+		delta := uint16(tag >> 4)
+		valueType := tag & 0x0f
+		if delta == 0 {
+			return "", 0, fmt.Errorf("%w: zero column delta", ErrCorruptValue)
+		}
+		colID += delta
+
+		switch valueType {
+		case valueTypeBytes:
+			length, n := binary.Uvarint(payload)
+			if n <= 0 {
+				return "", 0, fmt.Errorf("metadb: invalid bytes length")
+			}
+			payload = payload[n:]
+			if uint64(len(payload)) < length {
+				return "", 0, fmt.Errorf("metadb: bytes payload truncated")
+			}
+			raw := payload[:length]
+			payload = payload[length:]
+
+			switch colID {
+			case deviceColumnIDToken:
+				token = string(raw)
+				haveToken = true
+			case deviceColumnIDDeviceLevel:
+				return "", 0, fmt.Errorf("%w: invalid int column %d", ErrCorruptValue, colID)
+			}
+		case valueTypeInt:
+			raw, n := binary.Uvarint(payload)
+			if n <= 0 {
+				return "", 0, fmt.Errorf("metadb: invalid int payload")
+			}
+			payload = payload[n:]
+
+			switch colID {
+			case deviceColumnIDToken:
+				return "", 0, fmt.Errorf("%w: invalid string column %d", ErrCorruptValue, colID)
+			case deviceColumnIDDeviceLevel:
+				deviceLevel = decodeZigZagInt64(raw)
+				haveLevel = true
+			}
+		default:
+			return "", 0, fmt.Errorf("metadb: unsupported value type %d", valueType)
+		}
+	}
+
+	if !haveToken {
+		return "", 0, fmt.Errorf("%w: missing string column %d", ErrCorruptValue, deviceColumnIDToken)
+	}
+	if !haveLevel {
+		return "", 0, fmt.Errorf("%w: missing int column %d", ErrCorruptValue, deviceColumnIDDeviceLevel)
+	}
+	return token, deviceLevel, nil
 }
 
 func encodeChannelFamilyValue(ban int64, key []byte) []byte {

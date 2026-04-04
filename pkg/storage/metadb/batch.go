@@ -35,6 +35,21 @@ func (b *WriteBatch) UpsertUser(slot uint64, u User) error {
 	return b.batch.Set(key, value, nil)
 }
 
+// UpsertDevice encodes and stages a device write into the batch.
+// No lock is held; the batch is assumed single-threaded.
+func (b *WriteBatch) UpsertDevice(slot uint64, d Device) error {
+	if err := validateSlot(slot); err != nil {
+		return err
+	}
+	if err := validateDevice(d); err != nil {
+		return err
+	}
+
+	key := encodeDevicePrimaryKey(slot, d.UID, d.DeviceFlag, devicePrimaryFamilyID)
+	value := encodeDeviceFamilyValue(d.Token, d.DeviceLevel, key)
+	return b.batch.Set(key, value, nil)
+}
+
 // UpsertChannel encodes and stages a channel write (primary + index)
 // into the batch. No lock is held.
 func (b *WriteBatch) UpsertChannel(slot uint64, ch Channel) error {
