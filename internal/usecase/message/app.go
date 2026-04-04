@@ -6,20 +6,21 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	"github.com/WuKongIM/WuKongIM/internal/runtime/sequence"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 )
 
-var ErrUnauthenticatedSender = errors.New("usecase/message: unauthenticated sender")
+var (
+	ErrUnauthenticatedSender = errors.New("usecase/message: unauthenticated sender")
+	ErrClusterRequired       = errors.New("usecase/message: channel cluster required")
+)
 
 type Options struct {
 	IdentityStore IdentityStore
 	ChannelStore  ChannelStore
-	ClusterPort   any
+	Cluster       ChannelCluster
 	MetaRefresher MetaRefresher
 	Online        online.Registry
 	Delivery      online.Delivery
-	Sequence      sequence.Allocator
 	Now           func() time.Time
 }
 
@@ -30,21 +31,15 @@ type App struct {
 	refresher  MetaRefresher
 	online     online.Registry
 	delivery   online.Delivery
-	sequence   sequence.Allocator
 	now        func() time.Time
 }
 
 func New(opts Options) *App {
-	cluster, _ := opts.ClusterPort.(ChannelCluster)
-
 	if opts.Online == nil {
 		opts.Online = online.NewRegistry()
 	}
 	if opts.Delivery == nil {
 		opts.Delivery = online.LocalDelivery{}
-	}
-	if opts.Sequence == nil {
-		opts.Sequence = &sequence.MemoryAllocator{}
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -53,11 +48,10 @@ func New(opts Options) *App {
 	return &App{
 		identities: opts.IdentityStore,
 		channels:   opts.ChannelStore,
-		cluster:    cluster,
+		cluster:    opts.Cluster,
 		refresher:  opts.MetaRefresher,
 		online:     opts.Online,
 		delivery:   opts.Delivery,
-		sequence:   opts.Sequence,
 		now:        opts.Now,
 	}
 }

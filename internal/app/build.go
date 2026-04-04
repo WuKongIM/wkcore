@@ -9,7 +9,6 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/messageid"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	"github.com/WuKongIM/WuKongIM/internal/runtime/sequence"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
@@ -112,15 +111,13 @@ func build(cfg Config) (_ *App, err error) {
 		refreshInterval: time.Second,
 	}
 	onlineRegistry := online.NewRegistry()
-	sequenceAllocator := &sequence.MemoryAllocator{}
 	app.messageApp = message.New(message.Options{
 		IdentityStore: app.store,
 		ChannelStore:  app.store,
-		ClusterPort:   app.channelLog,
+		Cluster:       app.channelLog,
 		MetaRefresher: app.channelMetaSync,
 		Online:        onlineRegistry,
 		Delivery:      online.LocalDelivery{},
-		Sequence:      sequenceAllocator,
 	})
 	if cfg.API.ListenAddr != "" {
 		app.api = accessapi.New(accessapi.Options{

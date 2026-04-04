@@ -45,7 +45,21 @@ func TestSendReturnsUnsupportedChannelType(t *testing.T) {
 	require.Zero(t, result.MessageSeq)
 }
 
-func TestSendDeliversLocalPersonMessage(t *testing.T) {
+func TestSendReturnsClusterRequiredWhenClusterNotConfigured(t *testing.T) {
+	app := New(Options{Now: fixedNowFn})
+
+	result, err := app.Send(context.Background(), SendCommand{
+		SenderUID:   "u1",
+		ChannelID:   "u2",
+		ChannelType: wkframe.ChannelTypePerson,
+		Payload:     []byte("hi"),
+	})
+
+	require.ErrorIs(t, err, ErrClusterRequired)
+	require.Equal(t, SendResult{}, result)
+}
+
+func TestSendDeliversDurablePersonMessage(t *testing.T) {
 	reg := &fakeRegistry{
 		byUID: map[string][]online.OnlineConn{
 			"u2": {
@@ -55,12 +69,16 @@ func TestSendDeliversLocalPersonMessage(t *testing.T) {
 		},
 	}
 	delivery := &recordingDelivery{}
-	seq := &recordingSequenceAllocator{messageID: 99, sequence: 7}
+	cluster := &fakeChannelCluster{
+		sendReplies: []fakeChannelClusterSendReply{
+			{result: channellog.SendResult{MessageID: 99, MessageSeq: 7}},
+		},
+	}
 	app := New(Options{
 		Now:      fixedNowFn,
+		Cluster:  cluster,
 		Online:   reg,
 		Delivery: delivery,
-		Sequence: seq,
 	})
 
 	result, err := app.Send(context.Background(), SendCommand{
@@ -76,7 +94,7 @@ func TestSendDeliversLocalPersonMessage(t *testing.T) {
 	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
 	require.Equal(t, int64(99), result.MessageID)
 	require.Equal(t, uint64(7), result.MessageSeq)
-	require.Equal(t, []string{"u2"}, seq.channelKeys)
+	require.Len(t, cluster.sendRequests, 1)
 	require.Len(t, delivery.calls, 1)
 	require.Len(t, delivery.calls[0].recipients, 2)
 
@@ -92,10 +110,16 @@ func TestSendDeliversLocalPersonMessage(t *testing.T) {
 	require.Equal(t, int32(fixedSendNow.Unix()), recv.Timestamp)
 }
 
-func TestSendReturnsUserNotOnNodeWhenRecipientOffline(t *testing.T) {
+func TestSendReturnsSuccessWhenRecipientOfflineOnLocalNode(t *testing.T) {
+	cluster := &fakeChannelCluster{
+		sendReplies: []fakeChannelClusterSendReply{
+			{result: channellog.SendResult{MessageID: 301, MessageSeq: 15}},
+		},
+	}
 	app := New(Options{
-		Now:    fixedNowFn,
-		Online: &fakeRegistry{},
+		Now:     fixedNowFn,
+		Cluster: cluster,
+		Online:  &fakeRegistry{},
 	})
 
 	result, err := app.Send(context.Background(), SendCommand{
@@ -107,12 +131,13 @@ func TestSendReturnsUserNotOnNodeWhenRecipientOffline(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, wkframe.ReasonUserNotOnNode, result.Reason)
-	require.Zero(t, result.MessageID)
-	require.Zero(t, result.MessageSeq)
+	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+	require.Equal(t, int64(301), result.MessageID)
+	require.Equal(t, uint64(15), result.MessageSeq)
+	require.Len(t, cluster.sendRequests, 1)
 }
 
-func TestSendReturnsSystemErrorWhenDeliveryFails(t *testing.T) {
+func TestSendReturnsSuccessWhenPostCommitDeliveryFails(t *testing.T) {
 	reg := &fakeRegistry{
 		byUID: map[string][]online.OnlineConn{
 			"u2": {
@@ -121,11 +146,16 @@ func TestSendReturnsSystemErrorWhenDeliveryFails(t *testing.T) {
 			},
 		},
 	}
+	cluster := &fakeChannelCluster{
+		sendReplies: []fakeChannelClusterSendReply{
+			{result: channellog.SendResult{MessageID: 101, MessageSeq: 5}},
+		},
+	}
 	app := New(Options{
 		Now:      fixedNowFn,
+		Cluster:  cluster,
 		Online:   reg,
 		Delivery: failingDelivery{err: errors.New("boom")},
-		Sequence: &recordingSequenceAllocator{messageID: 101, sequence: 5},
 	})
 
 	result, err := app.Send(context.Background(), SendCommand{
@@ -138,9 +168,10 @@ func TestSendReturnsSystemErrorWhenDeliveryFails(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, wkframe.ReasonSystemError, result.Reason)
+	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
 	require.Equal(t, int64(101), result.MessageID)
 	require.Equal(t, uint64(5), result.MessageSeq)
+	require.Len(t, cluster.sendRequests, 1)
 }
 
 func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
@@ -168,7 +199,7 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	}
 	app := New(Options{
 		Now:           fixedNowFn,
-		ClusterPort:   cluster,
+		Cluster:       cluster,
 		MetaRefresher: refresher,
 		Online:        reg,
 		Delivery:      delivery,
@@ -223,7 +254,7 @@ func TestSendDurablePersonPropagatesRequestContextToClusterAndMetaRefresh(t *tes
 	}
 	app := New(Options{
 		Now:           fixedNowFn,
-		ClusterPort:   cluster,
+		Cluster:       cluster,
 		MetaRefresher: refresher,
 	})
 
@@ -254,7 +285,7 @@ func TestSendDurablePersonReturnsContextCanceled(t *testing.T) {
 	}
 	app := New(Options{
 		Now:         fixedNowFn,
-		ClusterPort: cluster,
+		Cluster:     cluster,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -274,37 +305,6 @@ func TestSendDurablePersonReturnsContextCanceled(t *testing.T) {
 	require.Same(t, ctx, cluster.sendContexts[0])
 }
 
-func TestSendClusterSuccessDoesNotRequireLocalRecipient(t *testing.T) {
-	cluster := &fakeChannelCluster{
-		sendReplies: []fakeChannelClusterSendReply{
-			{result: channellog.SendResult{MessageID: 301, MessageSeq: 15}},
-		},
-	}
-	delivery := &recordingDelivery{}
-	app := New(Options{
-		Now:         fixedNowFn,
-		ClusterPort: cluster,
-		Online:      &fakeRegistry{},
-		Delivery:    delivery,
-	})
-
-	result, err := app.Send(context.Background(), SendCommand{
-		SenderUID:   "u1",
-		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
-		Payload:     []byte("hi"),
-		ClientSeq:   22,
-		ClientMsgNo: "m7",
-	})
-
-	require.NoError(t, err)
-	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
-	require.Equal(t, int64(301), result.MessageID)
-	require.Equal(t, uint64(15), result.MessageSeq)
-	require.Empty(t, delivery.calls)
-	require.Len(t, cluster.sendRequests, 1)
-}
-
 func TestSendReturnsProtocolUpgradeRequiredWhenClusterRejectsLegacyClient(t *testing.T) {
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
@@ -314,7 +314,7 @@ func TestSendReturnsProtocolUpgradeRequiredWhenClusterRejectsLegacyClient(t *tes
 	delivery := &recordingDelivery{}
 	app := New(Options{
 		Now:         fixedNowFn,
-		ClusterPort: cluster,
+		Cluster:     cluster,
 		Online: &fakeRegistry{
 			byUID: map[string][]online.OnlineConn{
 				"u2": {
@@ -347,16 +347,14 @@ func TestNewPreservesInjectedCollaborators(t *testing.T) {
 	refresher := &fakeMetaRefresher{}
 	reg := &fakeRegistry{}
 	delivery := &recordingDelivery{}
-	seq := &recordingSequenceAllocator{}
 
 	app := New(Options{
 		IdentityStore: identities,
 		ChannelStore:  channels,
-		ClusterPort:   cluster,
+		Cluster:       cluster,
 		MetaRefresher: refresher,
 		Online:        reg,
 		Delivery:      delivery,
-		Sequence:      seq,
 		Now:           fixedNowFn,
 	})
 
@@ -366,7 +364,6 @@ func TestNewPreservesInjectedCollaborators(t *testing.T) {
 	require.Same(t, refresher, app.refresher)
 	require.Same(t, reg, app.online)
 	require.Same(t, delivery, app.delivery)
-	require.Same(t, seq, app.sequence)
 	require.Same(t, reg, app.OnlineRegistry())
 }
 
@@ -442,21 +439,6 @@ type failingDelivery struct {
 
 func (d failingDelivery) Deliver([]online.OnlineConn, wkframe.Frame) error {
 	return d.err
-}
-
-type recordingSequenceAllocator struct {
-	messageID   int64
-	sequence    uint32
-	channelKeys []string
-}
-
-func (a *recordingSequenceAllocator) NextMessageID() int64 {
-	return a.messageID
-}
-
-func (a *recordingSequenceAllocator) NextChannelSequence(channelKey string) uint32 {
-	a.channelKeys = append(a.channelKeys, channelKey)
-	return a.sequence
 }
 
 func requireRecvPacket(t *testing.T, frame wkframe.Frame) *wkframe.RecvPacket {

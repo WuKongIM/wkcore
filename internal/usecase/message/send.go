@@ -17,11 +17,11 @@ func (a *App) Send(ctx context.Context, cmd SendCommand) (SendResult, error) {
 		return SendResult{Reason: wkframe.ReasonNotSupportChannelType}, nil
 	}
 
-	if a.cluster != nil {
-		return a.sendDurablePerson(ctx, cmd)
+	if a.cluster == nil {
+		return SendResult{}, ErrClusterRequired
 	}
 
-	return a.sendLocalPerson(cmd)
+	return a.sendDurablePerson(ctx, cmd)
 }
 
 func (a *App) sendDurablePerson(ctx context.Context, cmd SendCommand) (SendResult, error) {
@@ -50,30 +50,6 @@ func (a *App) sendDurablePerson(ctx context.Context, cmd SendCommand) (SendResul
 	return sendResult, nil
 }
 
-func (a *App) sendLocalPerson(cmd SendCommand) (SendResult, error) {
-	target := resolveLocalPersonTarget(cmd)
-	recipients := a.online.ConnectionsByUID(target.RecipientUID)
-	if len(recipients) == 0 {
-		return SendResult{Reason: wkframe.ReasonUserNotOnNode}, nil
-	}
-
-	msgID := a.sequence.NextMessageID()
-	msgSeq := uint64(a.sequence.NextChannelSequence(target.SequenceKey))
-	if err := a.deliverLocalPerson(cmd, msgID, msgSeq); err != nil {
-		return SendResult{
-			MessageID:  msgID,
-			MessageSeq: msgSeq,
-			Reason:     wkframe.ReasonSystemError,
-		}, nil
-	}
-
-	return SendResult{
-		MessageID:  msgID,
-		MessageSeq: msgSeq,
-		Reason:     wkframe.ReasonSuccess,
-	}, nil
-}
-
 func (a *App) deliverLocalPerson(cmd SendCommand, msgID int64, msgSeq uint64) error {
 	recipients := a.online.ConnectionsByUID(cmd.ChannelID)
 	if len(recipients) == 0 {
@@ -81,18 +57,6 @@ func (a *App) deliverLocalPerson(cmd SendCommand, msgID int64, msgSeq uint64) er
 	}
 
 	return a.delivery.Deliver(recipients, buildPersonRecvPacket(cmd, msgID, msgSeq, a.now()))
-}
-
-type localPersonTarget struct {
-	RecipientUID string
-	SequenceKey  string
-}
-
-func resolveLocalPersonTarget(cmd SendCommand) localPersonTarget {
-	return localPersonTarget{
-		RecipientUID: cmd.ChannelID,
-		SequenceKey:  cmd.ChannelID,
-	}
 }
 
 func buildPersonRecvPacket(cmd SendCommand, msgID int64, msgSeq uint64, now time.Time) *wkframe.RecvPacket {
