@@ -30,8 +30,8 @@ func TestUpdateTokenCreatesUserWhenMissingAndUpsertsDevice(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, 1, users.getCalls)
-	require.Len(t, users.upserted, 1)
-	require.Equal(t, metadb.User{UID: "u1"}, users.upserted[0])
+	require.Len(t, users.created, 1)
+	require.Equal(t, metadb.User{UID: "u1"}, users.created[0])
 	require.Len(t, devices.upserted, 1)
 	require.Equal(t, metadb.Device{
 		UID:         "u1",
@@ -58,7 +58,32 @@ func TestUpdateTokenDoesNotRewriteExistingUser(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, 1, users.getCalls)
-	require.Empty(t, users.upserted)
+	require.Empty(t, users.created)
+	require.Len(t, devices.upserted, 1)
+}
+
+func TestUpdateTokenMissingUserCreateAlreadyExistsStillSucceeds(t *testing.T) {
+	users := &fakeUserStore{
+		getErr:    metadb.ErrNotFound,
+		createErr: metadb.ErrAlreadyExists,
+	}
+	devices := &fakeDeviceStore{}
+	app := New(Options{
+		Users:   users,
+		Devices: devices,
+	})
+
+	err := app.UpdateToken(context.Background(), UpdateTokenCommand{
+		UID:         "u1",
+		Token:       "token-1",
+		DeviceFlag:  wkframe.APP,
+		DeviceLevel: wkframe.DeviceLevelSlave,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, users.getCalls)
+	require.Len(t, users.created, 1)
+	require.Equal(t, metadb.User{UID: "u1"}, users.created[0])
 	require.Len(t, devices.upserted, 1)
 }
 
@@ -203,12 +228,29 @@ func TestUpdateTokenSlaveDoesNotKickSessions(t *testing.T) {
 	require.Empty(t, scheduled)
 }
 
+func TestNewInstallsDefaultOnlineAndAfterFunc(t *testing.T) {
+	app := New(Options{})
+	require.NotNil(t, app.online)
+	require.NotNil(t, app.afterFunc)
+
+	done := make(chan struct{})
+	app.afterFunc(0, func() {
+		close(done)
+	})
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("default AfterFunc did not invoke callback")
+	}
+}
+
 type fakeUserStore struct {
 	getErr    error
-	upsertErr error
+	createErr error
 
 	getCalls int
-	upserted []metadb.User
+	created  []metadb.User
 }
 
 func (f *fakeUserStore) GetUser(context.Context, string) (metadb.User, error) {
@@ -219,11 +261,11 @@ func (f *fakeUserStore) GetUser(context.Context, string) (metadb.User, error) {
 	return metadb.User{}, nil
 }
 
-func (f *fakeUserStore) UpsertUser(_ context.Context, u metadb.User) error {
-	if f.upsertErr != nil {
-		return f.upsertErr
+func (f *fakeUserStore) CreateUser(_ context.Context, u metadb.User) error {
+	f.created = append(f.created, u)
+	if f.createErr != nil {
+		return f.createErr
 	}
-	f.upserted = append(f.upserted, u)
 	return nil
 }
 

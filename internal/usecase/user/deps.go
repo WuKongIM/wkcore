@@ -16,7 +16,7 @@ var (
 
 type UserStore interface {
 	GetUser(ctx context.Context, uid string) (metadb.User, error)
-	UpsertUser(ctx context.Context, u metadb.User) error
+	CreateUser(ctx context.Context, u metadb.User) error
 }
 
 type DeviceStore interface {

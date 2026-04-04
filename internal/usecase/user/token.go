@@ -22,7 +22,7 @@ func (a *App) UpdateToken(ctx context.Context, cmd UpdateTokenCommand) error {
 
 	_, err := a.users.GetUser(ctx, cmd.UID)
 	if errors.Is(err, metadb.ErrNotFound) {
-		if err := a.users.UpsertUser(ctx, metadb.User{UID: cmd.UID}); err != nil {
+		if err := a.users.CreateUser(ctx, metadb.User{UID: cmd.UID}); err != nil && !errors.Is(err, metadb.ErrAlreadyExists) {
 			return err
 		}
 	} else if err != nil {
