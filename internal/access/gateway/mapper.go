@@ -56,11 +56,12 @@ func mapRecvAckCommand(ctx *coregateway.Context, pkt *wkframe.RecvackPacket) (me
 	}
 
 	if pkt == nil {
-		return message.RecvAckCommand{UID: uid}, nil
+		return message.RecvAckCommand{UID: uid, SessionID: ctx.Session.ID()}, nil
 	}
 
 	return message.RecvAckCommand{
 		UID:        uid,
+		SessionID:  ctx.Session.ID(),
 		Framer:     pkt.Framer,
 		MessageID:  pkt.MessageID,
 		MessageSeq: pkt.MessageSeq,

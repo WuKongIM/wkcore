@@ -47,9 +47,29 @@ func (a *App) sendDurablePerson(ctx context.Context, cmd SendCommand) (SendResul
 		Reason:     wkframe.ReasonSuccess,
 	}
 
-	// Durable ack follows the replicated write; local fanout is best-effort.
-	_ = a.deliverPerson(ctx, cmd, sendResult.MessageID, sendResult.MessageSeq)
+	if a.dispatcher != nil {
+		_ = a.dispatcher.SubmitCommitted(ctx, committedEnvelopeFromSend(cmd, result))
+	}
 	return sendResult, nil
+}
+
+func committedEnvelopeFromSend(cmd SendCommand, result channellog.SendResult) CommittedMessageEnvelope {
+	return CommittedMessageEnvelope{
+		ChannelID:   cmd.ChannelID,
+		ChannelType: cmd.ChannelType,
+		MessageID:   result.MessageID,
+		MessageSeq:  result.MessageSeq,
+		SenderUID:   cmd.SenderUID,
+		ClientMsgNo: cmd.ClientMsgNo,
+		Topic:       cmd.Topic,
+		Payload:     append([]byte(nil), cmd.Payload...),
+		Framer:      cmd.Framer,
+		Setting:     cmd.Setting,
+		MsgKey:      cmd.MsgKey,
+		Expire:      cmd.Expire,
+		StreamNo:    cmd.StreamNo,
+		ClientSeq:   cmd.ClientSeq,
+	}
 }
 
 func (a *App) deliverPerson(ctx context.Context, cmd SendCommand, msgID int64, msgSeq uint64) error {

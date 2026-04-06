@@ -60,11 +60,16 @@ func TestHandlerOnSessionOpenIsNoop(t *testing.T) {
 }
 
 func TestHandlerOnSessionCloseCallsPresenceDeactivate(t *testing.T) {
+	msgs := &fakeMessageUsecase{}
 	presenceUsecase := &fakePresenceUsecase{}
-	handler := newHandlerWithPresence(t, presenceUsecase, Options{})
+	handler := newHandlerWithPresence(t, presenceUsecase, Options{Messages: msgs})
 	ctx := newAuthedContext(t, 1, "u1")
 
 	require.NoError(t, handler.OnSessionClose(ctx))
+	require.Equal(t, []message.SessionClosedCommand{{
+		UID:       "u1",
+		SessionID: 1,
+	}}, msgs.sessionClosed)
 	require.Equal(t, []presence.DeactivateCommand{{
 		UID:       "u1",
 		SessionID: 1,
@@ -311,6 +316,7 @@ func TestHandlerOnFrameRecvackRoutesToMessageUsecase(t *testing.T) {
 	require.Equal(t, 1, msgs.recvAckCalls)
 	require.Len(t, msgs.recvAckCommands, 1)
 	require.Equal(t, "u1", msgs.recvAckCommands[0].UID)
+	require.Equal(t, uint64(1), msgs.recvAckCommands[0].SessionID)
 	require.Equal(t, int64(88), msgs.recvAckCommands[0].MessageID)
 	require.Equal(t, uint64(9), msgs.recvAckCommands[0].MessageSeq)
 	require.True(t, msgs.recvAckCommands[0].Framer.RedDot)
@@ -362,6 +368,8 @@ func TestNewSharesOnlineRegistryWithInjectedMessageApp(t *testing.T) {
 		ConnectedAt: fixedGatewayNow,
 		Session:     recipient,
 	}))
+	require.Same(t, msgApp.OnlineRegistry(), handler.online)
+	require.Len(t, handler.online.ConnectionsByUID("u2"), 1)
 
 	err := handler.OnFrame(&coregateway.Context{
 		Session:        sender,
@@ -379,11 +387,7 @@ func TestNewSharesOnlineRegistryWithInjectedMessageApp(t *testing.T) {
 	require.Len(t, sender.Writes(), 1)
 	ack := requireSendackPacket(t, sender.Writes()[0].frame)
 	require.Equal(t, wkframe.ReasonSuccess, ack.ReasonCode)
-
-	require.Len(t, recipient.Writes(), 1)
-	recv := requireRecvPacket(t, recipient.Writes()[0].frame)
-	require.Equal(t, "u1", recv.FromUID)
-	require.Equal(t, []byte("hi"), recv.Payload)
+	require.Empty(t, recipient.Writes())
 }
 
 func newAuthedContext(t *testing.T, sessionID uint64, uid string) *coregateway.Context {
@@ -439,6 +443,8 @@ type fakeMessageUsecase struct {
 	sendFn          func(context.Context, message.SendCommand) (message.SendResult, error)
 	sendResult      message.SendResult
 	sendErr         error
+	sessionClosed   []message.SessionClosedCommand
+	sessionCloseErr error
 	recvAckCalls    int
 	recvAckCommands []message.RecvAckCommand
 	recvAckErr      error
@@ -457,6 +463,11 @@ func (f *fakeMessageUsecase) RecvAck(cmd message.RecvAckCommand) error {
 	f.recvAckCalls++
 	f.recvAckCommands = append(f.recvAckCommands, cmd)
 	return f.recvAckErr
+}
+
+func (f *fakeMessageUsecase) SessionClosed(cmd message.SessionClosedCommand) error {
+	f.sessionClosed = append(f.sessionClosed, cmd)
+	return f.sessionCloseErr
 }
 
 type fakePresenceUsecase struct {
