@@ -1,0 +1,17 @@
+# WuKongIM single-node cluster example configuration.
+
+WK_NODE_ID=1
+WK_NODE_NAME=node-1
+WK_NODE_DATA_DIR=./data/node-1
+
+WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000
+WK_CLUSTER_FORWARD_TIMEOUT=2s
+WK_CLUSTER_TICK_INTERVAL=200ms
+WK_CLUSTER_DIAL_TIMEOUT=2s
+WK_CLUSTER_DATA_PLANE_RPC_TIMEOUT=250ms
+WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]
+WK_CLUSTER_GROUPS=[{"id":1,"peers":[1]}]
+
+WK_API_LISTEN_ADDR=0.0.0.0:5001
+
+WK_GATEWAY_LISTENERS=[{"name":"tcp-wkproto","network":"tcp","address":"0.0.0.0:5100","transport":"gnet","protocol":"wkproto"},{"name":"ws-jsonrpc","network":"websocket","address":"0.0.0.0:5200","path":"/ws","transport":"gnet","protocol":"jsonrpc"}]

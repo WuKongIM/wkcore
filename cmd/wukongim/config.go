@@ -4,149 +4,185 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/app"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
+	"github.com/spf13/viper"
 )
 
-type wireConfig struct {
-	Node    wireNodeConfig    `json:"node"`
-	Storage wireStorageConfig `json:"storage"`
-	Cluster wireClusterConfig `json:"cluster"`
-	API     wireAPIConfig     `json:"api"`
-	Gateway wireGatewayConfig `json:"gateway"`
-}
-
-type wireNodeConfig struct {
-	ID      uint64 `json:"id"`
-	Name    string `json:"name"`
-	DataDir string `json:"dataDir"`
-}
-
-type wireStorageConfig struct {
-	DBPath   string `json:"dbPath"`
-	RaftPath string `json:"raftPath"`
-}
-
-type wireClusterConfig struct {
-	ListenAddr          string              `json:"listenAddr"`
-	GroupCount          uint32              `json:"groupCount"`
-	Nodes               []wireNodeConfigRef `json:"nodes"`
-	Groups              []wireGroupConfig   `json:"groups"`
-	ForwardTimeout      string              `json:"forwardTimeout"`
-	PoolSize            int                 `json:"poolSize"`
-	TickInterval        string              `json:"tickInterval"`
-	RaftWorkers         int                 `json:"raftWorkers"`
-	ElectionTick        int                 `json:"electionTick"`
-	HeartbeatTick       int                 `json:"heartbeatTick"`
-	DialTimeout         string              `json:"dialTimeout"`
-	DataPlaneRPCTimeout string              `json:"dataPlaneRPCTimeout"`
-}
-
-type wireNodeConfigRef struct {
-	ID   uint64 `json:"id"`
-	Addr string `json:"addr"`
-}
-
-type wireGroupConfig struct {
-	ID    uint32   `json:"id"`
-	Peers []uint64 `json:"peers"`
-}
-
-type wireGatewayConfig struct {
-	TokenAuthOn    bool                       `json:"tokenAuthOn"`
-	DefaultSession wireSessionOptions         `json:"defaultSession"`
-	Listeners      *[]gateway.ListenerOptions `json:"listeners"`
-}
-
-type wireAPIConfig struct {
-	ListenAddr *string `json:"listenAddr"`
-}
-
-type wireSessionOptions struct {
-	ReadBufferSize      int    `json:"readBufferSize"`
-	WriteQueueSize      int    `json:"writeQueueSize"`
-	MaxInboundBytes     int    `json:"maxInboundBytes"`
-	MaxOutboundBytes    int    `json:"maxOutboundBytes"`
-	IdleTimeout         string `json:"idleTimeout"`
-	WriteTimeout        string `json:"writeTimeout"`
-	CloseOnHandlerError *bool  `json:"closeOnHandlerError"`
+var defaultConfigPaths = []string{
+	"./wukongim.conf",
+	"./conf/wukongim.conf",
+	"/etc/wukongim/wukongim.conf",
 }
 
 func loadConfig(path string) (app.Config, error) {
-	if strings.TrimSpace(path) == "" {
-		return app.Config{}, fmt.Errorf("load config: config path is required")
-	}
-
-	body, err := os.ReadFile(path)
+	cfgv, foundFile, attemptedPaths, err := readConfig(path)
 	if err != nil {
-		return app.Config{}, fmt.Errorf("load config: read %s: %w", path, err)
+		return app.Config{}, err
 	}
 
-	var wire wireConfig
-	dec := json.NewDecoder(strings.NewReader(string(body)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&wire); err != nil {
-		return app.Config{}, fmt.Errorf("load config: decode %s: %w", path, err)
-	}
-
-	cfg, err := wire.toAppConfig()
+	cfg, err := buildAppConfig(cfgv)
 	if err != nil {
+		if !foundFile {
+			return app.Config{}, missingDefaultConfigError(attemptedPaths, err)
+		}
+		return app.Config{}, fmt.Errorf("load config: %w", err)
+	}
+	if err := cfg.ApplyDefaultsAndValidate(); err != nil {
+		if !foundFile {
+			return app.Config{}, missingDefaultConfigError(attemptedPaths, err)
+		}
 		return app.Config{}, fmt.Errorf("load config: %w", err)
 	}
 	return cfg, nil
 }
 
-func (c wireConfig) toAppConfig() (app.Config, error) {
-	forwardTimeout, err := parseDuration("cluster.forwardTimeout", c.Cluster.ForwardTimeout)
+func readConfig(path string) (*viper.Viper, bool, []string, error) {
+	v := viper.New()
+	v.SetConfigType("env")
+	v.AutomaticEnv()
+
+	path = strings.TrimSpace(path)
+	if path != "" {
+		v.SetConfigFile(path)
+		if err := v.ReadInConfig(); err != nil {
+			return nil, false, nil, fmt.Errorf("load config: read %s: %w", path, err)
+		}
+		return v, true, nil, nil
+	}
+
+	attemptedPaths := append([]string(nil), defaultConfigPaths...)
+	for _, candidate := range attemptedPaths {
+		if _, err := os.Stat(candidate); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, false, attemptedPaths, fmt.Errorf("load config: stat %s: %w", candidate, err)
+		}
+		v.SetConfigFile(candidate)
+		if err := v.ReadInConfig(); err != nil {
+			return nil, false, attemptedPaths, fmt.Errorf("load config: read %s: %w", candidate, err)
+		}
+		return v, true, attemptedPaths, nil
+	}
+
+	return v, false, attemptedPaths, nil
+}
+
+func buildAppConfig(v *viper.Viper) (app.Config, error) {
+	nodeID, err := parseUint64(v, "WK_NODE_ID")
 	if err != nil {
 		return app.Config{}, err
 	}
-	tickInterval, err := parseDuration("cluster.tickInterval", c.Cluster.TickInterval)
+	groupCount, err := parseUint32(v, "WK_CLUSTER_GROUP_COUNT")
 	if err != nil {
 		return app.Config{}, err
 	}
-	dialTimeout, err := parseDuration("cluster.dialTimeout", c.Cluster.DialTimeout)
+	forwardTimeout, err := parseDuration(v, "WK_CLUSTER_FORWARD_TIMEOUT")
 	if err != nil {
 		return app.Config{}, err
 	}
-	dataPlaneRPCTimeout, err := parseDuration("cluster.dataPlaneRPCTimeout", c.Cluster.DataPlaneRPCTimeout)
+	poolSize, err := parseInt(v, "WK_CLUSTER_POOL_SIZE")
 	if err != nil {
 		return app.Config{}, err
 	}
-	idleTimeout, err := parseDuration("gateway.defaultSession.idleTimeout", c.Gateway.DefaultSession.IdleTimeout)
+	tickInterval, err := parseDuration(v, "WK_CLUSTER_TICK_INTERVAL")
 	if err != nil {
 		return app.Config{}, err
 	}
-	writeTimeout, err := parseDuration("gateway.defaultSession.writeTimeout", c.Gateway.DefaultSession.WriteTimeout)
+	raftWorkers, err := parseInt(v, "WK_CLUSTER_RAFT_WORKERS")
+	if err != nil {
+		return app.Config{}, err
+	}
+	electionTick, err := parseInt(v, "WK_CLUSTER_ELECTION_TICK")
+	if err != nil {
+		return app.Config{}, err
+	}
+	heartbeatTick, err := parseInt(v, "WK_CLUSTER_HEARTBEAT_TICK")
+	if err != nil {
+		return app.Config{}, err
+	}
+	dialTimeout, err := parseDuration(v, "WK_CLUSTER_DIAL_TIMEOUT")
+	if err != nil {
+		return app.Config{}, err
+	}
+	dataPlaneRPCTimeout, err := parseDuration(v, "WK_CLUSTER_DATA_PLANE_RPC_TIMEOUT")
+	if err != nil {
+		return app.Config{}, err
+	}
+	tokenAuthOn, err := parseBool(v, "WK_GATEWAY_TOKEN_AUTH_ON")
+	if err != nil {
+		return app.Config{}, err
+	}
+
+	nodes, err := parseJSONValue[[]app.NodeConfigRef](v, "WK_CLUSTER_NODES")
+	if err != nil {
+		return app.Config{}, err
+	}
+	groups, err := parseJSONValue[[]app.GroupConfig](v, "WK_CLUSTER_GROUPS")
+	if err != nil {
+		return app.Config{}, err
+	}
+	listeners, err := parseListeners(v)
+	if err != nil {
+		return app.Config{}, err
+	}
+	closeOnHandlerError, err := parseOptionalBool(v, "WK_GATEWAY_DEFAULT_SESSION_CLOSE_ON_HANDLER_ERROR")
+	if err != nil {
+		return app.Config{}, err
+	}
+	readBufferSize, err := parseInt(v, "WK_GATEWAY_DEFAULT_SESSION_READ_BUFFER_SIZE")
+	if err != nil {
+		return app.Config{}, err
+	}
+	writeQueueSize, err := parseInt(v, "WK_GATEWAY_DEFAULT_SESSION_WRITE_QUEUE_SIZE")
+	if err != nil {
+		return app.Config{}, err
+	}
+	maxInboundBytes, err := parseInt(v, "WK_GATEWAY_DEFAULT_SESSION_MAX_INBOUND_BYTES")
+	if err != nil {
+		return app.Config{}, err
+	}
+	maxOutboundBytes, err := parseInt(v, "WK_GATEWAY_DEFAULT_SESSION_MAX_OUTBOUND_BYTES")
+	if err != nil {
+		return app.Config{}, err
+	}
+	idleTimeout, err := parseDuration(v, "WK_GATEWAY_DEFAULT_SESSION_IDLE_TIMEOUT")
+	if err != nil {
+		return app.Config{}, err
+	}
+	writeTimeout, err := parseDuration(v, "WK_GATEWAY_DEFAULT_SESSION_WRITE_TIMEOUT")
 	if err != nil {
 		return app.Config{}, err
 	}
 
 	cfg := app.Config{
 		Node: app.NodeConfig{
-			ID:      c.Node.ID,
-			Name:    c.Node.Name,
-			DataDir: c.Node.DataDir,
+			ID:      nodeID,
+			Name:    stringValue(v, "WK_NODE_NAME"),
+			DataDir: stringValue(v, "WK_NODE_DATA_DIR"),
 		},
 		Storage: app.StorageConfig{
-			DBPath:   c.Storage.DBPath,
-			RaftPath: c.Storage.RaftPath,
+			DBPath:         stringValue(v, "WK_STORAGE_DB_PATH"),
+			RaftPath:       stringValue(v, "WK_STORAGE_RAFT_PATH"),
+			ChannelLogPath: stringValue(v, "WK_STORAGE_CHANNEL_LOG_PATH"),
 		},
 		Cluster: app.ClusterConfig{
-			ListenAddr:          c.Cluster.ListenAddr,
-			GroupCount:          c.Cluster.GroupCount,
-			Nodes:               make([]app.NodeConfigRef, 0, len(c.Cluster.Nodes)),
-			Groups:              make([]app.GroupConfig, 0, len(c.Cluster.Groups)),
+			ListenAddr:          stringValue(v, "WK_CLUSTER_LISTEN_ADDR"),
+			GroupCount:          groupCount,
+			Nodes:               nodes,
+			Groups:              groups,
 			ForwardTimeout:      forwardTimeout,
-			PoolSize:            c.Cluster.PoolSize,
+			PoolSize:            poolSize,
 			TickInterval:        tickInterval,
-			RaftWorkers:         c.Cluster.RaftWorkers,
-			ElectionTick:        c.Cluster.ElectionTick,
-			HeartbeatTick:       c.Cluster.HeartbeatTick,
+			RaftWorkers:         raftWorkers,
+			ElectionTick:        electionTick,
+			HeartbeatTick:       heartbeatTick,
 			DialTimeout:         dialTimeout,
 			DataPlaneRPCTimeout: dataPlaneRPCTimeout,
 		},
@@ -154,41 +190,33 @@ func (c wireConfig) toAppConfig() (app.Config, error) {
 			ListenAddr: defaultAPIListenAddr,
 		},
 		Gateway: app.GatewayConfig{
-			TokenAuthOn: c.Gateway.TokenAuthOn,
+			TokenAuthOn: tokenAuthOn,
 			DefaultSession: gateway.SessionOptions{
-				ReadBufferSize:      c.Gateway.DefaultSession.ReadBufferSize,
-				WriteQueueSize:      c.Gateway.DefaultSession.WriteQueueSize,
-				MaxInboundBytes:     c.Gateway.DefaultSession.MaxInboundBytes,
-				MaxOutboundBytes:    c.Gateway.DefaultSession.MaxOutboundBytes,
+				ReadBufferSize:      readBufferSize,
+				WriteQueueSize:      writeQueueSize,
+				MaxInboundBytes:     maxInboundBytes,
+				MaxOutboundBytes:    maxOutboundBytes,
 				IdleTimeout:         idleTimeout,
 				WriteTimeout:        writeTimeout,
-				CloseOnHandlerError: c.Gateway.DefaultSession.CloseOnHandlerError,
+				CloseOnHandlerError: closeOnHandlerError,
 			},
-			Listeners: defaultGatewayListeners(),
+			Listeners: listeners,
 		},
 	}
 
-	if c.API.ListenAddr != nil {
-		cfg.API.ListenAddr = *c.API.ListenAddr
-	}
-	if c.Gateway.Listeners != nil {
-		cfg.Gateway.Listeners = append([]gateway.ListenerOptions(nil), (*c.Gateway.Listeners)...)
-	}
-
-	for _, node := range c.Cluster.Nodes {
-		cfg.Cluster.Nodes = append(cfg.Cluster.Nodes, app.NodeConfigRef{
-			ID:   node.ID,
-			Addr: node.Addr,
-		})
-	}
-	for _, group := range c.Cluster.Groups {
-		cfg.Cluster.Groups = append(cfg.Cluster.Groups, app.GroupConfig{
-			ID:    group.ID,
-			Peers: append([]uint64(nil), group.Peers...),
-		})
+	if listenAddr := stringValue(v, "WK_API_LISTEN_ADDR"); listenAddr != "" {
+		cfg.API.ListenAddr = listenAddr
 	}
 
 	return cfg, nil
+}
+
+func missingDefaultConfigError(attemptedPaths []string, err error) error {
+	return fmt.Errorf(
+		"load config: no config file found in default paths %s: %w",
+		strings.Join(attemptedPaths, ", "),
+		err,
+	)
 }
 
 const defaultAPIListenAddr = "0.0.0.0:5001"
@@ -200,14 +228,120 @@ func defaultGatewayListeners() []gateway.ListenerOptions {
 	}
 }
 
-func parseDuration(field, value string) (time.Duration, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
+func parseListeners(v *viper.Viper) ([]gateway.ListenerOptions, error) {
+	raw := stringValue(v, "WK_GATEWAY_LISTENERS")
+	if raw == "" {
+		return defaultGatewayListeners(), nil
+	}
+
+	listeners, err := parseJSONValue[[]gateway.ListenerOptions](v, "WK_GATEWAY_LISTENERS")
+	if err != nil {
+		return nil, err
+	}
+	return listeners, nil
+}
+
+func parseJSONValue[T any](v *viper.Viper, key string) (T, error) {
+	var zero T
+
+	raw := stringValue(v, key)
+	if raw == "" {
+		return zero, nil
+	}
+
+	var value T
+	if err := v.UnmarshalKey(key, &value); err == nil {
+		return value, nil
+	}
+
+	if err := jsonUnmarshalString(raw, &value); err != nil {
+		return zero, fmt.Errorf("parse %s as JSON: %w", key, err)
+	}
+	return value, nil
+}
+
+func parseUint64(v *viper.Viper, key string) (uint64, error) {
+	raw := stringValue(v, key)
+	if raw == "" {
 		return 0, nil
 	}
-	d, err := time.ParseDuration(value)
+
+	value, err := strconv.ParseUint(raw, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("%s: %w", field, err)
+		return 0, fmt.Errorf("parse %s: %w", key, err)
 	}
-	return d, nil
+	return value, nil
+}
+
+func parseUint32(v *viper.Viper, key string) (uint32, error) {
+	raw := stringValue(v, key)
+	if raw == "" {
+		return 0, nil
+	}
+
+	value, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", key, err)
+	}
+	return uint32(value), nil
+}
+
+func parseInt(v *viper.Viper, key string) (int, error) {
+	raw := stringValue(v, key)
+	if raw == "" {
+		return 0, nil
+	}
+
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", key, err)
+	}
+	return value, nil
+}
+
+func parseBool(v *viper.Viper, key string) (bool, error) {
+	raw := stringValue(v, key)
+	if raw == "" {
+		return false, nil
+	}
+
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("parse %s: %w", key, err)
+	}
+	return value, nil
+}
+
+func parseOptionalBool(v *viper.Viper, key string) (*bool, error) {
+	raw := stringValue(v, key)
+	if raw == "" {
+		return nil, nil
+	}
+
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", key, err)
+	}
+	return &value, nil
+}
+
+func parseDuration(v *viper.Viper, key string) (time.Duration, error) {
+	raw := stringValue(v, key)
+	if raw == "" {
+		return 0, nil
+	}
+
+	value, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", key, err)
+	}
+	return value, nil
+}
+
+func stringValue(v *viper.Viper, key string) string {
+	return strings.TrimSpace(v.GetString(key))
+}
+
+func jsonUnmarshalString[T any](raw string, value *T) error {
+	return json.Unmarshal([]byte(raw), value)
 }
