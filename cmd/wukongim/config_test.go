@@ -68,6 +68,46 @@ func TestLoadConfigParsesJSONFileIntoAppConfig(t *testing.T) {
 	require.Equal(t, "127.0.0.1:8080", cfg.API.ListenAddr)
 }
 
+func TestLoadConfigDefaultsLegacyPortsWhenFieldsOmitted(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "node-1")
+	configPath := filepath.Join(t.TempDir(), "wukongim.json")
+
+	payload := map[string]any{
+		"node": map[string]any{
+			"id":      1,
+			"dataDir": dataDir,
+		},
+		"cluster": map[string]any{
+			"listenAddr": "127.0.0.1:7000",
+			"nodes": []map[string]any{
+				{"id": 1, "addr": "127.0.0.1:7000"},
+			},
+			"groups": []map[string]any{
+				{"id": 1, "peers": []uint64{1}},
+			},
+		},
+		"gateway": map[string]any{},
+		"api":     map[string]any{},
+	}
+
+	body, err := json.Marshal(payload)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, body, 0o644))
+
+	cfg, err := loadConfig(configPath)
+	require.NoError(t, err)
+	require.Equal(t, "0.0.0.0:5001", cfg.API.ListenAddr)
+	require.Len(t, cfg.Gateway.Listeners, 2)
+	require.Equal(t, "tcp-wkproto", cfg.Gateway.Listeners[0].Name)
+	require.Equal(t, "tcp", cfg.Gateway.Listeners[0].Network)
+	require.Equal(t, "0.0.0.0:5100", cfg.Gateway.Listeners[0].Address)
+	require.Equal(t, "wkproto", cfg.Gateway.Listeners[0].Protocol)
+	require.Equal(t, "ws-jsonrpc", cfg.Gateway.Listeners[1].Name)
+	require.Equal(t, "websocket", cfg.Gateway.Listeners[1].Network)
+	require.Equal(t, "0.0.0.0:5200", cfg.Gateway.Listeners[1].Address)
+	require.Equal(t, "jsonrpc", cfg.Gateway.Listeners[1].Protocol)
+}
+
 func TestLoadConfigRejectsMissingConfigPath(t *testing.T) {
 	_, err := loadConfig("")
 	require.ErrorContains(t, err, "config path")

@@ -49,7 +49,7 @@ func TestSendMessageMapsJSONToUsecaseCommand(t *testing.T) {
 	require.NoError(t, err)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/messages/send", bytes.NewReader(payload))
+	req := httptest.NewRequest(http.MethodPost, "/message/send", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 
 	srv.Engine().ServeHTTP(rec, req)
@@ -71,7 +71,7 @@ func TestSendMessagePropagatesHTTPRequestContext(t *testing.T) {
 
 	reqCtx := context.WithValue(context.Background(), ctxKey("request"), "api-send")
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/messages/send", bytes.NewBufferString(`{"sender_uid":"u1","channel_id":"u2","channel_type":1,"payload":"aGk="}`)).WithContext(reqCtx)
+	req := httptest.NewRequest(http.MethodPost, "/message/send", bytes.NewBufferString(`{"sender_uid":"u1","channel_id":"u2","channel_type":1,"payload":"aGk="}`)).WithContext(reqCtx)
 	req.Header.Set("Content-Type", "application/json")
 
 	srv.Engine().ServeHTTP(rec, req)
@@ -92,7 +92,7 @@ func TestSendMessageReturnsCanceledRequestContextError(t *testing.T) {
 	reqCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/messages/send", bytes.NewBufferString(`{"sender_uid":"u1","channel_id":"u2","channel_type":1,"payload":"aGk="}`)).WithContext(reqCtx)
+	req := httptest.NewRequest(http.MethodPost, "/message/send", bytes.NewBufferString(`{"sender_uid":"u1","channel_id":"u2","channel_type":1,"payload":"aGk="}`)).WithContext(reqCtx)
 	req.Header.Set("Content-Type", "application/json")
 
 	srv.Engine().ServeHTTP(rec, req)
@@ -107,7 +107,7 @@ func TestSendMessageRejectsInvalidBase64Payload(t *testing.T) {
 	srv := New(Options{})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/messages/send", bytes.NewBufferString(`{"sender_uid":"u1","channel_id":"u2","channel_type":1,"payload":"not-base64"}`))
+	req := httptest.NewRequest(http.MethodPost, "/message/send", bytes.NewBufferString(`{"sender_uid":"u1","channel_id":"u2","channel_type":1,"payload":"not-base64"}`))
 	req.Header.Set("Content-Type", "application/json")
 
 	srv.Engine().ServeHTTP(rec, req)
@@ -120,7 +120,7 @@ func TestSendMessageRejectsInvalidJSON(t *testing.T) {
 	srv := New(Options{})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/messages/send", bytes.NewBufferString(`{"sender_uid":`))
+	req := httptest.NewRequest(http.MethodPost, "/message/send", bytes.NewBufferString(`{"sender_uid":`))
 	req.Header.Set("Content-Type", "application/json")
 
 	srv.Engine().ServeHTTP(rec, req)
@@ -134,7 +134,7 @@ func TestSendMessageReturnsInternalServerErrorWhenUsecaseFails(t *testing.T) {
 	srv := New(Options{Messages: msgs})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/messages/send", bytes.NewBufferString(`{"sender_uid":"u1","channel_id":"u2","channel_type":1,"payload":"aGk="}`))
+	req := httptest.NewRequest(http.MethodPost, "/message/send", bytes.NewBufferString(`{"sender_uid":"u1","channel_id":"u2","channel_type":1,"payload":"aGk="}`))
 	req.Header.Set("Content-Type", "application/json")
 
 	srv.Engine().ServeHTTP(rec, req)
@@ -201,7 +201,7 @@ func TestSendMessageMapsSemanticErrorsToHTTPStatus(t *testing.T) {
 			})
 
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/api/messages/send", bytes.NewBufferString(`{"sender_uid":"u1","channel_id":"u2","channel_type":1,"payload":"aGk="}`))
+			req := httptest.NewRequest(http.MethodPost, "/message/send", bytes.NewBufferString(`{"sender_uid":"u1","channel_id":"u2","channel_type":1,"payload":"aGk="}`))
 			req.Header.Set("Content-Type", "application/json")
 
 			srv.Engine().ServeHTTP(rec, req)

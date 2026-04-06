@@ -9,6 +9,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/app"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
+	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
 )
 
 type wireConfig struct {
@@ -56,13 +57,13 @@ type wireGroupConfig struct {
 }
 
 type wireGatewayConfig struct {
-	TokenAuthOn    bool                      `json:"tokenAuthOn"`
-	DefaultSession wireSessionOptions        `json:"defaultSession"`
-	Listeners      []gateway.ListenerOptions `json:"listeners"`
+	TokenAuthOn    bool                       `json:"tokenAuthOn"`
+	DefaultSession wireSessionOptions         `json:"defaultSession"`
+	Listeners      *[]gateway.ListenerOptions `json:"listeners"`
 }
 
 type wireAPIConfig struct {
-	ListenAddr string `json:"listenAddr"`
+	ListenAddr *string `json:"listenAddr"`
 }
 
 type wireSessionOptions struct {
@@ -150,7 +151,7 @@ func (c wireConfig) toAppConfig() (app.Config, error) {
 			DataPlaneRPCTimeout: dataPlaneRPCTimeout,
 		},
 		API: app.APIConfig{
-			ListenAddr: c.API.ListenAddr,
+			ListenAddr: defaultAPIListenAddr,
 		},
 		Gateway: app.GatewayConfig{
 			TokenAuthOn: c.Gateway.TokenAuthOn,
@@ -163,8 +164,15 @@ func (c wireConfig) toAppConfig() (app.Config, error) {
 				WriteTimeout:        writeTimeout,
 				CloseOnHandlerError: c.Gateway.DefaultSession.CloseOnHandlerError,
 			},
-			Listeners: append([]gateway.ListenerOptions(nil), c.Gateway.Listeners...),
+			Listeners: defaultGatewayListeners(),
 		},
+	}
+
+	if c.API.ListenAddr != nil {
+		cfg.API.ListenAddr = *c.API.ListenAddr
+	}
+	if c.Gateway.Listeners != nil {
+		cfg.Gateway.Listeners = append([]gateway.ListenerOptions(nil), (*c.Gateway.Listeners)...)
 	}
 
 	for _, node := range c.Cluster.Nodes {
@@ -181,6 +189,15 @@ func (c wireConfig) toAppConfig() (app.Config, error) {
 	}
 
 	return cfg, nil
+}
+
+const defaultAPIListenAddr = "0.0.0.0:5001"
+
+func defaultGatewayListeners() []gateway.ListenerOptions {
+	return []gateway.ListenerOptions{
+		binding.TCPWKProto("tcp-wkproto", "0.0.0.0:5100"),
+		binding.WSJSONRPC("ws-jsonrpc", "0.0.0.0:5200"),
+	}
 }
 
 func parseDuration(field, value string) (time.Duration, error) {

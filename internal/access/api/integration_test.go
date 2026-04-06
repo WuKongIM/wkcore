@@ -59,7 +59,7 @@ func TestAPIServerSendMessageWithRealMessageApp(t *testing.T) {
 	payload, err := json.Marshal(body)
 	require.NoError(t, err)
 
-	resp, err := http.Post("http://"+srv.Addr()+"/api/messages/send", "application/json", bytes.NewReader(payload))
+	resp, err := http.Post("http://"+srv.Addr()+"/message/send", "application/json", bytes.NewReader(payload))
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
