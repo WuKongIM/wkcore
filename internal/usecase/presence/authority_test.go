@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
+	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/stretchr/testify/require"
 )
@@ -108,9 +110,11 @@ func TestAuthorityRegisterSlaveOnlyReplacesSameDeviceID(t *testing.T) {
 func TestAuthorityHeartbeatDetectsDigestMismatchWhenCountMatches(t *testing.T) {
 	app := New(Options{})
 
+	route := testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster))
+	route.Listener = "tcp"
 	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
-		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+		Route:   route,
 	})
 	require.NoError(t, err)
 
@@ -127,6 +131,48 @@ func TestAuthorityHeartbeatDetectsDigestMismatchWhenCountMatches(t *testing.T) {
 	require.True(t, result.Mismatch)
 	require.Equal(t, 1, result.RouteCount)
 	require.NotEqual(t, uint64(999), result.RouteDigest)
+}
+
+func TestAuthorityHeartbeatMatchesGatewayGroupDigest(t *testing.T) {
+	app := New(Options{})
+	reg := online.NewRegistry()
+
+	require.NoError(t, reg.Register(online.OnlineConn{
+		SessionID:   100,
+		UID:         "u1",
+		DeviceID:    "device-a",
+		DeviceFlag:  wkframe.APP,
+		DeviceLevel: wkframe.DeviceLevelMaster,
+		GroupID:     1,
+		State:       online.LocalRouteStateActive,
+		Listener:    "tcp",
+		Session:     session.New(session.Config{ID: 100, Listener: "tcp"}),
+	}))
+
+	groups := reg.ActiveGroups()
+	require.Len(t, groups, 1)
+
+	route := testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster))
+	route.Listener = "tcp"
+	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
+		GroupID: 1,
+		Route:   route,
+	})
+	require.NoError(t, err)
+
+	result, err := app.HeartbeatAuthoritative(context.Background(), HeartbeatAuthoritativeCommand{
+		Lease: GatewayLease{
+			GroupID:        1,
+			GatewayNodeID:  1,
+			GatewayBootID:  10,
+			RouteCount:     groups[0].Count,
+			RouteDigest:    groups[0].Digest,
+			LeaseUntilUnix: time.Unix(200, 0).Add(30 * time.Second).Unix(),
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, result.Mismatch)
+	require.Equal(t, groups[0].Digest, result.RouteDigest)
 }
 
 func TestAuthorityReplayReplacesOwnerSetWithActiveRoutesOnly(t *testing.T) {
@@ -168,6 +214,42 @@ func TestAuthorityReplayReplacesOwnerSetWithActiveRoutesOnly(t *testing.T) {
 
 	endpointsU2 := app.EndpointsByUID(context.Background(), "u2")
 	require.Empty(t, endpointsU2)
+}
+
+func TestAuthorityReplayDoesNotResurrectSupersededMasterRoute(t *testing.T) {
+	now := time.Unix(200, 0)
+	app := New(Options{
+		Now: func() time.Time { return now },
+	})
+
+	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
+		GroupID: 1,
+		Route:   testRoute("u1", 1, 10, 100, "old-device", uint8(wkframe.DeviceLevelMaster)),
+	})
+	require.NoError(t, err)
+
+	_, err = app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
+		GroupID: 1,
+		Route:   testRoute("u1", 2, 20, 200, "new-device", uint8(wkframe.DeviceLevelMaster)),
+	})
+	require.NoError(t, err)
+
+	err = app.ReplayAuthoritative(context.Background(), ReplayAuthoritativeCommand{
+		Lease: GatewayLease{
+			GroupID:        1,
+			GatewayNodeID:  1,
+			GatewayBootID:  10,
+			LeaseUntilUnix: now.Add(30 * time.Second).Unix(),
+		},
+		Routes: []Route{
+			testRoute("u1", 1, 10, 100, "old-device", uint8(wkframe.DeviceLevelMaster)),
+		},
+	})
+	require.NoError(t, err)
+
+	endpoints := app.EndpointsByUID(context.Background(), "u1")
+	require.Len(t, endpoints, 1)
+	require.Equal(t, uint64(200), endpoints[0].SessionID)
 }
 
 func TestAuthorityEndpointsByUIDReturnsCurrentRoutes(t *testing.T) {
@@ -243,6 +325,88 @@ func TestAuthorityHeartbeatExplicitLeaseKeepsRouteAlive(t *testing.T) {
 	endpoints := app.EndpointsByUID(context.Background(), "u1")
 	require.Len(t, endpoints, 1)
 	require.Equal(t, uint64(100), endpoints[0].SessionID)
+}
+
+func TestAuthorityHeartbeatStaleLeaseDoesNotShortenDeadline(t *testing.T) {
+	now := time.Unix(200, 0)
+	app := New(Options{
+		Now: func() time.Time { return now },
+	})
+
+	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
+		GroupID: 1,
+		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+	})
+	require.NoError(t, err)
+
+	_, err = app.HeartbeatAuthoritative(context.Background(), HeartbeatAuthoritativeCommand{
+		Lease: GatewayLease{
+			GroupID:        1,
+			GatewayNodeID:  1,
+			GatewayBootID:  10,
+			RouteCount:     1,
+			RouteDigest:    999,
+			LeaseUntilUnix: now.Add(90 * time.Second).Unix(),
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = app.HeartbeatAuthoritative(context.Background(), HeartbeatAuthoritativeCommand{
+		Lease: GatewayLease{
+			GroupID:        1,
+			GatewayNodeID:  1,
+			GatewayBootID:  10,
+			RouteCount:     1,
+			RouteDigest:    999,
+			LeaseUntilUnix: now.Add(5 * time.Second).Unix(),
+		},
+	})
+	require.NoError(t, err)
+
+	now = now.Add(31 * time.Second)
+	require.Len(t, app.EndpointsByUID(context.Background(), "u1"), 1)
+
+	now = time.Unix(291, 0)
+	require.Empty(t, app.EndpointsByUID(context.Background(), "u1"))
+}
+
+func TestAuthorityReplayStaleLeaseDoesNotShortenDeadline(t *testing.T) {
+	now := time.Unix(200, 0)
+	app := New(Options{
+		Now: func() time.Time { return now },
+	})
+
+	err := app.ReplayAuthoritative(context.Background(), ReplayAuthoritativeCommand{
+		Lease: GatewayLease{
+			GroupID:        1,
+			GatewayNodeID:  1,
+			GatewayBootID:  10,
+			LeaseUntilUnix: now.Add(90 * time.Second).Unix(),
+		},
+		Routes: []Route{
+			testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+		},
+	})
+	require.NoError(t, err)
+
+	err = app.ReplayAuthoritative(context.Background(), ReplayAuthoritativeCommand{
+		Lease: GatewayLease{
+			GroupID:        1,
+			GatewayNodeID:  1,
+			GatewayBootID:  10,
+			LeaseUntilUnix: now.Add(5 * time.Second).Unix(),
+		},
+		Routes: []Route{
+			testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+		},
+	})
+	require.NoError(t, err)
+
+	now = now.Add(31 * time.Second)
+	require.Len(t, app.EndpointsByUID(context.Background(), "u1"), 1)
+
+	now = time.Unix(291, 0)
+	require.Empty(t, app.EndpointsByUID(context.Background(), "u1"))
 }
 
 func TestAuthorityEndpointsByUIDEvictsExpiredLeaseRoutes(t *testing.T) {

@@ -1,6 +1,7 @@
 package presence
 
 import (
+	"encoding/binary"
 	"hash"
 	"hash/fnv"
 	"sort"
@@ -116,6 +117,7 @@ func (d *directory) heartbeat(lease GatewayLease, nowUnix int64) HeartbeatAuthor
 
 	lease.RouteCount = count
 	lease.RouteDigest = digest
+	lease.LeaseUntilUnix = keepLaterLeaseUntil(d.leases[k].LeaseUntilUnix, lease.LeaseUntilUnix)
 	d.leases[k] = lease
 
 	return HeartbeatAuthoritativeResult{
@@ -145,6 +147,9 @@ func (d *directory) replay(lease GatewayLease, routes []Route, nowUnix int64) {
 
 	nextOwnerSet := make(map[routeKey]Route, len(routes))
 	for _, route := range routes {
+		if d.replayConflictsLocked(route) {
+			continue
+		}
 		rk := makeRouteKey(route)
 		nextOwnerSet[rk] = route
 		if d.byUID[route.UID] == nil {
@@ -156,6 +161,7 @@ func (d *directory) replay(lease GatewayLease, routes []Route, nowUnix int64) {
 	d.ownerSet[k] = nextOwnerSet
 	lease.RouteCount = len(nextOwnerSet)
 	lease.RouteDigest = digestRoutes(nextOwnerSet)
+	lease.LeaseUntilUnix = keepLaterLeaseUntil(d.leases[k].LeaseUntilUnix, lease.LeaseUntilUnix)
 	d.leases[k] = lease
 }
 
@@ -226,6 +232,15 @@ func conflicts(incoming, existing Route) bool {
 	}
 }
 
+func (d *directory) replayConflictsLocked(route Route) bool {
+	for _, existing := range d.byUID[route.UID] {
+		if conflicts(route, existing) {
+			return true
+		}
+	}
+	return false
+}
+
 func actionForReplacement(incoming, existing Route) RouteAction {
 	kind := "close"
 	if incoming.DeviceLevel == uint8(wkframe.DeviceLevelMaster) && incoming.DeviceID != existing.DeviceID {
@@ -282,49 +297,40 @@ func deleteOwnerRoute(ownerSet map[leaseKey]map[routeKey]Route, leases map[lease
 }
 
 func digestRoutes(routes map[routeKey]Route) uint64 {
-	if len(routes) == 0 {
-		return 0
+	var digest uint64
+	for _, route := range routes {
+		digest ^= routeFingerprint(route)
 	}
+	return digest
+}
 
-	keys := make([]routeKey, 0, len(routes))
-	for key := range routes {
-		keys = append(keys, key)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].nodeID != keys[j].nodeID {
-			return keys[i].nodeID < keys[j].nodeID
-		}
-		if keys[i].bootID != keys[j].bootID {
-			return keys[i].bootID < keys[j].bootID
-		}
-		return keys[i].sessionID < keys[j].sessionID
-	})
-
+// Keep this fingerprint aligned with online.GroupSnapshot.Digest. The owner set
+// already scopes routes by gateway node/boot, so those fields are excluded.
+func routeFingerprint(route Route) uint64 {
 	h := fnv.New64a()
-	for _, key := range keys {
-		route := routes[key]
-		writeUint64(h, route.NodeID)
-		writeUint64(h, route.BootID)
-		writeUint64(h, route.SessionID)
-		_, _ = h.Write([]byte(route.UID))
-		_, _ = h.Write([]byte{0})
-		_, _ = h.Write([]byte(route.DeviceID))
-		_, _ = h.Write([]byte{route.DeviceFlag, route.DeviceLevel, 0})
-		_, _ = h.Write([]byte(route.Listener))
-		_, _ = h.Write([]byte{0})
-	}
+	writeUint64(h, route.SessionID)
+	writeString(h, route.UID)
+	writeString(h, route.DeviceID)
+	writeUint64(h, uint64(route.DeviceFlag))
+	writeUint64(h, uint64(route.DeviceLevel))
+	writeString(h, route.Listener)
 	return h.Sum64()
 }
 
 func writeUint64(h hash.Hash64, value uint64) {
 	var buf [8]byte
-	buf[0] = byte(value)
-	buf[1] = byte(value >> 8)
-	buf[2] = byte(value >> 16)
-	buf[3] = byte(value >> 24)
-	buf[4] = byte(value >> 32)
-	buf[5] = byte(value >> 40)
-	buf[6] = byte(value >> 48)
-	buf[7] = byte(value >> 56)
+	binary.BigEndian.PutUint64(buf[:], value)
 	_, _ = h.Write(buf[:])
+}
+
+func writeString(h hash.Hash64, value string) {
+	_, _ = h.Write([]byte(value))
+	_, _ = h.Write([]byte{0})
+}
+
+func keepLaterLeaseUntil(current, next int64) int64 {
+	if next < current {
+		return current
+	}
+	return next
 }

@@ -3,11 +3,11 @@ package presence
 import "context"
 
 type authoritativeDirectory interface {
-	register(groupID uint64, route Route) []RouteAction
-	unregister(groupID uint64, route Route)
-	heartbeat(lease GatewayLease) HeartbeatAuthoritativeResult
-	replay(lease GatewayLease, routes []Route)
-	endpointsByUID(uid string) []Route
+	register(groupID uint64, route Route, nowUnix int64) []RouteAction
+	unregister(groupID uint64, route Route, nowUnix int64)
+	heartbeat(lease GatewayLease, nowUnix int64) HeartbeatAuthoritativeResult
+	replay(lease GatewayLease, routes []Route, nowUnix int64)
+	endpointsByUID(uid string, nowUnix int64) []Route
 }
 
 type Authoritative interface {
