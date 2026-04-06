@@ -21,3 +21,18 @@ func TestAuthenticatorStoresNegotiatedProtocolVersion(t *testing.T) {
 		t.Fatalf("protocol version = %#v, want 5", result.SessionValues[gateway.SessionValueProtocolVersion])
 	}
 }
+
+func TestAuthenticatorStoresDeviceIDSessionValue(t *testing.T) {
+	auth := gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{})
+
+	result, err := auth.Authenticate(nil, &wkframe.ConnectPacket{
+		UID:      "u1",
+		DeviceID: "d-1",
+	})
+	if err != nil {
+		t.Fatalf("Authenticate() error = %v", err)
+	}
+	if result.SessionValues[gateway.SessionValueDeviceID] != "d-1" {
+		t.Fatalf("device id = %#v, want %q", result.SessionValues[gateway.SessionValueDeviceID], "d-1")
+	}
+}

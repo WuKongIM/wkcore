@@ -13,6 +13,7 @@ type AuthResult = gatewaytypes.AuthResult
 
 const (
 	SessionValueUID             = gatewaytypes.SessionValueUID
+	SessionValueDeviceID        = gatewaytypes.SessionValueDeviceID
 	SessionValueDeviceFlag      = gatewaytypes.SessionValueDeviceFlag
 	SessionValueDeviceLevel     = gatewaytypes.SessionValueDeviceLevel
 	SessionValueProtocolVersion = gatewaytypes.SessionValueProtocolVersion
@@ -88,6 +89,7 @@ func NewWKProtoAuthenticator(opts WKProtoAuthOptions) Authenticator {
 			Connack: connack,
 			SessionValues: map[string]any{
 				SessionValueUID:             connect.UID,
+				SessionValueDeviceID:        connect.DeviceID,
 				SessionValueDeviceFlag:      connect.DeviceFlag,
 				SessionValueDeviceLevel:     deviceLevel,
 				SessionValueProtocolVersion: serverVersion,
