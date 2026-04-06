@@ -19,8 +19,17 @@
 ## 常用命令
 
 - 全量测试：`go test ./...`
-- 运行主程序：`go run ./cmd/wukongim -config <config.json>`
+- 运行主程序：`go run ./cmd/wukongim`
+- 显式指定配置文件：`go run ./cmd/wukongim -config ./wukongim.conf`
 - 定向测试：`go test ./internal/... ./pkg/...`
+
+## 配置约定
+
+- 主配置文件使用 `wukongim.conf`，格式为 `KEY=value`。
+- 文件键名与环境变量键名统一，均使用 `WK_` 前缀。
+- 不传 `-config` 时，程序按 `./wukongim.conf`、`./conf/wukongim.conf`、`/etc/wukongim/wukongim.conf` 顺序查找。
+- 环境变量优先级高于配置文件；列表字段使用 JSON 字符串整体覆盖。
+- 仓库根目录提供 `wukongim.conf.example` 作为单节点集群示例。
 
 ## 目录结构
 

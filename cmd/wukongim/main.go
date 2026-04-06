@@ -18,7 +18,7 @@ func main() {
 }
 
 func run() error {
-	configPath := flag.String("config", "", "path to JSON config file")
+	configPath := registerConfigFlag(flag.CommandLine)
 	flag.Parse()
 
 	cfg, err := loadConfig(*configPath)
@@ -42,6 +42,10 @@ func run() error {
 
 	waitForSignal()
 	return nil
+}
+
+func registerConfigFlag(fs *flag.FlagSet) *string {
+	return fs.String("config", "", "path to wukongim.conf file")
 }
 
 func waitForSignal() {
