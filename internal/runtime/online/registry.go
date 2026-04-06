@@ -13,14 +13,20 @@ type MemoryRegistry struct {
 	mu        sync.RWMutex
 	bySession map[uint64]OnlineConn
 	byUID     map[string]map[uint64]OnlineConn
-	byGroup   map[uint64]map[uint64]OnlineConn
+	byGroup   map[uint64]*groupBucket
+}
+
+type groupBucket struct {
+	conns  map[uint64]OnlineConn
+	count  int
+	digest uint64
 }
 
 func NewRegistry() *MemoryRegistry {
 	return &MemoryRegistry{
 		bySession: make(map[uint64]OnlineConn),
 		byUID:     make(map[string]map[uint64]OnlineConn),
-		byGroup:   make(map[uint64]map[uint64]OnlineConn),
+		byGroup:   make(map[uint64]*groupBucket),
 	}
 }
 
@@ -42,7 +48,7 @@ func (r *MemoryRegistry) Register(conn OnlineConn) error {
 		r.byUID = make(map[string]map[uint64]OnlineConn)
 	}
 	if r.byGroup == nil {
-		r.byGroup = make(map[uint64]map[uint64]OnlineConn)
+		r.byGroup = make(map[uint64]*groupBucket)
 	}
 
 	if existing, ok := r.bySession[conn.SessionID]; ok {
@@ -53,9 +59,6 @@ func (r *MemoryRegistry) Register(conn OnlineConn) error {
 		conn.State = LocalRouteStateActive
 	}
 	r.bySession[conn.SessionID] = conn
-	if _, ok := r.byGroup[conn.GroupID]; !ok {
-		r.byGroup[conn.GroupID] = make(map[uint64]OnlineConn)
-	}
 	if conn.State != LocalRouteStateClosing {
 		r.addActiveIndexes(conn)
 	}
@@ -144,15 +147,13 @@ func (r *MemoryRegistry) ActiveConnectionsByGroup(groupID uint64) []OnlineConn {
 	defer r.mu.RUnlock()
 
 	conns := r.byGroup[groupID]
-	if len(conns) == 0 {
+	if conns == nil || conns.count == 0 {
 		return nil
 	}
 
-	out := make([]OnlineConn, 0, len(conns))
-	for _, conn := range conns {
-		if conn.State != LocalRouteStateClosing {
-			out = append(out, conn)
-		}
+	out := make([]OnlineConn, 0, conns.count)
+	for _, conn := range conns.conns {
+		out = append(out, conn)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].SessionID < out[j].SessionID
@@ -169,19 +170,15 @@ func (r *MemoryRegistry) ActiveGroups() []GroupSnapshot {
 	defer r.mu.RUnlock()
 
 	out := make([]GroupSnapshot, 0, len(r.byGroup))
-	for groupID, conns := range r.byGroup {
-		snapshot := GroupSnapshot{GroupID: groupID}
-		ordered := make([]OnlineConn, 0, len(conns))
-		for _, conn := range conns {
-			if conn.State != LocalRouteStateClosing {
-				ordered = append(ordered, conn)
-			}
+	for groupID, bucket := range r.byGroup {
+		if bucket == nil || bucket.count == 0 {
+			continue
 		}
-		sort.Slice(ordered, func(i, j int) bool {
-			return ordered[i].SessionID < ordered[j].SessionID
-		})
-		snapshot.Count = len(ordered)
-		snapshot.Digest = digestConnections(ordered)
+		snapshot := GroupSnapshot{
+			GroupID: groupID,
+			Count:   bucket.count,
+			Digest:  bucket.digest,
+		}
 		out = append(out, snapshot)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -196,10 +193,17 @@ func (r *MemoryRegistry) addActiveIndexes(conn OnlineConn) {
 	}
 	r.byUID[conn.UID][conn.SessionID] = conn
 
-	if _, ok := r.byGroup[conn.GroupID]; !ok {
-		r.byGroup[conn.GroupID] = make(map[uint64]OnlineConn)
+	bucket, ok := r.byGroup[conn.GroupID]
+	if !ok || bucket == nil {
+		bucket = &groupBucket{conns: make(map[uint64]OnlineConn)}
+		r.byGroup[conn.GroupID] = bucket
 	}
-	r.byGroup[conn.GroupID][conn.SessionID] = conn
+	if bucket.conns == nil {
+		bucket.conns = make(map[uint64]OnlineConn)
+	}
+	bucket.conns[conn.SessionID] = conn
+	bucket.count++
+	bucket.digest ^= routeFingerprint(conn)
 }
 
 func (r *MemoryRegistry) removeActiveIndexes(conn OnlineConn) {
@@ -209,21 +213,26 @@ func (r *MemoryRegistry) removeActiveIndexes(conn OnlineConn) {
 			delete(r.byUID, conn.UID)
 		}
 	}
-	if sessions, ok := r.byGroup[conn.GroupID]; ok {
-		delete(sessions, conn.SessionID)
+	if bucket, ok := r.byGroup[conn.GroupID]; ok && bucket != nil {
+		if _, exists := bucket.conns[conn.SessionID]; exists {
+			delete(bucket.conns, conn.SessionID)
+			bucket.count--
+			bucket.digest ^= routeFingerprint(conn)
+			if bucket.count == 0 {
+				delete(r.byGroup, conn.GroupID)
+			}
+		}
 	}
 }
 
-func digestConnections(conns []OnlineConn) uint64 {
+func routeFingerprint(conn OnlineConn) uint64 {
 	h := fnv.New64a()
-	for _, conn := range conns {
-		writeUint64(h, conn.SessionID)
-		writeString(h, conn.UID)
-		writeString(h, conn.DeviceID)
-		writeUint64(h, uint64(conn.DeviceFlag))
-		writeUint64(h, uint64(conn.DeviceLevel))
-		writeString(h, conn.Listener)
-	}
+	writeUint64(h, conn.SessionID)
+	writeString(h, conn.UID)
+	writeString(h, conn.DeviceID)
+	writeUint64(h, uint64(conn.DeviceFlag))
+	writeUint64(h, uint64(conn.DeviceLevel))
+	writeString(h, conn.Listener)
 	return h.Sum64()
 }
 

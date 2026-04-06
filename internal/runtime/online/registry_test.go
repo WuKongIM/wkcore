@@ -171,10 +171,44 @@ func TestRegistryMarkClosingRemovesRouteFromUIDDeliveryAndBucketDigest(t *testin
 	require.Equal(t, LocalRouteStateClosing, conn.State)
 	require.Empty(t, reg.ConnectionsByUID("u1"))
 	require.NotEmpty(t, before)
+	require.Empty(t, reg.ActiveGroups())
+}
+
+func TestRegistryMarkClosingUpdatesOnlyOccupiedGroupSnapshots(t *testing.T) {
+	reg := NewRegistry()
+	require.NoError(t, reg.Register(OnlineConn{
+		SessionID:   11,
+		UID:         "u1",
+		DeviceID:    "d1",
+		GroupID:     1,
+		State:       LocalRouteStateActive,
+		DeviceFlag:  wkframe.APP,
+		DeviceLevel: wkframe.DeviceLevelMaster,
+		Session:     session.New(session.Config{ID: 11, Listener: "tcp"}),
+	}))
+	require.NoError(t, reg.Register(OnlineConn{
+		SessionID:   12,
+		UID:         "u1",
+		DeviceID:    "d2",
+		GroupID:     1,
+		State:       LocalRouteStateActive,
+		DeviceFlag:  wkframe.WEB,
+		DeviceLevel: wkframe.DeviceLevelSlave,
+		Session:     session.New(session.Config{ID: 12, Listener: "ws"}),
+	}))
+
+	before := reg.ActiveGroups()
+	require.Len(t, before, 1)
+	require.Equal(t, 2, before[0].Count)
+
+	conn, ok := reg.MarkClosing(11)
+	require.True(t, ok)
+	require.Equal(t, LocalRouteStateClosing, conn.State)
+
 	after := reg.ActiveGroups()
 	require.Len(t, after, 1)
 	require.Equal(t, uint64(1), after[0].GroupID)
-	require.Zero(t, after[0].Count)
+	require.Equal(t, 1, after[0].Count)
 	require.NotEqual(t, before[0].Digest, after[0].Digest)
 }
 
