@@ -8,8 +8,10 @@ import (
 	accessgateway "github.com/WuKongIM/WuKongIM/internal/access/gateway"
 	accessnode "github.com/WuKongIM/WuKongIM/internal/access/node"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
+	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/messageid"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
+	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	userusecase "github.com/WuKongIM/WuKongIM/internal/usecase/user"
@@ -140,20 +142,29 @@ func build(cfg Config) (_ *App, err error) {
 		GatewayBootID: app.gatewayBootID,
 	})
 	app.presenceWorker = newPresenceWorker(app.presenceApp, 0)
-	app.messageApp = message.New(message.Options{
-		IdentityStore: app.store,
-		ChannelStore:  app.store,
-		Cluster:       app.channelLog,
-		MetaRefresher: app.channelMetaSync,
-		Online:        onlineRegistry,
-		Delivery:      online.LocalDelivery{},
-		Recipients:    messageRecipientDirectory{authority: authorityClient},
-		RemoteDelivery: messageRemoteDelivery{
-			cluster: app.cluster,
-			client:  app.nodeClient,
+	app.deliveryRuntime = deliveryruntime.NewManager(deliveryruntime.Config{
+		Resolver: localDeliveryResolver{
+			authority: app.presenceApp,
 		},
-		LocalNodeID: cfg.Node.ID,
-		LocalBootID: app.gatewayBootID,
+		Push: localDeliveryPush{
+			online:        onlineRegistry,
+			localNodeID:   cfg.Node.ID,
+			gatewayBootID: app.gatewayBootID,
+			now:           time.Now,
+		},
+	})
+	app.deliveryApp = deliveryusecase.New(deliveryusecase.Options{
+		Runtime: app.deliveryRuntime,
+	})
+	app.messageApp = message.New(message.Options{
+		IdentityStore:       app.store,
+		ChannelStore:        app.store,
+		Cluster:             app.channelLog,
+		MetaRefresher:       app.channelMetaSync,
+		Online:              onlineRegistry,
+		CommittedDispatcher: asyncCommittedDispatcher{delivery: app.deliveryApp},
+		DeliveryAck:         app.deliveryApp,
+		DeliveryOffline:     app.deliveryApp,
 	})
 	userApp := userusecase.New(userusecase.Options{
 		Users:   app.store,

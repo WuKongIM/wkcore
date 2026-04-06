@@ -109,3 +109,11 @@ func (m *Manager) actorCount() int {
 	}
 	return total
 }
+
+func (m *Manager) HasAckBinding(sessionID, messageID uint64) bool {
+	if m == nil {
+		return false
+	}
+	_, ok := m.ackIdx.Lookup(sessionID, messageID)
+	return ok
+}
