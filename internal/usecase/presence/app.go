@@ -1,22 +1,82 @@
 package presence
 
-import "time"
+import (
+	"errors"
+	"time"
+
+	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
+)
+
+var (
+	ErrRouterRequired               = errors.New("usecase/presence: router required")
+	ErrSessionRequired              = errors.New("usecase/presence: session required")
+	ErrRemoteActionDispatchRequired = errors.New("usecase/presence: remote action dispatcher required")
+)
 
 type Options struct {
-	Now func() time.Time
+	LocalNodeID      uint64
+	GatewayBootID    uint64
+	Online           online.Registry
+	Router           Router
+	AuthorityClient  Authoritative
+	ActionDispatcher ActionDispatcher
+	AfterFunc        func(time.Duration, func())
+	LeaseTTL         time.Duration
+	CloseDelay       time.Duration
+	Now              func() time.Time
 }
 
 type App struct {
-	dir *directory
-	now func() time.Time
+	dir           *directory
+	now           func() time.Time
+	online        online.Registry
+	router        Router
+	authority     Authoritative
+	actions       ActionDispatcher
+	afterFunc     func(time.Duration, func())
+	localNodeID   uint64
+	gatewayBootID uint64
+	leaseTTL      time.Duration
+	closeDelay    time.Duration
 }
 
 func New(opts Options) *App {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	return &App{
-		dir: newDirectory(),
-		now: opts.Now,
+	if opts.Online == nil {
+		opts.Online = online.NewRegistry()
 	}
+	if opts.AfterFunc == nil {
+		opts.AfterFunc = func(d time.Duration, fn func()) { time.AfterFunc(d, fn) }
+	}
+	if opts.LeaseTTL <= 0 {
+		opts.LeaseTTL = defaultLeaseTTL
+	}
+	if opts.CloseDelay <= 0 {
+		opts.CloseDelay = defaultRouteCloseDelay
+	}
+
+	app := &App{
+		dir:           newDirectory(),
+		now:           opts.Now,
+		online:        opts.Online,
+		router:        opts.Router,
+		afterFunc:     opts.AfterFunc,
+		localNodeID:   opts.LocalNodeID,
+		gatewayBootID: opts.GatewayBootID,
+		leaseTTL:      opts.LeaseTTL,
+		closeDelay:    opts.CloseDelay,
+	}
+	if opts.AuthorityClient != nil {
+		app.authority = opts.AuthorityClient
+	} else {
+		app.authority = app
+	}
+	if opts.ActionDispatcher != nil {
+		app.actions = opts.ActionDispatcher
+	} else {
+		app.actions = localActionDispatcher{app: app}
+	}
+	return app
 }

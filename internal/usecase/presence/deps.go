@@ -2,6 +2,14 @@ package presence
 
 import "context"
 
+type Router interface {
+	SlotForKey(key string) uint64
+}
+
+type ActionDispatcher interface {
+	ApplyRouteAction(ctx context.Context, action RouteAction) error
+}
+
 type authoritativeDirectory interface {
 	register(groupID uint64, route Route, nowUnix int64) []RouteAction
 	unregister(groupID uint64, route Route, nowUnix int64)

@@ -1,5 +1,12 @@
 package presence
 
+import (
+	"time"
+
+	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+)
+
 type Route struct {
 	UID         string
 	NodeID      uint64
@@ -57,4 +64,19 @@ type HeartbeatAuthoritativeResult struct {
 type ReplayAuthoritativeCommand struct {
 	Lease  GatewayLease
 	Routes []Route
+}
+
+type ActivateCommand struct {
+	UID         string
+	DeviceID    string
+	DeviceFlag  wkframe.DeviceFlag
+	DeviceLevel wkframe.DeviceLevel
+	Listener    string
+	ConnectedAt time.Time
+	Session     session.Session
+}
+
+type DeactivateCommand struct {
+	UID       string
+	SessionID uint64
 }
