@@ -135,26 +135,36 @@ func build(cfg Config) (_ *App, err error) {
 		ActionDispatcher: authorityClient,
 	})
 	authorityClient.local = app.presenceApp
-	app.nodeAccess = accessnode.New(accessnode.Options{
-		Cluster:       app.cluster,
-		Presence:      app.presenceApp,
-		Online:        onlineRegistry,
-		GatewayBootID: app.gatewayBootID,
-	})
 	app.presenceWorker = newPresenceWorker(app.presenceApp, 0)
+	app.deliveryAcks = deliveryruntime.NewAckIndex()
 	app.deliveryRuntime = deliveryruntime.NewManager(deliveryruntime.Config{
 		Resolver: localDeliveryResolver{
-			authority: app.presenceApp,
+			authority: authorityClient,
 		},
-		Push: localDeliveryPush{
-			online:        onlineRegistry,
-			localNodeID:   cfg.Node.ID,
-			gatewayBootID: app.gatewayBootID,
-			now:           time.Now,
+		Push: distributedDeliveryPush{
+			localNodeID: cfg.Node.ID,
+			local: localDeliveryPush{
+				online:        onlineRegistry,
+				localNodeID:   cfg.Node.ID,
+				gatewayBootID: app.gatewayBootID,
+				now:           time.Now,
+			},
+			client: app.nodeClient,
 		},
 	})
 	app.deliveryApp = deliveryusecase.New(deliveryusecase.Options{
 		Runtime: app.deliveryRuntime,
+	})
+	app.nodeAccess = accessnode.New(accessnode.Options{
+		Cluster:          app.cluster,
+		Presence:         app.presenceApp,
+		Online:           onlineRegistry,
+		GatewayBootID:    app.gatewayBootID,
+		LocalNodeID:      cfg.Node.ID,
+		DeliverySubmit:   app.deliveryApp,
+		DeliveryAck:      app.deliveryApp,
+		DeliveryOffline:  app.deliveryApp,
+		DeliveryAckIndex: app.deliveryAcks,
 	})
 	app.messageApp = message.New(message.Options{
 		IdentityStore:       app.store,
@@ -162,9 +172,24 @@ func build(cfg Config) (_ *App, err error) {
 		Cluster:             app.channelLog,
 		MetaRefresher:       app.channelMetaSync,
 		Online:              onlineRegistry,
-		CommittedDispatcher: asyncCommittedDispatcher{delivery: app.deliveryApp},
-		DeliveryAck:         app.deliveryApp,
-		DeliveryOffline:     app.deliveryApp,
+		CommittedDispatcher: asyncCommittedDispatcher{
+			localNodeID: cfg.Node.ID,
+			channelLog:  app.channelLog,
+			delivery:    app.deliveryApp,
+			nodeClient:  app.nodeClient,
+		},
+		DeliveryAck: ackRouting{
+			localNodeID: cfg.Node.ID,
+			local:       app.deliveryApp,
+			remoteAcks:  app.deliveryAcks,
+			nodeClient:  app.nodeClient,
+		},
+		DeliveryOffline: offlineRouting{
+			localNodeID: cfg.Node.ID,
+			local:       app.deliveryApp,
+			remoteAcks:  app.deliveryAcks,
+			nodeClient:  app.nodeClient,
+		},
 	})
 	userApp := userusecase.New(userusecase.Options{
 		Users:   app.store,

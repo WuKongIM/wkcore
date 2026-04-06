@@ -2,6 +2,7 @@ package node
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +34,13 @@ func mustDecodeDeliveryResponse(t *testing.T, body []byte) deliveryResponse {
 	return resp
 }
 
+func mustDecodeDeliveryPushResponse(t *testing.T, body []byte) deliveryPushResponse {
+	t.Helper()
+	resp, err := decodeDeliveryPushResponse(body)
+	require.NoError(t, err)
+	return resp
+}
+
 func testOnlineConn(sessionID uint64, uid string, groupID uint64) online.OnlineConn {
 	return online.OnlineConn{
 		SessionID:   sessionID,
@@ -46,4 +54,45 @@ func testOnlineConn(sessionID uint64, uid string, groupID uint64) online.OnlineC
 		ConnectedAt: time.Unix(200, 0),
 		Session:     session.New(session.Config{ID: sessionID, Listener: "tcp"}),
 	}
+}
+
+type recordingSession struct {
+	id       uint64
+	listener string
+
+	mu     sync.Mutex
+	frames []wkframe.Frame
+}
+
+func newRecordingSession(id uint64, listener string) *recordingSession {
+	return &recordingSession{id: id, listener: listener}
+}
+
+func (s *recordingSession) ID() uint64 { return s.id }
+
+func (s *recordingSession) Listener() string { return s.listener }
+
+func (s *recordingSession) RemoteAddr() string { return "" }
+
+func (s *recordingSession) LocalAddr() string { return "" }
+
+func (s *recordingSession) WriteFrame(frame wkframe.Frame, _ ...session.WriteOption) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.frames = append(s.frames, frame)
+	return nil
+}
+
+func (s *recordingSession) Close() error { return nil }
+
+func (s *recordingSession) SetValue(string, any) {}
+
+func (s *recordingSession) Value(string) any { return nil }
+
+func (s *recordingSession) WrittenFrames() []wkframe.Frame {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]wkframe.Frame, len(s.frames))
+	copy(out, s.frames)
+	return out
 }

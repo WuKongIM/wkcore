@@ -1,48 +1,48 @@
 package node
 
 import (
-	"context"
 	"encoding/json"
 
-	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 )
-
-type deliveryRequest struct {
-	UID        string   `json:"uid"`
-	GroupID    uint64   `json:"group_id,omitempty"`
-	BootID     uint64   `json:"boot_id"`
-	SessionIDs []uint64 `json:"session_ids"`
-	Frame      []byte   `json:"frame"`
-}
 
 type deliveryResponse struct {
 	Status string `json:"status"`
 }
 
-func (a *Adapter) handleDeliveryRPC(ctx context.Context, body []byte) ([]byte, error) {
-	_ = ctx
-	var req deliveryRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		return nil, err
-	}
-	if req.BootID != a.gatewayBootID {
-		return encodeDeliveryResponse(deliveryResponse{Status: rpcStatusOK})
-	}
-	frame, _, err := a.codec.DecodeFrame(req.Frame, wkframe.LatestVersion)
-	if err != nil {
-		return nil, err
-	}
-	for _, sessionID := range req.SessionIDs {
-		conn, ok := a.online.Connection(sessionID)
-		if !ok || conn.UID != req.UID || conn.State != online.LocalRouteStateActive {
-			continue
-		}
-		_ = conn.Session.WriteFrame(frame)
-	}
-	return encodeDeliveryResponse(deliveryResponse{Status: rpcStatusOK})
+type deliveryPushResponse struct {
+	Status    string                     `json:"status"`
+	Accepted  []deliveryruntime.RouteKey `json:"accepted,omitempty"`
+	Retryable []deliveryruntime.RouteKey `json:"retryable,omitempty"`
+	Dropped   []deliveryruntime.RouteKey `json:"dropped,omitempty"`
+}
+
+type DeliveryPushCommand struct {
+	OwnerNodeID uint64                     `json:"owner_node_id"`
+	ChannelID   string                     `json:"channel_id"`
+	ChannelType uint8                      `json:"channel_type"`
+	MessageID   uint64                     `json:"message_id"`
+	MessageSeq  uint64                     `json:"message_seq"`
+	Routes      []deliveryruntime.RouteKey `json:"routes"`
+	Frame       []byte                     `json:"frame"`
 }
 
 func encodeDeliveryResponse(resp deliveryResponse) ([]byte, error) {
 	return json.Marshal(resp)
+}
+
+func encodeDeliveryPushResponse(resp deliveryPushResponse) ([]byte, error) {
+	return json.Marshal(resp)
+}
+
+func decodeDeliveryResponse(body []byte) (deliveryResponse, error) {
+	var resp deliveryResponse
+	err := json.Unmarshal(body, &resp)
+	return resp, err
+}
+
+func decodeDeliveryPushResponse(body []byte) (deliveryPushResponse, error) {
+	var resp deliveryPushResponse
+	err := json.Unmarshal(body, &resp)
+	return resp, err
 }

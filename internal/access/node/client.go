@@ -5,24 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
 )
 
 type authoritativeRPCResponse interface {
 	rpcStatus() string
 	rpcLeaderID() uint64
-}
-
-type DeliveryCommand struct {
-	NodeID     uint64
-	GroupID    uint64
-	UID        string
-	BootID     uint64
-	SessionIDs []uint64
-	Frame      wkframe.Frame
 }
 
 func (c *Client) RegisterAuthoritative(ctx context.Context, cmd presence.RegisterAuthoritativeCommand) (presence.RegisterAuthoritativeResult, error) {
@@ -99,31 +90,52 @@ func (c *Client) ApplyRouteAction(ctx context.Context, action presence.RouteActi
 	return nil
 }
 
-func (c *Client) Deliver(ctx context.Context, cmd DeliveryCommand) error {
-	frameBytes, err := c.codec.EncodeFrame(cmd.Frame, wkframe.LatestVersion)
-	if err != nil {
-		return err
-	}
-	body, err := json.Marshal(deliveryRequest{
-		UID:        cmd.UID,
-		GroupID:    cmd.GroupID,
-		BootID:     cmd.BootID,
-		SessionIDs: append([]uint64(nil), cmd.SessionIDs...),
-		Frame:      frameBytes,
-	})
-	if err != nil {
-		return err
-	}
-	respBody, err := c.cluster.RPCService(ctx, multiraft.NodeID(cmd.NodeID), multiraft.GroupID(cmd.GroupID), deliveryRPCServiceID, body)
-	if err != nil {
-		return err
-	}
-	resp, err := decodeDeliveryResponse(respBody)
+func (c *Client) SubmitCommitted(ctx context.Context, nodeID uint64, env message.CommittedMessageEnvelope) error {
+	resp, err := callDeliveryDirect(ctx, c, nodeID, deliverySubmitRPCServiceID, deliverySubmitRequest{
+		Envelope: env,
+	}, decodeDeliveryResponse)
 	if err != nil {
 		return err
 	}
 	if resp.Status != rpcStatusOK {
-		return fmt.Errorf("access/node: unexpected delivery status %q", resp.Status)
+		return fmt.Errorf("access/node: unexpected delivery submit status %q", resp.Status)
+	}
+	return nil
+}
+
+func (c *Client) PushBatch(ctx context.Context, nodeID uint64, cmd DeliveryPushCommand) (deliveryPushResponse, error) {
+	resp, err := callDeliveryDirect(ctx, c, nodeID, deliveryPushRPCServiceID, cmd, decodeDeliveryPushResponse)
+	if err != nil {
+		return deliveryPushResponse{}, err
+	}
+	if resp.Status != rpcStatusOK {
+		return deliveryPushResponse{}, fmt.Errorf("access/node: unexpected delivery push status %q", resp.Status)
+	}
+	return resp, nil
+}
+
+func (c *Client) NotifyAck(ctx context.Context, nodeID uint64, cmd message.RouteAckCommand) error {
+	resp, err := callDeliveryDirect(ctx, c, nodeID, deliveryAckRPCServiceID, deliveryAckRequest{
+		Command: cmd,
+	}, decodeDeliveryResponse)
+	if err != nil {
+		return err
+	}
+	if resp.Status != rpcStatusOK {
+		return fmt.Errorf("access/node: unexpected delivery ack status %q", resp.Status)
+	}
+	return nil
+}
+
+func (c *Client) NotifyOffline(ctx context.Context, nodeID uint64, cmd message.SessionClosedCommand) error {
+	resp, err := callDeliveryDirect(ctx, c, nodeID, deliveryOfflineRPCServiceID, deliveryOfflineRequest{
+		Command: cmd,
+	}, decodeDeliveryResponse)
+	if err != nil {
+		return err
+	}
+	if resp.Status != rpcStatusOK {
+		return fmt.Errorf("access/node: unexpected delivery offline status %q", resp.Status)
 	}
 	return nil
 }
@@ -146,6 +158,30 @@ func (c *Client) callPresenceDirect(ctx context.Context, nodeID multiraft.NodeID
 		return presenceRPCResponse{}, err
 	}
 	return decodePresenceResponse(respBody)
+}
+
+func callDeliveryDirect[T any](
+	ctx context.Context,
+	c *Client,
+	nodeID uint64,
+	serviceID uint8,
+	req any,
+	decode func([]byte) (T, error),
+) (T, error) {
+	var zero T
+
+	if c.cluster == nil {
+		return zero, fmt.Errorf("access/node: cluster not configured")
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return zero, err
+	}
+	respBody, err := c.cluster.RPCService(ctx, multiraft.NodeID(nodeID), 0, serviceID, body)
+	if err != nil {
+		return zero, err
+	}
+	return decode(respBody)
 }
 
 func callAuthoritativeRPC[T authoritativeRPCResponse](
@@ -220,12 +256,6 @@ func callAuthoritativeRPC[T authoritativeRPCResponse](
 
 func decodePresenceResponse(body []byte) (presenceRPCResponse, error) {
 	var resp presenceRPCResponse
-	err := json.Unmarshal(body, &resp)
-	return resp, err
-}
-
-func decodeDeliveryResponse(body []byte) (deliveryResponse, error) {
-	var resp deliveryResponse
 	err := json.Unmarshal(body, &resp)
 	return resp, err
 }

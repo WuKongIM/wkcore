@@ -35,6 +35,7 @@ type App struct {
 	presenceApp     *presence.App
 	deliveryApp     *deliveryusecase.App
 	deliveryRuntime *deliveryruntime.Manager
+	deliveryAcks    *deliveryruntime.AckIndex
 	messageApp      *message.App
 	api             *accessapi.Server
 	nodeClient      *accessnode.Client

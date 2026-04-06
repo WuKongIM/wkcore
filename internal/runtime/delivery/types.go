@@ -51,6 +51,7 @@ type AckBinding struct {
 	MessageID   uint64
 	ChannelID   string
 	ChannelType uint8
+	OwnerNodeID uint64
 	Route       RouteKey
 }
 

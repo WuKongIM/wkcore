@@ -4,9 +4,11 @@ import (
 	"context"
 
 	accessnode "github.com/WuKongIM/WuKongIM/internal/access/node"
+	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
 )
 
 type messageRecipientDirectory struct {
@@ -42,12 +44,24 @@ func (d messageRemoteDelivery) DeliverRemote(ctx context.Context, cmd message.Re
 	if d.cluster == nil || d.client == nil {
 		return nil
 	}
-	return d.client.Deliver(ctx, accessnode.DeliveryCommand{
-		NodeID:     cmd.NodeID,
-		GroupID:    uint64(d.cluster.SlotForKey(cmd.UID)),
-		UID:        cmd.UID,
-		BootID:     cmd.BootID,
-		SessionIDs: append([]uint64(nil), cmd.SessionIDs...),
-		Frame:      cmd.Frame,
+	frameBytes, err := wkcodec.New().EncodeFrame(cmd.Frame, 0)
+	if err != nil {
+		return err
+	}
+	routes := make([]deliveryruntime.RouteKey, 0, len(cmd.SessionIDs))
+	for _, sessionID := range cmd.SessionIDs {
+		routes = append(routes, deliveryruntime.RouteKey{
+			UID:       cmd.UID,
+			NodeID:    cmd.NodeID,
+			BootID:    cmd.BootID,
+			SessionID: sessionID,
+		})
+	}
+	_, err = d.client.PushBatch(ctx, cmd.NodeID, accessnode.DeliveryPushCommand{
+		ChannelID:   cmd.UID,
+		ChannelType: 0,
+		Routes:      routes,
+		Frame:       frameBytes,
 	})
+	return err
 }

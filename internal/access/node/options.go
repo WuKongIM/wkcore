@@ -3,7 +3,9 @@ package node
 import (
 	"context"
 
+	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
+	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
@@ -25,20 +27,42 @@ type Presence interface {
 	ApplyRouteAction(ctx context.Context, action presence.RouteAction) error
 }
 
+type DeliverySubmit interface {
+	SubmitCommitted(ctx context.Context, env message.CommittedMessageEnvelope) error
+}
+
+type DeliveryAck interface {
+	AckRoute(ctx context.Context, cmd message.RouteAckCommand) error
+}
+
+type DeliveryOffline interface {
+	SessionClosed(ctx context.Context, cmd message.SessionClosedCommand) error
+}
+
 type Options struct {
-	Cluster       Cluster
-	Presence      Presence
-	Online        online.Registry
-	GatewayBootID uint64
-	Codec         wkcodec.Protocol
+	Cluster          Cluster
+	Presence         Presence
+	Online           online.Registry
+	GatewayBootID    uint64
+	LocalNodeID      uint64
+	DeliverySubmit   DeliverySubmit
+	DeliveryAck      DeliveryAck
+	DeliveryOffline  DeliveryOffline
+	DeliveryAckIndex *deliveryruntime.AckIndex
+	Codec            wkcodec.Protocol
 }
 
 type Adapter struct {
-	cluster       Cluster
-	presence      Presence
-	online        online.Registry
-	gatewayBootID uint64
-	codec         wkcodec.Protocol
+	cluster          Cluster
+	presence         Presence
+	online           online.Registry
+	gatewayBootID    uint64
+	localNodeID      uint64
+	deliverySubmit   DeliverySubmit
+	deliveryAck      DeliveryAck
+	deliveryOffline  DeliveryOffline
+	deliveryAckIndex *deliveryruntime.AckIndex
+	codec            wkcodec.Protocol
 }
 
 func New(opts Options) *Adapter {
@@ -46,15 +70,23 @@ func New(opts Options) *Adapter {
 		opts.Codec = wkcodec.New()
 	}
 	adapter := &Adapter{
-		cluster:       opts.Cluster,
-		presence:      opts.Presence,
-		online:        opts.Online,
-		gatewayBootID: opts.GatewayBootID,
-		codec:         opts.Codec,
+		cluster:          opts.Cluster,
+		presence:         opts.Presence,
+		online:           opts.Online,
+		gatewayBootID:    opts.GatewayBootID,
+		localNodeID:      opts.LocalNodeID,
+		deliverySubmit:   opts.DeliverySubmit,
+		deliveryAck:      opts.DeliveryAck,
+		deliveryOffline:  opts.DeliveryOffline,
+		deliveryAckIndex: opts.DeliveryAckIndex,
+		codec:            opts.Codec,
 	}
 	if opts.Cluster != nil && opts.Cluster.RPCMux() != nil {
 		opts.Cluster.RPCMux().Handle(presenceRPCServiceID, adapter.handlePresenceRPC)
-		opts.Cluster.RPCMux().Handle(deliveryRPCServiceID, adapter.handleDeliveryRPC)
+		opts.Cluster.RPCMux().Handle(deliverySubmitRPCServiceID, adapter.handleDeliverySubmitRPC)
+		opts.Cluster.RPCMux().Handle(deliveryPushRPCServiceID, adapter.handleDeliveryPushRPC)
+		opts.Cluster.RPCMux().Handle(deliveryAckRPCServiceID, adapter.handleDeliveryAckRPC)
+		opts.Cluster.RPCMux().Handle(deliveryOfflineRPCServiceID, adapter.handleDeliveryOfflineRPC)
 	}
 	return adapter
 }

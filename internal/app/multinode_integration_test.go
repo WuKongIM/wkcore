@@ -89,6 +89,109 @@ func TestThreeNodeAppGatewaySendUsesDurableCommit(t *testing.T) {
 	}
 }
 
+func TestThreeNodeAppDurableSendReturnsBeforeRemoteAck(t *testing.T) {
+	harness := newThreeNodeAppHarness(t)
+	ownerID := harness.waitForStableLeader(t, 1)
+	senderNodeID := ownerID
+	recipientNodeID := ownerID%3 + 1
+	owner := harness.apps[ownerID]
+	senderNode := harness.apps[senderNodeID]
+	recipientNode := harness.apps[recipientNodeID]
+
+	key := channellog.ChannelKey{
+		ChannelID:   "remote-recipient",
+		ChannelType: wkframe.ChannelTypePerson,
+	}
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    key.ChannelID,
+		ChannelType:  int64(key.ChannelType),
+		ChannelEpoch: 21,
+		LeaderEpoch:  8,
+		Replicas:     []uint64{1, 2, 3},
+		ISR:          []uint64{1, 2, 3},
+		Leader:       owner.cfg.Node.ID,
+		MinISR:       3,
+		Status:       uint8(channellog.ChannelStatusActive),
+		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
+	}
+	require.NoError(t, owner.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
+	for _, app := range harness.appsWithLeaderFirst(ownerID) {
+		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), key)
+		require.NoError(t, err)
+	}
+
+	senderConn, err := net.Dial("tcp", senderNode.Gateway().ListenerAddr("tcp-wkproto"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = senderConn.Close() })
+	recipientConn, err := net.Dial("tcp", recipientNode.Gateway().ListenerAddr("tcp-wkproto"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = recipientConn.Close() })
+
+	sendAppWKProtoFrame(t, senderConn, &wkframe.ConnectPacket{
+		Version:         wkframe.LatestVersion,
+		UID:             "sender-remote",
+		DeviceID:        "sender-remote-device",
+		DeviceFlag:      wkframe.APP,
+		ClientTimestamp: time.Now().UnixMilli(),
+	})
+	connack, ok := readAppWKProtoFrameWithin(t, senderConn, multinodeAppReadTimeout).(*wkframe.ConnackPacket)
+	require.True(t, ok)
+	require.Equal(t, wkframe.ReasonSuccess, connack.ReasonCode)
+
+	sendAppWKProtoFrame(t, recipientConn, &wkframe.ConnectPacket{
+		Version:         wkframe.LatestVersion,
+		UID:             key.ChannelID,
+		DeviceID:        "recipient-remote-device",
+		DeviceFlag:      wkframe.APP,
+		ClientTimestamp: time.Now().UnixMilli(),
+	})
+	recipientConnack, ok := readAppWKProtoFrameWithin(t, recipientConn, multinodeAppReadTimeout).(*wkframe.ConnackPacket)
+	require.True(t, ok)
+	require.Equal(t, wkframe.ReasonSuccess, recipientConnack.ReasonCode)
+
+	sendAppWKProtoFrame(t, senderConn, &wkframe.SendPacket{
+		ChannelID:   key.ChannelID,
+		ChannelType: key.ChannelType,
+		ClientSeq:   1,
+		ClientMsgNo: "three-node-async-1",
+		Payload:     []byte("hello realtime"),
+	})
+
+	sendack, ok := readAppWKProtoFrameWithin(t, senderConn, multinodeAppReadTimeout).(*wkframe.SendackPacket)
+	require.True(t, ok)
+	require.Equal(t, wkframe.ReasonSuccess, sendack.ReasonCode)
+
+	recv, ok := readAppWKProtoFrameWithin(t, recipientConn, multinodeAppReadTimeout).(*wkframe.RecvPacket)
+	require.True(t, ok)
+	require.Equal(t, "sender-remote", recv.FromUID)
+	require.Equal(t, sendack.MessageID, recv.MessageID)
+	require.Equal(t, sendack.MessageSeq, recv.MessageSeq)
+
+	var sessionID uint64
+	require.Eventually(t, func() bool {
+		conns := recipientNode.messageApp.OnlineRegistry().ConnectionsByUID(key.ChannelID)
+		if len(conns) == 0 {
+			return false
+		}
+		sessionID = conns[0].SessionID
+		return owner.deliveryRuntime.HasAckBinding(sessionID, uint64(sendack.MessageID))
+	}, 5*time.Second, 20*time.Millisecond)
+	require.Eventually(t, func() bool {
+		_, recipientHasBinding := recipientNode.deliveryAcks.Lookup(sessionID, uint64(sendack.MessageID))
+		return recipientHasBinding
+	}, 5*time.Second, 20*time.Millisecond)
+
+	sendAppWKProtoFrame(t, recipientConn, &wkframe.RecvackPacket{
+		MessageID:  recv.MessageID,
+		MessageSeq: recv.MessageSeq,
+	})
+	require.Eventually(t, func() bool {
+		_, recipientHasBinding := recipientNode.deliveryAcks.Lookup(sessionID, uint64(sendack.MessageID))
+		return !owner.deliveryRuntime.HasAckBinding(sessionID, uint64(sendack.MessageID)) && !recipientHasBinding
+	}, 5*time.Second, 20*time.Millisecond)
+}
+
 func TestThreeNodeAppUserTokenEndpointPersistsThroughClusterForwarding(t *testing.T) {
 	harness := newThreeNodeAppHarness(t)
 	leaderID := harness.waitForStableLeader(t, 1)
