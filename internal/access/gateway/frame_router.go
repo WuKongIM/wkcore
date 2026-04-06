@@ -4,7 +4,6 @@ import (
 	"context"
 
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
-	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
@@ -36,7 +35,8 @@ func (h *Handler) handleSend(ctx *coregateway.Context, pkt *wkframe.SendPacket) 
 	result, err := h.messages.Send(reqCtx, cmd)
 	if err != nil {
 		if reason, ok := mapSendErrorReason(err); ok {
-			return writeSendack(ctx, pkt, message.SendResult{Reason: reason})
+			result.Reason = reason
+			return writeSendack(ctx, pkt, result)
 		}
 		return err
 	}

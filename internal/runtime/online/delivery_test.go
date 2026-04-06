@@ -43,6 +43,21 @@ func TestLocalDeliveryContinuesAfterWriteFrameError(t *testing.T) {
 	require.Len(t, second.WrittenFrames(), 1)
 }
 
+func TestLocalDeliverySkipsClosingRoutes(t *testing.T) {
+	active := newRecordingSession(11, "tcp")
+	closing := newRecordingSession(12, "tcp")
+	delivery := LocalDelivery{}
+
+	err := delivery.Deliver([]OnlineConn{
+		{UID: "u2", Session: active, State: LocalRouteStateActive},
+		{UID: "u2", Session: closing, State: LocalRouteStateClosing},
+	}, &wkframe.PingPacket{})
+
+	require.NoError(t, err)
+	require.Len(t, active.WrittenFrames(), 1)
+	require.Empty(t, closing.WrittenFrames())
+}
+
 type erroringSession struct {
 	*recordingSession
 	err           error

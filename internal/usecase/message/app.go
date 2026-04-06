@@ -15,23 +15,31 @@ var (
 )
 
 type Options struct {
-	IdentityStore IdentityStore
-	ChannelStore  ChannelStore
-	Cluster       ChannelCluster
-	MetaRefresher MetaRefresher
-	Online        online.Registry
-	Delivery      online.Delivery
-	Now           func() time.Time
+	IdentityStore  IdentityStore
+	ChannelStore   ChannelStore
+	Cluster        ChannelCluster
+	MetaRefresher  MetaRefresher
+	Online         online.Registry
+	Delivery       online.Delivery
+	Recipients     RecipientDirectory
+	RemoteDelivery RemoteDelivery
+	LocalNodeID    uint64
+	LocalBootID    uint64
+	Now            func() time.Time
 }
 
 type App struct {
-	identities IdentityStore
-	channels   ChannelStore
-	cluster    ChannelCluster
-	refresher  MetaRefresher
-	online     online.Registry
-	delivery   online.Delivery
-	now        func() time.Time
+	identities  IdentityStore
+	channels    ChannelStore
+	cluster     ChannelCluster
+	refresher   MetaRefresher
+	online      online.Registry
+	delivery    online.Delivery
+	recipients  RecipientDirectory
+	remote      RemoteDelivery
+	localNodeID uint64
+	localBootID uint64
+	now         func() time.Time
 }
 
 func New(opts Options) *App {
@@ -46,13 +54,17 @@ func New(opts Options) *App {
 	}
 
 	return &App{
-		identities: opts.IdentityStore,
-		channels:   opts.ChannelStore,
-		cluster:    opts.Cluster,
-		refresher:  opts.MetaRefresher,
-		online:     opts.Online,
-		delivery:   opts.Delivery,
-		now:        opts.Now,
+		identities:  opts.IdentityStore,
+		channels:    opts.ChannelStore,
+		cluster:     opts.Cluster,
+		refresher:   opts.MetaRefresher,
+		online:      opts.Online,
+		delivery:    opts.Delivery,
+		recipients:  opts.Recipients,
+		remote:      opts.RemoteDelivery,
+		localNodeID: opts.LocalNodeID,
+		localBootID: opts.LocalBootID,
+		now:         opts.Now,
 	}
 }
 

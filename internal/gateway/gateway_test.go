@@ -4,6 +4,8 @@ import (
 	"errors"
 	"io"
 	"net"
+	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -197,6 +199,150 @@ func TestGatewayWKProtoAuthAcceptsConnectBeforeDispatchingFrames(t *testing.T) {
 	if got := handler.Contexts[0].Session.Value(gateway.SessionValueDeviceLevel); got != wkframe.DeviceLevelMaster {
 		t.Fatalf("expected device level to be stored, got %#v", got)
 	}
+}
+
+func TestGatewayWKProtoActivationSeesDeviceIDBeforeConnectSucceeds(t *testing.T) {
+	handler := &activationHandler{}
+	gw, err := gateway.New(gateway.Options{
+		Handler: handler,
+		Authenticator: gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{
+			TokenAuthOn: true,
+			VerifyToken: func(uid string, deviceFlag wkframe.DeviceFlag, token string) (wkframe.DeviceLevel, error) {
+				if uid == "u1" && token == "good-token" {
+					return wkframe.DeviceLevelMaster, nil
+				}
+				return 0, errors.New("token verify fail")
+			},
+		}),
+		Listeners: []gateway.ListenerOptions{
+			binding.TCPWKProto("tcp-wkproto-activate", "127.0.0.1:0"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := gw.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = gw.Stop() })
+
+	conn := dialTCPGateway(t, gw, "tcp-wkproto-activate")
+	t.Cleanup(func() { _ = conn.Close() })
+
+	connack := mustConnectWKProto(t, conn, &wkframe.ConnectPacket{
+		Version:         wkframe.LatestVersion,
+		UID:             "u1",
+		Token:           "good-token",
+		DeviceID:        "d1",
+		DeviceFlag:      wkframe.APP,
+		ClientTimestamp: time.Now().UnixMilli(),
+	})
+	if connack.ReasonCode != wkframe.ReasonSuccess {
+		t.Fatalf("expected success connack, got %v", connack.ReasonCode)
+	}
+
+	waitUntil(t, time.Second, func() bool { return handler.openSeen() })
+	if got := handler.deviceID(); got != "d1" {
+		t.Fatalf("expected activation to see device id, got %#v", got)
+	}
+	if got := handler.callOrder(); !reflect.DeepEqual(got, []string{"activate", "open"}) {
+		t.Fatalf("unexpected call order: %v", got)
+	}
+}
+
+func TestGatewayWKProtoActivationSeesDeviceIDWithCustomAuthenticator(t *testing.T) {
+	handler := &activationHandler{}
+	gw, err := gateway.New(gateway.Options{
+		Handler: handler,
+		Authenticator: gateway.AuthenticatorFunc(func(*gateway.Context, *wkframe.ConnectPacket) (*gateway.AuthResult, error) {
+			return &gateway.AuthResult{
+				Connack: &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonSuccess},
+			}, nil
+		}),
+		Listeners: []gateway.ListenerOptions{
+			binding.TCPWKProto("tcp-wkproto-custom-auth", "127.0.0.1:0"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := gw.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = gw.Stop() })
+
+	conn := dialTCPGateway(t, gw, "tcp-wkproto-custom-auth")
+	t.Cleanup(func() { _ = conn.Close() })
+
+	connack := mustConnectWKProto(t, conn, &wkframe.ConnectPacket{
+		Version:         wkframe.LatestVersion,
+		UID:             "u1",
+		DeviceID:        "d1",
+		DeviceFlag:      wkframe.APP,
+		ClientTimestamp: time.Now().UnixMilli(),
+	})
+	if connack.ReasonCode != wkframe.ReasonSuccess {
+		t.Fatalf("expected success connack, got %v", connack.ReasonCode)
+	}
+
+	waitUntil(t, time.Second, func() bool { return handler.openSeen() })
+	if got := handler.deviceID(); got != "d1" {
+		t.Fatalf("expected activation to see device id, got %#v", got)
+	}
+	if got := handler.callOrder(); !reflect.DeepEqual(got, []string{"activate", "open"}) {
+		t.Fatalf("unexpected call order: %v", got)
+	}
+}
+
+type activationHandler struct {
+	mu            sync.Mutex
+	order         []string
+	deviceIDValue string
+	open          bool
+}
+
+func (h *activationHandler) OnListenerError(string, error) {}
+
+func (h *activationHandler) OnSessionActivate(ctx *gateway.Context) (*wkframe.ConnackPacket, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.order = append(h.order, "activate")
+	if ctx != nil && ctx.Session != nil {
+		if got := ctx.Session.Value(gateway.SessionValueDeviceID); got != nil {
+			h.deviceIDValue, _ = got.(string)
+		}
+	}
+	return nil, nil
+}
+
+func (h *activationHandler) OnSessionOpen(ctx *gateway.Context) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.order = append(h.order, "open")
+	h.open = true
+	return nil
+}
+
+func (h *activationHandler) OnFrame(*gateway.Context, wkframe.Frame) error { return nil }
+func (h *activationHandler) OnSessionClose(*gateway.Context) error         { return nil }
+func (h *activationHandler) OnSessionError(*gateway.Context, error)        {}
+
+func (h *activationHandler) deviceID() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.deviceIDValue
+}
+
+func (h *activationHandler) openSeen() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.open
+}
+
+func (h *activationHandler) callOrder() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.order...)
 }
 
 func TestGatewayStartStopWSJSONRPC(t *testing.T) {

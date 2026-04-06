@@ -4,9 +4,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
@@ -61,6 +63,21 @@ func TestNewBuildsChannelLogDataPlane(t *testing.T) {
 	require.NotNil(t, app.ChannelLogDB())
 	require.NotNil(t, app.ISRRuntime())
 	require.NotNil(t, app.ChannelLog())
+}
+
+func TestBuildCreatesPresenceAppAndNodeAccess(t *testing.T) {
+	cfg := testConfig(t)
+
+	app, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, app.Stop())
+	})
+
+	requireAppFieldNonNil(t, app, "presenceApp")
+	requireAppFieldNonNil(t, app, "nodeClient")
+	requireAppFieldNonNil(t, app, "nodeAccess")
+	requireAppFieldNonNil(t, app, "presenceWorker")
 }
 
 func TestNewReturnsConfigErrorsBeforeOpeningResources(t *testing.T) {
@@ -194,6 +211,30 @@ func TestStartStartsChannelMetaSyncAfterClusterBeforeGateway(t *testing.T) {
 	require.Equal(t, []string{"cluster.start", "meta.start", "gateway.start"}, calls)
 }
 
+func TestAppLifecycleStartsPresenceWorkerBeforeGateway(t *testing.T) {
+	var calls []string
+
+	app := &App{
+		cluster: &raftcluster.Cluster{},
+		gateway: &gateway.Gateway{},
+		startClusterFn: func() error {
+			calls = append(calls, "cluster.start")
+			return nil
+		},
+		startGatewayFn: func() error {
+			calls = append(calls, "gateway.start")
+			return nil
+		},
+	}
+	setAppFuncField(t, app, "startPresenceFn", func() error {
+		calls = append(calls, "presence.start")
+		return nil
+	})
+
+	require.NoError(t, app.Start())
+	require.Equal(t, []string{"cluster.start", "presence.start", "gateway.start"}, calls)
+}
+
 func TestStartRollsBackClusterWhenGatewayStartFails(t *testing.T) {
 	var calls []string
 	startErr := errors.New("gateway start failed")
@@ -299,6 +340,53 @@ func TestStopStopsGatewayBeforeClosingStorage(t *testing.T) {
 	require.NoError(t, app.Stop())
 	require.Equal(t, []string{"gateway.stop", "meta.stop", "cluster.stop", "channellog.close", "raft.close", "metadb.close"}, calls)
 	require.False(t, app.started.Load())
+}
+
+func TestAppLifecycleStopsPresenceWorkerAfterGateway(t *testing.T) {
+	var startCalls []string
+	var stopCalls []string
+
+	app := &App{
+		cluster: &raftcluster.Cluster{},
+		gateway: &gateway.Gateway{},
+		startClusterFn: func() error {
+			startCalls = append(startCalls, "cluster.start")
+			return nil
+		},
+		startGatewayFn: func() error {
+			startCalls = append(startCalls, "gateway.start")
+			return nil
+		},
+		stopGatewayFn: func() error {
+			stopCalls = append(stopCalls, "gateway.stop")
+			return nil
+		},
+		stopClusterFn: func() {
+			stopCalls = append(stopCalls, "cluster.stop")
+		},
+		closeRaftDBFn: func() error {
+			stopCalls = append(stopCalls, "raft.close")
+			return nil
+		},
+		closeWKDBFn: func() error {
+			stopCalls = append(stopCalls, "metadb.close")
+			return nil
+		},
+	}
+	setAppFuncField(t, app, "startPresenceFn", func() error {
+		startCalls = append(startCalls, "presence.start")
+		return nil
+	})
+	setAppFuncField(t, app, "stopPresenceFn", func() error {
+		stopCalls = append(stopCalls, "presence.stop")
+		return nil
+	})
+
+	require.NoError(t, app.Start())
+	require.Equal(t, []string{"cluster.start", "presence.start", "gateway.start"}, startCalls)
+
+	require.NoError(t, app.Stop())
+	require.Equal(t, []string{"gateway.stop", "presence.stop", "cluster.stop", "raft.close", "metadb.close"}, stopCalls)
 }
 
 func TestStopStopsAPIBeforeGatewayAndClusterClose(t *testing.T) {
@@ -515,4 +603,30 @@ func openRaftDBForTest(path string) (interface{ Close() error }, error) {
 func atomicBool(v bool) (flag atomic.Bool) {
 	flag.Store(v)
 	return flag
+}
+
+func requireAppFieldNonNil(t *testing.T, app *App, name string) {
+	t.Helper()
+
+	field := reflect.ValueOf(app).Elem().FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("App is missing field %s", name)
+	}
+	switch field.Kind() {
+	case reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice, reflect.Func:
+		require.Falsef(t, field.IsNil(), "App field %s should not be nil", name)
+	default:
+		t.Fatalf("App field %s is %s; expected a nil-able field", name, field.Kind())
+	}
+}
+
+func setAppFuncField(t *testing.T, app *App, name string, fn any) {
+	t.Helper()
+
+	field := reflect.ValueOf(app).Elem().FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("App is missing field %s", name)
+	}
+	ptr := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
+	ptr.Set(reflect.ValueOf(fn))
 }

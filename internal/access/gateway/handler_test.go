@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -11,41 +12,74 @@ import (
 	gatewaysession "github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
+	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 	"github.com/stretchr/testify/require"
 )
 
-func TestHandlerOnSessionOpenRegistersAuthenticatedSession(t *testing.T) {
+func TestHandlerOnSessionActivateCallsPresenceActivate(t *testing.T) {
 	fixedNow := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
-	handler := New(Options{Now: func() time.Time { return fixedNow }})
+	presenceUsecase := &fakePresenceUsecase{}
+	handler := newHandlerWithPresence(t, presenceUsecase, Options{
+		Now: func() time.Time { return fixedNow },
+	})
 	ctx := newAuthedContext(t, 1, "u1")
+	ctx.Session.SetValue(coregateway.SessionValueDeviceID, "dev-1")
 
-	require.NoError(t, handler.OnSessionOpen(ctx))
+	activator, ok := any(handler).(interface {
+		OnSessionActivate(*coregateway.Context) (*wkframe.ConnackPacket, error)
+	})
+	require.True(t, ok, "handler must implement session activation hook")
 
-	conns := handler.online.ConnectionsByUID("u1")
-	require.Len(t, conns, 1)
-	require.Equal(t, uint64(1), conns[0].SessionID)
-	require.Equal(t, fixedNow, conns[0].ConnectedAt)
+	connack, err := activator.OnSessionActivate(ctx)
+	require.NoError(t, err)
+	require.Nil(t, connack)
+	require.Len(t, presenceUsecase.activateCommands, 1)
+	require.Equal(t, presence.ActivateCommand{
+		UID:         "u1",
+		DeviceID:    "dev-1",
+		DeviceFlag:  wkframe.APP,
+		DeviceLevel: wkframe.DeviceLevelMaster,
+		Listener:    "tcp",
+		ConnectedAt: fixedNow,
+		Session:     ctx.Session,
+	}, presenceUsecase.activateCommands[0])
 }
 
-func TestHandlerOnSessionCloseUnregistersSession(t *testing.T) {
+func TestHandlerOnSessionOpenIsNoop(t *testing.T) {
 	handler := New(Options{Now: func() time.Time { return time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC) }})
 	ctx := newAuthedContext(t, 1, "u1")
 
 	require.NoError(t, handler.OnSessionOpen(ctx))
-	require.NoError(t, handler.OnSessionClose(ctx))
 
 	require.Empty(t, handler.online.ConnectionsByUID("u1"))
 	_, ok := handler.online.Connection(1)
 	require.False(t, ok)
 }
 
-func TestHandlerOnSessionOpenRejectsUnauthenticatedContext(t *testing.T) {
-	handler := New(Options{})
+func TestHandlerOnSessionCloseCallsPresenceDeactivate(t *testing.T) {
+	presenceUsecase := &fakePresenceUsecase{}
+	handler := newHandlerWithPresence(t, presenceUsecase, Options{})
+	ctx := newAuthedContext(t, 1, "u1")
 
-	err := handler.OnSessionOpen(&coregateway.Context{
+	require.NoError(t, handler.OnSessionClose(ctx))
+	require.Equal(t, []presence.DeactivateCommand{{
+		UID:       "u1",
+		SessionID: 1,
+	}}, presenceUsecase.deactivateCommands)
+}
+
+func TestHandlerOnSessionActivateRejectsUnauthenticatedContext(t *testing.T) {
+	handler := newHandlerWithPresence(t, &fakePresenceUsecase{}, Options{})
+
+	activator, ok := any(handler).(interface {
+		OnSessionActivate(*coregateway.Context) (*wkframe.ConnackPacket, error)
+	})
+	require.True(t, ok, "handler must implement session activation hook")
+
+	_, err := activator.OnSessionActivate(&coregateway.Context{
 		Session: gatewaysession.New(gatewaysession.Config{
 			ID:       1,
 			Listener: "tcp",
@@ -310,8 +344,24 @@ func TestNewSharesOnlineRegistryWithInjectedMessageApp(t *testing.T) {
 	recipient.SetValue(coregateway.SessionValueDeviceFlag, wkframe.APP)
 	recipient.SetValue(coregateway.SessionValueDeviceLevel, wkframe.DeviceLevelMaster)
 
-	require.NoError(t, handler.OnSessionOpen(&coregateway.Context{Session: sender, Listener: "tcp"}))
-	require.NoError(t, handler.OnSessionOpen(&coregateway.Context{Session: recipient, Listener: "tcp"}))
+	require.NoError(t, msgApp.OnlineRegistry().Register(online.OnlineConn{
+		SessionID:   sender.ID(),
+		UID:         "u1",
+		DeviceFlag:  wkframe.APP,
+		DeviceLevel: wkframe.DeviceLevelMaster,
+		Listener:    "tcp",
+		ConnectedAt: fixedGatewayNow,
+		Session:     sender,
+	}))
+	require.NoError(t, msgApp.OnlineRegistry().Register(online.OnlineConn{
+		SessionID:   recipient.ID(),
+		UID:         "u2",
+		DeviceFlag:  wkframe.APP,
+		DeviceLevel: wkframe.DeviceLevelMaster,
+		Listener:    "tcp",
+		ConnectedAt: fixedGatewayNow,
+		Session:     recipient,
+	}))
 
 	err := handler.OnFrame(&coregateway.Context{
 		Session:        sender,
@@ -354,6 +404,19 @@ func newAuthedContext(t *testing.T, sessionID uint64, uid string) *coregateway.C
 	}
 }
 
+func newHandlerWithPresence(t *testing.T, presenceUsecase *fakePresenceUsecase, opts Options) *Handler {
+	t.Helper()
+
+	optionsValue := reflect.ValueOf(&opts).Elem()
+	presenceField := optionsValue.FieldByName("Presence")
+	if !presenceField.IsValid() {
+		t.Fatalf("gateway.Options is missing Presence field")
+	}
+	require.True(t, presenceField.CanSet())
+	presenceField.Set(reflect.ValueOf(presenceUsecase))
+	return New(opts)
+}
+
 func requireSendackPacket(t *testing.T, frame wkframe.Frame) *wkframe.SendackPacket {
 	t.Helper()
 
@@ -394,6 +457,23 @@ func (f *fakeMessageUsecase) RecvAck(cmd message.RecvAckCommand) error {
 	f.recvAckCalls++
 	f.recvAckCommands = append(f.recvAckCommands, cmd)
 	return f.recvAckErr
+}
+
+type fakePresenceUsecase struct {
+	activateCommands   []presence.ActivateCommand
+	activateErr        error
+	deactivateCommands []presence.DeactivateCommand
+	deactivateErr      error
+}
+
+func (f *fakePresenceUsecase) Activate(_ context.Context, cmd presence.ActivateCommand) error {
+	f.activateCommands = append(f.activateCommands, cmd)
+	return f.activateErr
+}
+
+func (f *fakePresenceUsecase) Deactivate(_ context.Context, cmd presence.DeactivateCommand) error {
+	f.deactivateCommands = append(f.deactivateCommands, cmd)
+	return f.deactivateErr
 }
 
 type outboundWrite struct {
@@ -459,10 +539,15 @@ func (f *fakeChannelCluster) Send(context.Context, channellog.SendRequest) (chan
 }
 
 func newClusterBackedMessageApp(result channellog.SendResult) *message.App {
+	return newClusterBackedMessageAppWithOnline(nil, result)
+}
+
+func newClusterBackedMessageAppWithOnline(registry online.Registry, result channellog.SendResult) *message.App {
 	return message.New(message.Options{
 		IdentityStore: &fakeIdentityStore{},
 		ChannelStore:  &fakeChannelStore{},
 		Cluster:       &fakeChannelCluster{result: result},
+		Online:        registry,
 		Now:           func() time.Time { return fixedGatewayNow },
 	})
 }

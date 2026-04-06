@@ -456,6 +456,42 @@ func (s *Server) handleAuthFrame(state *sessionState, replyToken string, frame w
 		connack.ReasonCode = wkframe.ReasonSuccess
 	}
 
+	if connack.ReasonCode != wkframe.ReasonSuccess {
+		if writeErr := s.writeImmediateFrame(state, connack); writeErr != nil {
+			state.close(closeReasonForError(writeErr, gatewaytypes.CloseReasonPeerClosed), writeErr)
+			return true, nil
+		}
+		state.close(gatewaytypes.CloseReasonPolicyViolation, nil)
+		return true, nil
+	}
+
+	if result.SessionValues == nil {
+		result.SessionValues = make(map[string]any, 1)
+	}
+	result.SessionValues[gatewaytypes.SessionValueDeviceID] = connect.DeviceID
+	for key, value := range result.SessionValues {
+		state.session.SetValue(key, value)
+	}
+
+	ctx = s.dispatcher.context(state, replyToken, state.closeReason(), nil)
+	if activator, ok := s.options.Handler.(gatewaytypes.SessionActivator); ok {
+		override, err := activator.OnSessionActivate(ctx)
+		if err != nil {
+			if writeErr := s.writeImmediateFrame(state, &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonSystemError}); writeErr != nil {
+				state.close(closeReasonForError(writeErr, gatewaytypes.CloseReasonPolicyViolation), writeErr)
+				return true, nil
+			}
+			state.close(gatewaytypes.CloseReasonPolicyViolation, err)
+			return true, nil
+		}
+		if override != nil {
+			connack = override
+		}
+	}
+	if connack.ReasonCode == 0 {
+		connack.ReasonCode = wkframe.ReasonSuccess
+	}
+
 	if writeErr := s.writeImmediateFrame(state, connack); writeErr != nil {
 		state.close(closeReasonForError(writeErr, gatewaytypes.CloseReasonPeerClosed), writeErr)
 		return true, nil
@@ -463,10 +499,6 @@ func (s *Server) handleAuthFrame(state *sessionState, replyToken string, frame w
 	if connack.ReasonCode != wkframe.ReasonSuccess {
 		state.close(gatewaytypes.CloseReasonPolicyViolation, nil)
 		return true, nil
-	}
-
-	for key, value := range result.SessionValues {
-		state.session.SetValue(key, value)
 	}
 	state.setAuthenticated(true)
 	if !state.openWasDispatched() {

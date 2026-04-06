@@ -15,6 +15,10 @@ type Handler interface {
 	OnSessionError(ctx *Context, err error)
 }
 
+type SessionActivator interface {
+	OnSessionActivate(ctx *Context) (*wkframe.ConnackPacket, error)
+}
+
 type Context struct {
 	Session        session.Session
 	Listener       string

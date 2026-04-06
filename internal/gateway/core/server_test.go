@@ -89,6 +89,175 @@ func TestServer(t *testing.T) {
 		}
 	})
 
+	t.Run("successful wkproto activation runs before success connack", func(t *testing.T) {
+		handler := newTestHandler()
+		handler.onActivate = func(ctx *gateway.Context) (*wkframe.ConnackPacket, error) {
+			if got := ctx.Session.Value(gateway.SessionValueDeviceID); got != "d-1" {
+				t.Fatalf("expected device id before activation, got %#v", got)
+			}
+			return nil, nil
+		}
+
+		proto := newScriptedProtocol("wkproto")
+		proto.encodedBytes = []byte("connack-success")
+		proto.pushDecode(decodeResult{
+			frames: []wkframe.Frame{&wkframe.ConnectPacket{
+				UID:        "u1",
+				DeviceID:   "d-1",
+				DeviceFlag: wkframe.APP,
+			}},
+			consumed: 1,
+		})
+
+		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{}))
+		if err := srv.Start(); err != nil {
+			t.Fatalf("start failed: %v", err)
+		}
+		t.Cleanup(func() { _ = srv.Stop() })
+
+		conn := transportFactory.MustOpen("listener-a", 1)
+		transportFactory.MustData("listener-a", 1, []byte("c"))
+
+		waitFor(t, func() bool { return len(handler.callOrder()) == 2 && len(conn.Writes()) == 1 })
+		if got := handler.callOrder(); !reflect.DeepEqual(got, []string{"activate", "open"}) {
+			t.Fatalf("unexpected call order: %v", got)
+		}
+		if got := conn.Writes()[0]; !reflect.DeepEqual(got, []byte("connack-success")) {
+			t.Fatalf("unexpected connack payload: %q", got)
+		}
+	})
+
+	t.Run("successful wkproto activation sees device id from generic auth result", func(t *testing.T) {
+		handler := newTestHandler()
+		handler.onActivate = func(ctx *gateway.Context) (*wkframe.ConnackPacket, error) {
+			if got := ctx.Session.Value(gateway.SessionValueDeviceID); got != "d-1" {
+				t.Fatalf("expected device id before activation, got %#v", got)
+			}
+			return nil, nil
+		}
+
+		proto := newScriptedProtocol("wkproto")
+		proto.encodedBytes = []byte("connack-success")
+		proto.pushDecode(decodeResult{
+			frames: []wkframe.Frame{&wkframe.ConnectPacket{
+				UID:        "u1",
+				DeviceID:   "d-1",
+				DeviceFlag: wkframe.APP,
+			}},
+			consumed: 1,
+		})
+
+		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(*gateway.Context, *wkframe.ConnectPacket) (*gateway.AuthResult, error) {
+			return &gateway.AuthResult{
+				Connack: &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonSuccess},
+			}, nil
+		}))
+		if err := srv.Start(); err != nil {
+			t.Fatalf("start failed: %v", err)
+		}
+		t.Cleanup(func() { _ = srv.Stop() })
+
+		conn := transportFactory.MustOpen("listener-a", 1)
+		transportFactory.MustData("listener-a", 1, []byte("c"))
+
+		waitFor(t, func() bool { return len(handler.callOrder()) == 2 && len(conn.Writes()) == 1 })
+		if got := handler.callOrder(); !reflect.DeepEqual(got, []string{"activate", "open"}) {
+			t.Fatalf("unexpected call order: %v", got)
+		}
+	})
+
+	t.Run("wkproto activation failure writes retryable connack and closes", func(t *testing.T) {
+		handler := newTestHandler()
+		handler.onActivate = func(*gateway.Context) (*wkframe.ConnackPacket, error) {
+			return nil, errors.New("activate boom")
+		}
+
+		proto := newScriptedProtocol("wkproto")
+		proto.encodeFn = func(_ session.Session, frame wkframe.Frame, _ session.OutboundMeta) ([]byte, error) {
+			connack, ok := frame.(*wkframe.ConnackPacket)
+			if !ok {
+				t.Fatalf("expected connack frame, got %T", frame)
+			}
+			if connack.ReasonCode != wkframe.ReasonSystemError {
+				t.Fatalf("expected retryable connack, got %v", connack.ReasonCode)
+			}
+			return []byte("connack-system"), nil
+		}
+		proto.pushDecode(decodeResult{
+			frames: []wkframe.Frame{&wkframe.ConnectPacket{
+				UID:        "u1",
+				DeviceID:   "d-1",
+				DeviceFlag: wkframe.APP,
+			}},
+			consumed: 1,
+		})
+
+		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{}))
+		if err := srv.Start(); err != nil {
+			t.Fatalf("start failed: %v", err)
+		}
+		t.Cleanup(func() { _ = srv.Stop() })
+
+		conn := transportFactory.MustOpen("listener-a", 1)
+		transportFactory.MustData("listener-a", 1, []byte("c"))
+
+		waitFor(t, func() bool { return connClosed(conn) && len(conn.Writes()) == 1 })
+		if got := handler.callOrder(); !reflect.DeepEqual(got, []string{"activate"}) {
+			t.Fatalf("unexpected call order: %v", got)
+		}
+		if got := conn.Writes()[0]; !reflect.DeepEqual(got, []byte("connack-system")) {
+			t.Fatalf("unexpected connack payload: %q", got)
+		}
+	})
+
+	t.Run("wkproto activation normalizes zero reason override to success", func(t *testing.T) {
+		handler := newTestHandler()
+		handler.onActivate = func(*gateway.Context) (*wkframe.ConnackPacket, error) {
+			return &wkframe.ConnackPacket{}, nil
+		}
+
+		proto := newScriptedProtocol("wkproto")
+		proto.encodeFn = func(_ session.Session, frame wkframe.Frame, _ session.OutboundMeta) ([]byte, error) {
+			connack, ok := frame.(*wkframe.ConnackPacket)
+			if !ok {
+				t.Fatalf("expected connack frame, got %T", frame)
+			}
+			if connack.ReasonCode != wkframe.ReasonSuccess {
+				t.Fatalf("expected normalized success connack, got %v", connack.ReasonCode)
+			}
+			return []byte("connack-success"), nil
+		}
+		proto.pushDecode(decodeResult{
+			frames: []wkframe.Frame{&wkframe.ConnectPacket{
+				UID:        "u1",
+				DeviceID:   "d-1",
+				DeviceFlag: wkframe.APP,
+			}},
+			consumed: 1,
+		})
+
+		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(*gateway.Context, *wkframe.ConnectPacket) (*gateway.AuthResult, error) {
+			return &gateway.AuthResult{
+				Connack: &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonSuccess},
+			}, nil
+		}))
+		if err := srv.Start(); err != nil {
+			t.Fatalf("start failed: %v", err)
+		}
+		t.Cleanup(func() { _ = srv.Stop() })
+
+		conn := transportFactory.MustOpen("listener-a", 1)
+		transportFactory.MustData("listener-a", 1, []byte("c"))
+
+		waitFor(t, func() bool { return len(conn.Writes()) == 1 && len(handler.callOrder()) == 2 })
+		if got := handler.callOrder(); !reflect.DeepEqual(got, []string{"activate", "open"}) {
+			t.Fatalf("unexpected call order: %v", got)
+		}
+		if got := conn.Writes()[0]; !reflect.DeepEqual(got, []byte("connack-success")) {
+			t.Fatalf("unexpected connack payload: %q", got)
+		}
+	})
+
 	t.Run("successful wkproto authentication replies with connack and allows later frames", func(t *testing.T) {
 		handler := newTestHandler()
 		proto := newScriptedProtocol("wkproto")
@@ -825,6 +994,7 @@ type scriptedProtocol struct {
 	decodeQueue  []decodeResult
 	tokenQueue   [][]string
 	encodedBytes []byte
+	encodeFn     func(session.Session, wkframe.Frame, session.OutboundMeta) ([]byte, error)
 	encodeErr    error
 	openErr      error
 	closeErr     error
@@ -852,9 +1022,12 @@ func (p *scriptedProtocol) Decode(_ session.Session, _ []byte) ([]wkframe.Frame,
 	return append([]wkframe.Frame(nil), step.frames...), step.consumed, step.err
 }
 
-func (p *scriptedProtocol) Encode(_ session.Session, _ wkframe.Frame, _ session.OutboundMeta) ([]byte, error) {
+func (p *scriptedProtocol) Encode(sess session.Session, frame wkframe.Frame, meta session.OutboundMeta) ([]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.encodeFn != nil {
+		return p.encodeFn(sess, frame, meta)
+	}
 	if p.encodeErr != nil {
 		return nil, p.encodeErr
 	}
@@ -903,9 +1076,10 @@ type testHandler struct {
 	framesSeen     []wkframe.Frame
 	contextCopies  []gateway.Context
 
-	onOpen  func(*gateway.Context) error
-	onFrame func(*gateway.Context, wkframe.Frame) error
-	onClose func(*gateway.Context) error
+	onOpen     func(*gateway.Context) error
+	onActivate func(*gateway.Context) (*wkframe.ConnackPacket, error)
+	onFrame    func(*gateway.Context, wkframe.Frame) error
+	onClose    func(*gateway.Context) error
 }
 
 func newTestHandler() *testHandler { return &testHandler{} }
@@ -929,6 +1103,21 @@ func (h *testHandler) OnSessionOpen(ctx *gateway.Context) error {
 		return fn(ctx)
 	}
 	return nil
+}
+
+func (h *testHandler) OnSessionActivate(ctx *gateway.Context) (*wkframe.ConnackPacket, error) {
+	fn := h.onActivate
+	if fn == nil {
+		return nil, nil
+	}
+
+	h.mu.Lock()
+	h.order = append(h.order, "activate")
+	if ctx != nil {
+		h.contextCopies = append(h.contextCopies, *ctx)
+	}
+	h.mu.Unlock()
+	return fn(ctx)
 }
 
 func (h *testHandler) OnFrame(ctx *gateway.Context, frame wkframe.Frame) error {

@@ -8,7 +8,9 @@ import (
 
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
+	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
+	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
@@ -25,12 +27,14 @@ const (
 )
 
 func TestGatewayWKProtoHandlerRoutesDurablePersonSend(t *testing.T) {
-	handler := New(Options{
-		Messages: newClusterBackedMessageApp(channellog.SendResult{
+	registry := online.NewRegistry()
+	handler := newGatewayIntegrationHandler(
+		newClusterBackedMessageAppWithOnline(registry, channellog.SendResult{
 			MessageID:  88,
 			MessageSeq: 9,
 		}),
-	})
+		registry,
+	)
 	gw, err := coregateway.New(coregateway.Options{
 		Handler: handler,
 		Authenticator: coregateway.NewWKProtoAuthenticator(coregateway.WKProtoAuthOptions{
@@ -83,9 +87,7 @@ func TestGatewayWKProtoHandlerRoutesDurablePersonSend(t *testing.T) {
 }
 
 func TestGatewayVersion5ClientGetsUpgradeRequiredOnSend(t *testing.T) {
-	handler := New(Options{
-		Messages: &fakeMessageUsecase{sendErr: channellog.ErrProtocolUpgradeRequired},
-	})
+	handler := newGatewayIntegrationHandler(&fakeMessageUsecase{sendErr: channellog.ErrProtocolUpgradeRequired}, nil)
 	gw, err := coregateway.New(coregateway.Options{
 		Handler: handler,
 		Authenticator: coregateway.NewWKProtoAuthenticator(coregateway.WKProtoAuthOptions{
@@ -126,7 +128,7 @@ func TestGatewayWKProtoHandlerPropagatesRequestContextToUsecase(t *testing.T) {
 	msgs := &fakeMessageUsecase{
 		sendResult: message.SendResult{Reason: wkframe.ReasonSuccess},
 	}
-	handler := New(Options{Messages: msgs})
+	handler := newGatewayIntegrationHandler(msgs, nil)
 	gw, err := coregateway.New(coregateway.Options{
 		Handler: handler,
 		Authenticator: coregateway.NewWKProtoAuthenticator(coregateway.WKProtoAuthOptions{
@@ -172,9 +174,13 @@ func TestGatewayWKProtoHandlerCancelsInFlightSendOnTimeout(t *testing.T) {
 			return message.SendResult{}, ctx.Err()
 		},
 	}
+	registry := online.NewRegistry()
 	handler := New(Options{
 		Messages:    msgs,
+		Presence:    newGatewayIntegrationPresence(registry),
+		Online:      registry,
 		SendTimeout: 50 * time.Millisecond,
+		Now:         func() time.Time { return fixedGatewayNow },
 	})
 	gw, err := coregateway.New(coregateway.Options{
 		Handler: handler,
@@ -220,6 +226,42 @@ func TestGatewayWKProtoHandlerCancelsInFlightSendOnTimeout(t *testing.T) {
 	require.Equal(t, "m2", ack.ClientMsgNo)
 }
 
+func newGatewayIntegrationHandler(msgs MessageUsecase, registry online.Registry) *Handler {
+	if registry == nil {
+		registry = online.NewRegistry()
+	}
+	return New(Options{
+		Online:   registry,
+		Messages: msgs,
+		Presence: newGatewayIntegrationPresence(registry),
+		Now:      func() time.Time { return fixedGatewayNow },
+	})
+}
+
+func newGatewayIntegrationPresence(registry online.Registry) PresenceUsecase {
+	if registry == nil {
+		registry = online.NewRegistry()
+	}
+	return presence.New(presence.Options{
+		LocalNodeID:   1,
+		GatewayBootID: 1,
+		Online:        registry,
+		Router:        fixedGatewayRouter{groupID: 1},
+		Now:           func() time.Time { return fixedGatewayNow },
+	})
+}
+
+type fixedGatewayRouter struct {
+	groupID uint64
+}
+
+func (r fixedGatewayRouter) SlotForKey(string) uint64 {
+	if r.groupID == 0 {
+		return 1
+	}
+	return r.groupID
+}
+
 func TestGatewayWKProtoHandlerCancelsInFlightSendOnGatewayStop(t *testing.T) {
 	started := make(chan struct{})
 	done := make(chan error, 1)
@@ -231,10 +273,8 @@ func TestGatewayWKProtoHandlerCancelsInFlightSendOnGatewayStop(t *testing.T) {
 			return message.SendResult{}, ctx.Err()
 		},
 	}
-	handler := New(Options{
-		Messages:    msgs,
-		SendTimeout: time.Second,
-	})
+	handler := newGatewayIntegrationHandler(msgs, nil)
+	handler.sendTimeout = time.Second
 	gw, err := coregateway.New(coregateway.Options{
 		Handler: handler,
 		Authenticator: coregateway.NewWKProtoAuthenticator(coregateway.WKProtoAuthOptions{

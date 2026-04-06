@@ -7,6 +7,9 @@ type LocalDelivery struct{}
 func (LocalDelivery) Deliver(recipients []OnlineConn, frame wkframe.Frame) error {
 	var firstErr error
 	for _, recipient := range recipients {
+		if recipient.State == LocalRouteStateClosing {
+			continue
+		}
 		if recipient.Session == nil {
 			if firstErr == nil {
 				firstErr = ErrInvalidConnection

@@ -16,6 +16,38 @@ func TestRegistryRegisterRejectsInvalidConnection(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidConnection)
 }
 
+func TestRegistryRegisterStoresDeviceIDGroupAndActiveState(t *testing.T) {
+	reg := NewRegistry()
+	conn := OnlineConn{
+		SessionID:   11,
+		UID:         "u1",
+		DeviceID:    "d1",
+		GroupID:     7,
+		State:       LocalRouteStateActive,
+		DeviceFlag:  wkframe.APP,
+		DeviceLevel: wkframe.DeviceLevelMaster,
+		Listener:    "tcp",
+		ConnectedAt: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC),
+		Session:     session.New(session.Config{ID: 11, Listener: "tcp"}),
+	}
+
+	require.NoError(t, reg.Register(conn))
+
+	got, ok := reg.Connection(11)
+	require.True(t, ok)
+	require.Equal(t, conn, got)
+
+	connections := reg.ConnectionsByUID("u1")
+	require.Len(t, connections, 1)
+	require.Equal(t, conn, connections[0])
+
+	groups := reg.ActiveGroups()
+	require.Len(t, groups, 1)
+	require.Equal(t, uint64(7), groups[0].GroupID)
+	require.Equal(t, 1, groups[0].Count)
+	require.NotZero(t, groups[0].Digest)
+}
+
 func TestRegistryRegisterLookupAndUnregister(t *testing.T) {
 	reg := NewRegistry()
 	fixedNow := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
@@ -118,6 +150,98 @@ func TestRegistryUnregisterIsIdempotent(t *testing.T) {
 	_, ok := reg.Connection(1)
 	require.False(t, ok)
 	require.Empty(t, reg.ConnectionsByUID("u1"))
+}
+
+func TestRegistryMarkClosingRemovesRouteFromUIDDeliveryAndBucketDigest(t *testing.T) {
+	reg := NewRegistry()
+	require.NoError(t, reg.Register(OnlineConn{
+		SessionID:   11,
+		UID:         "u1",
+		DeviceID:    "d1",
+		GroupID:     1,
+		State:       LocalRouteStateActive,
+		DeviceFlag:  wkframe.APP,
+		DeviceLevel: wkframe.DeviceLevelMaster,
+		Session:     session.New(session.Config{ID: 11, Listener: "tcp"}),
+	}))
+
+	before := reg.ActiveGroups()
+	conn, ok := reg.MarkClosing(11)
+	require.True(t, ok)
+	require.Equal(t, LocalRouteStateClosing, conn.State)
+	require.Empty(t, reg.ConnectionsByUID("u1"))
+	require.NotEmpty(t, before)
+	require.Empty(t, reg.ActiveGroups())
+}
+
+func TestRegistryMarkClosingUpdatesOnlyOccupiedGroupSnapshots(t *testing.T) {
+	reg := NewRegistry()
+	require.NoError(t, reg.Register(OnlineConn{
+		SessionID:   11,
+		UID:         "u1",
+		DeviceID:    "d1",
+		GroupID:     1,
+		State:       LocalRouteStateActive,
+		DeviceFlag:  wkframe.APP,
+		DeviceLevel: wkframe.DeviceLevelMaster,
+		Session:     session.New(session.Config{ID: 11, Listener: "tcp"}),
+	}))
+	require.NoError(t, reg.Register(OnlineConn{
+		SessionID:   12,
+		UID:         "u1",
+		DeviceID:    "d2",
+		GroupID:     1,
+		State:       LocalRouteStateActive,
+		DeviceFlag:  wkframe.WEB,
+		DeviceLevel: wkframe.DeviceLevelSlave,
+		Session:     session.New(session.Config{ID: 12, Listener: "ws"}),
+	}))
+
+	before := reg.ActiveGroups()
+	require.Len(t, before, 1)
+	require.Equal(t, 2, before[0].Count)
+
+	conn, ok := reg.MarkClosing(11)
+	require.True(t, ok)
+	require.Equal(t, LocalRouteStateClosing, conn.State)
+
+	after := reg.ActiveGroups()
+	require.Len(t, after, 1)
+	require.Equal(t, uint64(1), after[0].GroupID)
+	require.Equal(t, 1, after[0].Count)
+	require.NotEqual(t, before[0].Digest, after[0].Digest)
+}
+
+func TestRegistryActiveConnectionsByGroupReturnsOnlyActiveRoutes(t *testing.T) {
+	reg := NewRegistry()
+
+	active := OnlineConn{
+		SessionID:   11,
+		UID:         "u1",
+		DeviceID:    "d1",
+		GroupID:     3,
+		State:       LocalRouteStateActive,
+		DeviceFlag:  wkframe.APP,
+		DeviceLevel: wkframe.DeviceLevelMaster,
+		Session:     session.New(session.Config{ID: 11, Listener: "tcp"}),
+	}
+	closing := OnlineConn{
+		SessionID:   12,
+		UID:         "u1",
+		DeviceID:    "d2",
+		GroupID:     3,
+		State:       LocalRouteStateClosing,
+		DeviceFlag:  wkframe.WEB,
+		DeviceLevel: wkframe.DeviceLevelSlave,
+		Session:     session.New(session.Config{ID: 12, Listener: "ws"}),
+	}
+
+	require.NoError(t, reg.Register(active))
+	require.NoError(t, reg.Register(closing))
+
+	conns := reg.ActiveConnectionsByGroup(3)
+	require.Len(t, conns, 1)
+	require.Equal(t, active, conns[0])
 }
 
 func listenersOf(conns []OnlineConn) []string {

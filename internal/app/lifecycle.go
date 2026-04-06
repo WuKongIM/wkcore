@@ -14,6 +14,8 @@ import (
 const (
 	apiStopTimeout              = 5 * time.Second
 	defaultDataPlaneDialTimeout = 5 * time.Second
+	presenceLeaderReadyTimeout  = 10 * time.Second
+	presenceLeaderPollInterval  = 50 * time.Millisecond
 )
 
 func (a *App) Start() error {
@@ -41,7 +43,17 @@ func (a *App) Start() error {
 		}
 		a.channelMetaOn.Store(true)
 	}
+	if a.presenceWorker != nil || a.startPresenceFn != nil {
+		if err := a.startPresence(); err != nil {
+			_ = a.stopChannelMetaSync()
+			_ = a.stopClusterWithError()
+			a.started.Store(false)
+			return err
+		}
+		a.presenceOn.Store(true)
+	}
 	if err := a.startGateway(); err != nil {
+		_ = a.stopPresence()
 		_ = a.stopChannelMetaSync()
 		_ = a.stopClusterWithError()
 		a.started.Store(false)
@@ -50,6 +62,7 @@ func (a *App) Start() error {
 	a.gatewayOn.Store(true)
 	if err := a.startAPI(); err != nil {
 		_ = a.stopGateway()
+		_ = a.stopPresence()
 		_ = a.stopChannelMetaSync()
 		_ = a.stopClusterWithError()
 		a.started.Store(false)
@@ -75,6 +88,7 @@ func (a *App) Stop() error {
 		err = errors.Join(
 			a.stopAPI(),
 			a.stopGateway(),
+			a.stopPresence(),
 			a.stopChannelMetaSync(),
 			a.stopClusterWithError(),
 			a.closeChannelLogDB(),
@@ -168,6 +182,19 @@ func (a *App) startAPI() error {
 	return a.api.Start()
 }
 
+func (a *App) startPresence() error {
+	if a.startPresenceFn != nil {
+		return a.startPresenceFn()
+	}
+	if err := a.waitForPresenceLeaders(); err != nil {
+		return err
+	}
+	if a.presenceWorker == nil {
+		return nil
+	}
+	return a.presenceWorker.Start()
+}
+
 func (a *App) stopGateway() error {
 	if !a.gatewayOn.Swap(false) {
 		return nil
@@ -179,6 +206,19 @@ func (a *App) stopGateway() error {
 		return nil
 	}
 	return a.gateway.Stop()
+}
+
+func (a *App) stopPresence() error {
+	if !a.presenceOn.Swap(false) {
+		return nil
+	}
+	if a.stopPresenceFn != nil {
+		return a.stopPresenceFn()
+	}
+	if a.presenceWorker == nil {
+		return nil
+	}
+	return a.presenceWorker.Stop()
 }
 
 func (a *App) stopChannelMetaSync() error {
@@ -220,6 +260,39 @@ func (a *App) stopAPI() error {
 	ctx, cancel := context.WithTimeout(context.Background(), apiStopTimeout)
 	defer cancel()
 	return a.api.Stop(ctx)
+}
+
+func (a *App) waitForPresenceLeaders() error {
+	if a == nil || a.cluster == nil {
+		return nil
+	}
+	groupIDs := a.cluster.GroupIDs()
+	if len(groupIDs) == 0 {
+		return nil
+	}
+
+	deadline := time.Now().Add(presenceLeaderReadyTimeout)
+	var lastErr error
+	for {
+		allReady := true
+		for _, groupID := range groupIDs {
+			if _, err := a.cluster.LeaderOf(groupID); err != nil {
+				allReady = false
+				lastErr = err
+				break
+			}
+		}
+		if allReady {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return lastErr
+			}
+			return ErrNotBuilt
+		}
+		time.Sleep(presenceLeaderPollInterval)
+	}
 }
 
 func (a *App) stopCluster() {
