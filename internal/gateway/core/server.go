@@ -465,6 +465,10 @@ func (s *Server) handleAuthFrame(state *sessionState, replyToken string, frame w
 		return true, nil
 	}
 
+	if result.SessionValues == nil {
+		result.SessionValues = make(map[string]any, 1)
+	}
+	result.SessionValues[gatewaytypes.SessionValueDeviceID] = connect.DeviceID
 	for key, value := range result.SessionValues {
 		state.session.SetValue(key, value)
 	}
@@ -483,6 +487,9 @@ func (s *Server) handleAuthFrame(state *sessionState, replyToken string, frame w
 		if override != nil {
 			connack = override
 		}
+	}
+	if connack.ReasonCode == 0 {
+		connack.ReasonCode = wkframe.ReasonSuccess
 	}
 
 	if writeErr := s.writeImmediateFrame(state, connack); writeErr != nil {

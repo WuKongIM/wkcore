@@ -127,6 +127,45 @@ func TestServer(t *testing.T) {
 		}
 	})
 
+	t.Run("successful wkproto activation sees device id from generic auth result", func(t *testing.T) {
+		handler := newTestHandler()
+		handler.onActivate = func(ctx *gateway.Context) (*wkframe.ConnackPacket, error) {
+			if got := ctx.Session.Value(gateway.SessionValueDeviceID); got != "d-1" {
+				t.Fatalf("expected device id before activation, got %#v", got)
+			}
+			return nil, nil
+		}
+
+		proto := newScriptedProtocol("wkproto")
+		proto.encodedBytes = []byte("connack-success")
+		proto.pushDecode(decodeResult{
+			frames: []wkframe.Frame{&wkframe.ConnectPacket{
+				UID:        "u1",
+				DeviceID:   "d-1",
+				DeviceFlag: wkframe.APP,
+			}},
+			consumed: 1,
+		})
+
+		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(*gateway.Context, *wkframe.ConnectPacket) (*gateway.AuthResult, error) {
+			return &gateway.AuthResult{
+				Connack: &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonSuccess},
+			}, nil
+		}))
+		if err := srv.Start(); err != nil {
+			t.Fatalf("start failed: %v", err)
+		}
+		t.Cleanup(func() { _ = srv.Stop() })
+
+		conn := transportFactory.MustOpen("listener-a", 1)
+		transportFactory.MustData("listener-a", 1, []byte("c"))
+
+		waitFor(t, func() bool { return len(handler.callOrder()) == 2 && len(conn.Writes()) == 1 })
+		if got := handler.callOrder(); !reflect.DeepEqual(got, []string{"activate", "open"}) {
+			t.Fatalf("unexpected call order: %v", got)
+		}
+	})
+
 	t.Run("wkproto activation failure writes retryable connack and closes", func(t *testing.T) {
 		handler := newTestHandler()
 		handler.onActivate = func(*gateway.Context) (*wkframe.ConnackPacket, error) {
@@ -167,6 +206,54 @@ func TestServer(t *testing.T) {
 			t.Fatalf("unexpected call order: %v", got)
 		}
 		if got := conn.Writes()[0]; !reflect.DeepEqual(got, []byte("connack-system")) {
+			t.Fatalf("unexpected connack payload: %q", got)
+		}
+	})
+
+	t.Run("wkproto activation normalizes zero reason override to success", func(t *testing.T) {
+		handler := newTestHandler()
+		handler.onActivate = func(*gateway.Context) (*wkframe.ConnackPacket, error) {
+			return &wkframe.ConnackPacket{}, nil
+		}
+
+		proto := newScriptedProtocol("wkproto")
+		proto.encodeFn = func(_ session.Session, frame wkframe.Frame, _ session.OutboundMeta) ([]byte, error) {
+			connack, ok := frame.(*wkframe.ConnackPacket)
+			if !ok {
+				t.Fatalf("expected connack frame, got %T", frame)
+			}
+			if connack.ReasonCode != wkframe.ReasonSuccess {
+				t.Fatalf("expected normalized success connack, got %v", connack.ReasonCode)
+			}
+			return []byte("connack-success"), nil
+		}
+		proto.pushDecode(decodeResult{
+			frames: []wkframe.Frame{&wkframe.ConnectPacket{
+				UID:        "u1",
+				DeviceID:   "d-1",
+				DeviceFlag: wkframe.APP,
+			}},
+			consumed: 1,
+		})
+
+		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(*gateway.Context, *wkframe.ConnectPacket) (*gateway.AuthResult, error) {
+			return &gateway.AuthResult{
+				Connack: &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonSuccess},
+			}, nil
+		}))
+		if err := srv.Start(); err != nil {
+			t.Fatalf("start failed: %v", err)
+		}
+		t.Cleanup(func() { _ = srv.Stop() })
+
+		conn := transportFactory.MustOpen("listener-a", 1)
+		transportFactory.MustData("listener-a", 1, []byte("c"))
+
+		waitFor(t, func() bool { return len(conn.Writes()) == 1 && len(handler.callOrder()) == 2 })
+		if got := handler.callOrder(); !reflect.DeepEqual(got, []string{"activate", "open"}) {
+			t.Fatalf("unexpected call order: %v", got)
+		}
+		if got := conn.Writes()[0]; !reflect.DeepEqual(got, []byte("connack-success")) {
 			t.Fatalf("unexpected connack payload: %q", got)
 		}
 	})

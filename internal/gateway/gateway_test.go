@@ -250,6 +250,50 @@ func TestGatewayWKProtoActivationSeesDeviceIDBeforeConnectSucceeds(t *testing.T)
 	}
 }
 
+func TestGatewayWKProtoActivationSeesDeviceIDWithCustomAuthenticator(t *testing.T) {
+	handler := &activationHandler{}
+	gw, err := gateway.New(gateway.Options{
+		Handler: handler,
+		Authenticator: gateway.AuthenticatorFunc(func(*gateway.Context, *wkframe.ConnectPacket) (*gateway.AuthResult, error) {
+			return &gateway.AuthResult{
+				Connack: &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonSuccess},
+			}, nil
+		}),
+		Listeners: []gateway.ListenerOptions{
+			binding.TCPWKProto("tcp-wkproto-custom-auth", "127.0.0.1:0"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := gw.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = gw.Stop() })
+
+	conn := dialTCPGateway(t, gw, "tcp-wkproto-custom-auth")
+	t.Cleanup(func() { _ = conn.Close() })
+
+	connack := mustConnectWKProto(t, conn, &wkframe.ConnectPacket{
+		Version:         wkframe.LatestVersion,
+		UID:             "u1",
+		DeviceID:        "d1",
+		DeviceFlag:      wkframe.APP,
+		ClientTimestamp: time.Now().UnixMilli(),
+	})
+	if connack.ReasonCode != wkframe.ReasonSuccess {
+		t.Fatalf("expected success connack, got %v", connack.ReasonCode)
+	}
+
+	waitUntil(t, time.Second, func() bool { return handler.openSeen() })
+	if got := handler.deviceID(); got != "d1" {
+		t.Fatalf("expected activation to see device id, got %#v", got)
+	}
+	if got := handler.callOrder(); !reflect.DeepEqual(got, []string{"activate", "open"}) {
+		t.Fatalf("unexpected call order: %v", got)
+	}
+}
+
 type activationHandler struct {
 	mu            sync.Mutex
 	order         []string
