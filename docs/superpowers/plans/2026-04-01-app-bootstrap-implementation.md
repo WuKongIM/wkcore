@@ -448,18 +448,18 @@ Run: `go test ./cmd/wukongim -run 'TestLoadConfig' -v`
 
 Expected: FAIL because `cmd/wukongim` does not exist yet.
 
-- [ ] **Step 3: Implement JSON config loading and process main**
+- [ ] **Step 3: Implement config loading and process main**
 
 Create `cmd/wukongim/config.go`:
-- define wire structs mirroring the JSON document
 - implement `loadConfig(path string) (app.Config, error)`
-- translate JSON values into `app.Config`
+- load startup config from `wukongim.conf` and environment variables
+- translate known `WK_*` values into `app.Config`
 
 Create `cmd/wukongim/main.go`:
 
 ```go
 func main() {
-	configPath := flag.String("config", "", "path to JSON config file")
+	configPath := flag.String("config", "", "path to wukongim.conf file")
 	flag.Parse()
 
 	cfg, err := loadConfig(*configPath)

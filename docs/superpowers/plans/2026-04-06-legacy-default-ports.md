@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> Historical note: this plan was written against the earlier JSON loader. The current startup path uses `wukongim.conf` plus environment-variable overrides in `cmd/wukongim/config.go`.
+
 **Goal:** Make `cmd/wukongim` default its API, TCP, and WebSocket listener ports to the legacy WuKongIM values when those JSON fields are omitted.
 
 **Architecture:** Keep compatibility isolated to the JSON config loading layer in `cmd/wukongim/config.go`. Do not change `internal/app` validation semantics; instead, detect omitted config fields during decode and synthesize the legacy defaults there.
