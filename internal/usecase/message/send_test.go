@@ -284,8 +284,8 @@ func TestSendDurablePersonReturnsContextCanceled(t *testing.T) {
 		},
 	}
 	app := New(Options{
-		Now:         fixedNowFn,
-		Cluster:     cluster,
+		Now:     fixedNowFn,
+		Cluster: cluster,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -313,8 +313,8 @@ func TestSendReturnsProtocolUpgradeRequiredWhenClusterRejectsLegacyClient(t *tes
 	}
 	delivery := &recordingDelivery{}
 	app := New(Options{
-		Now:         fixedNowFn,
-		Cluster:     cluster,
+		Now:     fixedNowFn,
+		Cluster: cluster,
 		Online: &fakeRegistry{
 			byUID: map[string][]online.OnlineConn{
 				"u2": {
@@ -399,6 +399,10 @@ func (f *fakeRegistry) Unregister(sessionID uint64) {
 	}
 }
 
+func (f *fakeRegistry) MarkClosing(uint64) (online.OnlineConn, bool) {
+	return online.OnlineConn{}, false
+}
+
 func (f *fakeRegistry) Connection(sessionID uint64) (online.OnlineConn, bool) {
 	for _, conns := range f.byUID {
 		for _, conn := range conns {
@@ -415,6 +419,14 @@ func (f *fakeRegistry) ConnectionsByUID(uid string) []online.OnlineConn {
 	out := make([]online.OnlineConn, len(conns))
 	copy(out, conns)
 	return out
+}
+
+func (f *fakeRegistry) ActiveConnectionsByGroup(uint64) []online.OnlineConn {
+	return nil
+}
+
+func (f *fakeRegistry) ActiveGroups() []online.GroupSnapshot {
+	return nil
 }
 
 type deliveryCall struct {
