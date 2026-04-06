@@ -5,12 +5,36 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/sequence"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 )
 
 type OnlineRegistry = online.Registry
 type Delivery = online.Delivery
 type SequenceAllocator = sequence.Allocator
+
+type Endpoint struct {
+	NodeID     uint64
+	BootID     uint64
+	SessionID  uint64
+	DeviceFlag uint8
+}
+
+type RecipientDirectory interface {
+	EndpointsByUID(ctx context.Context, uid string) ([]Endpoint, error)
+}
+
+type RemoteDeliveryCommand struct {
+	NodeID     uint64
+	UID        string
+	BootID     uint64
+	SessionIDs []uint64
+	Frame      wkframe.Frame
+}
+
+type RemoteDelivery interface {
+	DeliverRemote(ctx context.Context, cmd RemoteDeliveryCommand) error
+}
 
 type ChannelCluster interface {
 	ApplyMeta(meta channellog.ChannelMeta) error

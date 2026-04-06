@@ -44,8 +44,8 @@ func TestPresenceRPCClientFollowsNotLeaderRedirect(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.Empty(t, presence1.EndpointsByUID(context.Background(), "u1"))
-	require.Len(t, presence2.EndpointsByUID(context.Background(), "u1"), 1)
+	require.Empty(t, requirePresenceEndpoints(t, presence1, "u1"))
+	require.Len(t, requirePresenceEndpoints(t, presence2, "u1"), 1)
 }
 
 func TestPresenceRPCRegisterRoundTrip(t *testing.T) {
@@ -78,7 +78,7 @@ func TestPresenceRPCRegisterRoundTrip(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Empty(t, result.Actions)
-	require.Len(t, presenceApp.EndpointsByUID(context.Background(), "u1"), 1)
+	require.Len(t, requirePresenceEndpoints(t, presenceApp, "u1"), 1)
 }
 
 func TestPresenceRPCUnregisterRoundTrip(t *testing.T) {
@@ -116,7 +116,7 @@ func TestPresenceRPCUnregisterRoundTrip(t *testing.T) {
 		GroupID: 1,
 		Route:   route,
 	}))
-	require.Empty(t, presenceApp.EndpointsByUID(context.Background(), "u1"))
+	require.Empty(t, requirePresenceEndpoints(t, presenceApp, "u1"))
 }
 
 func TestPresenceRPCReplayRoundTrip(t *testing.T) {
@@ -153,7 +153,7 @@ func TestPresenceRPCReplayRoundTrip(t *testing.T) {
 		}},
 	})
 	require.NoError(t, err)
-	require.Len(t, presenceApp.EndpointsByUID(context.Background(), "u1"), 1)
+	require.Len(t, requirePresenceEndpoints(t, presenceApp, "u1"), 1)
 }
 
 func TestPresenceRPCApplyActionRoundTrip(t *testing.T) {
@@ -253,4 +253,12 @@ func (c *fakeCluster) PeersForGroup(groupID multiraft.GroupID) []multiraft.NodeI
 		out = append(out, multiraft.NodeID(peer))
 	}
 	return out
+}
+
+func requirePresenceEndpoints(t *testing.T, app *presence.App, uid string) []presence.Route {
+	t.Helper()
+
+	endpoints, err := app.EndpointsByUID(context.Background(), uid)
+	require.NoError(t, err)
+	return endpoints
 }

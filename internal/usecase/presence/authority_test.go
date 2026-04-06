@@ -29,7 +29,7 @@ func TestAuthorityRegisterMasterDifferentDeviceReturnsKickThenCloseActions(t *te
 	require.Equal(t, "kick_then_close", result.Actions[0].Kind)
 	require.Equal(t, uint64(100), result.Actions[0].SessionID)
 
-	endpoints := app.EndpointsByUID(context.Background(), "u1")
+	endpoints := requireAuthorityEndpoints(t, app, "u1")
 	require.Len(t, endpoints, 1)
 	require.Equal(t, uint64(200), endpoints[0].SessionID)
 }
@@ -51,7 +51,7 @@ func TestAuthorityRegisterDuplicateSameRouteIsIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, result.Actions)
 
-	endpoints := app.EndpointsByUID(context.Background(), "u1")
+	endpoints := requireAuthorityEndpoints(t, app, "u1")
 	require.Len(t, endpoints, 1)
 	require.Equal(t, uint64(100), endpoints[0].SessionID)
 }
@@ -74,7 +74,7 @@ func TestAuthorityRegisterMasterSameDeviceReturnsCloseActions(t *testing.T) {
 	require.Equal(t, "close", result.Actions[0].Kind)
 	require.Equal(t, uint64(100), result.Actions[0].SessionID)
 
-	endpoints := app.EndpointsByUID(context.Background(), "u1")
+	endpoints := requireAuthorityEndpoints(t, app, "u1")
 	require.Len(t, endpoints, 1)
 	require.Equal(t, uint64(101), endpoints[0].SessionID)
 }
@@ -102,7 +102,7 @@ func TestAuthorityRegisterSlaveOnlyReplacesSameDeviceID(t *testing.T) {
 	require.Equal(t, "close", result.Actions[0].Kind)
 	require.Equal(t, uint64(100), result.Actions[0].SessionID)
 
-	endpoints := app.EndpointsByUID(context.Background(), "u1")
+	endpoints := requireAuthorityEndpoints(t, app, "u1")
 	require.Len(t, endpoints, 2)
 	require.ElementsMatch(t, []uint64{101, 200}, []uint64{endpoints[0].SessionID, endpoints[1].SessionID})
 }
@@ -208,11 +208,11 @@ func TestAuthorityReplayReplacesOwnerSetWithActiveRoutesOnly(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	endpointsU1 := app.EndpointsByUID(context.Background(), "u1")
+	endpointsU1 := requireAuthorityEndpoints(t, app, "u1")
 	require.Len(t, endpointsU1, 1)
 	require.Equal(t, uint64(100), endpointsU1[0].SessionID)
 
-	endpointsU2 := app.EndpointsByUID(context.Background(), "u2")
+	endpointsU2 := requireAuthorityEndpoints(t, app, "u2")
 	require.Empty(t, endpointsU2)
 }
 
@@ -247,7 +247,7 @@ func TestAuthorityReplayDoesNotResurrectSupersededMasterRoute(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	endpoints := app.EndpointsByUID(context.Background(), "u1")
+	endpoints := requireAuthorityEndpoints(t, app, "u1")
 	require.Len(t, endpoints, 1)
 	require.Equal(t, uint64(200), endpoints[0].SessionID)
 }
@@ -274,7 +274,7 @@ func TestAuthorityEndpointsByUIDReturnsCurrentRoutes(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	endpoints := app.EndpointsByUID(context.Background(), "u1")
+	endpoints := requireAuthorityEndpoints(t, app, "u1")
 	require.Len(t, endpoints, 2)
 	require.ElementsMatch(t, []uint64{100, 200}, []uint64{endpoints[0].SessionID, endpoints[1].SessionID})
 }
@@ -290,10 +290,10 @@ func TestAuthorityRegisterSeedsLeaseDeadlineAndExpiresWithoutHeartbeat(t *testin
 		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
 	})
 	require.NoError(t, err)
-	require.Len(t, app.EndpointsByUID(context.Background(), "u1"), 1)
+	require.Len(t, requireAuthorityEndpoints(t, app, "u1"), 1)
 
 	now = now.Add(31 * time.Second)
-	require.Empty(t, app.EndpointsByUID(context.Background(), "u1"))
+	require.Empty(t, requireAuthorityEndpoints(t, app, "u1"))
 }
 
 func TestAuthorityHeartbeatExplicitLeaseKeepsRouteAlive(t *testing.T) {
@@ -322,7 +322,7 @@ func TestAuthorityHeartbeatExplicitLeaseKeepsRouteAlive(t *testing.T) {
 	require.True(t, heartbeat.Mismatch)
 
 	now = now.Add(31 * time.Second)
-	endpoints := app.EndpointsByUID(context.Background(), "u1")
+	endpoints := requireAuthorityEndpoints(t, app, "u1")
 	require.Len(t, endpoints, 1)
 	require.Equal(t, uint64(100), endpoints[0].SessionID)
 }
@@ -364,10 +364,10 @@ func TestAuthorityHeartbeatStaleLeaseDoesNotShortenDeadline(t *testing.T) {
 	require.NoError(t, err)
 
 	now = now.Add(31 * time.Second)
-	require.Len(t, app.EndpointsByUID(context.Background(), "u1"), 1)
+	require.Len(t, requireAuthorityEndpoints(t, app, "u1"), 1)
 
 	now = time.Unix(291, 0)
-	require.Empty(t, app.EndpointsByUID(context.Background(), "u1"))
+	require.Empty(t, requireAuthorityEndpoints(t, app, "u1"))
 }
 
 func TestAuthorityReplayStaleLeaseDoesNotShortenDeadline(t *testing.T) {
@@ -403,10 +403,10 @@ func TestAuthorityReplayStaleLeaseDoesNotShortenDeadline(t *testing.T) {
 	require.NoError(t, err)
 
 	now = now.Add(31 * time.Second)
-	require.Len(t, app.EndpointsByUID(context.Background(), "u1"), 1)
+	require.Len(t, requireAuthorityEndpoints(t, app, "u1"), 1)
 
 	now = time.Unix(291, 0)
-	require.Empty(t, app.EndpointsByUID(context.Background(), "u1"))
+	require.Empty(t, requireAuthorityEndpoints(t, app, "u1"))
 }
 
 func TestAuthorityEndpointsByUIDEvictsExpiredLeaseRoutes(t *testing.T) {
@@ -428,7 +428,7 @@ func TestAuthorityEndpointsByUIDEvictsExpiredLeaseRoutes(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	endpoints := app.EndpointsByUID(context.Background(), "u1")
+	endpoints := requireAuthorityEndpoints(t, app, "u1")
 	require.Empty(t, endpoints)
 }
 
@@ -459,4 +459,12 @@ func testRoute(uid string, nodeID, bootID, sessionID uint64, deviceID string, le
 		DeviceFlag:  uint8(wkframe.APP),
 		DeviceLevel: level,
 	}
+}
+
+func requireAuthorityEndpoints(t *testing.T, app *App, uid string) []Route {
+	t.Helper()
+
+	endpoints, err := app.EndpointsByUID(context.Background(), uid)
+	require.NoError(t, err)
+	return endpoints
 }

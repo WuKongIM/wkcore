@@ -174,6 +174,182 @@ func TestSendReturnsSuccessWhenPostCommitDeliveryFails(t *testing.T) {
 	require.Len(t, cluster.sendRequests, 1)
 }
 
+func TestSendUsesResolvedEndpointsForLocalAndRemoteRecipients(t *testing.T) {
+	reg := &fakeRegistry{
+		byUID: map[string][]online.OnlineConn{
+			"u2": {
+				{SessionID: 2, UID: "u2"},
+				{SessionID: 99, UID: "u2"},
+			},
+		},
+	}
+	delivery := &recordingDelivery{}
+	remote := &recordingRemoteDelivery{}
+	cluster := &fakeChannelCluster{
+		sendReplies: []fakeChannelClusterSendReply{
+			{result: channellog.SendResult{MessageID: 601, MessageSeq: 22}},
+		},
+	}
+	recipients := fakeRecipientDirectory{
+		endpointsByUID: map[string][]Endpoint{
+			"u2": {
+				{NodeID: 1, BootID: 11, SessionID: 2},
+				{NodeID: 2, BootID: 22, SessionID: 8},
+			},
+		},
+	}
+	app := New(Options{
+		Now:            fixedNowFn,
+		Cluster:        cluster,
+		Online:         reg,
+		Delivery:       delivery,
+		Recipients:     recipients,
+		RemoteDelivery: remote,
+		LocalNodeID:    1,
+		LocalBootID:    11,
+	})
+
+	result, err := app.Send(context.Background(), SendCommand{
+		SenderUID:   "u1",
+		ChannelID:   "u2",
+		ChannelType: wkframe.ChannelTypePerson,
+		Payload:     []byte("hi"),
+		ClientSeq:   31,
+		ClientMsgNo: "m-remote",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+	require.Len(t, delivery.calls, 1)
+	require.Len(t, delivery.calls[0].recipients, 1)
+	require.Equal(t, uint64(2), delivery.calls[0].recipients[0].SessionID)
+	require.Len(t, remote.calls, 1)
+	require.Equal(t, uint64(2), remote.calls[0].NodeID)
+	require.Equal(t, uint64(22), remote.calls[0].BootID)
+	require.Equal(t, []uint64{8}, remote.calls[0].SessionIDs)
+
+	recv := requireRecvPacket(t, remote.calls[0].Frame)
+	require.Equal(t, "u1", recv.FromUID)
+	require.Equal(t, int64(601), recv.MessageID)
+	require.Equal(t, uint64(22), recv.MessageSeq)
+}
+
+func TestSendLocalEndpointsRequireBootUIDAndActiveState(t *testing.T) {
+	reg := &fakeRegistry{
+		byUID: map[string][]online.OnlineConn{
+			"u2": {
+				{SessionID: 6, UID: "u2", State: online.LocalRouteStateActive},
+				{SessionID: 8, UID: "u2", State: online.LocalRouteStateClosing},
+			},
+			"other": {
+				{SessionID: 7, UID: "other", State: online.LocalRouteStateActive},
+			},
+		},
+	}
+	delivery := &recordingDelivery{}
+	cluster := &fakeChannelCluster{
+		sendReplies: []fakeChannelClusterSendReply{
+			{result: channellog.SendResult{MessageID: 611, MessageSeq: 24}},
+		},
+	}
+	recipients := fakeRecipientDirectory{
+		endpointsByUID: map[string][]Endpoint{
+			"u2": {
+				{NodeID: 1, BootID: 10, SessionID: 6},
+				{NodeID: 1, BootID: 11, SessionID: 7},
+				{NodeID: 1, BootID: 11, SessionID: 8},
+				{NodeID: 1, BootID: 11, SessionID: 6},
+			},
+		},
+	}
+	app := New(Options{
+		Now:         fixedNowFn,
+		Cluster:     cluster,
+		Online:      reg,
+		Delivery:    delivery,
+		Recipients:  recipients,
+		LocalNodeID: 1,
+		LocalBootID: 11,
+	})
+
+	result, err := app.Send(context.Background(), SendCommand{
+		SenderUID:   "u1",
+		ChannelID:   "u2",
+		ChannelType: wkframe.ChannelTypePerson,
+		Payload:     []byte("hi"),
+		ClientSeq:   33,
+		ClientMsgNo: "m-local-fence",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+	require.Len(t, delivery.calls, 1)
+	require.Len(t, delivery.calls[0].recipients, 1)
+	require.Equal(t, uint64(6), delivery.calls[0].recipients[0].SessionID)
+}
+
+func TestSendReturnsSuccessWhenRemoteDeliveryFailsPostCommit(t *testing.T) {
+	cluster := &fakeChannelCluster{
+		sendReplies: []fakeChannelClusterSendReply{
+			{result: channellog.SendResult{MessageID: 701, MessageSeq: 23}},
+		},
+	}
+	app := New(Options{
+		Now:     fixedNowFn,
+		Cluster: cluster,
+		Recipients: fakeRecipientDirectory{
+			endpointsByUID: map[string][]Endpoint{
+				"u2": {
+					{NodeID: 2, BootID: 22, SessionID: 8},
+				},
+			},
+		},
+		RemoteDelivery: failingRemoteDelivery{err: errors.New("remote boom")},
+		LocalNodeID:    1,
+	})
+
+	result, err := app.Send(context.Background(), SendCommand{
+		SenderUID:   "u1",
+		ChannelID:   "u2",
+		ChannelType: wkframe.ChannelTypePerson,
+		Payload:     []byte("hi"),
+		ClientSeq:   32,
+		ClientMsgNo: "m-remote-fail",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+	require.Equal(t, int64(701), result.MessageID)
+	require.Equal(t, uint64(23), result.MessageSeq)
+}
+
+func TestSendReturnsSuccessWhenRecipientLookupFailsPostCommit(t *testing.T) {
+	cluster := &fakeChannelCluster{
+		sendReplies: []fakeChannelClusterSendReply{
+			{result: channellog.SendResult{MessageID: 702, MessageSeq: 24}},
+		},
+	}
+	app := New(Options{
+		Now:        fixedNowFn,
+		Cluster:    cluster,
+		Recipients: fakeRecipientDirectory{err: errors.New("lookup boom")},
+	})
+
+	result, err := app.Send(context.Background(), SendCommand{
+		SenderUID:   "u1",
+		ChannelID:   "u2",
+		ChannelType: wkframe.ChannelTypePerson,
+		Payload:     []byte("hi"),
+		ClientSeq:   35,
+		ClientMsgNo: "m-lookup-fail",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, int64(702), result.MessageID)
+	require.Equal(t, uint64(24), result.MessageSeq)
+	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+}
+
 func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	reg := &fakeRegistry{
 		byUID: map[string][]online.OnlineConn{
@@ -355,6 +531,7 @@ func TestNewPreservesInjectedCollaborators(t *testing.T) {
 		MetaRefresher: refresher,
 		Online:        reg,
 		Delivery:      delivery,
+		LocalBootID:   9,
 		Now:           fixedNowFn,
 	})
 
@@ -364,6 +541,7 @@ func TestNewPreservesInjectedCollaborators(t *testing.T) {
 	require.Same(t, refresher, app.refresher)
 	require.Same(t, reg, app.online)
 	require.Same(t, delivery, app.delivery)
+	require.Equal(t, uint64(9), app.localBootID)
 	require.Same(t, reg, app.OnlineRegistry())
 }
 
@@ -450,6 +628,37 @@ type failingDelivery struct {
 }
 
 func (d failingDelivery) Deliver([]online.OnlineConn, wkframe.Frame) error {
+	return d.err
+}
+
+type fakeRecipientDirectory struct {
+	endpointsByUID map[string][]Endpoint
+	err            error
+}
+
+func (f fakeRecipientDirectory) EndpointsByUID(_ context.Context, uid string) ([]Endpoint, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]Endpoint(nil), f.endpointsByUID[uid]...), nil
+}
+
+type recordingRemoteDelivery struct {
+	calls []RemoteDeliveryCommand
+}
+
+func (d *recordingRemoteDelivery) DeliverRemote(_ context.Context, cmd RemoteDeliveryCommand) error {
+	copied := cmd
+	copied.SessionIDs = append([]uint64(nil), cmd.SessionIDs...)
+	d.calls = append(d.calls, copied)
+	return nil
+}
+
+type failingRemoteDelivery struct {
+	err error
+}
+
+func (d failingRemoteDelivery) DeliverRemote(context.Context, RemoteDeliveryCommand) error {
 	return d.err
 }
 

@@ -23,5 +23,5 @@ type Authoritative interface {
 	UnregisterAuthoritative(ctx context.Context, cmd UnregisterAuthoritativeCommand) error
 	HeartbeatAuthoritative(ctx context.Context, cmd HeartbeatAuthoritativeCommand) (HeartbeatAuthoritativeResult, error)
 	ReplayAuthoritative(ctx context.Context, cmd ReplayAuthoritativeCommand) error
-	EndpointsByUID(ctx context.Context, uid string) []Route
+	EndpointsByUID(ctx context.Context, uid string) ([]Route, error)
 }

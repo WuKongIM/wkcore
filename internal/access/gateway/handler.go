@@ -8,11 +8,14 @@ import (
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
+	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
 var ErrUnsupportedFrame = errors.New("access/gateway: unsupported frame")
 var ErrUnauthenticatedSession = errors.New("access/gateway: unauthenticated session")
 var ErrMissingRequestContext = errors.New("access/gateway: missing request context")
+var ErrPresenceRequired = errors.New("access/gateway: presence usecase required")
 
 const defaultSendTimeout = 10 * time.Second
 
@@ -21,9 +24,15 @@ type MessageUsecase interface {
 	RecvAck(cmd message.RecvAckCommand) error
 }
 
+type PresenceUsecase interface {
+	Activate(ctx context.Context, cmd presence.ActivateCommand) error
+	Deactivate(ctx context.Context, cmd presence.DeactivateCommand) error
+}
+
 type Options struct {
 	Online      online.Registry
 	Messages    MessageUsecase
+	Presence    PresenceUsecase
 	Now         func() time.Time
 	SendTimeout time.Duration
 }
@@ -31,6 +40,7 @@ type Options struct {
 type Handler struct {
 	online      online.Registry
 	messages    MessageUsecase
+	presence    PresenceUsecase
 	now         func() time.Time
 	sendTimeout time.Duration
 }
@@ -60,6 +70,7 @@ func New(opts Options) *Handler {
 	return &Handler{
 		online:      opts.Online,
 		messages:    opts.Messages,
+		presence:    opts.Presence,
 		now:         opts.Now,
 		sendTimeout: opts.SendTimeout,
 	}
@@ -67,25 +78,32 @@ func New(opts Options) *Handler {
 
 func (h *Handler) OnListenerError(string, error) {}
 
-func (h *Handler) OnSessionOpen(ctx *coregateway.Context) error {
+func (h *Handler) OnSessionActivate(ctx *coregateway.Context) (*wkframe.ConnackPacket, error) {
 	if h == nil {
-		return nil
+		return nil, nil
 	}
-
-	conn, err := onlineConnFromContext(ctx, h.now())
+	if h.presence == nil {
+		return nil, ErrPresenceRequired
+	}
+	cmd, err := activateCommandFromContext(ctx, h.now())
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return h.online.Register(conn)
+	return nil, h.presence.Activate(requestContextFromContext(ctx), cmd)
+}
+
+func (h *Handler) OnSessionOpen(*coregateway.Context) error {
+	return nil
 }
 
 func (h *Handler) OnSessionClose(ctx *coregateway.Context) error {
 	if h == nil || ctx == nil || ctx.Session == nil {
 		return nil
 	}
-
-	h.online.Unregister(ctx.Session.ID())
-	return nil
+	if h.presence == nil {
+		return nil
+	}
+	return h.presence.Deactivate(requestContextFromContext(ctx), deactivateCommandFromContext(ctx))
 }
 
 func (h *Handler) OnSessionError(*coregateway.Context, error) {}

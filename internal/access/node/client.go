@@ -72,7 +72,7 @@ func (c *Client) ReplayAuthoritative(ctx context.Context, cmd presence.ReplayAut
 	return err
 }
 
-func (c *Client) EndpointsByUID(ctx context.Context, uid string) []presence.Route {
+func (c *Client) EndpointsByUID(ctx context.Context, uid string) ([]presence.Route, error) {
 	groupID := c.cluster.SlotForKey(uid)
 	resp, err := c.callPresenceAuthoritative(ctx, groupID, presenceRPCRequest{
 		Op:      presenceOpEndpoints,
@@ -80,9 +80,9 @@ func (c *Client) EndpointsByUID(ctx context.Context, uid string) []presence.Rout
 		UID:     uid,
 	})
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return resp.Endpoints
+	return resp.Endpoints, nil
 }
 
 func (c *Client) ApplyRouteAction(ctx context.Context, action presence.RouteAction) error {

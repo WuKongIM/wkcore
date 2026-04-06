@@ -26,7 +26,7 @@ func (a *App) ReplayAuthoritative(ctx context.Context, cmd ReplayAuthoritativeCo
 	return nil
 }
 
-func (a *App) EndpointsByUID(ctx context.Context, uid string) []Route {
+func (a *App) EndpointsByUID(ctx context.Context, uid string) ([]Route, error) {
 	_ = ctx
-	return a.dir.endpointsByUID(uid, a.now().Unix())
+	return a.dir.endpointsByUID(uid, a.now().Unix()), nil
 }

@@ -6,8 +6,10 @@ import (
 
 	accessapi "github.com/WuKongIM/WuKongIM/internal/access/api"
 	accessgateway "github.com/WuKongIM/WuKongIM/internal/access/gateway"
+	accessnode "github.com/WuKongIM/WuKongIM/internal/access/node"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
+	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isrnode"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
@@ -28,10 +30,15 @@ type App struct {
 	channelLog      channellog.Cluster
 	channelMetaSync *channelMetaSync
 	store           *metastore.Store
+	presenceApp     *presence.App
 	messageApp      *message.App
 	api             *accessapi.Server
+	nodeClient      *accessnode.Client
+	nodeAccess      *accessnode.Adapter
+	presenceWorker  *presenceWorker
 	gatewayHandler  *accessgateway.Handler
 	gateway         *gateway.Gateway
+	gatewayBootID   uint64
 
 	isrTransport    *isrTransportBridge
 	replicaFactory  *channelReplicaFactory
@@ -44,15 +51,18 @@ type App struct {
 	stopped       atomic.Bool
 	clusterOn     atomic.Bool
 	channelMetaOn atomic.Bool
+	presenceOn    atomic.Bool
 	apiOn         atomic.Bool
 	gatewayOn     atomic.Bool
 
 	startClusterFn         func() error
 	startChannelMetaSyncFn func() error
+	startPresenceFn        func() error
 	startAPIFn             func() error
 	startGatewayFn         func() error
 	stopAPIFn              func() error
 	stopGatewayFn          func() error
+	stopPresenceFn         func() error
 	stopChannelMetaSyncFn  func() error
 	stopClusterFn          func()
 	closeChannelLogDBFn    func() error

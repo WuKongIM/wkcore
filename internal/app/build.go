@@ -6,10 +6,12 @@ import (
 
 	accessapi "github.com/WuKongIM/WuKongIM/internal/access/api"
 	accessgateway "github.com/WuKongIM/WuKongIM/internal/access/gateway"
+	accessnode "github.com/WuKongIM/WuKongIM/internal/access/node"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/messageid"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
+	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	userusecase "github.com/WuKongIM/WuKongIM/internal/usecase/user"
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
@@ -70,6 +72,10 @@ func build(cfg Config) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: create message id generator: %w", err)
 	}
+	app.gatewayBootID, err = newGatewayBootID()
+	if err != nil {
+		return nil, fmt.Errorf("app: create gateway boot id: %w", err)
+	}
 
 	app.isrTransport = newISRTransportBridge()
 	app.replicaFactory = newChannelReplicaFactory(app.channelLogDB, isr.NodeID(cfg.Node.ID), nil)
@@ -112,6 +118,28 @@ func build(cfg Config) (_ *App, err error) {
 		refreshInterval: time.Second,
 	}
 	onlineRegistry := online.NewRegistry()
+	app.nodeClient = accessnode.NewClient(app.cluster)
+	authorityClient := &presenceAuthorityClient{
+		cluster:     app.cluster,
+		remote:      app.nodeClient,
+		localNodeID: cfg.Node.ID,
+	}
+	app.presenceApp = presence.New(presence.Options{
+		LocalNodeID:      cfg.Node.ID,
+		GatewayBootID:    app.gatewayBootID,
+		Online:           onlineRegistry,
+		Router:           presenceRouter{cluster: app.cluster},
+		AuthorityClient:  authorityClient,
+		ActionDispatcher: authorityClient,
+	})
+	authorityClient.local = app.presenceApp
+	app.nodeAccess = accessnode.New(accessnode.Options{
+		Cluster:       app.cluster,
+		Presence:      app.presenceApp,
+		Online:        onlineRegistry,
+		GatewayBootID: app.gatewayBootID,
+	})
+	app.presenceWorker = newPresenceWorker(app.presenceApp, 0)
 	app.messageApp = message.New(message.Options{
 		IdentityStore: app.store,
 		ChannelStore:  app.store,
@@ -119,6 +147,13 @@ func build(cfg Config) (_ *App, err error) {
 		MetaRefresher: app.channelMetaSync,
 		Online:        onlineRegistry,
 		Delivery:      online.LocalDelivery{},
+		Recipients:    messageRecipientDirectory{authority: authorityClient},
+		RemoteDelivery: messageRemoteDelivery{
+			cluster: app.cluster,
+			client:  app.nodeClient,
+		},
+		LocalNodeID: cfg.Node.ID,
+		LocalBootID: app.gatewayBootID,
 	})
 	userApp := userusecase.New(userusecase.Options{
 		Users:   app.store,
@@ -135,6 +170,7 @@ func build(cfg Config) (_ *App, err error) {
 	app.gatewayHandler = accessgateway.New(accessgateway.Options{
 		Online:   onlineRegistry,
 		Messages: app.messageApp,
+		Presence: app.presenceApp,
 	})
 
 	app.gateway, err = gateway.New(gateway.Options{
@@ -199,4 +235,15 @@ func newStorageFactory(raftDB *raftstorage.DB) func(groupID multiraft.GroupID) (
 	return func(groupID multiraft.GroupID) (multiraft.Storage, error) {
 		return raftDB.ForGroup(uint64(groupID)), nil
 	}
+}
+
+type presenceRouter struct {
+	cluster *raftcluster.Cluster
+}
+
+func (r presenceRouter) SlotForKey(key string) uint64 {
+	if r.cluster == nil {
+		return 0
+	}
+	return uint64(r.cluster.SlotForKey(key))
 }

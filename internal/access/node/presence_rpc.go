@@ -142,9 +142,13 @@ func (a *Adapter) handleEndpoints(ctx context.Context, req presenceRPCRequest) (
 	if body, handled, err := a.handleAuthoritativeRPC(multiraft.GroupID(req.GroupID)); handled || err != nil {
 		return body, err
 	}
+	endpoints, err := a.presence.EndpointsByUID(ctx, req.UID)
+	if err != nil {
+		return nil, err
+	}
 	return encodePresenceResponse(presenceRPCResponse{
 		Status:    rpcStatusOK,
-		Endpoints: a.presence.EndpointsByUID(ctx, req.UID),
+		Endpoints: endpoints,
 	})
 }
 

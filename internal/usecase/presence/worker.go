@@ -2,18 +2,20 @@ package presence
 
 import (
 	"context"
+	"errors"
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 )
 
 func (a *App) HeartbeatOnce(ctx context.Context) error {
 	groups := a.online.ActiveGroups()
+	var err error
 	for _, group := range groups {
-		if err := a.heartbeatGroup(ctx, group); err != nil {
-			return err
+		if heartbeatErr := a.heartbeatGroup(ctx, group); heartbeatErr != nil {
+			err = errors.Join(err, heartbeatErr)
 		}
 	}
-	return nil
+	return err
 }
 
 func (a *App) heartbeatGroup(ctx context.Context, group online.GroupSnapshot) error {

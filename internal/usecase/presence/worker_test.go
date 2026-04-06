@@ -2,6 +2,7 @@ package presence
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -62,6 +63,32 @@ func TestWorkerReplayUsesOnlyActiveRoutes(t *testing.T) {
 		authority.replayCalls[0].Routes[0].SessionID,
 		authority.replayCalls[0].Routes[1].SessionID,
 	})
+}
+
+func TestWorkerContinuesAfterSingleGroupHeartbeatError(t *testing.T) {
+	onlineReg := online.NewRegistry()
+	mustRegisterTestConn(t, onlineReg, 11, "u1", "d1", 1)
+	mustRegisterTestConn(t, onlineReg, 21, "u2", "d2", 2)
+
+	heartbeatErr := errors.New("group-1 heartbeat failed")
+	authority := &fakeAuthorityClient{
+		heartbeatErrBySlot: map[uint64]error{
+			1: heartbeatErr,
+		},
+	}
+	app := New(Options{
+		LocalNodeID:     1,
+		GatewayBootID:   101,
+		Online:          onlineReg,
+		AuthorityClient: authority,
+		Now:             func() time.Time { return time.Unix(200, 0) },
+	})
+
+	err := app.HeartbeatOnce(context.Background())
+	require.ErrorIs(t, err, heartbeatErr)
+	require.Len(t, authority.heartbeatCalls, 2)
+	require.Equal(t, uint64(1), authority.heartbeatCalls[0].Lease.GroupID)
+	require.Equal(t, uint64(2), authority.heartbeatCalls[1].Lease.GroupID)
 }
 
 func mustRegisterTestConn(t *testing.T, reg online.Registry, sessionID uint64, uid, deviceID string, groupID uint64) {

@@ -202,12 +202,13 @@ func (f fakeRouter) SlotForKey(key string) uint64 {
 }
 
 type fakeAuthorityClient struct {
-	registerResult  RegisterAuthoritativeResult
-	registerErr     error
-	unregisterErr   error
-	heartbeatErr    error
-	replayErr       error
-	heartbeatBySlot map[uint64]HeartbeatAuthoritativeResult
+	registerResult     RegisterAuthoritativeResult
+	registerErr        error
+	unregisterErr      error
+	heartbeatErr       error
+	replayErr          error
+	heartbeatBySlot    map[uint64]HeartbeatAuthoritativeResult
+	heartbeatErrBySlot map[uint64]error
 
 	registerCalls   []RegisterAuthoritativeCommand
 	unregisterCalls []UnregisterAuthoritativeCommand
@@ -233,6 +234,9 @@ func (f *fakeAuthorityClient) HeartbeatAuthoritative(_ context.Context, cmd Hear
 	if f.heartbeatErr != nil {
 		return HeartbeatAuthoritativeResult{}, f.heartbeatErr
 	}
+	if err, ok := f.heartbeatErrBySlot[cmd.Lease.GroupID]; ok {
+		return HeartbeatAuthoritativeResult{}, err
+	}
 	if result, ok := f.heartbeatBySlot[cmd.Lease.GroupID]; ok {
 		return result, nil
 	}
@@ -244,8 +248,8 @@ func (f *fakeAuthorityClient) ReplayAuthoritative(_ context.Context, cmd ReplayA
 	return f.replayErr
 }
 
-func (f *fakeAuthorityClient) EndpointsByUID(context.Context, string) []Route {
-	return nil
+func (f *fakeAuthorityClient) EndpointsByUID(context.Context, string) ([]Route, error) {
+	return nil, nil
 }
 
 type fakeActionDispatcher struct {
