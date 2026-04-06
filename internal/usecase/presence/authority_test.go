@@ -268,6 +268,23 @@ func TestAuthorityEndpointsByUIDEvictsExpiredLeaseRoutes(t *testing.T) {
 	require.Empty(t, endpoints)
 }
 
+func TestDirectoryUnregisterRemovesOwnerSetWhenAssumedGroupIsWrong(t *testing.T) {
+	dir := newDirectory()
+	nowUnix := time.Unix(200, 0).Unix()
+	route := testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster))
+
+	dir.register(1, route, nowUnix)
+	require.Len(t, dir.endpointsByUID("u1", nowUnix), 1)
+	require.Len(t, dir.ownerSet, 1)
+	require.Len(t, dir.leases, 1)
+
+	dir.unregister(99, route, nowUnix)
+
+	require.Empty(t, dir.endpointsByUID("u1", nowUnix))
+	require.Empty(t, dir.ownerSet)
+	require.Empty(t, dir.leases)
+}
+
 func testRoute(uid string, nodeID, bootID, sessionID uint64, deviceID string, level uint8) Route {
 	return Route{
 		UID:         uid,

@@ -63,7 +63,7 @@ func (d *directory) register(groupID uint64, route Route, nowUnix int64) []Route
 			continue
 		}
 		delete(d.byUID[route.UID], existingKey)
-		deleteOwnerRoute(d.ownerSet, groupID, existing)
+		deleteOwnerRoute(d.ownerSet, d.leases, groupID, existing)
 		actions = append(actions, actionForReplacement(route, existing))
 	}
 
@@ -99,7 +99,7 @@ func (d *directory) unregister(groupID uint64, route Route, nowUnix int64) {
 			delete(d.byUID, route.UID)
 		}
 	}
-	deleteOwnerRoute(d.ownerSet, groupID, route)
+	deleteOwnerRoute(d.ownerSet, d.leases, groupID, route)
 }
 
 func (d *directory) heartbeat(lease GatewayLease, nowUnix int64) HeartbeatAuthoritativeResult {
@@ -256,15 +256,27 @@ func makeLeaseKey(lease GatewayLease) leaseKey {
 	}
 }
 
-func deleteOwnerRoute(ownerSet map[leaseKey]map[routeKey]Route, groupID uint64, route Route) {
+func deleteOwnerRoute(ownerSet map[leaseKey]map[routeKey]Route, leases map[leaseKey]GatewayLease, groupID uint64, route Route) {
 	k := leaseKey{groupID: groupID, gatewayNodeID: route.NodeID, gatewayBootID: route.BootID}
 	routes := ownerSet[k]
+	rk := makeRouteKey(route)
+	if routes == nil || routes[rk].UID == "" {
+		for candidateKey, candidateRoutes := range ownerSet {
+			if _, ok := candidateRoutes[rk]; !ok {
+				continue
+			}
+			k = candidateKey
+			routes = candidateRoutes
+			break
+		}
+	}
 	if routes == nil {
 		return
 	}
-	delete(routes, makeRouteKey(route))
+	delete(routes, rk)
 	if len(routes) == 0 {
 		delete(ownerSet, k)
+		delete(leases, k)
 		return
 	}
 }
