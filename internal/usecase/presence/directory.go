@@ -36,9 +36,11 @@ func newDirectory() *directory {
 	}
 }
 
-func (d *directory) register(groupID uint64, route Route) []RouteAction {
+func (d *directory) register(groupID uint64, route Route, nowUnix int64) []RouteAction {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	d.sweepExpiredLocked(nowUnix)
 
 	k := leaseKey{groupID: groupID, gatewayNodeID: route.NodeID, gatewayBootID: route.BootID}
 	if d.byUID[route.UID] == nil {
@@ -48,8 +50,12 @@ func (d *directory) register(groupID uint64, route Route) []RouteAction {
 		d.ownerSet[k] = make(map[routeKey]Route)
 	}
 
+	rk := makeRouteKey(route)
 	actions := make([]RouteAction, 0)
 	for existingKey, existing := range d.byUID[route.UID] {
+		if existingKey == rk {
+			continue
+		}
 		if !conflicts(route, existing) {
 			continue
 		}
@@ -58,7 +64,6 @@ func (d *directory) register(groupID uint64, route Route) []RouteAction {
 		actions = append(actions, actionForReplacement(route, existing))
 	}
 
-	rk := makeRouteKey(route)
 	d.byUID[route.UID][rk] = route
 	d.ownerSet[k][rk] = route
 	d.leases[k] = GatewayLease{
@@ -73,9 +78,11 @@ func (d *directory) register(groupID uint64, route Route) []RouteAction {
 	return actions
 }
 
-func (d *directory) unregister(groupID uint64, route Route) {
+func (d *directory) unregister(groupID uint64, route Route, nowUnix int64) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	d.sweepExpiredLocked(nowUnix)
 
 	rk := makeRouteKey(route)
 	if routes := d.byUID[route.UID]; routes != nil {
@@ -87,9 +94,11 @@ func (d *directory) unregister(groupID uint64, route Route) {
 	deleteOwnerRoute(d.ownerSet, groupID, route)
 }
 
-func (d *directory) heartbeat(lease GatewayLease) HeartbeatAuthoritativeResult {
+func (d *directory) heartbeat(lease GatewayLease, nowUnix int64) HeartbeatAuthoritativeResult {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	d.sweepExpiredLocked(nowUnix)
 
 	k := makeLeaseKey(lease)
 	current := d.ownerSet[k]
@@ -108,9 +117,11 @@ func (d *directory) heartbeat(lease GatewayLease) HeartbeatAuthoritativeResult {
 	}
 }
 
-func (d *directory) replay(lease GatewayLease, routes []Route) {
+func (d *directory) replay(lease GatewayLease, routes []Route, nowUnix int64) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	d.sweepExpiredLocked(nowUnix)
 
 	k := makeLeaseKey(lease)
 	if prev := d.ownerSet[k]; prev != nil {
@@ -140,9 +151,11 @@ func (d *directory) replay(lease GatewayLease, routes []Route) {
 	d.leases[k] = lease
 }
 
-func (d *directory) endpointsByUID(uid string) []Route {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+func (d *directory) endpointsByUID(uid string, nowUnix int64) []Route {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.sweepExpiredLocked(nowUnix)
 
 	routes := d.byUID[uid]
 	if len(routes) == 0 {
@@ -163,6 +176,32 @@ func (d *directory) endpointsByUID(uid string) []Route {
 		return out[i].BootID < out[j].BootID
 	})
 	return out
+}
+
+func (d *directory) sweepExpiredLocked(nowUnix int64) {
+	if nowUnix <= 0 {
+		return
+	}
+	for k, lease := range d.leases {
+		if lease.LeaseUntilUnix <= 0 || lease.LeaseUntilUnix > nowUnix {
+			continue
+		}
+		d.removeOwnerSetLocked(k)
+	}
+}
+
+func (d *directory) removeOwnerSetLocked(k leaseKey) {
+	routes := d.ownerSet[k]
+	for routeKey, route := range routes {
+		if byUID := d.byUID[route.UID]; byUID != nil {
+			delete(byUID, routeKey)
+			if len(byUID) == 0 {
+				delete(d.byUID, route.UID)
+			}
+		}
+	}
+	delete(d.ownerSet, k)
+	delete(d.leases, k)
 }
 
 func conflicts(incoming, existing Route) bool {

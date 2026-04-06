@@ -3,6 +3,7 @@ package presence
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/stretchr/testify/require"
@@ -29,6 +30,28 @@ func TestAuthorityRegisterMasterDifferentDeviceReturnsKickThenCloseActions(t *te
 	endpoints := app.EndpointsByUID(context.Background(), "u1")
 	require.Len(t, endpoints, 1)
 	require.Equal(t, uint64(200), endpoints[0].SessionID)
+}
+
+func TestAuthorityRegisterDuplicateSameRouteIsIdempotent(t *testing.T) {
+	app := New(Options{})
+
+	route := testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster))
+	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
+		GroupID: 1,
+		Route:   route,
+	})
+	require.NoError(t, err)
+
+	result, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
+		GroupID: 1,
+		Route:   route,
+	})
+	require.NoError(t, err)
+	require.Empty(t, result.Actions)
+
+	endpoints := app.EndpointsByUID(context.Background(), "u1")
+	require.Len(t, endpoints, 1)
+	require.Equal(t, uint64(100), endpoints[0].SessionID)
 }
 
 func TestAuthorityRegisterMasterSameDeviceReturnsCloseActions(t *testing.T) {
@@ -167,6 +190,29 @@ func TestAuthorityEndpointsByUIDReturnsCurrentRoutes(t *testing.T) {
 	endpoints := app.EndpointsByUID(context.Background(), "u1")
 	require.Len(t, endpoints, 2)
 	require.ElementsMatch(t, []uint64{100, 200}, []uint64{endpoints[0].SessionID, endpoints[1].SessionID})
+}
+
+func TestAuthorityEndpointsByUIDEvictsExpiredLeaseRoutes(t *testing.T) {
+	now := time.Unix(200, 0)
+	app := New(Options{
+		Now: func() time.Time { return now },
+	})
+
+	err := app.ReplayAuthoritative(context.Background(), ReplayAuthoritativeCommand{
+		Lease: GatewayLease{
+			GroupID:        1,
+			GatewayNodeID:  9,
+			GatewayBootID:  99,
+			LeaseUntilUnix: now.Add(-time.Second).Unix(),
+		},
+		Routes: []Route{
+			testRoute("u1", 9, 99, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+		},
+	})
+	require.NoError(t, err)
+
+	endpoints := app.EndpointsByUID(context.Background(), "u1")
+	require.Empty(t, endpoints)
 }
 
 func testRoute(uid string, nodeID, bootID, sessionID uint64, deviceID string, level uint8) Route {
