@@ -92,7 +92,7 @@
 
 区别只体现在订阅者解析：
 
-- 个人频道：从 canonical personal `channel_id` 解析出两个 uid
+- 个人频道：从兼容旧实现的 canonical personal `channel_id` 解析出两个 uid
 - 群频道：从数据库分页查询订阅者
 
 ### 3. actor owner
@@ -212,12 +212,25 @@ type SubscriberResolver interface {
 
 个人频道不走数据库成员表，而是使用 `PersonChannelCodec` 从 canonical `channel_id` 中解析出两个 uid。
 
+canonical 规则必须兼容 [learn_project/WuKongIM/internal/options/common.go](/Users/tt/Desktop/work/go/WuKongIM-v3.1/learn_project/WuKongIM/internal/options/common.go) 里的：
+
+- `GetFakeChannelIDWith(fromUID, toUID)`
+- `GetFromUIDAndToUIDWith(channelId)`
+
 设计假定：
 
-- personal `channel_id` 必须是可逆的 canonical 表示
-- 两端 uid 排序规则必须稳定
+- personal `channel_id` 使用 `uidA@uidB` 形式
+- 两端 uid 的前后顺序按 `crc32(uid)` 比较决定，而不是按字典序
+- `PersonChannelCodec.Encode(a, b)` 必须与 `GetFakeChannelIDWith(a, b)` 保持一致
+- `PersonChannelCodec.Decode(channelID)` 必须与 `GetFromUIDAndToUIDWith(channelID)` 保持一致
+- `@` 作为个人频道分隔符时，uid 本身不能再包含 `@`
 
 如果现有入口层仍有“把对端 uid 直接塞进 `channel_id`”的兼容行为，则需要在进入 `message.Send` 前先归一化成 canonical personal `channel_id`。这是从当前代码现状推导出的兼容要求。
+
+关于 `crc32` 冲突：
+
+- 旧实现中，如果两个不同 uid 的 `crc32` 恰好相同，会打印 warning，然后退回 `toUID + "@" + fromUID`
+- 新实现首版应保持同样行为，优先保证兼容，不要擅自引入新的 tie-break 规则
 
 ### 群频道
 
@@ -517,6 +530,7 @@ internal/
 - 同频道连续消息按 `message_seq` 串行投递
 - 乱序 envelope 通过 reorder buffer 补洞后顺序投递
 - 个人频道通过 personal channel codec 解析两个订阅者
+- personal channel codec 与 `learn_project` 的 `GetFakeChannelIDWith/GetFromUIDAndToUIDWith` 保持兼容
 - 群频道分页解析订阅者并批量查 presence
 - 只跟踪在线 route，离线 uid 不进入 inflight
 - `recvack` 通过 `AckBindingIndex` 命中正确 actor

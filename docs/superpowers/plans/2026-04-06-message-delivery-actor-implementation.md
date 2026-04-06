@@ -4,7 +4,7 @@
 
 **Goal:** Split durable send from async realtime delivery, add a channel-owner virtual actor runtime with `recvack`-driven completion, and extend the system to support both personal and group-channel subscriber fanout.
 
-**Architecture:** Keep durable writes in `internal/usecase/message`, introduce a dedicated `internal/usecase/delivery` plus `internal/runtime/delivery` stack for actor execution, and expose cross-node submit/push/ack/offline RPCs through `internal/access/node`. Group delivery will be backed by a new subscriber snapshot read path in `pkg/storage/metadb` and `pkg/storage/metastore`, while personal channels will use a canonical person-channel codec so both channel kinds share one delivery pipeline.
+**Architecture:** Keep durable writes in `internal/usecase/message`, introduce a dedicated `internal/usecase/delivery` plus `internal/runtime/delivery` stack for actor execution, and expose cross-node submit/push/ack/offline RPCs through `internal/access/node`. Group delivery will be backed by a new subscriber snapshot read path in `pkg/storage/metadb` and `pkg/storage/metastore`, while personal channels will use a codec compatible with `learn_project/WuKongIM/internal/options/common.go` so both channel kinds share one delivery pipeline.
 
 **Tech Stack:** Go 1.23, `internal/access/gateway`, `internal/access/node`, `internal/usecase/message`, `internal/usecase/delivery`, `internal/usecase/presence`, `internal/runtime/delivery`, `internal/runtime/online`, `pkg/storage/metadb`, `pkg/storage/metafsm`, `pkg/storage/metastore`, `pkg/storage/channellog`, `pkg/cluster/raftcluster`, `testing`, `testify`.
 
@@ -20,6 +20,7 @@
 - Do not persist delivery runtime state in this plan. Route disconnects and node restarts still fall back to offline catch-up.
 - Single-node deployment still means single-node cluster semantics; do not add local-only send shortcuts that bypass channel ownership.
 - Treat personal channels and group channels as the same delivery abstraction. The only allowed difference is subscriber resolution.
+- Preserve personal-channel compatibility with `learn_project/WuKongIM/internal/options/common.go:GetFakeChannelIDWith` and `GetFromUIDAndToUIDWith`. Do not replace that rule with lexical ordering or a new wire format in this plan.
 - Prefer small focused files. If a file starts absorbing multiple responsibilities, split it during implementation rather than letting it grow.
 - Because this harness only allows subagent spawning on explicit user request, perform a local review of this plan document before execution instead of dispatching a plan-review subagent.
 - Before final handoff, run `@superpowers/verification-before-completion`.
@@ -272,7 +273,8 @@ Test sketch:
 ```go
 func TestActorBuffersOutOfOrderEnvelopeAndDispatchesInSequence(t *testing.T) {
 	runtime := newTestRuntime()
-	actor := runtime.mustActor("p:u1|u2", wkframe.ChannelTypePerson)
+	channelID := delivery.EncodePersonChannel("u1", "u2")
+	actor := runtime.mustActor(channelID, wkframe.ChannelTypePerson)
 
 	actor.handle(StartDispatch{Envelope: env(seq: 2)})
 	actor.handle(StartDispatch{Envelope: env(seq: 1)})
@@ -282,11 +284,12 @@ func TestActorBuffersOutOfOrderEnvelopeAndDispatchesInSequence(t *testing.T) {
 
 func TestActorRetryTickRetriesPendingRoutesUntilAcked(t *testing.T) {
 	runtime := newTestRuntime()
-	actor := runtime.mustActor("p:u1|u2", wkframe.ChannelTypePerson)
+	channelID := delivery.EncodePersonChannel("u1", "u2")
+	actor := runtime.mustActor(channelID, wkframe.ChannelTypePerson)
 	runtime.pushErr = errors.New("temporary")
 
 	actor.handle(StartDispatch{Envelope: env(seq: 1)})
-	actor.handle(RetryTick{ChannelID: "p:u1|u2", ChannelType: wkframe.ChannelTypePerson})
+	actor.handle(RetryTick{ChannelID: channelID, ChannelType: wkframe.ChannelTypePerson})
 
 	require.GreaterOrEqual(t, runtime.pushAttemptsFor(1), 2)
 }
@@ -386,7 +389,7 @@ func TestAppSendReturnsBeforeRealtimeAckArrives(t *testing.T) {
 	conn := connectWKProto(t, app, "u2", "d2")
 
 	result, err := app.Message().Send(context.Background(), message.SendCommand{
-		SenderUID: "u1", ChannelID: canonicalPerson("u1", "u2"), ChannelType: wkframe.ChannelTypePerson, Payload: []byte("hi"),
+		SenderUID: "u1", ChannelID: delivery.EncodePersonChannel("u1", "u2"), ChannelType: wkframe.ChannelTypePerson, Payload: []byte("hi"),
 	})
 
 	require.NoError(t, err)
@@ -718,14 +721,23 @@ Add a canonical person-channel codec:
 
 ```go
 func EncodePersonChannel(a, b string) string {
-	if a < b {
-		return "p:" + a + "|" + b
+	aHash := wkutil.HashCrc32(a)
+	bHash := wkutil.HashCrc32(b)
+	if aHash > bHash {
+		return a + "@" + b
 	}
-	return "p:" + b + "|" + a
+	return b + "@" + a
 }
 
 func DecodePersonChannel(channelID string) (string, string, error)
 ```
+
+The implementation must stay compatible with:
+
+- `learn_project/WuKongIM/internal/options/common.go:GetFakeChannelIDWith`
+- `learn_project/WuKongIM/internal/options/common.go:GetFromUIDAndToUIDWith`
+
+Keep the same `crc32`-collision fallback behavior as the existing helper for v1 compatibility.
 
 Add unified resolver behavior:
 
@@ -853,6 +865,6 @@ git commit -m "feat(delivery): add guardrails and hotspot isolation"
 - [ ] Run `go test ./...`
 - [ ] Inspect `git status --short` and confirm only intended files changed.
 - [ ] Summarize any residual risks:
-  - canonical personal channel migration compatibility
+  - personal channel `crc32` collision compatibility
   - large-group snapshot read costs
   - non-persistent delivery state after owner restart
