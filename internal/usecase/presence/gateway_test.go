@@ -3,7 +3,6 @@ package presence
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 
@@ -133,12 +132,10 @@ func TestApplyRouteActionMarksRouteClosingBeforeAck(t *testing.T) {
 		Session:     sess,
 	}))
 
-	scheduler := &fakeAfterScheduler{}
 	app := New(Options{
 		LocalNodeID:   1,
 		GatewayBootID: 101,
 		Online:        onlineReg,
-		AfterFunc:     scheduler.AfterFunc,
 	})
 
 	err := app.ApplyRouteAction(context.Background(), RouteAction{
@@ -154,7 +151,6 @@ func TestApplyRouteActionMarksRouteClosingBeforeAck(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, online.LocalRouteStateClosing, conn.State)
 	require.Empty(t, onlineReg.ConnectionsByUID("u1"))
-	require.Len(t, scheduler.calls(), 1)
 }
 
 func TestApplyRouteActionRejectsMismatchedActiveRoute(t *testing.T) {
@@ -260,23 +256,4 @@ type fakeActionDispatcher struct {
 func (f *fakeActionDispatcher) ApplyRouteAction(_ context.Context, action RouteAction) error {
 	f.actions = append(f.actions, action)
 	return f.applyErr
-}
-
-type fakeAfterScheduler struct {
-	mu     sync.Mutex
-	delays []time.Duration
-}
-
-func (f *fakeAfterScheduler) AfterFunc(delay time.Duration, _ func()) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.delays = append(f.delays, delay)
-}
-
-func (f *fakeAfterScheduler) calls() []time.Duration {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	out := make([]time.Duration, len(f.delays))
-	copy(out, f.delays)
-	return out
 }

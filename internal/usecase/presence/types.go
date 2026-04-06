@@ -3,7 +3,7 @@ package presence
 import (
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
+	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
@@ -73,7 +73,7 @@ type ActivateCommand struct {
 	DeviceLevel wkframe.DeviceLevel
 	Listener    string
 	ConnectedAt time.Time
-	Session     session.Session
+	Session     online.Session
 }
 
 type DeactivateCommand struct {

@@ -77,7 +77,11 @@ func (a *App) Deactivate(ctx context.Context, cmd DeactivateCommand) error {
 	if uid == "" {
 		return nil
 	}
-	a.bestEffortUnregister(ctx, a.router.SlotForKey(uid), conn)
+	groupID := conn.GroupID
+	if groupID == 0 {
+		groupID = a.router.SlotForKey(uid)
+	}
+	a.bestEffortUnregister(ctx, groupID, conn)
 	return nil
 }
 
@@ -106,9 +110,7 @@ func (a *App) ApplyRouteAction(ctx context.Context, action RouteAction) error {
 		return fmt.Errorf("presence: failed to move session %d to closing", action.SessionID)
 	}
 
-	a.afterFunc(0, func() {
-		a.finishRouteAction(conn, action)
-	})
+	go a.finishRouteAction(conn, action)
 	return nil
 }
 

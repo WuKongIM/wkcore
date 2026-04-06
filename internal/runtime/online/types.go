@@ -24,6 +24,7 @@ type Conn struct {
 }
 
 type OnlineConn = Conn
+type Session = session.Session
 
 type LocalRouteState uint8
 
