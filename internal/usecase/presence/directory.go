@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
@@ -27,6 +28,8 @@ type directory struct {
 	leases   map[leaseKey]GatewayLease
 	ownerSet map[leaseKey]map[routeKey]Route
 }
+
+const defaultLeaseTTL = 30 * time.Second
 
 func newDirectory() *directory {
 	return &directory{
@@ -66,13 +69,18 @@ func (d *directory) register(groupID uint64, route Route, nowUnix int64) []Route
 
 	d.byUID[route.UID][rk] = route
 	d.ownerSet[k][rk] = route
+	leaseUntilUnix := d.leases[k].LeaseUntilUnix
+	defaultLeaseUntilUnix := nowUnix + int64(defaultLeaseTTL/time.Second)
+	if leaseUntilUnix < defaultLeaseUntilUnix {
+		leaseUntilUnix = defaultLeaseUntilUnix
+	}
 	d.leases[k] = GatewayLease{
 		GroupID:        groupID,
 		GatewayNodeID:  route.NodeID,
 		GatewayBootID:  route.BootID,
 		RouteCount:     len(d.ownerSet[k]),
 		RouteDigest:    digestRoutes(d.ownerSet[k]),
-		LeaseUntilUnix: d.leases[k].LeaseUntilUnix,
+		LeaseUntilUnix: leaseUntilUnix,
 	}
 
 	return actions

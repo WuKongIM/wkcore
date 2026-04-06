@@ -130,13 +130,17 @@ func TestAuthorityHeartbeatDetectsDigestMismatchWhenCountMatches(t *testing.T) {
 }
 
 func TestAuthorityReplayReplacesOwnerSetWithActiveRoutesOnly(t *testing.T) {
-	app := New(Options{})
+	now := time.Unix(200, 0)
+	app := New(Options{
+		Now: func() time.Time { return now },
+	})
 
 	err := app.ReplayAuthoritative(context.Background(), ReplayAuthoritativeCommand{
 		Lease: GatewayLease{
-			GroupID:       1,
-			GatewayNodeID: 9,
-			GatewayBootID: 99,
+			GroupID:        1,
+			GatewayNodeID:  9,
+			GatewayBootID:  99,
+			LeaseUntilUnix: now.Add(30 * time.Second).Unix(),
 		},
 		Routes: []Route{
 			testRoute("u1", 9, 99, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
@@ -147,9 +151,10 @@ func TestAuthorityReplayReplacesOwnerSetWithActiveRoutesOnly(t *testing.T) {
 
 	err = app.ReplayAuthoritative(context.Background(), ReplayAuthoritativeCommand{
 		Lease: GatewayLease{
-			GroupID:       1,
-			GatewayNodeID: 9,
-			GatewayBootID: 99,
+			GroupID:        1,
+			GatewayNodeID:  9,
+			GatewayBootID:  99,
+			LeaseUntilUnix: now.Add(30 * time.Second).Unix(),
 		},
 		Routes: []Route{
 			testRoute("u1", 9, 99, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
@@ -190,6 +195,54 @@ func TestAuthorityEndpointsByUIDReturnsCurrentRoutes(t *testing.T) {
 	endpoints := app.EndpointsByUID(context.Background(), "u1")
 	require.Len(t, endpoints, 2)
 	require.ElementsMatch(t, []uint64{100, 200}, []uint64{endpoints[0].SessionID, endpoints[1].SessionID})
+}
+
+func TestAuthorityRegisterSeedsLeaseDeadlineAndExpiresWithoutHeartbeat(t *testing.T) {
+	now := time.Unix(200, 0)
+	app := New(Options{
+		Now: func() time.Time { return now },
+	})
+
+	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
+		GroupID: 1,
+		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+	})
+	require.NoError(t, err)
+	require.Len(t, app.EndpointsByUID(context.Background(), "u1"), 1)
+
+	now = now.Add(31 * time.Second)
+	require.Empty(t, app.EndpointsByUID(context.Background(), "u1"))
+}
+
+func TestAuthorityHeartbeatExplicitLeaseKeepsRouteAlive(t *testing.T) {
+	now := time.Unix(200, 0)
+	app := New(Options{
+		Now: func() time.Time { return now },
+	})
+
+	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
+		GroupID: 1,
+		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+	})
+	require.NoError(t, err)
+
+	heartbeat, err := app.HeartbeatAuthoritative(context.Background(), HeartbeatAuthoritativeCommand{
+		Lease: GatewayLease{
+			GroupID:        1,
+			GatewayNodeID:  1,
+			GatewayBootID:  10,
+			RouteCount:     1,
+			RouteDigest:    999,
+			LeaseUntilUnix: now.Add(90 * time.Second).Unix(),
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, heartbeat.Mismatch)
+
+	now = now.Add(31 * time.Second)
+	endpoints := app.EndpointsByUID(context.Background(), "u1")
+	require.Len(t, endpoints, 1)
+	require.Equal(t, uint64(100), endpoints[0].SessionID)
 }
 
 func TestAuthorityEndpointsByUIDEvictsExpiredLeaseRoutes(t *testing.T) {
