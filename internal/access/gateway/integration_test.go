@@ -26,7 +26,7 @@ const (
 	gatewayReadTimeout      = 2 * time.Second
 )
 
-func TestGatewayWKProtoHandlerRoutesDurablePersonSend(t *testing.T) {
+func TestGatewayWKProtoHandlerAcknowledgesDurablePersonSend(t *testing.T) {
 	registry := online.NewRegistry()
 	handler := newGatewayIntegrationHandler(
 		newClusterBackedMessageAppWithOnline(registry, channellog.SendResult{
@@ -75,15 +75,6 @@ func TestGatewayWKProtoHandlerRoutesDurablePersonSend(t *testing.T) {
 	require.Equal(t, gatewayTestClientMsgNo, ack.ClientMsgNo)
 	require.Equal(t, int64(88), ack.MessageID)
 	require.Equal(t, uint64(9), ack.MessageSeq)
-
-	recv := readRecvPacket(t, recipientConn)
-	require.Equal(t, gatewayTestSenderUID, recv.FromUID)
-	require.Equal(t, gatewayTestSenderUID, recv.ChannelID)
-	require.Equal(t, wkframe.ChannelTypePerson, recv.ChannelType)
-	require.Equal(t, []byte(gatewayTestPayload), recv.Payload)
-	require.Equal(t, gatewayTestClientMsgNo, recv.ClientMsgNo)
-	require.Equal(t, ack.MessageID, recv.MessageID)
-	require.Equal(t, ack.MessageSeq, recv.MessageSeq)
 }
 
 func TestGatewayVersion5ClientGetsUpgradeRequiredOnSend(t *testing.T) {

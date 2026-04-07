@@ -279,6 +279,30 @@ func TestAuthorityEndpointsByUIDReturnsCurrentRoutes(t *testing.T) {
 	require.ElementsMatch(t, []uint64{100, 200}, []uint64{endpoints[0].SessionID, endpoints[1].SessionID})
 }
 
+func TestPresenceAuthorityEndpointsByUIDsReturnsBatchRoutes(t *testing.T) {
+	app := New(Options{})
+
+	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
+		GroupID: 1,
+		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+	})
+	require.NoError(t, err)
+	_, err = app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
+		GroupID: 1,
+		Route:   testRoute("u2", 2, 20, 200, "device-b", uint8(wkframe.DeviceLevelMaster)),
+	})
+	require.NoError(t, err)
+
+	endpoints, err := app.EndpointsByUIDs(context.Background(), []string{"u2", "u1", "missing"})
+	require.NoError(t, err)
+	require.Len(t, endpoints["u1"], 1)
+	require.Equal(t, uint64(100), endpoints["u1"][0].SessionID)
+	require.Len(t, endpoints["u2"], 1)
+	require.Equal(t, uint64(200), endpoints["u2"][0].SessionID)
+	_, ok := endpoints["missing"]
+	require.False(t, ok)
+}
+
 func TestAuthorityRegisterSeedsLeaseDeadlineAndExpiresWithoutHeartbeat(t *testing.T) {
 	now := time.Unix(200, 0)
 	app := New(Options{

@@ -8,8 +8,10 @@ import (
 	accessgateway "github.com/WuKongIM/WuKongIM/internal/access/gateway"
 	accessnode "github.com/WuKongIM/WuKongIM/internal/access/node"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
+	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/messageid"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
+	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	userusecase "github.com/WuKongIM/WuKongIM/internal/usecase/user"
@@ -133,27 +135,65 @@ func build(cfg Config) (_ *App, err error) {
 		ActionDispatcher: authorityClient,
 	})
 	authorityClient.local = app.presenceApp
-	app.nodeAccess = accessnode.New(accessnode.Options{
-		Cluster:       app.cluster,
-		Presence:      app.presenceApp,
-		Online:        onlineRegistry,
-		GatewayBootID: app.gatewayBootID,
-	})
 	app.presenceWorker = newPresenceWorker(app.presenceApp, 0)
+	app.deliveryAcks = deliveryruntime.NewAckIndex()
+	subscriberResolver := deliveryusecase.NewSubscriberResolver(deliveryusecase.SubscriberResolverOptions{
+		Store: app.store,
+	})
+	app.deliveryRuntime = deliveryruntime.NewManager(deliveryruntime.Config{
+		Resolver: localDeliveryResolver{
+			subscribers: subscriberResolver,
+			authority:   authorityClient,
+		},
+		Push: distributedDeliveryPush{
+			localNodeID: cfg.Node.ID,
+			local: localDeliveryPush{
+				online:        onlineRegistry,
+				localNodeID:   cfg.Node.ID,
+				gatewayBootID: app.gatewayBootID,
+				now:           time.Now,
+			},
+			client: app.nodeClient,
+		},
+	})
+	app.deliveryApp = deliveryusecase.New(deliveryusecase.Options{
+		Runtime: app.deliveryRuntime,
+	})
+	app.nodeAccess = accessnode.New(accessnode.Options{
+		Cluster:          app.cluster,
+		Presence:         app.presenceApp,
+		Online:           onlineRegistry,
+		GatewayBootID:    app.gatewayBootID,
+		LocalNodeID:      cfg.Node.ID,
+		DeliverySubmit:   app.deliveryApp,
+		DeliveryAck:      app.deliveryApp,
+		DeliveryOffline:  app.deliveryApp,
+		DeliveryAckIndex: app.deliveryAcks,
+	})
 	app.messageApp = message.New(message.Options{
 		IdentityStore: app.store,
 		ChannelStore:  app.store,
 		Cluster:       app.channelLog,
 		MetaRefresher: app.channelMetaSync,
 		Online:        onlineRegistry,
-		Delivery:      online.LocalDelivery{},
-		Recipients:    messageRecipientDirectory{authority: authorityClient},
-		RemoteDelivery: messageRemoteDelivery{
-			cluster: app.cluster,
-			client:  app.nodeClient,
+		CommittedDispatcher: asyncCommittedDispatcher{
+			localNodeID: cfg.Node.ID,
+			channelLog:  app.channelLog,
+			delivery:    app.deliveryApp,
+			nodeClient:  app.nodeClient,
 		},
-		LocalNodeID: cfg.Node.ID,
-		LocalBootID: app.gatewayBootID,
+		DeliveryAck: ackRouting{
+			localNodeID: cfg.Node.ID,
+			local:       app.deliveryApp,
+			remoteAcks:  app.deliveryAcks,
+			notifier:    app.nodeClient,
+		},
+		DeliveryOffline: offlineRouting{
+			localNodeID: cfg.Node.ID,
+			local:       app.deliveryApp,
+			remoteAcks:  app.deliveryAcks,
+			notifier:    app.nodeClient,
+		},
 	})
 	userApp := userusecase.New(userusecase.Options{
 		Users:   app.store,

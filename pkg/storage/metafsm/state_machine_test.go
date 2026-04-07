@@ -224,6 +224,63 @@ func TestStateMachineApplyUpsertsAndDeletesChannelRuntimeMeta(t *testing.T) {
 	}
 }
 
+func TestStateMachineAppliesAddAndRemoveSubscribers(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	sm := mustNewStateMachine(t, db, 11)
+
+	result, err := sm.Apply(ctx, multiraft.Command{
+		GroupID: 11,
+		Index:   1,
+		Term:    1,
+		Data:    encodeTestAddSubscribersCommand("group-1", 2, []string{"u3", "u1", "u2"}),
+	})
+	if err != nil {
+		t.Fatalf("Apply(add subscribers) error = %v", err)
+	}
+	if string(result) != ApplyResultOK {
+		t.Fatalf("Apply(add subscribers) result = %q, want %q", result, ApplyResultOK)
+	}
+
+	shard, ok := any(db.ForSlot(11)).(interface {
+		ListSubscribersPage(ctx context.Context, channelID string, channelType int64, afterUID string, limit int) ([]string, string, bool, error)
+	})
+	if !ok {
+		t.Fatalf("subscriber shard store methods missing")
+	}
+
+	got, _, done, err := shard.ListSubscribersPage(ctx, "group-1", 2, "", 10)
+	if err != nil {
+		t.Fatalf("ListSubscribersPage() after add error = %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{"u1", "u2", "u3"}) {
+		t.Fatalf("subscribers after add = %#v", got)
+	}
+	if !done {
+		t.Fatalf("done after add = false, want true")
+	}
+
+	if _, err := sm.Apply(ctx, multiraft.Command{
+		GroupID: 11,
+		Index:   2,
+		Term:    1,
+		Data:    encodeTestRemoveSubscribersCommand("group-1", 2, []string{"u2"}),
+	}); err != nil {
+		t.Fatalf("Apply(remove subscribers) error = %v", err)
+	}
+
+	got, _, done, err = shard.ListSubscribersPage(ctx, "group-1", 2, "", 10)
+	if err != nil {
+		t.Fatalf("ListSubscribersPage() after remove error = %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{"u1", "u3"}) {
+		t.Fatalf("subscribers after remove = %#v", got)
+	}
+	if !done {
+		t.Fatalf("done after remove = false, want true")
+	}
+}
+
 func TestStateMachineApplyCreateUserAndUpsertDevice(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
@@ -324,6 +381,32 @@ func TestStateMachineRejectsIncompleteDeleteChannelRuntimeMetaCommand(t *testing
 	if !errors.Is(err, metadb.ErrCorruptValue) {
 		t.Fatalf("Apply(incomplete delete runtime meta) err = %v, want ErrCorruptValue", err)
 	}
+}
+
+const (
+	testCmdTypeAddSubscribers    uint8 = 8
+	testCmdTypeRemoveSubscribers uint8 = 9
+
+	testTagSubscriberChannelID   uint8 = 1
+	testTagSubscriberChannelType uint8 = 2
+	testTagSubscriberUIDs        uint8 = 3
+)
+
+func encodeTestAddSubscribersCommand(channelID string, channelType int64, uids []string) []byte {
+	return encodeTestSubscriberCommand(testCmdTypeAddSubscribers, channelID, channelType, uids)
+}
+
+func encodeTestRemoveSubscribersCommand(channelID string, channelType int64, uids []string) []byte {
+	return encodeTestSubscriberCommand(testCmdTypeRemoveSubscribers, channelID, channelType, uids)
+}
+
+func encodeTestSubscriberCommand(cmdType uint8, channelID string, channelType int64, uids []string) []byte {
+	buf := make([]byte, 0, headerSize+len(channelID)+len(uids)*8)
+	buf = append(buf, commandVersion, cmdType)
+	buf = appendStringTLVField(buf, testTagSubscriberChannelID, channelID)
+	buf = appendInt64TLVField(buf, testTagSubscriberChannelType, channelType)
+	buf = appendBytesTLVField(buf, testTagSubscriberUIDs, []byte(strings.Join(uids, "\x00")))
+	return buf
 }
 
 func TestStateMachineRejectsDeleteChannelRuntimeMetaWithEmptyChannelID(t *testing.T) {
@@ -785,6 +868,12 @@ func TestApplyBatch_DeleteChannel(t *testing.T) {
 		t.Fatalf("unexpected channel ID: %s", ch.ChannelID)
 	}
 
+	addSubscribersCmd := EncodeAddSubscribersCommand("ch1", 1, []string{"u2", "u3"})
+	_, err = sm.Apply(ctx, multiraft.Command{GroupID: 1, Data: addSubscribersCmd})
+	if err != nil {
+		t.Fatalf("Apply add subscribers: %v", err)
+	}
+
 	// Delete the channel
 	deleteCmd := EncodeDeleteChannelCommand("ch1", 1)
 	_, err = sm.Apply(ctx, multiraft.Command{GroupID: 1, Data: deleteCmd})
@@ -796,6 +885,14 @@ func TestApplyBatch_DeleteChannel(t *testing.T) {
 	_, err = db.ForSlot(1).GetChannel(ctx, "ch1", 1)
 	if err != metadb.ErrNotFound {
 		t.Fatalf("expected ErrNotFound, got: %v", err)
+	}
+
+	uids, _, done, err := db.ForSlot(1).ListSubscribersPage(ctx, "ch1", 1, "", 10)
+	if err != nil {
+		t.Fatalf("ListSubscribersPage after delete: %v", err)
+	}
+	if len(uids) != 0 || !done {
+		t.Fatalf("expected subscribers removed, got uids=%v done=%v", uids, done)
 	}
 }
 

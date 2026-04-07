@@ -192,6 +192,37 @@ func (d *directory) endpointsByUID(uid string, nowUnix int64) []Route {
 	return out
 }
 
+func (d *directory) endpointsByUIDs(uids []string, nowUnix int64) map[string][]Route {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.sweepExpiredLocked(nowUnix)
+
+	out := make(map[string][]Route, len(uids))
+	for _, uid := range uids {
+		routes := d.byUID[uid]
+		if len(routes) == 0 {
+			continue
+		}
+
+		current := make([]Route, 0, len(routes))
+		for _, route := range routes {
+			current = append(current, route)
+		}
+		sort.Slice(current, func(i, j int) bool {
+			if current[i].SessionID != current[j].SessionID {
+				return current[i].SessionID < current[j].SessionID
+			}
+			if current[i].NodeID != current[j].NodeID {
+				return current[i].NodeID < current[j].NodeID
+			}
+			return current[i].BootID < current[j].BootID
+		})
+		out[uid] = current
+	}
+	return out
+}
+
 func (d *directory) sweepExpiredLocked(nowUnix int64) {
 	if nowUnix <= 0 {
 		return

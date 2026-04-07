@@ -186,6 +186,58 @@ func TestPresenceRPCApplyActionRoundTrip(t *testing.T) {
 	require.Equal(t, online.LocalRouteStateClosing, conn.State)
 }
 
+func TestPresenceRPCEndpointsByUIDsRoundTrip(t *testing.T) {
+	network := newFakeClusterNetwork(
+		map[uint64][]uint64{1: {1}},
+		map[uint64]uint64{1: 1},
+	)
+	node1 := network.cluster(1)
+
+	presenceApp := presence.New(presence.Options{
+		LocalNodeID:   1,
+		GatewayBootID: 11,
+		Now:           func() time.Time { return time.Unix(200, 0) },
+	})
+	New(Options{Cluster: node1, Presence: presenceApp, Online: online.NewRegistry(), GatewayBootID: 11})
+
+	client := NewClient(node1)
+	_, err := client.RegisterAuthoritative(context.Background(), presence.RegisterAuthoritativeCommand{
+		GroupID: 1,
+		Route: presence.Route{
+			UID:         "u1",
+			NodeID:      1,
+			BootID:      11,
+			SessionID:   100,
+			DeviceID:    "d1",
+			DeviceFlag:  uint8(wkframe.APP),
+			DeviceLevel: uint8(wkframe.DeviceLevelMaster),
+			Listener:    "tcp",
+		},
+	})
+	require.NoError(t, err)
+	_, err = client.RegisterAuthoritative(context.Background(), presence.RegisterAuthoritativeCommand{
+		GroupID: 1,
+		Route: presence.Route{
+			UID:         "u2",
+			NodeID:      1,
+			BootID:      11,
+			SessionID:   200,
+			DeviceID:    "d2",
+			DeviceFlag:  uint8(wkframe.WEB),
+			DeviceLevel: uint8(wkframe.DeviceLevelMaster),
+			Listener:    "tcp",
+		},
+	})
+	require.NoError(t, err)
+
+	endpoints, err := client.EndpointsByUIDs(context.Background(), []string{"u2", "u1"})
+	require.NoError(t, err)
+	require.Len(t, endpoints["u1"], 1)
+	require.Equal(t, uint64(100), endpoints["u1"][0].SessionID)
+	require.Len(t, endpoints["u2"], 1)
+	require.Equal(t, uint64(200), endpoints["u2"][0].SessionID)
+}
+
 type fakeClusterNetwork struct {
 	mu        sync.Mutex
 	peers     map[uint64][]uint64

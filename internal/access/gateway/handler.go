@@ -22,6 +22,7 @@ const defaultSendTimeout = 10 * time.Second
 type MessageUsecase interface {
 	Send(ctx context.Context, cmd message.SendCommand) (message.SendResult, error)
 	RecvAck(cmd message.RecvAckCommand) error
+	SessionClosed(cmd message.SessionClosedCommand) error
 }
 
 type PresenceUsecase interface {
@@ -100,10 +101,19 @@ func (h *Handler) OnSessionClose(ctx *coregateway.Context) error {
 	if h == nil || ctx == nil || ctx.Session == nil {
 		return nil
 	}
-	if h.presence == nil {
-		return nil
+
+	var err error
+	if h.messages != nil {
+		uid, _ := ctx.Session.Value(coregateway.SessionValueUID).(string)
+		err = errors.Join(err, h.messages.SessionClosed(message.SessionClosedCommand{
+			UID:       uid,
+			SessionID: ctx.Session.ID(),
+		}))
 	}
-	return h.presence.Deactivate(requestContextFromContext(ctx), deactivateCommandFromContext(ctx))
+	if h.presence != nil {
+		err = errors.Join(err, h.presence.Deactivate(requestContextFromContext(ctx), deactivateCommandFromContext(ctx)))
+	}
+	return err
 }
 
 func (h *Handler) OnSessionError(*coregateway.Context, error) {}

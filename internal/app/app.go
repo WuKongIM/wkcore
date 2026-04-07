@@ -8,7 +8,9 @@ import (
 	accessgateway "github.com/WuKongIM/WuKongIM/internal/access/gateway"
 	accessnode "github.com/WuKongIM/WuKongIM/internal/access/node"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
+	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
+	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isrnode"
@@ -31,6 +33,9 @@ type App struct {
 	channelMetaSync *channelMetaSync
 	store           *metastore.Store
 	presenceApp     *presence.App
+	deliveryApp     *deliveryusecase.App
+	deliveryRuntime *deliveryruntime.Manager
+	deliveryAcks    *deliveryruntime.AckIndex
 	messageApp      *message.App
 	api             *accessapi.Server
 	nodeClient      *accessnode.Client

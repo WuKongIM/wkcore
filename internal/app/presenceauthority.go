@@ -58,6 +58,44 @@ func (c *presenceAuthorityClient) EndpointsByUID(ctx context.Context, uid string
 	return c.remote.EndpointsByUID(ctx, uid)
 }
 
+func (c *presenceAuthorityClient) EndpointsByUIDs(ctx context.Context, uids []string) (map[string][]presence.Route, error) {
+	if c.cluster == nil || c.remote == nil {
+		if c.local == nil {
+			return nil, nil
+		}
+		return c.local.EndpointsByUIDs(ctx, uids)
+	}
+
+	grouped := make(map[uint64][]string)
+	for _, uid := range uids {
+		groupID := uint64(c.cluster.SlotForKey(uid))
+		grouped[groupID] = append(grouped[groupID], uid)
+	}
+
+	out := make(map[string][]presence.Route, len(uids))
+	for groupID, groupUIDs := range grouped {
+		if leaderID, err := c.cluster.LeaderOf(multiraft.GroupID(groupID)); err == nil && c.cluster.IsLocal(leaderID) {
+			routes, err := c.local.EndpointsByUIDs(ctx, groupUIDs)
+			if err != nil {
+				return nil, err
+			}
+			for uid, current := range routes {
+				out[uid] = append([]presence.Route(nil), current...)
+			}
+			continue
+		}
+
+		routes, err := c.remote.EndpointsByUIDs(ctx, groupUIDs)
+		if err != nil {
+			return nil, err
+		}
+		for uid, current := range routes {
+			out[uid] = append([]presence.Route(nil), current...)
+		}
+	}
+	return out, nil
+}
+
 func (c *presenceAuthorityClient) ApplyRouteAction(ctx context.Context, action presence.RouteAction) error {
 	if c.local != nil && (action.NodeID == 0 || action.NodeID == c.localNodeID) {
 		return c.local.ApplyRouteAction(ctx, action)

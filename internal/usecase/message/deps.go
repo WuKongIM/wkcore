@@ -36,6 +36,18 @@ type RemoteDelivery interface {
 	DeliverRemote(ctx context.Context, cmd RemoteDeliveryCommand) error
 }
 
+type CommittedMessageDispatcher interface {
+	SubmitCommitted(ctx context.Context, env CommittedMessageEnvelope) error
+}
+
+type DeliveryAck interface {
+	AckRoute(ctx context.Context, cmd RouteAckCommand) error
+}
+
+type DeliveryOffline interface {
+	SessionClosed(ctx context.Context, cmd SessionClosedCommand) error
+}
+
 type ChannelCluster interface {
 	ApplyMeta(meta channellog.ChannelMeta) error
 	Send(ctx context.Context, req channellog.SendRequest) (channellog.SendResult, error)

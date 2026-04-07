@@ -253,6 +253,7 @@ func (s *ShardStore) DeleteChannel(ctx context.Context, channelID string, channe
 	}
 
 	indexKey := encodeChannelIDIndexKey(s.slot, channelID, channelType)
+	subscriberPrefix := encodeSubscriberChannelPrefix(s.slot, channelID, channelType)
 
 	batch := s.db.db.NewBatch()
 	defer batch.Close()
@@ -261,6 +262,9 @@ func (s *ShardStore) DeleteChannel(ctx context.Context, channelID string, channe
 		return err
 	}
 	if err := batch.Delete(indexKey, nil); err != nil {
+		return err
+	}
+	if err := batch.DeleteRange(subscriberPrefix, nextPrefix(subscriberPrefix), nil); err != nil {
 		return err
 	}
 	return batch.Commit(pebble.Sync)

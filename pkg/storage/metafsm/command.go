@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 )
@@ -29,6 +30,8 @@ const (
 	cmdTypeDeleteChannelRuntimeMeta uint8 = 5
 	cmdTypeCreateUser               uint8 = 6
 	cmdTypeUpsertDevice             uint8 = 7
+	cmdTypeAddSubscribers           uint8 = 8
+	cmdTypeRemoveSubscribers        uint8 = 9
 
 	// User field tags.
 	tagUserUID         uint8 = 1
@@ -60,6 +63,11 @@ const (
 	tagRuntimeMetaFeatures     uint8 = 10
 	tagRuntimeMetaLeaseUntilMS uint8 = 11
 
+	// Subscriber field tags.
+	tagSubscriberChannelID   uint8 = 1
+	tagSubscriberChannelType uint8 = 2
+	tagSubscriberUIDs        uint8 = 3
+
 	// ApplyResultOK is the result returned by Apply/ApplyBatch on success.
 	ApplyResultOK = "ok"
 
@@ -90,6 +98,8 @@ var commandDecoders = map[uint8]commandDecoder{
 	cmdTypeDeleteChannelRuntimeMeta: decodeDeleteChannelRuntimeMeta,
 	cmdTypeCreateUser:               decodeCreateUser,
 	cmdTypeUpsertDevice:             decodeUpsertDevice,
+	cmdTypeAddSubscribers:           decodeAddSubscribers,
+	cmdTypeRemoveSubscribers:        decodeRemoveSubscribers,
 }
 
 // --- UpsertUser ---
@@ -162,6 +172,30 @@ type deleteChannelRuntimeMetaCmd struct {
 
 func (c *deleteChannelRuntimeMetaCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
 	return wb.DeleteChannelRuntimeMeta(slot, c.channelID, c.channelType)
+}
+
+// --- AddSubscribers ---
+
+type addSubscribersCmd struct {
+	channelID   string
+	channelType int64
+	uids        []string
+}
+
+func (c *addSubscribersCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
+	return wb.AddSubscribers(slot, c.channelID, c.channelType, c.uids)
+}
+
+// --- RemoveSubscribers ---
+
+type removeSubscribersCmd struct {
+	channelID   string
+	channelType int64
+	uids        []string
+}
+
+func (c *removeSubscribersCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
+	return wb.RemoveSubscribers(slot, c.channelID, c.channelType, c.uids)
 }
 
 // EncodeUpsertUserCommand encodes a User into a binary command.
@@ -290,6 +324,25 @@ func EncodeDeleteChannelRuntimeMetaCommand(channelID string, channelType int64) 
 	buf = append(buf, commandVersion, cmdTypeDeleteChannelRuntimeMeta)
 	buf = appendStringTLVField(buf, tagRuntimeMetaChannelID, channelID)
 	buf = appendInt64TLVField(buf, tagRuntimeMetaChannelType, channelType)
+	return buf
+}
+
+// EncodeAddSubscribersCommand encodes a subscriber add command.
+func EncodeAddSubscribersCommand(channelID string, channelType int64, uids []string) []byte {
+	return encodeSubscribersCommand(cmdTypeAddSubscribers, channelID, channelType, uids)
+}
+
+// EncodeRemoveSubscribersCommand encodes a subscriber removal command.
+func EncodeRemoveSubscribersCommand(channelID string, channelType int64, uids []string) []byte {
+	return encodeSubscribersCommand(cmdTypeRemoveSubscribers, channelID, channelType, uids)
+}
+
+func encodeSubscribersCommand(cmdType uint8, channelID string, channelType int64, uids []string) []byte {
+	buf := make([]byte, 0, headerSize+len(channelID)+len(uids)*8)
+	buf = append(buf, commandVersion, cmdType)
+	buf = appendStringTLVField(buf, tagSubscriberChannelID, channelID)
+	buf = appendInt64TLVField(buf, tagSubscriberChannelType, channelType)
+	buf = appendBytesTLVField(buf, tagSubscriberUIDs, encodeStringSet(uids))
 	return buf
 }
 
@@ -584,6 +637,68 @@ func decodeDeleteChannelRuntimeMeta(data []byte) (command, error) {
 	return &cmd, nil
 }
 
+func decodeAddSubscribers(data []byte) (command, error) {
+	return decodeSubscribersCommand(data, func(channelID string, channelType int64, uids []string) command {
+		return &addSubscribersCmd{
+			channelID:   channelID,
+			channelType: channelType,
+			uids:        uids,
+		}
+	})
+}
+
+func decodeRemoveSubscribers(data []byte) (command, error) {
+	return decodeSubscribersCommand(data, func(channelID string, channelType int64, uids []string) command {
+		return &removeSubscribersCmd{
+			channelID:   channelID,
+			channelType: channelType,
+			uids:        uids,
+		}
+	})
+}
+
+func decodeSubscribersCommand(data []byte, build func(channelID string, channelType int64, uids []string) command) (command, error) {
+	var (
+		channelID       string
+		channelType     int64
+		uids            []string
+		haveChannelID   bool
+		haveChannelType bool
+		haveUIDs        bool
+	)
+
+	off := 0
+	for off < len(data) {
+		tag, value, n, err := readTLV(data[off:])
+		if err != nil {
+			return nil, err
+		}
+		off += n
+
+		switch tag {
+		case tagSubscriberChannelID:
+			channelID = string(value)
+			haveChannelID = true
+		case tagSubscriberChannelType:
+			if len(value) != 8 {
+				return nil, fmt.Errorf("%w: bad subscriber ChannelType length", metadb.ErrCorruptValue)
+			}
+			channelType = int64(binary.BigEndian.Uint64(value))
+			haveChannelType = true
+		case tagSubscriberUIDs:
+			uids = decodeStringSet(value)
+			haveUIDs = true
+		default:
+			// Unknown tag — skip for forward compatibility.
+		}
+	}
+
+	if !haveChannelID || !haveChannelType || !haveUIDs {
+		return nil, fmt.Errorf("%w: incomplete subscriber command", metadb.ErrCorruptValue)
+	}
+	return build(channelID, channelType, uids), nil
+}
+
 // ---------- TLV helpers ----------
 
 // putStringField writes [tag][len:4][string bytes] and returns the new offset.
@@ -689,4 +804,29 @@ func decodeUint64Slice(data []byte) ([]uint64, error) {
 		values[i] = binary.BigEndian.Uint64(data[i*8:])
 	}
 	return values, nil
+}
+
+func encodeStringSet(values []string) []byte {
+	if len(values) == 0 {
+		return nil
+	}
+	sorted := append([]string(nil), values...)
+	sort.Strings(sorted)
+	n := 1
+	for i := 1; i < len(sorted); i++ {
+		if sorted[i] == sorted[n-1] {
+			continue
+		}
+		sorted[n] = sorted[i]
+		n++
+	}
+	sorted = sorted[:n]
+	return []byte(strings.Join(sorted, "\x00"))
+}
+
+func decodeStringSet(data []byte) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	return strings.Split(string(data), "\x00")
 }

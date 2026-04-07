@@ -112,7 +112,11 @@ func (b *WriteBatch) DeleteChannel(slot uint64, channelID string, channelType in
 		return err
 	}
 	indexKey := encodeChannelIDIndexKey(slot, channelID, channelType)
-	return b.batch.Delete(indexKey, nil)
+	if err := b.batch.Delete(indexKey, nil); err != nil {
+		return err
+	}
+	subscriberPrefix := encodeSubscriberChannelPrefix(slot, channelID, channelType)
+	return b.batch.DeleteRange(subscriberPrefix, nextPrefix(subscriberPrefix), nil)
 }
 
 // UpsertChannelRuntimeMeta encodes and stages a runtime metadata write into the batch.
@@ -141,6 +145,50 @@ func (b *WriteBatch) DeleteChannelRuntimeMeta(slot uint64, channelID string, cha
 	}
 	key := encodeChannelRuntimeMetaPrimaryKey(slot, channelID, channelType, channelRuntimeMetaPrimaryFamilyID)
 	return b.batch.Delete(key, nil)
+}
+
+// AddSubscribers stages subscriber snapshot rows into the batch.
+func (b *WriteBatch) AddSubscribers(slot uint64, channelID string, channelType int64, uids []string) error {
+	if err := validateSlot(slot); err != nil {
+		return err
+	}
+	if err := validateSubscriberChannel(channelID); err != nil {
+		return err
+	}
+
+	normalized, err := normalizeSubscriberUIDs(uids)
+	if err != nil {
+		return err
+	}
+	for _, uid := range normalized {
+		key := encodeSubscriberPrimaryKey(slot, channelID, channelType, uid, subscriberPrimaryFamilyID)
+		if err := b.batch.Set(key, wrapFamilyValue(key, nil), nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RemoveSubscribers stages subscriber snapshot row deletions into the batch.
+func (b *WriteBatch) RemoveSubscribers(slot uint64, channelID string, channelType int64, uids []string) error {
+	if err := validateSlot(slot); err != nil {
+		return err
+	}
+	if err := validateSubscriberChannel(channelID); err != nil {
+		return err
+	}
+
+	normalized, err := normalizeSubscriberUIDs(uids)
+	if err != nil {
+		return err
+	}
+	for _, uid := range normalized {
+		key := encodeSubscriberPrimaryKey(slot, channelID, channelType, uid, subscriberPrimaryFamilyID)
+		if err := b.batch.Delete(key, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Commit atomically writes all staged operations with a single fsync.

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
+	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
@@ -28,6 +29,15 @@ func mapSendCommand(ctx *coregateway.Context, pkt *wkframe.SendPacket) (message.
 		}, nil
 	}
 
+	channelID := pkt.ChannelID
+	if pkt.ChannelType == wkframe.ChannelTypePerson && senderUID != "" && channelID != "" {
+		var err error
+		channelID, err = runtimechannelid.NormalizePersonChannel(senderUID, channelID)
+		if err != nil {
+			return message.SendCommand{}, err
+		}
+	}
+
 	return message.SendCommand{
 		Framer:          pkt.Framer,
 		Setting:         pkt.Setting,
@@ -37,7 +47,7 @@ func mapSendCommand(ctx *coregateway.Context, pkt *wkframe.SendPacket) (message.
 		ClientSeq:       pkt.ClientSeq,
 		ClientMsgNo:     pkt.ClientMsgNo,
 		StreamNo:        pkt.StreamNo,
-		ChannelID:       pkt.ChannelID,
+		ChannelID:       channelID,
 		ChannelType:     pkt.ChannelType,
 		Topic:           pkt.Topic,
 		Payload:         pkt.Payload,
@@ -56,11 +66,12 @@ func mapRecvAckCommand(ctx *coregateway.Context, pkt *wkframe.RecvackPacket) (me
 	}
 
 	if pkt == nil {
-		return message.RecvAckCommand{UID: uid}, nil
+		return message.RecvAckCommand{UID: uid, SessionID: ctx.Session.ID()}, nil
 	}
 
 	return message.RecvAckCommand{
 		UID:        uid,
+		SessionID:  ctx.Session.ID(),
 		Framer:     pkt.Framer,
 		MessageID:  pkt.MessageID,
 		MessageSeq: pkt.MessageSeq,

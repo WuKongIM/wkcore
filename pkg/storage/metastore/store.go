@@ -22,6 +22,7 @@ func New(cluster *raftcluster.Cluster, db *metadb.DB) *Store {
 	if cluster != nil && cluster.RPCMux() != nil {
 		cluster.RPCMux().Handle(runtimeMetaRPCServiceID, store.handleRuntimeMetaRPC)
 		cluster.RPCMux().Handle(identityRPCServiceID, store.handleIdentityRPC)
+		cluster.RPCMux().Handle(subscriberRPCServiceID, store.handleSubscriberRPC)
 	}
 	return store
 }
@@ -54,6 +55,23 @@ func (s *Store) DeleteChannel(ctx context.Context, channelID string, channelType
 func (s *Store) GetChannel(ctx context.Context, channelID string, channelType int64) (metadb.Channel, error) {
 	groupID := s.cluster.SlotForKey(channelID)
 	return s.db.ForSlot(uint64(groupID)).GetChannel(ctx, channelID, channelType)
+}
+
+func (s *Store) AddChannelSubscribers(ctx context.Context, channelID string, channelType int64, uids []string) error {
+	groupID := s.cluster.SlotForKey(channelID)
+	cmd := metafsm.EncodeAddSubscribersCommand(channelID, channelType, uids)
+	return s.cluster.Propose(ctx, groupID, cmd)
+}
+
+func (s *Store) RemoveChannelSubscribers(ctx context.Context, channelID string, channelType int64, uids []string) error {
+	groupID := s.cluster.SlotForKey(channelID)
+	cmd := metafsm.EncodeRemoveSubscribersCommand(channelID, channelType, uids)
+	return s.cluster.Propose(ctx, groupID, cmd)
+}
+
+func (s *Store) ListChannelSubscribers(ctx context.Context, channelID string, channelType int64, afterUID string, limit int) ([]string, string, bool, error) {
+	groupID := s.cluster.SlotForKey(channelID)
+	return s.listChannelSubscribersAuthoritative(ctx, groupID, channelID, channelType, afterUID, limit)
 }
 
 func (s *Store) UpsertChannelRuntimeMeta(ctx context.Context, meta metadb.ChannelRuntimeMeta) error {

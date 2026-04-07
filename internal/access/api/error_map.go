@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 )
 
@@ -22,6 +23,8 @@ func mapSendError(err error) (int, string, bool) {
 		return http.StatusConflict, "message seq exhausted", true
 	case errors.Is(err, channellog.ErrStaleMeta), errors.Is(err, channellog.ErrNotLeader):
 		return http.StatusServiceUnavailable, "retry required", true
+	case errors.Is(err, runtimechannelid.ErrInvalidPersonChannel):
+		return http.StatusBadRequest, "invalid channel id", true
 	case errors.Is(err, context.Canceled):
 		return http.StatusRequestTimeout, "request canceled", true
 	case errors.Is(err, context.DeadlineExceeded):

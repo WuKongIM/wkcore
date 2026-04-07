@@ -151,6 +151,38 @@ func TestDeleteChannelRemovesOnlySlotLocalIndex(t *testing.T) {
 	}
 }
 
+func TestDeleteChannelRemovesSubscribers(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	shard := db.ForSlot(1)
+
+	channel := Channel{ChannelID: "group-cleanup", ChannelType: 1}
+	if err := shard.CreateChannel(ctx, channel); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	if err := shard.AddSubscribers(ctx, channel.ChannelID, channel.ChannelType, []string{"u1", "u2"}); err != nil {
+		t.Fatalf("add subscribers: %v", err)
+	}
+
+	if err := shard.DeleteChannel(ctx, channel.ChannelID, channel.ChannelType); err != nil {
+		t.Fatalf("delete channel: %v", err)
+	}
+
+	subscribers, cursor, done, err := shard.ListSubscribersPage(ctx, channel.ChannelID, channel.ChannelType, "", 10)
+	if err != nil {
+		t.Fatalf("list subscribers: %v", err)
+	}
+	if len(subscribers) != 0 {
+		t.Fatalf("expected subscribers to be removed, got %#v", subscribers)
+	}
+	if cursor != "" {
+		t.Fatalf("expected empty cursor, got %q", cursor)
+	}
+	if !done {
+		t.Fatal("expected done after subscriber cleanup")
+	}
+}
+
 func TestChannelIndexValueTracksListPayload(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
