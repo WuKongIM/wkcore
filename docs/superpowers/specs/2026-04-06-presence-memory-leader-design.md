@@ -33,6 +33,14 @@ The current repository intentionally excludes cross-node online fanout from the 
 At the same time, a naive per-connection periodic refresh design does not scale.
 If a node holds 100k sessions and refreshes all of them individually to a remote authority, steady-state control traffic and authority CPU become linear in connection count.
 
+The old implementation also has connect-time device semantics that are not optional:
+
+- `device_level` is not just auth metadata
+- `device_id` is required to distinguish same-device reconnect from different-device conflict
+- conflict handling is scoped by `uid + device_flag`
+
+V1 must preserve those semantics when routing becomes cross-node.
+
 ## Decision
 
 V1 will use an in-memory authoritative directory owned by the current slot leader.
@@ -101,6 +109,7 @@ It owns:
 - local `session.Session`
 - local session lookup by `sessionID`
 - local user-to-sessions membership
+- local device-aware session metadata
 
 It does not become a distributed directory.
 
@@ -169,6 +178,7 @@ type Route struct {
     NodeID      uint64
     BootID      uint64
     SessionID   uint64
+    DeviceID    string
     DeviceFlag  uint8
     DeviceLevel uint8
     Listener    string
@@ -180,6 +190,32 @@ Recommended indexes:
 - `uid -> []Route`
 - `groupID + gatewayNodeID + bootID -> lease`
 - `groupID + gatewayNodeID + bootID -> []RouteRef`
+
+The authority only stores `active` routes.
+Routes that have been superseded by device-conflict handling must be removed from the authority immediately and must never re-enter authority state via replay.
+
+### Local Route State
+
+Each gateway must track a local route lifecycle:
+
+```go
+type LocalRouteState uint8
+
+const (
+    LocalRouteStateActive LocalRouteState = iota
+    LocalRouteStateClosing
+)
+```
+
+Rules:
+
+- `active` routes participate in authority registration, heartbeat lease counts, replay payloads, and delivery lookup
+- `closing` routes are on a one-way path to physical close
+- `closing` routes do not participate in replay
+- `closing` routes do not count toward heartbeat lease `routeCount`
+- `closing` routes must be excluded from local delivery targeting
+
+This state is required so leader failover repair cannot resurrect routes that were already superseded by a later connect decision.
 
 ### Gateway Lease
 
@@ -193,6 +229,7 @@ type GatewayLease struct {
     GatewayNodeID  uint64
     GatewayBootID  uint64
     RouteCount     int
+    RouteDigest    uint64
     LeaseUntilUnix int64
 }
 ```
@@ -203,6 +240,124 @@ The lease means:
 - all routes attached to that lease remain valid while the lease is alive
 
 If a lease expires, the authority removes all routes attached to that gateway/group lease.
+
+`RouteDigest` is an order-independent fingerprint of the gateway's current `active` owner set for that `(groupID, gatewayNodeID, gatewayBootID)`.
+
+It exists because `routeCount` alone cannot detect owner-set divergence when the number of routes stays constant but membership changes.
+
+### Required Session Values
+
+Current gateway session values carry:
+
+- `uid`
+- `device_flag`
+- `device_level`
+
+They do not currently carry `device_id`.
+
+V1 must add:
+
+```go
+const SessionValueDeviceID = "gateway.device_id"
+```
+
+so that pre-ack activation and later route handling can read full device identity from the session.
+
+This is a required gateway contract change, not just a spec-level field addition.
+
+For successful authenticated connects, gateway auth/core must persist `device_id` into session values before the activation hook runs.
+
+`SessionActivator` in V1 reads route metadata from session values and does not rely on recovering the raw `ConnectPacket` later.
+
+`device_level` continues to come from token verification result.
+`device_id` comes directly from the connect packet.
+
+`internal/runtime/online.OnlineConn` and the gateway lifecycle mapper must also be extended to carry `DeviceID` so the node-local registry remains device-aware after connect activation.
+
+## Device Semantics Compatibility
+
+V1 must preserve the old connect-time conflict rules from the legacy implementation.
+
+Conflict scope:
+
+- same `uid`
+- same `device_flag`
+
+Decision key:
+
+- new route `device_level`
+- old route `device_id`
+- new route `device_id`
+
+Rules:
+
+- new route is `master`:
+  - all existing routes for same `uid + device_flag` are replaced
+  - if old `device_id != new device_id`, old route receives `DisconnectPacket{ReasonConnectKick, "login in other device"}` and then delayed close
+  - if old `device_id == new device_id`, old route is only delayed-close, without kick packet
+- new route is `slave`:
+  - only existing routes with same `uid + device_flag + device_id` are replaced
+  - replaced slave routes are delayed-close only, without kick packet
+
+These rules cannot be implemented independently on each gateway node because the online set is cross-node.
+
+Therefore the authority leader must be the single conflict arbiter for `RegisterRoute`.
+
+### Authority Register Result
+
+`RegisterRoute` must return both success status and replacement actions.
+
+Those actions are not fire-and-forget cleanup hints.
+They are part of the connect-time correctness path.
+
+Suggested shape:
+
+```go
+type RegisterRouteResult struct {
+    Actions []RouteAction
+}
+
+type RouteAction struct {
+    UID       string
+    NodeID    uint64
+    BootID    uint64
+    SessionID uint64
+    Kind      string // "close" | "kick_then_close"
+    Reason    string
+    DelayMS   int64
+}
+```
+
+The authority applies the route-set mutation first, then returns the actions needed to move replaced routes into local `closing` state.
+
+That means:
+
+- new route becomes authoritative immediately
+- replaced routes stop appearing in authority query results before physical close finishes
+- replaced routes must be marked `closing` on their owning gateways before the new connect succeeds
+
+Suggested action execution contract:
+
+- the activating gateway dispatches route actions to target gateways synchronously
+- each target gateway must atomically move the specified local route from `active` to `closing` before acknowledging the action
+- after ack, target gateway performs the physical kick and/or delayed close asynchronously
+
+If any required action cannot be acknowledged:
+
+- the activating gateway must unregister the new route from authority
+- the activating gateway must roll back the new local route to non-connected state
+- connect fails instead of returning success
+
+This design explicitly chooses fail-closed behavior for partial action success.
+
+If some route actions have already been acknowledged and moved old routes to `closing`, but a later action acknowledgment fails:
+
+- the new connect still fails
+- the new route is rolled back
+- already-`closing` old routes remain `closing`
+
+V1 accepts this tradeoff to keep the design simpler than a full two-phase authority commit with compensating restore.
+The priority is to avoid stale conflicting routes remaining routable.
 
 ## Connect Activation
 
@@ -226,17 +381,26 @@ type SessionActivator interface {
 For authenticated wkproto sessions:
 
 1. gateway authenticates connect packet
-2. gateway writes auth-derived session values
-3. gateway constructs local route metadata
+2. gateway writes auth-derived session values, including `device_id`
+3. gateway constructs local route metadata in `active` state
 4. gateway registers the route in local `online.Registry`
 5. gateway synchronously calls `presence.RegisterRoute(...)`
-6. if authority registration succeeds, gateway writes success `CONNACK`
-7. if authority registration fails, gateway rolls back local registration and rejects connect
+6. authority applies device conflict rules and returns replacement actions
+7. gateway synchronously dispatches those actions and waits for ack that replaced routes are now `closing`
+8. if any action ack fails, gateway unregisters the new route from authority, rolls back local registration, and rejects connect
+9. if all required action acks succeed, gateway writes success `CONNACK`
+10. kicked or replaced old routes finish delayed physical close asynchronously on their owning gateways
 
 This enforces:
 
 ```text
 successful connect implies routable-at-authority
+```
+
+and:
+
+```text
+successful connect implies all superseded conflicting routes are already non-routable
 ```
 
 ### Failure Behavior
@@ -246,6 +410,18 @@ If authority registration fails:
 - remove the just-registered local route from `online.Registry`
 - return a retryable connect failure
 - do not enter connected state
+
+If action dispatch or action acknowledgment fails:
+
+- remove the just-registered local route from `online.Registry`
+- unregister the route from authority
+- return a retryable connect failure
+- do not enter connected state
+
+If some conflicting old routes were already moved to `closing` before the failure:
+
+- they remain `closing`
+- V1 treats this as fail-closed behavior rather than restoring them to `active`
 
 ## Authority RPCs
 
@@ -264,8 +440,10 @@ Behavior:
 
 - route request to current authority leader
 - insert or replace the route
+- apply device-aware conflict rules for same `uid + device_flag`
 - attach the route to the gateway lease owner set
 - create or extend the lease for that `(groupID, gatewayNodeID, gatewayBootID)`
+- return replacement actions for old routes that must be marked `closing`
 
 ### UnregisterRoute
 
@@ -293,12 +471,15 @@ Input:
 - `groupID`
 - `gatewayNodeID`
 - `gatewayBootID`
-- `routeCount`
+- `routeCount` of `active` local routes only
+- `routeDigest` of the same `active` local owner set
 
 Behavior:
 
 - refresh the lease deadline
-- verify that authority still has route state for that owner set
+- verify that authority still has route state for that owner set by comparing both:
+  - `routeCount`
+  - `routeDigest`
 - return one of:
   - `ok`
   - `replay_required`
@@ -318,15 +499,35 @@ Input:
 - `groupID`
 - `gatewayNodeID`
 - `gatewayBootID`
-- full route list for that owner set
+- full `active` route list for that owner set only
 
 Behavior:
 
-- replace authority-side route membership for that owner set
-- rebuild `uid -> routes` entries for those routes
+- replace authority-side route membership for that owner set using only `active` routes
+- rebuild `uid -> routes` entries for those active routes
 - set the gateway lease deadline
 
+`ReplayRoutes` must never replay local routes already marked `closing`.
+
 `ReplayRoutes` is intentionally batch-oriented and only used on repair paths, not steady state.
+
+### ApplyRouteAction
+
+`RouteAction` delivery to owning gateways requires an acknowledged node RPC.
+
+Input:
+
+- full `RouteAction`
+
+Behavior on target gateway:
+
+- find the matching local route by `(nodeID, bootID, sessionID)`
+- if the route is already absent or already `closing`, treat the action as idempotently applied
+- if the route is `active`, atomically move it to `closing`
+- only after that state transition, acknowledge success to the activating gateway
+- after ack, perform kick packet send and/or delayed close asynchronously
+
+This RPC exists specifically to make connect-time conflict handling reliable enough for distributed pre-ack activation.
 
 ## Gateway-Side Indexing
 
@@ -334,8 +535,9 @@ Each gateway node must maintain local grouping so it can avoid scanning all conn
 
 Recommended local indexes:
 
-- `sessionID -> Route`
-- `groupID -> map[sessionID]Route`
+- `sessionID -> LocalRoute`
+- `groupID -> active map[sessionID]Route`
+- `sessionID -> closing route metadata`
 - `groupID + authorityNodeID -> owner state`
 
 This enables:
@@ -343,6 +545,8 @@ This enables:
 - connect/disconnect updating one group bucket
 - periodic heartbeat by group bucket
 - batch replay of only affected groups
+- local exclusion of superseded routes from replay and delivery
+- incremental maintenance of owner-set digest
 
 The gateway must not rescan all sessions globally every interval.
 
@@ -371,15 +575,23 @@ Requirements:
 
 ### Performance Model
 
-Steady-state network volume scales with:
+Steady-state control traffic scales with:
 
 - number of non-empty local authority groups
+- route churn
 
-Steady-state network volume does not scale with:
+It is no longer linearly proportional to total live routes when many routes share the same authority groups.
 
-- total local routes inside those groups
+However it still depends on route distribution.
+In the worst case, if a gateway's routes are spread broadly across many groups, heartbeat count approaches one request per occupied group.
 
-That is the main scalability goal of the design.
+The main scalability goal of the design is narrower:
+
+- eliminate periodic per-route refresh
+- keep steady-state work bounded by occupied-group count rather than raw connection count
+
+The digest requirement does not change that goal.
+The gateway computes and maintains the digest incrementally as local routes enter or leave the `active` set, instead of rescanning all routes every heartbeat interval.
 
 ## Leader Change And Memory Loss
 
@@ -397,7 +609,7 @@ For an affected local group bucket:
 
 1. gateway detects `not_leader(newLeader)` or `replay_required`
 2. gateway resolves current leader
-3. gateway immediately issues `ReplayRoutes` for that group bucket
+3. gateway immediately issues `ReplayRoutes` for that group bucket using only local `active` routes
 4. subsequent heartbeats return `ok`
 
 Repair is node-side.
@@ -437,7 +649,9 @@ type Endpoint struct {
     NodeID     uint64
     BootID     uint64
     SessionID  uint64
+    DeviceID   string
     DeviceFlag uint8
+    DeviceLevel uint8
 }
 ```
 
@@ -459,6 +673,7 @@ The target node only writes the packet if:
 - request `bootID` matches current local gateway boot id
 - local `online.Registry` contains `sessionID`
 - stored route `uid` still matches target `uid`
+- local route state is still `active`
 
 Otherwise the target silently drops that route target.
 
@@ -473,6 +688,11 @@ This prevents stale RPCs from reaching sessions after process restart.
 - auth success + register failure:
   - connect fails
   - local route registration rolled back
+- auth success + register success + action ack failure:
+  - connect fails
+  - new route removed from local registry
+  - new route unregistered from authority
+  - any already-`closing` conflicting old routes remain `closing` by fail-closed design
 
 ### Disconnect Path
 
@@ -509,6 +729,7 @@ If replay repeatedly fails for a specific group bucket:
 V1 guarantees:
 
 - successful connect means the current authority knows the route
+- successful connect means conflicting replaced routes are already non-routable on their owning gateways
 - steady-state liveness cost is aggregated by group lease, not per route
 - authority memory loss can be repaired by gateway batch replay
 
@@ -527,17 +748,26 @@ Add tests for the new pre-ack activation hook:
 - activation success writes success `CONNACK`
 - activation failure rejects connect
 - activation failure rolls back local route registration
+- `device_id` is propagated into session values before activation
+- connect success waits for required route-action acknowledgments
 
 ### Presence Usecase
 
 Add tests for:
 
 - register attaches route to group owner bucket
+- register stores `device_id`, `device_flag`, and `device_level`
+- register master route replaces all same-flag routes
+- master same-device replacement returns `close` action
+- master different-device replacement returns `kick_then_close` action
+- slave route replaces only same `device_id` within same flag
+- replaced routes transition to local `closing` state before new connect succeeds
 - unregister removes route
 - heartbeat `ok`
 - heartbeat `replay_required`
 - replay rebuilds missing authority state
 - leader change triggers replay against new leader
+- replay excludes routes already marked `closing`
 
 ### Node RPC
 
@@ -545,7 +775,9 @@ Add tests for:
 
 - authority register/unregister
 - authority heartbeat responses
+- authority heartbeat detects digest mismatch even when route counts match
 - authority replay replace semantics
+- route-action acknowledgment semantics
 - remote delivery fencing on `bootID + sessionID`
 
 ### Multi-Node Integration
@@ -553,6 +785,10 @@ Add tests for:
 Add integration tests for:
 
 - user connected on node 1 is discoverable by authority on node 2
+- cross-node master connect kicks old different-device route on another node
+- cross-node slave connect closes only same-device route
+- authority failover replay does not resurrect superseded routes already marked `closing`
+- owner-set divergence with unchanged route count triggers replay via digest mismatch
 - authority heartbeat remains one request per non-empty group bucket, not per session
 - simulated leader change empties authority memory and is repaired by gateway replay
 - realtime delivery resumes after replay repair
