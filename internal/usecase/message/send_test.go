@@ -34,7 +34,7 @@ func TestSendReturnsUnsupportedChannelType(t *testing.T) {
 	result, err := app.Send(context.Background(), SendCommand{
 		SenderUID:   "u1",
 		ChannelID:   "group-1",
-		ChannelType: wkframe.ChannelTypeGroup,
+		ChannelType: 99,
 		ClientSeq:   12,
 		ClientMsgNo: "m3",
 	})
@@ -86,9 +86,10 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedEnvelope(t *testi
 	require.Equal(t, int64(99), result.MessageID)
 	require.Equal(t, uint64(7), result.MessageSeq)
 	require.Len(t, cluster.sendRequests, 1)
+	require.Equal(t, "u2@u1", cluster.sendRequests[0].ChannelID)
 	require.Len(t, dispatcher.calls, 1)
 	require.Equal(t, CommittedMessageEnvelope{
-		ChannelID:   "u2",
+		ChannelID:   "u2@u1",
 		ChannelType: wkframe.ChannelTypePerson,
 		MessageID:   99,
 		MessageSeq:  7,
@@ -97,6 +98,49 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedEnvelope(t *testi
 		Payload:     []byte("hi"),
 		ClientSeq:   9,
 	}, dispatcher.calls[0])
+}
+
+func TestSendRecanonicalizesPrecomposedPersonChannelBeforeDurableWrite(t *testing.T) {
+	cluster := &fakeChannelCluster{
+		sendReplies: []fakeChannelClusterSendReply{
+			{result: channellog.SendResult{MessageID: 88, MessageSeq: 12}},
+		},
+	}
+	app := New(Options{
+		Now:     fixedNowFn,
+		Cluster: cluster,
+	})
+
+	result, err := app.Send(context.Background(), SendCommand{
+		SenderUID:   "u1",
+		ChannelID:   "u1@u2",
+		ChannelType: wkframe.ChannelTypePerson,
+		Payload:     []byte("hi"),
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+	require.Len(t, cluster.sendRequests, 1)
+	require.Equal(t, "u2@u1", cluster.sendRequests[0].ChannelID)
+}
+
+func TestSendRejectsThirdPartyPrecomposedPersonChannel(t *testing.T) {
+	cluster := &fakeChannelCluster{}
+	app := New(Options{
+		Now:     fixedNowFn,
+		Cluster: cluster,
+	})
+
+	result, err := app.Send(context.Background(), SendCommand{
+		SenderUID:   "u1",
+		ChannelID:   "u3@u4",
+		ChannelType: wkframe.ChannelTypePerson,
+		Payload:     []byte("hi"),
+	})
+
+	require.Error(t, err)
+	require.Equal(t, SendResult{}, result)
+	require.Empty(t, cluster.sendRequests)
 }
 
 func TestSendReturnsSuccessWhenCommittedSubmitFails(t *testing.T) {
@@ -190,7 +234,7 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	}
 	refresher := &fakeMetaRefresher{
 		metas: []channellog.ChannelMeta{{
-			ChannelID:    "u2",
+			ChannelID:    "u2@u1",
 			ChannelType:  wkframe.ChannelTypePerson,
 			ChannelEpoch: 11,
 			LeaderEpoch:  3,
@@ -217,7 +261,7 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	require.Equal(t, int64(201), result.MessageID)
 	require.Equal(t, uint64(7), result.MessageSeq)
 	require.Len(t, refresher.keys, 1)
-	require.Equal(t, "u2", refresher.keys[0].ChannelID)
+	require.Equal(t, "u2@u1", refresher.keys[0].ChannelID)
 	require.Len(t, cluster.appliedMetas, 1)
 	require.Equal(t, uint64(11), cluster.appliedMetas[0].ChannelEpoch)
 	require.Len(t, cluster.sendRequests, 2)
@@ -225,7 +269,7 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	require.Equal(t, uint64(11), cluster.sendRequests[1].ExpectedChannelEpoch)
 	require.Equal(t, uint64(3), cluster.sendRequests[1].ExpectedLeaderEpoch)
 	require.Equal(t, []CommittedMessageEnvelope{{
-		ChannelID:   "u2",
+		ChannelID:   "u2@u1",
 		ChannelType: wkframe.ChannelTypePerson,
 		MessageID:   201,
 		MessageSeq:  7,
@@ -247,7 +291,7 @@ func TestSendDurablePersonPropagatesRequestContextToClusterAndMetaRefresh(t *tes
 	}
 	refresher := &fakeMetaRefresher{
 		metas: []channellog.ChannelMeta{{
-			ChannelID:    "u2",
+			ChannelID:    "u2@u1",
 			ChannelType:  wkframe.ChannelTypePerson,
 			ChannelEpoch: 12,
 			LeaderEpoch:  4,

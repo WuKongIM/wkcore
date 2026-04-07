@@ -58,9 +58,24 @@ func TestSendMessageMapsJSONToUsecaseCommand(t *testing.T) {
 	require.JSONEq(t, `{"message_id":99,"message_seq":4294967302,"reason":1}`, rec.Body.String())
 	require.Len(t, msgs.calls, 1)
 	require.Equal(t, "u1", msgs.calls[0].SenderUID)
-	require.Equal(t, "u2", msgs.calls[0].ChannelID)
+	require.Equal(t, "u2@u1", msgs.calls[0].ChannelID)
 	require.Equal(t, uint8(wkframe.ChannelTypePerson), msgs.calls[0].ChannelType)
 	require.Equal(t, []byte("hi"), msgs.calls[0].Payload)
+}
+
+func TestSendMessageRejectsInvalidPersonChannelID(t *testing.T) {
+	msgs := &recordingMessageUsecase{}
+	srv := New(Options{Messages: msgs})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/message/send", bytes.NewBufferString(`{"sender_uid":"u1","channel_id":"u3@u4","channel_type":1,"payload":"aGk="}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"error":"invalid channel id"}`, rec.Body.String())
+	require.Empty(t, msgs.calls)
 }
 
 func TestSendMessagePropagatesHTTPRequestContext(t *testing.T) {

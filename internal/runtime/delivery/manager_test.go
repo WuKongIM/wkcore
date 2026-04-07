@@ -31,10 +31,72 @@ func TestManagerEvictsIdleActors(t *testing.T) {
 	require.Zero(t, runtime.actorCount())
 }
 
-func newTestManager() (*Manager, *testClock, *recordingPusher) {
+func TestManagerPromotesHighActivityChannelToDedicatedLane(t *testing.T) {
+	runtime, _, _ := newTestManager(Config{
+		Limits: Limits{DedicatedLaneActivityThreshold: 8},
+	})
+
+	for i := 0; i < 20; i++ {
+		require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
+			ChannelID:   "g-hot",
+			ChannelType: wkframe.ChannelTypeGroup,
+			MessageID:   uint64(i + 1),
+			MessageSeq:  uint64(i + 1),
+			SenderUID:   "u1",
+			Payload:     []byte("hot"),
+		}))
+	}
+
+	require.Equal(t, LaneDedicated, runtime.ActorLane("g-hot", wkframe.ChannelTypeGroup))
+}
+
+func TestManagerSubmitKeepsShardLockUntilActorIsLocked(t *testing.T) {
+	runtime, clock, _ := newTestManager()
+	key := ChannelKey{ChannelID: "g-submit-race", ChannelType: wkframe.ChannelTypeGroup}
+	shard := runtime.shardFor(key)
+
+	shard.mu.Lock()
+	act := shard.actorFor(key)
+	shard.mu.Unlock()
+	act.lastActive = clock.Now().Add(-2 * time.Minute).UnixNano()
+
+	act.mu.Lock()
+	submitDone := make(chan error, 1)
+	go func() {
+		submitDone <- runtime.Submit(context.Background(), CommittedEnvelope{
+			ChannelID:   key.ChannelID,
+			ChannelType: key.ChannelType,
+			MessageID:   701,
+			MessageSeq:  1,
+			SenderUID:   "u1",
+			Payload:     []byte("race"),
+		})
+	}()
+
+	require.Eventually(t, func() bool {
+		if shard.mu.TryLock() {
+			shard.mu.Unlock()
+			return false
+		}
+		return true
+	}, time.Second, 10*time.Millisecond)
+
+	sweepDone := make(chan struct{})
+	go func() {
+		shard.sweepIdle()
+		close(sweepDone)
+	}()
+
+	act.mu.Unlock()
+	require.NoError(t, <-submitDone)
+	<-sweepDone
+	require.Equal(t, 1, runtime.actorCount())
+}
+
+func newTestManager(overrides ...Config) (*Manager, *testClock, *recordingPusher) {
 	clock := &testClock{now: time.Date(2026, 4, 6, 12, 0, 0, 0, time.UTC)}
 	pusher := &recordingPusher{}
-	runtime := NewManager(Config{
+	cfg := Config{
 		Resolver: &stubResolver{
 			routesByChannel: map[string][]RouteKey{
 				testChannelID: {
@@ -48,7 +110,36 @@ func newTestManager() (*Manager, *testClock, *recordingPusher) {
 		IdleTimeout:      time.Minute,
 		RetryDelays:      []time.Duration{time.Second},
 		MaxRetryAttempts: 4,
-	})
+	}
+	if len(overrides) > 0 {
+		override := overrides[0]
+		if override.Resolver != nil {
+			cfg.Resolver = override.Resolver
+		}
+		if override.Push != nil {
+			cfg.Push = override.Push
+		}
+		if override.Clock != nil {
+			cfg.Clock = override.Clock
+		}
+		if override.ShardCount != 0 {
+			cfg.ShardCount = override.ShardCount
+		}
+		if override.ResolvePageSize != 0 {
+			cfg.ResolvePageSize = override.ResolvePageSize
+		}
+		if override.IdleTimeout != 0 {
+			cfg.IdleTimeout = override.IdleTimeout
+		}
+		if len(override.RetryDelays) > 0 {
+			cfg.RetryDelays = override.RetryDelays
+		}
+		if override.MaxRetryAttempts != 0 {
+			cfg.MaxRetryAttempts = override.MaxRetryAttempts
+		}
+		cfg.Limits = override.Limits
+	}
+	runtime := NewManager(cfg)
 	return runtime, clock, pusher
 }
 
@@ -66,6 +157,40 @@ func (c *testClock) Advance(delta time.Duration) {
 
 type stubResolver struct {
 	routesByChannel map[string][]RouteKey
+}
+
+func (r *stubResolver) BeginResolve(_ context.Context, key ChannelKey, _ CommittedEnvelope) (any, error) {
+	return key.ChannelID, nil
+}
+
+func (r *stubResolver) ResolvePage(_ context.Context, token any, cursor string, limit int) ([]RouteKey, string, bool, error) {
+	key := ChannelKey{ChannelID: token.(string)}
+	routes := r.routesByChannel[key.ChannelID]
+	start := 0
+	if cursor != "" {
+		for i, route := range routes {
+			if route.UID == cursor {
+				start = i + 1
+				break
+			}
+		}
+	}
+	if start >= len(routes) {
+		return nil, cursor, true, nil
+	}
+	if limit <= 0 {
+		limit = len(routes) - start
+	}
+	end := start + limit
+	if end > len(routes) {
+		end = len(routes)
+	}
+	page := append([]RouteKey(nil), routes[start:end]...)
+	nextCursor := cursor
+	if len(page) > 0 {
+		nextCursor = page[len(page)-1].UID
+	}
+	return page, nextCursor, end >= len(routes), nil
 }
 
 func (r *stubResolver) ResolveRoutes(_ context.Context, key ChannelKey, _ CommittedEnvelope) ([]RouteKey, error) {
@@ -120,6 +245,19 @@ func (p *recordingPusher) attemptsFor(messageID uint64) int {
 		}
 	}
 	return count
+}
+
+func (p *recordingPusher) acceptedSessionIDs(messageID uint64) []uint64 {
+	out := make([]uint64, 0, len(p.calls))
+	for _, call := range p.calls {
+		if call.envelope.MessageID != messageID {
+			continue
+		}
+		for _, route := range call.routes {
+			out = append(out, route.SessionID)
+		}
+	}
+	return out
 }
 
 const testChannelID = "u1@u2"

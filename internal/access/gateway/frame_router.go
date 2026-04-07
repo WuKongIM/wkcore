@@ -4,6 +4,7 @@ import (
 	"context"
 
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
+	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
@@ -23,6 +24,9 @@ func (h *Handler) OnFrame(ctx *coregateway.Context, frame wkframe.Frame) error {
 func (h *Handler) handleSend(ctx *coregateway.Context, pkt *wkframe.SendPacket) error {
 	cmd, err := mapSendCommand(ctx, pkt)
 	if err != nil {
+		if reason, ok := mapSendErrorReason(err); ok {
+			return writeSendack(ctx, pkt, message.SendResult{Reason: reason})
+		}
 		return err
 	}
 

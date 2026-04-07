@@ -82,9 +82,14 @@ func (p *Pool) Reset(nodeID NodeID, idx int) {
 
 // Close closes all connections in all pools.
 func (p *Pool) Close() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.mu.RLock()
+	nodes := make([]*nodeConns, 0, len(p.nodes))
 	for _, nc := range p.nodes {
+		nodes = append(nodes, nc)
+	}
+	p.mu.RUnlock()
+
+	for _, nc := range nodes {
 		for i := range nc.conns {
 			nc.mu[i].Lock()
 			if nc.conns[i] != nil {

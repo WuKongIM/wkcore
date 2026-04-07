@@ -6,20 +6,25 @@ import (
 	"time"
 
 	accessnode "github.com/WuKongIM/WuKongIM/internal/access/node"
-	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
+	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
+)
+
+var (
+	errRemoteAckNotifierRequired     = errors.New("app: remote ack notifier required")
+	errRemoteOfflineNotifierRequired = errors.New("app: remote offline notifier required")
 )
 
 type asyncCommittedDispatcher struct {
 	localNodeID uint64
 	channelLog  channellog.Cluster
-	delivery    *deliveryusecase.App
+	delivery    committedSubmitter
 	nodeClient  *accessnode.Client
 }
 
@@ -33,18 +38,25 @@ func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, env messa
 		ctx = context.WithoutCancel(ctx)
 	}
 	go func() {
-		ownerNodeID := d.localNodeID
-		if d.channelLog != nil {
-			status, err := d.channelLog.Status(channellog.ChannelKey{
-				ChannelID:   env.ChannelID,
-				ChannelType: env.ChannelType,
-			})
-			if err == nil && status.Leader != 0 {
-				ownerNodeID = uint64(status.Leader)
-			}
-		}
-		if ownerNodeID == 0 || ownerNodeID == d.localNodeID || d.nodeClient == nil {
+		if d.channelLog == nil {
 			_ = d.delivery.SubmitCommitted(ctx, env)
+			return
+		}
+
+		status, err := d.channelLog.Status(channellog.ChannelKey{
+			ChannelID:   env.ChannelID,
+			ChannelType: env.ChannelType,
+		})
+		if err != nil || status.Leader == 0 {
+			return
+		}
+
+		ownerNodeID := uint64(status.Leader)
+		if ownerNodeID == d.localNodeID {
+			_ = d.delivery.SubmitCommitted(ctx, env)
+			return
+		}
+		if d.nodeClient == nil {
 			return
 		}
 		_ = d.nodeClient.SubmitCommitted(ctx, ownerNodeID, env)
@@ -53,27 +65,116 @@ func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, env messa
 }
 
 type localDeliveryResolver struct {
-	authority presence.Authoritative
+	subscribers deliveryusecase.SubscriberResolver
+	authority   presence.Authoritative
+	pageSize    int
 }
 
-func (r localDeliveryResolver) ResolveRoutes(ctx context.Context, key deliveryruntime.ChannelKey, _ deliveryruntime.CommittedEnvelope) ([]deliveryruntime.RouteKey, error) {
-	if r.authority == nil {
+type localResolveToken struct {
+	snapshot deliveryusecase.SnapshotToken
+	pending  []deliveryruntime.RouteKey
+	done     bool
+}
+
+func (r localDeliveryResolver) BeginResolve(ctx context.Context, key deliveryruntime.ChannelKey, _ deliveryruntime.CommittedEnvelope) (any, error) {
+	if r.subscribers == nil {
 		return nil, nil
 	}
-	routes, err := r.authority.EndpointsByUID(ctx, key.ChannelID)
+	snapshot, err := r.subscribers.BeginSnapshot(ctx, channellog.ChannelKey{
+		ChannelID:   key.ChannelID,
+		ChannelType: key.ChannelType,
+	})
 	if err != nil {
 		return nil, err
 	}
-	out := make([]deliveryruntime.RouteKey, 0, len(routes))
-	for _, route := range routes {
-		out = append(out, deliveryruntime.RouteKey{
-			UID:       route.UID,
-			NodeID:    route.NodeID,
-			BootID:    route.BootID,
-			SessionID: route.SessionID,
-		})
+	return &localResolveToken{snapshot: snapshot}, nil
+}
+
+func (r localDeliveryResolver) ResolvePage(ctx context.Context, token any, cursor string, limit int) ([]deliveryruntime.RouteKey, string, bool, error) {
+	if r.subscribers == nil || r.authority == nil {
+		return nil, "", true, nil
 	}
-	return out, nil
+	if limit <= 0 {
+		limit = r.pageSize
+	}
+	if limit <= 0 {
+		limit = 128
+	}
+
+	resolveToken, ok := token.(*localResolveToken)
+	if !ok {
+		return nil, "", true, nil
+	}
+
+	out := make([]deliveryruntime.RouteKey, 0, limit)
+	if len(resolveToken.pending) > 0 {
+		taken := limit
+		if taken > len(resolveToken.pending) {
+			taken = len(resolveToken.pending)
+		}
+		out = append(out, resolveToken.pending[:taken]...)
+		resolveToken.pending = resolveToken.pending[taken:]
+		if len(out) == limit || resolveToken.done {
+			return out, cursor, resolveToken.done && len(resolveToken.pending) == 0, nil
+		}
+	}
+
+	pageSize := r.pageSize
+	if pageSize <= 0 {
+		pageSize = 128
+	}
+
+	for len(out) < limit {
+		if resolveToken.done {
+			return out, cursor, true, nil
+		}
+
+		uids, nextCursor, done, err := r.subscribers.NextPage(ctx, resolveToken.snapshot, cursor, pageSize)
+		if err != nil {
+			return nil, "", false, err
+		}
+		cursor = nextCursor
+		resolveToken.done = done
+		if len(uids) == 0 {
+			if done {
+				return out, cursor, true, nil
+			}
+			continue
+		}
+
+		endpointsByUID, err := r.authority.EndpointsByUIDs(ctx, uids)
+		if err != nil {
+			return nil, "", false, err
+		}
+
+		expanded := make([]deliveryruntime.RouteKey, 0, len(uids))
+		for _, uid := range uids {
+			for _, route := range endpointsByUID[uid] {
+				expanded = append(expanded, deliveryruntime.RouteKey{
+					UID:       route.UID,
+					NodeID:    route.NodeID,
+					BootID:    route.BootID,
+					SessionID: route.SessionID,
+				})
+			}
+		}
+		if len(expanded) == 0 {
+			if done {
+				return out, cursor, true, nil
+			}
+			continue
+		}
+
+		remaining := limit - len(out)
+		if len(expanded) <= remaining {
+			out = append(out, expanded...)
+			continue
+		}
+		out = append(out, expanded[:remaining]...)
+		resolveToken.pending = append(resolveToken.pending[:0], expanded[remaining:]...)
+		return out, cursor, false, nil
+	}
+	return out, cursor, false, nil
 }
 
 type localDeliveryPush struct {
@@ -181,18 +282,25 @@ func (p distributedDeliveryPush) Push(ctx context.Context, cmd deliveryruntime.P
 
 type ackRouting struct {
 	localNodeID uint64
-	local       *deliveryusecase.App
+	local       routeAcker
 	remoteAcks  *deliveryruntime.AckIndex
-	nodeClient  *accessnode.Client
+	notifier    deliveryOwnerNotifier
 }
 
 func (r ackRouting) AckRoute(ctx context.Context, cmd message.RouteAckCommand) error {
 	if r.remoteAcks != nil {
 		if binding, ok := r.remoteAcks.Lookup(cmd.SessionID, cmd.MessageID); ok {
-			r.remoteAcks.Remove(cmd.SessionID, cmd.MessageID)
-			if binding.OwnerNodeID != 0 && binding.OwnerNodeID != r.localNodeID && r.nodeClient != nil {
-				return r.nodeClient.NotifyAck(ctx, binding.OwnerNodeID, cmd)
+			if binding.OwnerNodeID != 0 && binding.OwnerNodeID != r.localNodeID {
+				if r.notifier == nil {
+					return errRemoteAckNotifierRequired
+				}
+				if err := r.notifier.NotifyAck(ctx, binding.OwnerNodeID, cmd); err != nil {
+					return err
+				}
+				r.remoteAcks.Remove(cmd.SessionID, cmd.MessageID)
+				return nil
 			}
+			r.remoteAcks.Remove(cmd.SessionID, cmd.MessageID)
 		}
 	}
 	if r.local == nil {
@@ -203,33 +311,58 @@ func (r ackRouting) AckRoute(ctx context.Context, cmd message.RouteAckCommand) e
 
 type offlineRouting struct {
 	localNodeID uint64
-	local       *deliveryusecase.App
+	local       sessionCloser
 	remoteAcks  *deliveryruntime.AckIndex
-	nodeClient  *accessnode.Client
+	notifier    deliveryOwnerNotifier
 }
 
 func (r offlineRouting) SessionClosed(ctx context.Context, cmd message.SessionClosedCommand) error {
 	var err error
 	if r.remoteAcks != nil {
-		ownerNodes := make(map[uint64]struct{})
+		ownerBindings := make(map[uint64][]deliveryruntime.AckBinding)
 		for _, binding := range r.remoteAcks.LookupSession(cmd.SessionID) {
-			r.remoteAcks.Remove(binding.SessionID, binding.MessageID)
 			if binding.OwnerNodeID == 0 || binding.OwnerNodeID == r.localNodeID {
+				r.remoteAcks.Remove(binding.SessionID, binding.MessageID)
 				continue
 			}
-			ownerNodes[binding.OwnerNodeID] = struct{}{}
+			ownerBindings[binding.OwnerNodeID] = append(ownerBindings[binding.OwnerNodeID], binding)
 		}
-		for ownerNodeID := range ownerNodes {
-			if r.nodeClient == nil {
+		for ownerNodeID, bindings := range ownerBindings {
+			if r.notifier == nil {
+				err = errors.Join(err, errRemoteOfflineNotifierRequired)
 				continue
 			}
-			err = errors.Join(err, r.nodeClient.NotifyOffline(ctx, ownerNodeID, cmd))
+			notifyErr := r.notifier.NotifyOffline(ctx, ownerNodeID, cmd)
+			err = errors.Join(err, notifyErr)
+			if notifyErr != nil {
+				continue
+			}
+			for _, binding := range bindings {
+				r.remoteAcks.Remove(binding.SessionID, binding.MessageID)
+			}
 		}
 	}
 	if r.local != nil {
 		err = errors.Join(err, r.local.SessionClosed(ctx, cmd))
 	}
 	return err
+}
+
+type routeAcker interface {
+	AckRoute(ctx context.Context, cmd message.RouteAckCommand) error
+}
+
+type sessionCloser interface {
+	SessionClosed(ctx context.Context, cmd message.SessionClosedCommand) error
+}
+
+type deliveryOwnerNotifier interface {
+	NotifyAck(ctx context.Context, nodeID uint64, cmd message.RouteAckCommand) error
+	NotifyOffline(ctx context.Context, nodeID uint64, cmd message.SessionClosedCommand) error
+}
+
+type committedSubmitter interface {
+	SubmitCommitted(ctx context.Context, env message.CommittedMessageEnvelope) error
 }
 
 func buildRealtimeRecvPacket(env deliveryruntime.CommittedEnvelope, now time.Time) *wkframe.RecvPacket {

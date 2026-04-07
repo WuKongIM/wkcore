@@ -122,7 +122,7 @@ func TestRecvAckForwardsSessionIDAndMessageIdentity(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, delivery.RouteAckCommand{
+	require.Equal(t, RouteAckCommand{
 		UID:        "u1",
 		SessionID:  42,
 		MessageID:  88,
@@ -173,8 +173,20 @@ type CommittedMessageDispatcher interface {
 	SubmitCommitted(ctx context.Context, env CommittedMessageEnvelope) error
 }
 
+type RouteAckCommand struct {
+	UID       string
+	SessionID uint64
+	MessageID uint64
+	MessageSeq uint64
+}
+
 type DeliveryAck interface {
 	AckRoute(ctx context.Context, cmd RouteAckCommand) error
+}
+
+type SessionClosedCommand struct {
+	UID       string
+	SessionID uint64
 }
 
 type DeliveryOffline interface {

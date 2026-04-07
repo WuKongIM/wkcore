@@ -146,7 +146,7 @@ func TestHandlerOnFrameSendMapsCommandAndWritesSendack(t *testing.T) {
 	msgs := handler.messages.(*fakeMessageUsecase)
 	require.Len(t, msgs.sendCommands, 1)
 	require.Equal(t, "u1", msgs.sendCommands[0].SenderUID)
-	require.Equal(t, "u2", msgs.sendCommands[0].ChannelID)
+	require.Equal(t, "u2@u1", msgs.sendCommands[0].ChannelID)
 	require.Equal(t, wkframe.ChannelTypePerson, msgs.sendCommands[0].ChannelType)
 	require.Equal(t, uint64(13), msgs.sendCommands[0].ClientSeq)
 	require.Equal(t, "m4", msgs.sendCommands[0].ClientMsgNo)
@@ -163,6 +163,64 @@ func TestHandlerOnFrameSendMapsCommandAndWritesSendack(t *testing.T) {
 	require.Equal(t, uint64(13), ack.ClientSeq)
 	require.Equal(t, "m4", ack.ClientMsgNo)
 	require.Equal(t, "reply-1", write.meta.ReplyToken)
+}
+
+func TestHandlerOnFrameSendRecanonicalizesPrecomposedPersonChannel(t *testing.T) {
+	sender := newOptionRecordingSession(1, "tcp")
+	sender.SetValue(coregateway.SessionValueUID, "u1")
+	msgs := &fakeMessageUsecase{
+		sendResult: message.SendResult{
+			MessageID:  77,
+			MessageSeq: 9,
+			Reason:     wkframe.ReasonSuccess,
+		},
+	}
+	handler := New(Options{Messages: msgs})
+
+	ctx := &coregateway.Context{
+		Session:        sender,
+		Listener:       "tcp",
+		ReplyToken:     "reply-precomposed",
+		RequestContext: context.Background(),
+	}
+
+	require.NoError(t, handler.OnFrame(ctx, &wkframe.SendPacket{
+		ChannelID:   "u1@u2",
+		ChannelType: wkframe.ChannelTypePerson,
+		ClientSeq:   1,
+		ClientMsgNo: "m-pre",
+	}))
+
+	require.Len(t, msgs.sendCommands, 1)
+	require.Equal(t, "u2@u1", msgs.sendCommands[0].ChannelID)
+}
+
+func TestHandlerOnFrameSendRejectsInvalidPersonChannelID(t *testing.T) {
+	sender := newOptionRecordingSession(1, "tcp")
+	sender.SetValue(coregateway.SessionValueUID, "u1")
+	msgs := &fakeMessageUsecase{}
+	handler := New(Options{Messages: msgs})
+
+	ctx := &coregateway.Context{
+		Session:        sender,
+		Listener:       "tcp",
+		ReplyToken:     "reply-invalid-channel",
+		RequestContext: context.Background(),
+	}
+
+	require.NoError(t, handler.OnFrame(ctx, &wkframe.SendPacket{
+		ChannelID:   "u3@u4",
+		ChannelType: wkframe.ChannelTypePerson,
+		ClientSeq:   2,
+		ClientMsgNo: "m-invalid",
+	}))
+
+	require.Empty(t, msgs.sendCommands)
+	require.Len(t, sender.Writes(), 1)
+	ack := requireSendackPacket(t, sender.Writes()[0].frame)
+	require.Equal(t, wkframe.ReasonChannelIDError, ack.ReasonCode)
+	require.Equal(t, uint64(2), ack.ClientSeq)
+	require.Equal(t, "m-invalid", ack.ClientMsgNo)
 }
 
 func TestHandlerOnFrameSendPropagatesRequestContext(t *testing.T) {

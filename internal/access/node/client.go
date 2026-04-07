@@ -76,6 +76,22 @@ func (c *Client) EndpointsByUID(ctx context.Context, uid string) ([]presence.Rou
 	return resp.Endpoints, nil
 }
 
+func (c *Client) EndpointsByUIDs(ctx context.Context, uids []string) (map[string][]presence.Route, error) {
+	if len(uids) == 0 {
+		return nil, nil
+	}
+	groupID := c.cluster.SlotForKey(uids[0])
+	resp, err := c.callPresenceAuthoritative(ctx, groupID, presenceRPCRequest{
+		Op:      presenceOpEndpointsByUIDs,
+		GroupID: uint64(groupID),
+		UIDs:    append([]string(nil), uids...),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.EndpointMap, nil
+}
+
 func (c *Client) ApplyRouteAction(ctx context.Context, action presence.RouteAction) error {
 	resp, err := c.callPresenceDirect(ctx, multiraft.NodeID(action.NodeID), 0, presenceRPCRequest{
 		Op:     presenceOpApplyAction,

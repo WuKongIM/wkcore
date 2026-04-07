@@ -5,6 +5,7 @@ const (
 	TableIDChannel            uint32 = 2
 	TableIDChannelRuntimeMeta uint32 = 3
 	TableIDDevice             uint32 = 4
+	TableIDSubscriber         uint32 = 5
 
 	maxKeyStringLen = 1<<16 - 1
 )
@@ -52,6 +53,15 @@ const (
 	deviceColumnIDDeviceFlag  uint16 = 2
 	deviceColumnIDToken       uint16 = 3
 	deviceColumnIDDeviceLevel uint16 = 4
+)
+
+const (
+	subscriberPrimaryFamilyID uint16 = 0
+	subscriberPrimaryIndexID  uint16 = 1
+
+	subscriberColumnIDChannelID uint16 = 1
+	subscriberColumnIDType      uint16 = 2
+	subscriberColumnIDUID       uint16 = 3
 )
 
 type ColumnType int
@@ -219,5 +229,29 @@ var DeviceTable = &TableDesc{
 		Unique:    true,
 		Primary:   true,
 		ColumnIDs: []uint16{deviceColumnIDUID, deviceColumnIDDeviceFlag},
+	},
+}
+
+var SubscriberTable = &TableDesc{
+	ID:   TableIDSubscriber,
+	Name: "subscriber",
+	Columns: []ColumnDesc{
+		{ID: subscriberColumnIDChannelID, Name: "channel_id", Type: ColumnString},
+		{ID: subscriberColumnIDType, Name: "channel_type", Type: ColumnInt64},
+		{ID: subscriberColumnIDUID, Name: "uid", Type: ColumnString},
+	},
+	Families: []ColumnFamilyDesc{
+		{
+			ID:              subscriberPrimaryFamilyID,
+			Name:            "primary",
+			DefaultColumnID: subscriberColumnIDUID,
+		},
+	},
+	PrimaryIndex: IndexDesc{
+		ID:        subscriberPrimaryIndexID,
+		Name:      "pk_subscriber",
+		Unique:    true,
+		Primary:   true,
+		ColumnIDs: []uint16{subscriberColumnIDChannelID, subscriberColumnIDType, subscriberColumnIDUID},
 	},
 }

@@ -17,18 +17,20 @@ const (
 	rpcStatusNoLeader  = "no_leader"
 	rpcStatusNoGroup   = "no_group"
 
-	presenceOpRegister    = "register"
-	presenceOpUnregister  = "unregister"
-	presenceOpHeartbeat   = "heartbeat"
-	presenceOpReplay      = "replay"
-	presenceOpEndpoints   = "endpoints"
-	presenceOpApplyAction = "apply_action"
+	presenceOpRegister        = "register"
+	presenceOpUnregister      = "unregister"
+	presenceOpHeartbeat       = "heartbeat"
+	presenceOpReplay          = "replay"
+	presenceOpEndpoints       = "endpoints"
+	presenceOpEndpointsByUIDs = "endpoints_batch"
+	presenceOpApplyAction     = "apply_action"
 )
 
 type presenceRPCRequest struct {
 	Op      string                 `json:"op"`
 	GroupID uint64                 `json:"group_id,omitempty"`
 	UID     string                 `json:"uid,omitempty"`
+	UIDs    []string               `json:"uids,omitempty"`
 	Route   *presence.Route        `json:"route,omitempty"`
 	Routes  []presence.Route       `json:"routes,omitempty"`
 	Action  *presence.RouteAction  `json:"action,omitempty"`
@@ -36,11 +38,12 @@ type presenceRPCRequest struct {
 }
 
 type presenceRPCResponse struct {
-	Status    string                                 `json:"status"`
-	LeaderID  uint64                                 `json:"leader_id,omitempty"`
-	Register  *presence.RegisterAuthoritativeResult  `json:"register,omitempty"`
-	Heartbeat *presence.HeartbeatAuthoritativeResult `json:"heartbeat,omitempty"`
-	Endpoints []presence.Route                       `json:"endpoints,omitempty"`
+	Status      string                                 `json:"status"`
+	LeaderID    uint64                                 `json:"leader_id,omitempty"`
+	Register    *presence.RegisterAuthoritativeResult  `json:"register,omitempty"`
+	Heartbeat   *presence.HeartbeatAuthoritativeResult `json:"heartbeat,omitempty"`
+	Endpoints   []presence.Route                       `json:"endpoints,omitempty"`
+	EndpointMap map[string][]presence.Route            `json:"endpoint_map,omitempty"`
 }
 
 func (r presenceRPCResponse) rpcStatus() string {
@@ -68,6 +71,8 @@ func (a *Adapter) handlePresenceRPC(ctx context.Context, body []byte) ([]byte, e
 		return a.handleReplay(ctx, req)
 	case presenceOpEndpoints:
 		return a.handleEndpoints(ctx, req)
+	case presenceOpEndpointsByUIDs:
+		return a.handleEndpointsByUIDs(ctx, req)
 	case presenceOpApplyAction:
 		return a.handleApplyAction(ctx, req)
 	default:
@@ -149,6 +154,20 @@ func (a *Adapter) handleEndpoints(ctx context.Context, req presenceRPCRequest) (
 	return encodePresenceResponse(presenceRPCResponse{
 		Status:    rpcStatusOK,
 		Endpoints: endpoints,
+	})
+}
+
+func (a *Adapter) handleEndpointsByUIDs(ctx context.Context, req presenceRPCRequest) ([]byte, error) {
+	if body, handled, err := a.handleAuthoritativeRPC(multiraft.GroupID(req.GroupID)); handled || err != nil {
+		return body, err
+	}
+	endpoints, err := a.presence.EndpointsByUIDs(ctx, req.UIDs)
+	if err != nil {
+		return nil, err
+	}
+	return encodePresenceResponse(presenceRPCResponse{
+		Status:      rpcStatusOK,
+		EndpointMap: endpoints,
 	})
 }
 

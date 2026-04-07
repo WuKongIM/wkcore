@@ -487,6 +487,58 @@ func TestStoreGetChannelRuntimeMetaReadsAuthoritativeRemoteSlot(t *testing.T) {
 	require.Equal(t, meta, got)
 }
 
+func TestStoreListChannelSubscribersReadsAuthoritativeSlot(t *testing.T) {
+	ctx := context.Background()
+	nodes := startTwoNodeShardedStores(t)
+
+	channelID := findChannelIDForSlot(t, nodes[0].cluster, 2, "remote-subscribers")
+
+	remoteShard, ok := any(nodes[1].db.ForSlot(2)).(interface {
+		AddSubscribers(ctx context.Context, channelID string, channelType int64, uids []string) error
+	})
+	require.True(t, ok, "subscriber shard store methods missing")
+	require.NoError(t, remoteShard.AddSubscribers(ctx, channelID, 2, []string{"u3", "u1", "u2"}))
+
+	store, ok := any(nodes[0].store).(interface {
+		ListChannelSubscribers(ctx context.Context, channelID string, channelType int64, afterUID string, limit int) ([]string, string, bool, error)
+	})
+	require.True(t, ok, "subscriber store methods missing")
+
+	page1, cursor, done, err := store.ListChannelSubscribers(ctx, channelID, 2, "", 2)
+	require.NoError(t, err)
+	require.Equal(t, []string{"u1", "u2"}, page1)
+	require.Equal(t, "u2", cursor)
+	require.False(t, done)
+
+	page2, cursor, done, err := store.ListChannelSubscribers(ctx, channelID, 2, cursor, 2)
+	require.NoError(t, err)
+	require.Equal(t, []string{"u3"}, page2)
+	require.Equal(t, "u3", cursor)
+	require.True(t, done)
+}
+
+func TestStoreSnapshotChannelSubscribersReadsAuthoritativeSlot(t *testing.T) {
+	ctx := context.Background()
+	nodes := startTwoNodeShardedStores(t)
+
+	channelID := findChannelIDForSlot(t, nodes[0].cluster, 2, "remote-subscriber-snapshot")
+
+	remoteShard, ok := any(nodes[1].db.ForSlot(2)).(interface {
+		AddSubscribers(ctx context.Context, channelID string, channelType int64, uids []string) error
+	})
+	require.True(t, ok, "subscriber shard store methods missing")
+	require.NoError(t, remoteShard.AddSubscribers(ctx, channelID, 2, []string{"u3", "u1", "u2"}))
+
+	store, ok := any(nodes[0].store).(interface {
+		SnapshotChannelSubscribers(ctx context.Context, channelID string, channelType int64) ([]string, error)
+	})
+	require.True(t, ok, "subscriber snapshot store methods missing")
+
+	snapshot, err := store.SnapshotChannelSubscribers(ctx, channelID, 2)
+	require.NoError(t, err)
+	require.Equal(t, []string{"u1", "u2", "u3"}, snapshot)
+}
+
 func TestStoreGetUserReadsAuthoritativeRemoteSlot(t *testing.T) {
 	ctx := context.Background()
 	nodes := startTwoNodeShardedStores(t)

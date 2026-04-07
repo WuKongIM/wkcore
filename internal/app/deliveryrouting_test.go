@@ -1,0 +1,378 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
+	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
+	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
+	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	"github.com/stretchr/testify/require"
+)
+
+func TestAckRoutingKeepsRemoteBindingWhenOwnerNotifyFails(t *testing.T) {
+	remoteAcks := deliveryruntime.NewAckIndex()
+	remoteAcks.Bind(deliveryruntime.AckBinding{
+		SessionID:   7,
+		MessageID:   101,
+		ChannelID:   "c1",
+		ChannelType: 2,
+		OwnerNodeID: 9,
+		Route:       deliveryruntime.RouteKey{UID: "u2", SessionID: 7},
+	})
+	notifier := &recordingDeliveryOwnerNotifier{
+		ackErr: errors.New("owner unavailable"),
+	}
+
+	router := ackRouting{
+		localNodeID: 1,
+		remoteAcks:  remoteAcks,
+		notifier:    notifier,
+	}
+
+	err := router.AckRoute(context.Background(), message.RouteAckCommand{
+		UID:        "u2",
+		SessionID:  7,
+		MessageID:  101,
+		MessageSeq: 1,
+	})
+
+	require.Error(t, err)
+	require.Len(t, notifier.acks, 1)
+	require.True(t, remoteAcksHas(remoteAcks, 7, 101))
+}
+
+func TestAckRoutingRemovesRemoteBindingAfterOwnerNotifySucceeds(t *testing.T) {
+	remoteAcks := deliveryruntime.NewAckIndex()
+	remoteAcks.Bind(deliveryruntime.AckBinding{
+		SessionID:   7,
+		MessageID:   101,
+		ChannelID:   "c1",
+		ChannelType: 2,
+		OwnerNodeID: 9,
+		Route:       deliveryruntime.RouteKey{UID: "u2", SessionID: 7},
+	})
+	notifier := &recordingDeliveryOwnerNotifier{}
+
+	router := ackRouting{
+		localNodeID: 1,
+		remoteAcks:  remoteAcks,
+		notifier:    notifier,
+	}
+
+	require.NoError(t, router.AckRoute(context.Background(), message.RouteAckCommand{
+		UID:        "u2",
+		SessionID:  7,
+		MessageID:  101,
+		MessageSeq: 1,
+	}))
+
+	require.Len(t, notifier.acks, 1)
+	require.False(t, remoteAcksHas(remoteAcks, 7, 101))
+}
+
+func TestAckRoutingKeepsRemoteBindingWhenNotifierMissing(t *testing.T) {
+	remoteAcks := deliveryruntime.NewAckIndex()
+	remoteAcks.Bind(deliveryruntime.AckBinding{
+		SessionID:   7,
+		MessageID:   101,
+		ChannelID:   "c1",
+		ChannelType: 2,
+		OwnerNodeID: 9,
+		Route:       deliveryruntime.RouteKey{UID: "u2", SessionID: 7},
+	})
+	local := &recordingRouteAcker{}
+
+	router := ackRouting{
+		localNodeID: 1,
+		local:       local,
+		remoteAcks:  remoteAcks,
+	}
+
+	err := router.AckRoute(context.Background(), message.RouteAckCommand{
+		UID:        "u2",
+		SessionID:  7,
+		MessageID:  101,
+		MessageSeq: 1,
+	})
+
+	require.Error(t, err)
+	require.True(t, remoteAcksHas(remoteAcks, 7, 101))
+	require.Empty(t, local.acks)
+}
+
+func TestOfflineRoutingKeepsRemoteBindingsWhenOwnerNotifyFails(t *testing.T) {
+	remoteAcks := deliveryruntime.NewAckIndex()
+	remoteAcks.Bind(deliveryruntime.AckBinding{
+		SessionID:   8,
+		MessageID:   201,
+		ChannelID:   "c2",
+		ChannelType: 2,
+		OwnerNodeID: 9,
+		Route:       deliveryruntime.RouteKey{UID: "u2", SessionID: 8},
+	})
+	notifier := &recordingDeliveryOwnerNotifier{
+		offlineErr: errors.New("owner unavailable"),
+	}
+
+	router := offlineRouting{
+		localNodeID: 1,
+		remoteAcks:  remoteAcks,
+		notifier:    notifier,
+	}
+
+	err := router.SessionClosed(context.Background(), message.SessionClosedCommand{
+		UID:       "u2",
+		SessionID: 8,
+	})
+
+	require.Error(t, err)
+	require.Len(t, notifier.offlines, 1)
+	require.False(t, notifier.localClosed)
+	require.True(t, remoteAcksHas(remoteAcks, 8, 201))
+}
+
+func TestOfflineRoutingRemovesRemoteBindingsAfterOwnerNotifySucceeds(t *testing.T) {
+	remoteAcks := deliveryruntime.NewAckIndex()
+	remoteAcks.Bind(deliveryruntime.AckBinding{
+		SessionID:   8,
+		MessageID:   201,
+		ChannelID:   "c2",
+		ChannelType: 2,
+		OwnerNodeID: 9,
+		Route:       deliveryruntime.RouteKey{UID: "u2", SessionID: 8},
+	})
+	notifier := &recordingDeliveryOwnerNotifier{}
+
+	router := offlineRouting{
+		localNodeID: 1,
+		remoteAcks:  remoteAcks,
+		notifier:    notifier,
+	}
+
+	require.NoError(t, router.SessionClosed(context.Background(), message.SessionClosedCommand{
+		UID:       "u2",
+		SessionID: 8,
+	}))
+
+	require.Len(t, notifier.offlines, 1)
+	require.False(t, remoteAcksHas(remoteAcks, 8, 201))
+}
+
+func TestOfflineRoutingKeepsRemoteBindingsWhenNotifierMissing(t *testing.T) {
+	remoteAcks := deliveryruntime.NewAckIndex()
+	remoteAcks.Bind(deliveryruntime.AckBinding{
+		SessionID:   8,
+		MessageID:   201,
+		ChannelID:   "c2",
+		ChannelType: 2,
+		OwnerNodeID: 9,
+		Route:       deliveryruntime.RouteKey{UID: "u2", SessionID: 8},
+	})
+	local := &recordingSessionCloser{}
+
+	router := offlineRouting{
+		localNodeID: 1,
+		local:       local,
+		remoteAcks:  remoteAcks,
+	}
+
+	err := router.SessionClosed(context.Background(), message.SessionClosedCommand{
+		UID:       "u2",
+		SessionID: 8,
+	})
+
+	require.Error(t, err)
+	require.True(t, remoteAcksHas(remoteAcks, 8, 201))
+	require.Len(t, local.closed, 1)
+}
+
+func TestAsyncCommittedDispatcherDropsRealtimeWhenOwnerIsUnknown(t *testing.T) {
+	delivery := &recordingCommittedSubmitter{}
+	dispatcher := asyncCommittedDispatcher{
+		localNodeID: 1,
+		channelLog: &stubChannelLogCluster{
+			statusErr: errors.New("leader unknown"),
+		},
+		delivery: delivery,
+	}
+
+	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), message.CommittedMessageEnvelope{
+		ChannelID:   "g1",
+		ChannelType: 2,
+		MessageID:   101,
+		MessageSeq:  1,
+	}))
+
+	require.Eventually(t, func() bool {
+		return delivery.submitCalls == 0
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestLocalDeliveryResolverSplitsExpandedRoutesAcrossPages(t *testing.T) {
+	store := &resolverSnapshotStore{
+		uids: []string{"u2"},
+	}
+	authority := &recordingAuthoritative{
+		batches: map[string][]presence.Route{
+			"u2": {
+				{UID: "u2", NodeID: 1, BootID: 11, SessionID: 2},
+				{UID: "u2", NodeID: 1, BootID: 11, SessionID: 3},
+			},
+		},
+	}
+	resolver := localDeliveryResolver{
+		subscribers: deliveryusecase.NewSubscriberResolver(deliveryusecase.SubscriberResolverOptions{
+			Store: store,
+		}),
+		authority: authority,
+		pageSize:  8,
+	}
+
+	token, err := resolver.BeginResolve(context.Background(), deliveryruntime.ChannelKey{
+		ChannelID:   "g1",
+		ChannelType: 2,
+	}, deliveryruntime.CommittedEnvelope{})
+	require.NoError(t, err)
+
+	page1, cursor, done, err := resolver.ResolvePage(context.Background(), token, "", 1)
+	require.NoError(t, err)
+	require.Equal(t, []deliveryruntime.RouteKey{{UID: "u2", NodeID: 1, BootID: 11, SessionID: 2}}, page1)
+	require.Equal(t, "u2", cursor)
+	require.False(t, done)
+
+	page2, cursor, done, err := resolver.ResolvePage(context.Background(), token, cursor, 1)
+	require.NoError(t, err)
+	require.Equal(t, []deliveryruntime.RouteKey{{UID: "u2", NodeID: 1, BootID: 11, SessionID: 3}}, page2)
+	require.Equal(t, "u2", cursor)
+	require.True(t, done)
+
+	require.Equal(t, 1, store.snapshotCalls)
+	require.Equal(t, [][]string{{"u2"}}, authority.uidBatches)
+}
+
+type recordingDeliveryOwnerNotifier struct {
+	acks        []message.RouteAckCommand
+	offlines    []message.SessionClosedCommand
+	ackErr      error
+	offlineErr  error
+	localClosed bool
+}
+
+func (r *recordingDeliveryOwnerNotifier) NotifyAck(_ context.Context, _ uint64, cmd message.RouteAckCommand) error {
+	r.acks = append(r.acks, cmd)
+	return r.ackErr
+}
+
+func (r *recordingDeliveryOwnerNotifier) NotifyOffline(_ context.Context, _ uint64, cmd message.SessionClosedCommand) error {
+	r.offlines = append(r.offlines, cmd)
+	return r.offlineErr
+}
+
+func remoteAcksHas(idx *deliveryruntime.AckIndex, sessionID, messageID uint64) bool {
+	if idx == nil {
+		return false
+	}
+	_, ok := idx.Lookup(sessionID, messageID)
+	return ok
+}
+
+type recordingRouteAcker struct {
+	acks []message.RouteAckCommand
+}
+
+func (r *recordingRouteAcker) AckRoute(_ context.Context, cmd message.RouteAckCommand) error {
+	r.acks = append(r.acks, cmd)
+	return nil
+}
+
+type recordingSessionCloser struct {
+	closed []message.SessionClosedCommand
+}
+
+func (r *recordingSessionCloser) SessionClosed(_ context.Context, cmd message.SessionClosedCommand) error {
+	r.closed = append(r.closed, cmd)
+	return nil
+}
+
+type recordingCommittedSubmitter struct {
+	submitCalls int
+}
+
+func (r *recordingCommittedSubmitter) SubmitCommitted(_ context.Context, _ message.CommittedMessageEnvelope) error {
+	r.submitCalls++
+	return nil
+}
+
+type resolverSnapshotStore struct {
+	snapshotCalls int
+	uids          []string
+}
+
+func (s *resolverSnapshotStore) SnapshotChannelSubscribers(_ context.Context, _ string, _ int64) ([]string, error) {
+	s.snapshotCalls++
+	return append([]string(nil), s.uids...), nil
+}
+
+func (s *resolverSnapshotStore) ListChannelSubscribers(context.Context, string, int64, string, int) ([]string, string, bool, error) {
+	return nil, "", true, nil
+}
+
+type recordingAuthoritative struct {
+	uidBatches [][]string
+	batches    map[string][]presence.Route
+}
+
+func (r *recordingAuthoritative) RegisterAuthoritative(context.Context, presence.RegisterAuthoritativeCommand) (presence.RegisterAuthoritativeResult, error) {
+	return presence.RegisterAuthoritativeResult{}, nil
+}
+
+func (r *recordingAuthoritative) UnregisterAuthoritative(context.Context, presence.UnregisterAuthoritativeCommand) error {
+	return nil
+}
+
+func (r *recordingAuthoritative) HeartbeatAuthoritative(context.Context, presence.HeartbeatAuthoritativeCommand) (presence.HeartbeatAuthoritativeResult, error) {
+	return presence.HeartbeatAuthoritativeResult{}, nil
+}
+
+func (r *recordingAuthoritative) ReplayAuthoritative(context.Context, presence.ReplayAuthoritativeCommand) error {
+	return nil
+}
+
+func (r *recordingAuthoritative) EndpointsByUID(context.Context, string) ([]presence.Route, error) {
+	return nil, nil
+}
+
+func (r *recordingAuthoritative) EndpointsByUIDs(_ context.Context, uids []string) (map[string][]presence.Route, error) {
+	r.uidBatches = append(r.uidBatches, append([]string(nil), uids...))
+	out := make(map[string][]presence.Route, len(uids))
+	for _, uid := range uids {
+		out[uid] = append([]presence.Route(nil), r.batches[uid]...)
+	}
+	return out, nil
+}
+
+type stubChannelLogCluster struct {
+	status    channellog.ChannelRuntimeStatus
+	statusErr error
+}
+
+func (s *stubChannelLogCluster) ApplyMeta(channellog.ChannelMeta) error {
+	return nil
+}
+
+func (s *stubChannelLogCluster) Send(context.Context, channellog.SendRequest) (channellog.SendResult, error) {
+	return channellog.SendResult{}, nil
+}
+
+func (s *stubChannelLogCluster) Fetch(context.Context, channellog.FetchRequest) (channellog.FetchResult, error) {
+	return channellog.FetchResult{}, nil
+}
+
+func (s *stubChannelLogCluster) Status(channellog.ChannelKey) (channellog.ChannelRuntimeStatus, error) {
+	return s.status, s.statusErr
+}

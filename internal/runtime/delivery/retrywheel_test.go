@@ -37,3 +37,10 @@ func TestRetryWheelPopsDueEntriesInTimeOrder(t *testing.T) {
 	require.Len(t, due, 1)
 	require.Equal(t, uint64(102), due[0].MessageID)
 }
+
+func TestRetryWheelAppliesCappedBackoffWithJitter(t *testing.T) {
+	delay := cappedBackoffWithJitter([]time.Duration{time.Second, 2 * time.Second}, 6)
+
+	require.Greater(t, delay, 2*time.Second)
+	require.LessOrEqual(t, delay, 2200*time.Millisecond)
+}

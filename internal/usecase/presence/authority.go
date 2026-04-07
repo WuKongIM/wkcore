@@ -30,3 +30,8 @@ func (a *App) EndpointsByUID(ctx context.Context, uid string) ([]Route, error) {
 	_ = ctx
 	return a.dir.endpointsByUID(uid, a.now().Unix()), nil
 }
+
+func (a *App) EndpointsByUIDs(ctx context.Context, uids []string) (map[string][]Route, error) {
+	_ = ctx
+	return a.dir.endpointsByUIDs(uids, a.now().Unix()), nil
+}

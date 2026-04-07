@@ -252,6 +252,14 @@ func (f *fakeAuthorityClient) EndpointsByUID(context.Context, string) ([]Route, 
 	return nil, nil
 }
 
+func (f *fakeAuthorityClient) EndpointsByUIDs(_ context.Context, uids []string) (map[string][]Route, error) {
+	out := make(map[string][]Route, len(uids))
+	for _, uid := range uids {
+		out[uid] = nil
+	}
+	return out, nil
+}
+
 type fakeActionDispatcher struct {
 	applyErr error
 	actions  []RouteAction

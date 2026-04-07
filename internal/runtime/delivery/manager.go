@@ -6,12 +6,19 @@ import (
 	"time"
 )
 
+const (
+	defaultMaxInflightRoutesPerActor      = 4096
+	defaultDedicatedLaneActivityThreshold = 8
+)
+
 type Manager struct {
 	shards           []*shard
 	resolver         Resolver
 	push             Pusher
 	clock            Clock
 	ackIdx           *AckIndex
+	resolvePageSize  int
+	limits           Limits
 	idleTimeout      time.Duration
 	retryDelays      []time.Duration
 	maxRetryAttempts int
@@ -30,6 +37,9 @@ func NewManager(cfg Config) *Manager {
 	if cfg.Push == nil {
 		cfg.Push = noopPusher{}
 	}
+	if cfg.ResolvePageSize <= 0 {
+		cfg.ResolvePageSize = 256
+	}
 	if cfg.IdleTimeout <= 0 {
 		cfg.IdleTimeout = time.Minute
 	}
@@ -39,11 +49,19 @@ func NewManager(cfg Config) *Manager {
 	if cfg.MaxRetryAttempts <= 0 {
 		cfg.MaxRetryAttempts = len(cfg.RetryDelays) + 1
 	}
+	if cfg.Limits.MaxInflightRoutesPerActor <= 0 {
+		cfg.Limits.MaxInflightRoutesPerActor = defaultMaxInflightRoutesPerActor
+	}
+	if cfg.Limits.DedicatedLaneActivityThreshold <= 0 {
+		cfg.Limits.DedicatedLaneActivityThreshold = defaultDedicatedLaneActivityThreshold
+	}
 	m := &Manager{
 		resolver:         cfg.Resolver,
 		push:             cfg.Push,
 		clock:            cfg.Clock,
 		ackIdx:           NewAckIndex(),
+		resolvePageSize:  cfg.ResolvePageSize,
+		limits:           cfg.Limits,
 		idleTimeout:      cfg.IdleTimeout,
 		retryDelays:      append([]time.Duration(nil), cfg.RetryDelays...),
 		maxRetryAttempts: cfg.MaxRetryAttempts,
@@ -116,4 +134,17 @@ func (m *Manager) HasAckBinding(sessionID, messageID uint64) bool {
 	}
 	_, ok := m.ackIdx.Lookup(sessionID, messageID)
 	return ok
+}
+
+func (m *Manager) ActorLane(channelID string, channelType uint8) ActorLane {
+	if m == nil {
+		return LaneShared
+	}
+	act := m.shardFor(ChannelKey{ChannelID: channelID, ChannelType: channelType}).actor(ChannelKey{ChannelID: channelID, ChannelType: channelType})
+	if act == nil {
+		return LaneShared
+	}
+	act.mu.Lock()
+	defer act.mu.Unlock()
+	return act.lane
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
@@ -92,7 +93,10 @@ func TestAppStartWiresMessageSendThroughDurableChannelLog(t *testing.T) {
 	app, err := New(cfg)
 	require.NoError(t, err)
 
-	key := channellog.ChannelKey{ChannelID: "durable-user", ChannelType: wkframe.ChannelTypePerson}
+	key := channellog.ChannelKey{
+		ChannelID:   deliveryusecase.EncodePersonChannel("sender", "durable-user"),
+		ChannelType: wkframe.ChannelTypePerson,
+	}
 	meta := metadb.ChannelRuntimeMeta{
 		ChannelID:    key.ChannelID,
 		ChannelType:  int64(key.ChannelType),
@@ -115,7 +119,7 @@ func TestAppStartWiresMessageSendThroughDurableChannelLog(t *testing.T) {
 
 	result, err := app.Message().Send(context.Background(), message.SendCommand{
 		SenderUID:   "sender",
-		ChannelID:   key.ChannelID,
+		ChannelID:   "durable-user",
 		ChannelType: key.ChannelType,
 		ClientMsgNo: "durable-1",
 		Payload:     []byte("hello durable"),
@@ -140,10 +144,11 @@ func TestAppStartWiresMessageSendThroughDurableChannelLog(t *testing.T) {
 func TestAppSendReturnsBeforeRealtimeAckArrives(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Cluster.ListenAddr = "127.0.0.1:0"
+	channelID := deliveryusecase.EncodePersonChannel("u1", "u2")
 
 	app, err := New(cfg)
 	require.NoError(t, err)
-	seedChannelRuntimeMeta(t, app, "u2", wkframe.ChannelTypePerson)
+	seedChannelRuntimeMeta(t, app, channelID, wkframe.ChannelTypePerson)
 
 	require.NoError(t, app.Start())
 	t.Cleanup(func() {
@@ -155,7 +160,7 @@ func TestAppSendReturnsBeforeRealtimeAckArrives(t *testing.T) {
 
 	result, err := app.Message().Send(context.Background(), message.SendCommand{
 		SenderUID:   "u1",
-		ChannelID:   "u2",
+		ChannelID:   channelID,
 		ChannelType: wkframe.ChannelTypePerson,
 		ClientMsgNo: "async-1",
 		Payload:     []byte("hi async"),
@@ -183,10 +188,11 @@ func TestAppSendReturnsBeforeRealtimeAckArrives(t *testing.T) {
 func TestAppRecvAckCompletesLocalInflightRoute(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Cluster.ListenAddr = "127.0.0.1:0"
+	channelID := deliveryusecase.EncodePersonChannel("u1", "u2")
 
 	app, err := New(cfg)
 	require.NoError(t, err)
-	seedChannelRuntimeMeta(t, app, "u2", wkframe.ChannelTypePerson)
+	seedChannelRuntimeMeta(t, app, channelID, wkframe.ChannelTypePerson)
 
 	require.NoError(t, app.Start())
 	t.Cleanup(func() {
@@ -200,7 +206,7 @@ func TestAppRecvAckCompletesLocalInflightRoute(t *testing.T) {
 
 	result, err := app.Message().Send(context.Background(), message.SendCommand{
 		SenderUID:   "u1",
-		ChannelID:   "u2",
+		ChannelID:   channelID,
 		ChannelType: wkframe.ChannelTypePerson,
 		ClientMsgNo: "async-ack-1",
 		Payload:     []byte("hi ack"),
@@ -226,10 +232,11 @@ func TestAppRecvAckCompletesLocalInflightRoute(t *testing.T) {
 func TestAppSessionCloseDropsRealtimeRouteAndDoesNotBlockSend(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Cluster.ListenAddr = "127.0.0.1:0"
+	channelID := deliveryusecase.EncodePersonChannel("u1", "u2")
 
 	app, err := New(cfg)
 	require.NoError(t, err)
-	seedChannelRuntimeMeta(t, app, "u2", wkframe.ChannelTypePerson)
+	seedChannelRuntimeMeta(t, app, channelID, wkframe.ChannelTypePerson)
 
 	require.NoError(t, app.Start())
 	t.Cleanup(func() {
@@ -241,7 +248,7 @@ func TestAppSessionCloseDropsRealtimeRouteAndDoesNotBlockSend(t *testing.T) {
 
 	first, err := app.Message().Send(context.Background(), message.SendCommand{
 		SenderUID:   "u1",
-		ChannelID:   "u2",
+		ChannelID:   channelID,
 		ChannelType: wkframe.ChannelTypePerson,
 		ClientMsgNo: "async-close-1",
 		Payload:     []byte("hi close"),
@@ -265,7 +272,7 @@ func TestAppSessionCloseDropsRealtimeRouteAndDoesNotBlockSend(t *testing.T) {
 
 	second, err := app.Message().Send(context.Background(), message.SendCommand{
 		SenderUID:   "u1",
-		ChannelID:   "u2",
+		ChannelID:   channelID,
 		ChannelType: wkframe.ChannelTypePerson,
 		ClientMsgNo: "async-close-2",
 		Payload:     []byte("still durable"),

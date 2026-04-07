@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // staticDiscovery is a test helper implementing Discovery.
@@ -187,4 +189,50 @@ func TestPool_Concurrent(t *testing.T) {
 		}(uint64(i))
 	}
 	wg.Wait()
+}
+
+func TestPool_CloseDoesNotDeadlockWithConcurrentRelease(t *testing.T) {
+	serverConn, peerConn := net.Pipe()
+	t.Cleanup(func() { _ = peerConn.Close() })
+
+	pool := NewPool(&staticDiscovery{}, 1, time.Second)
+	nc := &nodeConns{
+		conns: []net.Conn{serverConn},
+		mu:    []sync.Mutex{{}},
+	}
+	pool.nodes[2] = nc
+
+	nc.mu[0].Lock()
+
+	closeDone := make(chan struct{})
+	go func() {
+		pool.Close()
+		close(closeDone)
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+
+	releaseDone := make(chan struct{})
+	go func() {
+		pool.Release(2, 0)
+		close(releaseDone)
+	}()
+
+	require.Eventually(t, func() bool {
+		select {
+		case <-releaseDone:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		select {
+		case <-closeDone:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
 }

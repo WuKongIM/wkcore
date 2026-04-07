@@ -137,9 +137,13 @@ func build(cfg Config) (_ *App, err error) {
 	authorityClient.local = app.presenceApp
 	app.presenceWorker = newPresenceWorker(app.presenceApp, 0)
 	app.deliveryAcks = deliveryruntime.NewAckIndex()
+	subscriberResolver := deliveryusecase.NewSubscriberResolver(deliveryusecase.SubscriberResolverOptions{
+		Store: app.store,
+	})
 	app.deliveryRuntime = deliveryruntime.NewManager(deliveryruntime.Config{
 		Resolver: localDeliveryResolver{
-			authority: authorityClient,
+			subscribers: subscriberResolver,
+			authority:   authorityClient,
 		},
 		Push: distributedDeliveryPush{
 			localNodeID: cfg.Node.ID,
@@ -167,11 +171,11 @@ func build(cfg Config) (_ *App, err error) {
 		DeliveryAckIndex: app.deliveryAcks,
 	})
 	app.messageApp = message.New(message.Options{
-		IdentityStore:       app.store,
-		ChannelStore:        app.store,
-		Cluster:             app.channelLog,
-		MetaRefresher:       app.channelMetaSync,
-		Online:              onlineRegistry,
+		IdentityStore: app.store,
+		ChannelStore:  app.store,
+		Cluster:       app.channelLog,
+		MetaRefresher: app.channelMetaSync,
+		Online:        onlineRegistry,
 		CommittedDispatcher: asyncCommittedDispatcher{
 			localNodeID: cfg.Node.ID,
 			channelLog:  app.channelLog,
@@ -182,13 +186,13 @@ func build(cfg Config) (_ *App, err error) {
 			localNodeID: cfg.Node.ID,
 			local:       app.deliveryApp,
 			remoteAcks:  app.deliveryAcks,
-			nodeClient:  app.nodeClient,
+			notifier:    app.nodeClient,
 		},
 		DeliveryOffline: offlineRouting{
 			localNodeID: cfg.Node.ID,
 			local:       app.deliveryApp,
 			remoteAcks:  app.deliveryAcks,
-			nodeClient:  app.nodeClient,
+			notifier:    app.nodeClient,
 		},
 	})
 	userApp := userusecase.New(userusecase.Options{

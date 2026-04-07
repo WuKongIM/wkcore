@@ -28,3 +28,10 @@ func (m *mailbox) drain() []any {
 	m.events = m.events[:0]
 	return out
 }
+
+func (m *mailbox) depth() int {
+	if m == nil {
+		return 0
+	}
+	return len(m.events)
+}

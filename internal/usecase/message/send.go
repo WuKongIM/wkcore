@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
@@ -15,18 +16,25 @@ func (a *App) Send(ctx context.Context, cmd SendCommand) (SendResult, error) {
 		return SendResult{}, ErrUnauthenticatedSender
 	}
 
-	if cmd.ChannelType != wkframe.ChannelTypePerson {
+	if cmd.ChannelType != wkframe.ChannelTypePerson && cmd.ChannelType != wkframe.ChannelTypeGroup {
 		return SendResult{Reason: wkframe.ReasonNotSupportChannelType}, nil
+	}
+	if cmd.ChannelType == wkframe.ChannelTypePerson {
+		channelID, err := runtimechannelid.NormalizePersonChannel(cmd.SenderUID, cmd.ChannelID)
+		if err != nil {
+			return SendResult{}, err
+		}
+		cmd.ChannelID = channelID
 	}
 
 	if a.cluster == nil {
 		return SendResult{}, ErrClusterRequired
 	}
 
-	return a.sendDurablePerson(ctx, cmd)
+	return a.sendDurable(ctx, cmd)
 }
 
-func (a *App) sendDurablePerson(ctx context.Context, cmd SendCommand) (SendResult, error) {
+func (a *App) sendDurable(ctx context.Context, cmd SendCommand) (SendResult, error) {
 	result, err := sendWithMetaRefreshRetry(ctx, a.cluster, a.refresher, channellog.SendRequest{
 		ChannelID:             cmd.ChannelID,
 		ChannelType:           cmd.ChannelType,

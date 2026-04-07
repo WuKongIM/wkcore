@@ -99,16 +99,35 @@ type RouteDeliveryState struct {
 	Accepted bool
 }
 
+type ActorLane uint8
+
+const (
+	LaneShared ActorLane = iota
+	LaneDedicated
+)
+
 type InflightMessage struct {
 	MessageID       uint64
 	MessageSeq      uint64
 	Envelope        CommittedEnvelope
+	ResolveToken    any
+	ResolveBegun    bool
+	ResolveDone     bool
+	ResolveAttempt  int
+	ResolveRetryAt  time.Time
+	NextCursor      string
 	Routes          map[RouteKey]*RouteDeliveryState
 	PendingRouteCnt int
 }
 
+type Limits struct {
+	MaxInflightRoutesPerActor      int
+	DedicatedLaneActivityThreshold int
+}
+
 type Resolver interface {
-	ResolveRoutes(ctx context.Context, key ChannelKey, env CommittedEnvelope) ([]RouteKey, error)
+	BeginResolve(ctx context.Context, key ChannelKey, env CommittedEnvelope) (any, error)
+	ResolvePage(ctx context.Context, token any, cursor string, limit int) ([]RouteKey, string, bool, error)
 }
 
 type Pusher interface {
@@ -124,6 +143,8 @@ type Config struct {
 	Push             Pusher
 	Clock            Clock
 	ShardCount       int
+	ResolvePageSize  int
+	Limits           Limits
 	IdleTimeout      time.Duration
 	RetryDelays      []time.Duration
 	MaxRetryAttempts int
@@ -137,8 +158,12 @@ func (defaultClock) Now() time.Time {
 
 type noopResolver struct{}
 
-func (noopResolver) ResolveRoutes(context.Context, ChannelKey, CommittedEnvelope) ([]RouteKey, error) {
+func (noopResolver) BeginResolve(context.Context, ChannelKey, CommittedEnvelope) (any, error) {
 	return nil, nil
+}
+
+func (noopResolver) ResolvePage(context.Context, any, string, int) ([]RouteKey, string, bool, error) {
+	return nil, "", true, nil
 }
 
 type noopPusher struct{}
