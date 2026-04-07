@@ -154,3 +154,64 @@ func TestShardClearUserConversationActiveAtZeroesOnlyActiveField(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, second, gotSecond)
 }
+
+func TestWriteBatchUpsertUserConversationStateReplacesActiveIndex(t *testing.T) {
+	db := openTestDB(t)
+	shard := db.ForSlot(7)
+	ctx := context.Background()
+
+	require.NoError(t, shard.UpsertUserConversationState(ctx, UserConversationState{
+		UID:         "u1",
+		ChannelID:   "g1",
+		ChannelType: 2,
+		ActiveAt:    100,
+		UpdatedAt:   10,
+	}))
+
+	wb := db.NewWriteBatch()
+	defer wb.Close()
+	require.NoError(t, wb.UpsertUserConversationState(7, UserConversationState{
+		UID:         "u1",
+		ChannelID:   "g1",
+		ChannelType: 2,
+		ActiveAt:    200,
+		UpdatedAt:   10,
+	}))
+	require.NoError(t, wb.Commit())
+
+	got, err := shard.ListUserConversationActive(ctx, "u1", 10)
+	require.NoError(t, err)
+	require.Equal(t, []UserConversationState{
+		{UID: "u1", ChannelID: "g1", ChannelType: 2, ActiveAt: 200, UpdatedAt: 10},
+	}, got)
+}
+
+func TestWriteBatchUpsertUserConversationStateReplacesActiveIndexWithinBatch(t *testing.T) {
+	db := openTestDB(t)
+	shard := db.ForSlot(7)
+	ctx := context.Background()
+
+	wb := db.NewWriteBatch()
+	defer wb.Close()
+	require.NoError(t, wb.UpsertUserConversationState(7, UserConversationState{
+		UID:         "u1",
+		ChannelID:   "g1",
+		ChannelType: 2,
+		ActiveAt:    100,
+		UpdatedAt:   10,
+	}))
+	require.NoError(t, wb.UpsertUserConversationState(7, UserConversationState{
+		UID:         "u1",
+		ChannelID:   "g1",
+		ChannelType: 2,
+		ActiveAt:    200,
+		UpdatedAt:   10,
+	}))
+	require.NoError(t, wb.Commit())
+
+	got, err := shard.ListUserConversationActive(ctx, "u1", 10)
+	require.NoError(t, err)
+	require.Equal(t, []UserConversationState{
+		{UID: "u1", ChannelID: "g1", ChannelType: 2, ActiveAt: 200, UpdatedAt: 10},
+	}, got)
+}

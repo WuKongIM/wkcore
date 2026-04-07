@@ -5,9 +5,15 @@ import "github.com/cockroachdb/pebble/v2"
 // WriteBatch accumulates multiple writes into a single pebble batch,
 // committing them atomically with one fsync in Commit.
 type WriteBatch struct {
-	db              *DB
-	batch           *pebble.Batch
-	writtenUserKeys map[string]struct{}
+	db                     *DB
+	batch                  *pebble.Batch
+	writtenUserKeys        map[string]struct{}
+	userConversationStates map[string]userConversationStateBatchEntry
+}
+
+type userConversationStateBatchEntry struct {
+	state  UserConversationState
+	exists bool
 }
 
 // NewWriteBatch creates a new WriteBatch. The caller must call Close
@@ -145,7 +151,17 @@ func (b *WriteBatch) UpsertUserConversationState(slot uint64, state UserConversa
 	}
 
 	primaryKey := encodeUserConversationStatePrimaryKey(slot, state.UID, state.ChannelType, state.ChannelID, userConversationStatePrimaryFamilyID)
+	existing, exists, err := b.loadUserConversationState(slot, primaryKey, state.UID, state.ChannelID, state.ChannelType)
+	if err != nil {
+		return err
+	}
 	value := encodeUserConversationStateFamilyValue(state, primaryKey)
+	if exists && existing.ActiveAt > 0 && existing.ActiveAt != state.ActiveAt {
+		oldIndexKey := encodeUserConversationActiveIndexKey(slot, state.UID, existing.ActiveAt, state.ChannelType, state.ChannelID)
+		if err := b.batch.Delete(oldIndexKey, nil); err != nil {
+			return err
+		}
+	}
 	if err := b.batch.Set(primaryKey, value, nil); err != nil {
 		return err
 	}
@@ -155,6 +171,7 @@ func (b *WriteBatch) UpsertUserConversationState(slot uint64, state UserConversa
 			return err
 		}
 	}
+	b.rememberUserConversationState(primaryKey, state, true)
 	return nil
 }
 
@@ -275,4 +292,35 @@ func (b *WriteBatch) userKeyWritten(key []byte) bool {
 	}
 	_, ok := b.writtenUserKeys[string(key)]
 	return ok
+}
+
+func (b *WriteBatch) loadUserConversationState(slot uint64, primaryKey []byte, uid, channelID string, channelType int64) (UserConversationState, bool, error) {
+	if b.userConversationStates != nil {
+		if entry, ok := b.userConversationStates[string(primaryKey)]; ok {
+			return entry.state, entry.exists, nil
+		}
+	}
+
+	shard := b.db.ForSlot(slot)
+	state, err := shard.getUserConversationStateLocked(uid, channelID, channelType)
+	switch err {
+	case nil:
+		b.rememberUserConversationState(primaryKey, state, true)
+		return state, true, nil
+	case ErrNotFound:
+		b.rememberUserConversationState(primaryKey, UserConversationState{}, false)
+		return UserConversationState{}, false, nil
+	default:
+		return UserConversationState{}, false, err
+	}
+}
+
+func (b *WriteBatch) rememberUserConversationState(primaryKey []byte, state UserConversationState, exists bool) {
+	if b.userConversationStates == nil {
+		b.userConversationStates = make(map[string]userConversationStateBatchEntry, 1)
+	}
+	b.userConversationStates[string(primaryKey)] = userConversationStateBatchEntry{
+		state:  state,
+		exists: exists,
+	}
 }
