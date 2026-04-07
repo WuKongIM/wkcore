@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
@@ -71,6 +72,30 @@ type FetchRequest struct {
 	MaxBytes             int
 	ExpectedChannelEpoch uint64
 	ExpectedLeaderEpoch  uint64
+}
+
+type Message struct {
+	MessageID   uint64
+	// MessageSeq is derived from the committed log offset and is not encoded in
+	// the durable record payload.
+	MessageSeq  uint64
+	// Framer persists only durable flag bits; transport/runtime sizing fields
+	// are rebuilt by the realtime view layer.
+	Framer      wkframe.Framer
+	Setting     wkframe.Setting
+	MsgKey      string
+	Expire      uint32
+	ClientSeq   uint64
+	ClientMsgNo string
+	StreamNo    string
+	StreamID    uint64
+	StreamFlag  wkframe.StreamFlag
+	Timestamp   int32
+	ChannelID   string
+	ChannelType uint8
+	Topic       string
+	FromUID     string
+	Payload     []byte
 }
 
 type ChannelMessage struct {

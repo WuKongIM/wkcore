@@ -3,8 +3,11 @@ package channellog
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"hash/fnv"
 	"io"
+
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 )
 
 type storedMessage struct {
@@ -23,18 +26,82 @@ type storedMessageView struct {
 	Payload     []byte
 }
 
-func encodeStoredMessage(message storedMessage) ([]byte, error) {
+type messageView struct {
+	Message
+	PayloadHash uint64
+}
+
+const (
+	messageCodecVersion byte = 1
+	messageHeaderSize        = 45
+)
+
+var errUnknownMessageCodecVersion = errors.New("channellog: unknown message codec version")
+
+const (
+	framerFlagNoPersist uint8 = 1 << iota
+	framerFlagRedDot
+	framerFlagSyncOnce
+	framerFlagDUP
+	framerFlagHasServerVersion
+	framerFlagEnd
+)
+
+func encodeMessage(message Message) ([]byte, error) {
+	return encodeMessageWithPayloadHash(message, hashPayload(message.Payload))
+}
+
+func encodeMessageWithPayloadHash(message Message, payloadHash uint64) ([]byte, error) {
 	var buf bytes.Buffer
+	if err := buf.WriteByte(messageCodecVersion); err != nil {
+		return nil, err
+	}
 	if err := binary.Write(&buf, binary.BigEndian, message.MessageID); err != nil {
 		return nil, err
 	}
-	if err := binary.Write(&buf, binary.BigEndian, message.PayloadHash); err != nil {
+	if err := buf.WriteByte(encodeFramerFlags(message.Framer)); err != nil {
 		return nil, err
 	}
-	if err := writeString(&buf, message.SenderUID); err != nil {
+	if err := buf.WriteByte(byte(message.Setting)); err != nil {
+		return nil, err
+	}
+	if err := buf.WriteByte(byte(message.StreamFlag)); err != nil {
+		return nil, err
+	}
+	if err := buf.WriteByte(message.ChannelType); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&buf, binary.BigEndian, message.Expire); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&buf, binary.BigEndian, message.ClientSeq); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&buf, binary.BigEndian, message.StreamID); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&buf, binary.BigEndian, message.Timestamp); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&buf, binary.BigEndian, payloadHash); err != nil {
+		return nil, err
+	}
+	if err := writeString(&buf, message.MsgKey); err != nil {
 		return nil, err
 	}
 	if err := writeString(&buf, message.ClientMsgNo); err != nil {
+		return nil, err
+	}
+	if err := writeString(&buf, message.StreamNo); err != nil {
+		return nil, err
+	}
+	if err := writeString(&buf, message.ChannelID); err != nil {
+		return nil, err
+	}
+	if err := writeString(&buf, message.Topic); err != nil {
+		return nil, err
+	}
+	if err := writeString(&buf, message.FromUID); err != nil {
 		return nil, err
 	}
 	if err := writeBytes(&buf, message.Payload); err != nil {
@@ -43,14 +110,96 @@ func encodeStoredMessage(message storedMessage) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+func decodeMessage(payload []byte) (Message, error) {
+	view, err := decodeMessageView(payload)
+	if err != nil {
+		return Message{}, err
+	}
+	message := view.Message
+	message.Payload = append([]byte(nil), view.Payload...)
+	return message, nil
+}
+
+func decodeMessageView(payload []byte) (messageView, error) {
+	if len(payload) < messageHeaderSize {
+		return messageView{}, io.ErrUnexpectedEOF
+	}
+	if payload[0] != messageCodecVersion {
+		return messageView{}, errUnknownMessageCodecVersion
+	}
+
+	view := messageView{}
+	view.MessageID = binary.BigEndian.Uint64(payload[1:9])
+	view.Framer = decodeFramerFlags(payload[9])
+	view.Setting = wkframe.Setting(payload[10])
+	view.StreamFlag = wkframe.StreamFlag(payload[11])
+	view.ChannelType = payload[12]
+	view.Expire = binary.BigEndian.Uint32(payload[13:17])
+	view.ClientSeq = binary.BigEndian.Uint64(payload[17:25])
+	view.StreamID = binary.BigEndian.Uint64(payload[25:33])
+	view.Timestamp = int32(binary.BigEndian.Uint32(payload[33:37]))
+	view.PayloadHash = binary.BigEndian.Uint64(payload[37:45])
+
+	pos := messageHeaderSize
+
+	msgKey, nextPos, err := readSizedBytesView(payload, pos)
+	if err != nil {
+		return messageView{}, err
+	}
+	clientMsgNo, nextPos, err := readSizedBytesView(payload, nextPos)
+	if err != nil {
+		return messageView{}, err
+	}
+	streamNo, nextPos, err := readSizedBytesView(payload, nextPos)
+	if err != nil {
+		return messageView{}, err
+	}
+	channelID, nextPos, err := readSizedBytesView(payload, nextPos)
+	if err != nil {
+		return messageView{}, err
+	}
+	topic, nextPos, err := readSizedBytesView(payload, nextPos)
+	if err != nil {
+		return messageView{}, err
+	}
+	fromUID, nextPos, err := readSizedBytesView(payload, nextPos)
+	if err != nil {
+		return messageView{}, err
+	}
+	body, _, err := readSizedBytesView(payload, nextPos)
+	if err != nil {
+		return messageView{}, err
+	}
+
+	view.MsgKey = string(msgKey)
+	view.ClientMsgNo = string(clientMsgNo)
+	view.StreamNo = string(streamNo)
+	view.ChannelID = string(channelID)
+	view.Topic = string(topic)
+	view.FromUID = string(fromUID)
+	// The caller already owns the encoded record bytes and may reuse the body
+	// slice directly to avoid one more payload allocation during reads.
+	view.Payload = body
+	return view, nil
+}
+
+func encodeStoredMessage(message storedMessage) ([]byte, error) {
+	return encodeMessageWithPayloadHash(Message{
+		MessageID:   message.MessageID,
+		ClientMsgNo: message.ClientMsgNo,
+		FromUID:     message.SenderUID,
+		Payload:     message.Payload,
+	}, message.PayloadHash)
+}
+
 func decodeStoredMessage(payload []byte) (storedMessage, error) {
-	view, err := decodeStoredMessageView(payload)
+	view, err := decodeMessageView(payload)
 	if err != nil {
 		return storedMessage{}, err
 	}
 	return storedMessage{
 		MessageID:   view.MessageID,
-		SenderUID:   view.SenderUID,
+		SenderUID:   view.FromUID,
 		ClientMsgNo: view.ClientMsgNo,
 		PayloadHash: view.PayloadHash,
 		Payload:     append([]byte(nil), view.Payload...),
@@ -58,35 +207,51 @@ func decodeStoredMessage(payload []byte) (storedMessage, error) {
 }
 
 func decodeStoredMessageView(payload []byte) (storedMessageView, error) {
-	if len(payload) < 16 {
-		return storedMessageView{}, io.ErrUnexpectedEOF
-	}
-
-	view := storedMessageView{
-		MessageID:   binary.BigEndian.Uint64(payload[:8]),
-		PayloadHash: binary.BigEndian.Uint64(payload[8:16]),
-	}
-	pos := 16
-
-	senderUID, nextPos, err := readSizedBytesView(payload, pos)
+	view, err := decodeMessageView(payload)
 	if err != nil {
 		return storedMessageView{}, err
 	}
-	clientMsgNo, nextPos, err := readSizedBytesView(payload, nextPos)
-	if err != nil {
-		return storedMessageView{}, err
-	}
-	body, _, err := readSizedBytesView(payload, nextPos)
-	if err != nil {
-		return storedMessageView{}, err
-	}
+	return storedMessageView{
+		MessageID:   view.MessageID,
+		SenderUID:   view.FromUID,
+		ClientMsgNo: view.ClientMsgNo,
+		PayloadHash: view.PayloadHash,
+		Payload:     view.Payload,
+	}, nil
+}
 
-	view.SenderUID = string(senderUID)
-	view.ClientMsgNo = string(clientMsgNo)
-	// The caller already owns the encoded record bytes and may reuse the body
-	// slice directly to avoid one more payload allocation during reads.
-	view.Payload = body
-	return view, nil
+func encodeFramerFlags(framer wkframe.Framer) uint8 {
+	var flags uint8
+	if framer.NoPersist {
+		flags |= framerFlagNoPersist
+	}
+	if framer.RedDot {
+		flags |= framerFlagRedDot
+	}
+	if framer.SyncOnce {
+		flags |= framerFlagSyncOnce
+	}
+	if framer.DUP {
+		flags |= framerFlagDUP
+	}
+	if framer.HasServerVersion {
+		flags |= framerFlagHasServerVersion
+	}
+	if framer.End {
+		flags |= framerFlagEnd
+	}
+	return flags
+}
+
+func decodeFramerFlags(flags uint8) wkframe.Framer {
+	return wkframe.Framer{
+		NoPersist:        flags&framerFlagNoPersist != 0,
+		RedDot:           flags&framerFlagRedDot != 0,
+		SyncOnce:         flags&framerFlagSyncOnce != 0,
+		DUP:              flags&framerFlagDUP != 0,
+		HasServerVersion: flags&framerFlagHasServerVersion != 0,
+		End:              flags&framerFlagEnd != 0,
+	}
 }
 
 func readSizedBytesView(payload []byte, pos int) ([]byte, int, error) {
