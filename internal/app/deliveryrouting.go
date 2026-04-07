@@ -21,14 +21,15 @@ var (
 )
 
 type asyncCommittedDispatcher struct {
-	localNodeID uint64
-	channelLog  channellog.Cluster
-	delivery    committedSubmitter
-	nodeClient  *accessnode.Client
+	localNodeID  uint64
+	channelLog   channellog.Cluster
+	delivery     committedSubmitter
+	conversation committedSubmitter
+	nodeClient   *accessnode.Client
 }
 
 func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, msg channellog.Message) error {
-	if d.delivery == nil {
+	if d.delivery == nil && d.conversation == nil {
 		return nil
 	}
 	if ctx == nil {
@@ -38,7 +39,7 @@ func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, msg chann
 	}
 	go func() {
 		if d.channelLog == nil {
-			_ = d.delivery.SubmitCommitted(ctx, msg)
+			d.submitLocal(ctx, msg)
 			return
 		}
 
@@ -52,7 +53,7 @@ func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, msg chann
 
 		ownerNodeID := uint64(status.Leader)
 		if ownerNodeID == d.localNodeID {
-			_ = d.delivery.SubmitCommitted(ctx, msg)
+			d.submitLocal(ctx, msg)
 			return
 		}
 		if d.nodeClient == nil {
@@ -61,6 +62,15 @@ func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, msg chann
 		_ = d.nodeClient.SubmitCommitted(ctx, ownerNodeID, msg)
 	}()
 	return nil
+}
+
+func (d asyncCommittedDispatcher) submitLocal(ctx context.Context, msg channellog.Message) {
+	if d.delivery != nil {
+		_ = d.delivery.SubmitCommitted(ctx, msg)
+	}
+	if d.conversation != nil {
+		_ = d.conversation.SubmitCommitted(ctx, msg)
+	}
 }
 
 type localDeliveryResolver struct {

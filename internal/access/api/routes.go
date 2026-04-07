@@ -8,4 +8,5 @@ func (s *Server) registerRoutes() {
 	s.engine.GET("/healthz", s.handleHealthz)
 	s.engine.POST("/user/token", s.handleUpdateToken)
 	s.engine.POST("/message/send", s.handleSendMessage)
+	s.engine.POST("/conversation/sync", s.handleConversationSync)
 }

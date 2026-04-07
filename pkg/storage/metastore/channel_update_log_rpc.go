@@ -10,7 +10,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metafsm"
 )
 
-const channelUpdateLogRPCServiceID uint8 = 6
+const channelUpdateLogRPCServiceID uint8 = 12
 
 const (
 	channelUpdateLogRPCBatchGet = "batch_get"

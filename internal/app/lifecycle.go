@@ -52,7 +52,18 @@ func (a *App) Start() error {
 		}
 		a.presenceOn.Store(true)
 	}
+	if a.conversationProjector != nil || a.startConversationProjectorFn != nil {
+		if err := a.startConversationProjector(); err != nil {
+			_ = a.stopPresence()
+			_ = a.stopChannelMetaSync()
+			_ = a.stopClusterWithError()
+			a.started.Store(false)
+			return err
+		}
+		a.conversationOn.Store(true)
+	}
 	if err := a.startGateway(); err != nil {
+		_ = a.stopConversationProjector()
 		_ = a.stopPresence()
 		_ = a.stopChannelMetaSync()
 		_ = a.stopClusterWithError()
@@ -88,6 +99,7 @@ func (a *App) Stop() error {
 		err = errors.Join(
 			a.stopAPI(),
 			a.stopGateway(),
+			a.stopConversationProjector(),
 			a.stopPresence(),
 			a.stopChannelMetaSync(),
 			a.stopClusterWithError(),
@@ -195,6 +207,16 @@ func (a *App) startPresence() error {
 	return a.presenceWorker.Start()
 }
 
+func (a *App) startConversationProjector() error {
+	if a.startConversationProjectorFn != nil {
+		return a.startConversationProjectorFn()
+	}
+	if a.conversationProjector == nil {
+		return nil
+	}
+	return a.conversationProjector.Start()
+}
+
 func (a *App) stopGateway() error {
 	if !a.gatewayOn.Swap(false) {
 		return nil
@@ -219,6 +241,19 @@ func (a *App) stopPresence() error {
 		return nil
 	}
 	return a.presenceWorker.Stop()
+}
+
+func (a *App) stopConversationProjector() error {
+	if !a.conversationOn.Swap(false) {
+		return nil
+	}
+	if a.stopConversationProjectorFn != nil {
+		return a.stopConversationProjectorFn()
+	}
+	if a.conversationProjector == nil {
+		return nil
+	}
+	return a.conversationProjector.Stop()
 }
 
 func (a *App) stopChannelMetaSync() error {

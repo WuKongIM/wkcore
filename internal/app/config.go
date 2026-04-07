@@ -10,11 +10,12 @@ import (
 )
 
 type Config struct {
-	Node    NodeConfig
-	Storage StorageConfig
-	Cluster ClusterConfig
-	API     APIConfig
-	Gateway GatewayConfig
+	Node         NodeConfig
+	Storage      StorageConfig
+	Cluster      ClusterConfig
+	API          APIConfig
+	Gateway      GatewayConfig
+	Conversation ConversationConfig
 }
 
 type NodeConfig struct {
@@ -62,6 +63,18 @@ type GatewayConfig struct {
 
 type APIConfig struct {
 	ListenAddr string
+}
+
+type ConversationConfig struct {
+	SyncEnabled           bool
+	ColdThreshold         time.Duration
+	ActiveScanLimit       int
+	ChannelProbeBatchSize int
+	SyncDefaultLimit      int
+	SyncMaxLimit          int
+	FlushInterval         time.Duration
+	FlushDirtyLimit       int
+	SubscriberPageSize    int
 }
 
 func (c *Config) ApplyDefaultsAndValidate() error {
@@ -134,6 +147,33 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	}
 
 	c.Gateway.DefaultSession = gateway.NormalizeSessionOptions(c.Gateway.DefaultSession)
+	if c.Conversation.ColdThreshold <= 0 {
+		c.Conversation.ColdThreshold = 30 * 24 * time.Hour
+	}
+	if c.Conversation.ActiveScanLimit <= 0 {
+		c.Conversation.ActiveScanLimit = 2000
+	}
+	if c.Conversation.ChannelProbeBatchSize <= 0 {
+		c.Conversation.ChannelProbeBatchSize = 512
+	}
+	if c.Conversation.SyncDefaultLimit <= 0 {
+		c.Conversation.SyncDefaultLimit = 200
+	}
+	if c.Conversation.SyncMaxLimit <= 0 {
+		c.Conversation.SyncMaxLimit = 500
+	}
+	if c.Conversation.SyncDefaultLimit > c.Conversation.SyncMaxLimit {
+		c.Conversation.SyncDefaultLimit = c.Conversation.SyncMaxLimit
+	}
+	if c.Conversation.FlushInterval <= 0 {
+		c.Conversation.FlushInterval = 200 * time.Millisecond
+	}
+	if c.Conversation.FlushDirtyLimit <= 0 {
+		c.Conversation.FlushDirtyLimit = 1024
+	}
+	if c.Conversation.SubscriberPageSize <= 0 {
+		c.Conversation.SubscriberPageSize = 512
+	}
 
 	nodeSet := make(map[uint64]struct{}, len(c.Cluster.Nodes))
 	selfNodeFound := false

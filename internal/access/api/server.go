@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sync"
 
+	conversationusecase "github.com/WuKongIM/WuKongIM/internal/usecase/conversation"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/user"
 	"github.com/gin-gonic/gin"
@@ -22,34 +23,51 @@ type UserUsecase interface {
 	UpdateToken(ctx context.Context, cmd user.UpdateTokenCommand) error
 }
 
+type ConversationUsecase interface {
+	Sync(ctx context.Context, query conversationusecase.SyncQuery) (conversationusecase.SyncResult, error)
+}
+
 type Options struct {
-	ListenAddr string
-	Messages   MessageUsecase
-	Users      UserUsecase
+	ListenAddr               string
+	Messages                 MessageUsecase
+	Users                    UserUsecase
+	Conversations            ConversationUsecase
+	ConversationSyncEnabled  bool
+	ConversationDefaultLimit int
+	ConversationMaxLimit     int
 }
 
 type Server struct {
-	mu         sync.RWMutex
-	engine     *gin.Engine
-	httpServer *http.Server
-	listener   net.Listener
-	listenAddr string
-	addr       string
-	messages   MessageUsecase
-	users      UserUsecase
-	started    bool
+	mu                       sync.RWMutex
+	engine                   *gin.Engine
+	httpServer               *http.Server
+	listener                 net.Listener
+	listenAddr               string
+	addr                     string
+	messages                 MessageUsecase
+	users                    UserUsecase
+	conversations            ConversationUsecase
+	conversationSyncEnabled  bool
+	conversationDefaultLimit int
+	conversationMaxLimit     int
+	started                  bool
 }
 
 func New(opts Options) *Server {
 	if gin.Mode() != gin.ReleaseMode {
 		gin.SetMode(gin.ReleaseMode)
 	}
+	defaultLimit, maxLimit := normalizeConversationLimits(opts.ConversationDefaultLimit, opts.ConversationMaxLimit)
 	engine := gin.New()
 	srv := &Server{
-		engine:     engine,
-		listenAddr: opts.ListenAddr,
-		messages:   opts.Messages,
-		users:      opts.Users,
+		engine:                   engine,
+		listenAddr:               opts.ListenAddr,
+		messages:                 opts.Messages,
+		users:                    opts.Users,
+		conversations:            opts.Conversations,
+		conversationSyncEnabled:  opts.ConversationSyncEnabled,
+		conversationDefaultLimit: defaultLimit,
+		conversationMaxLimit:     maxLimit,
 	}
 	srv.registerRoutes()
 	return srv
@@ -126,4 +144,17 @@ func (s *Server) Stop(ctx context.Context) error {
 		return nil
 	}
 	return httpServer.Shutdown(ctx)
+}
+
+func normalizeConversationLimits(defaultLimit, maxLimit int) (int, int) {
+	if defaultLimit <= 0 {
+		defaultLimit = 200
+	}
+	if maxLimit <= 0 {
+		maxLimit = 500
+	}
+	if defaultLimit > maxLimit {
+		defaultLimit = maxLimit
+	}
+	return defaultLimit, maxLimit
 }

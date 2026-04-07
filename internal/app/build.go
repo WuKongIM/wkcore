@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/messageid"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
+	conversationusecase "github.com/WuKongIM/WuKongIM/internal/usecase/conversation"
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
@@ -111,6 +114,23 @@ func build(cfg Config) (_ *App, err error) {
 	}
 
 	app.store = metastore.New(app.cluster, app.db)
+	app.conversationProjector = conversationusecase.NewProjector(conversationusecase.ProjectorOptions{
+		Store:              app.store,
+		FlushInterval:      cfg.Conversation.FlushInterval,
+		DirtyLimit:         cfg.Conversation.FlushDirtyLimit,
+		ColdThreshold:      cfg.Conversation.ColdThreshold,
+		SubscriberPageSize: cfg.Conversation.SubscriberPageSize,
+	})
+	app.store.RegisterChannelUpdateOverlay(app.conversationProjector)
+	app.conversationApp = conversationusecase.New(conversationusecase.Options{
+		States:                app.store,
+		ChannelUpdate:         app.store,
+		Facts:                 channelLogConversationFacts{cluster: app.channelLog},
+		Now:                   time.Now,
+		ColdThreshold:         cfg.Conversation.ColdThreshold,
+		ActiveScanLimit:       cfg.Conversation.ActiveScanLimit,
+		ChannelProbeBatchSize: cfg.Conversation.ChannelProbeBatchSize,
+	})
 	app.channelMetaSync = &channelMetaSync{
 		source:          app.store,
 		runtime:         app.isrRuntime,
@@ -158,29 +178,31 @@ func build(cfg Config) (_ *App, err error) {
 	app.deliveryApp = deliveryusecase.New(deliveryusecase.Options{
 		Runtime: app.deliveryRuntime,
 	})
+	committedDispatcher := asyncCommittedDispatcher{
+		localNodeID:  cfg.Node.ID,
+		channelLog:   app.channelLog,
+		delivery:     app.deliveryApp,
+		conversation: app.conversationProjector,
+		nodeClient:   app.nodeClient,
+	}
 	app.nodeAccess = accessnode.New(accessnode.Options{
 		Cluster:          app.cluster,
 		Presence:         app.presenceApp,
 		Online:           onlineRegistry,
 		GatewayBootID:    app.gatewayBootID,
 		LocalNodeID:      cfg.Node.ID,
-		DeliverySubmit:   app.deliveryApp,
+		DeliverySubmit:   committedDispatcher,
 		DeliveryAck:      app.deliveryApp,
 		DeliveryOffline:  app.deliveryApp,
 		DeliveryAckIndex: app.deliveryAcks,
 	})
 	app.messageApp = message.New(message.Options{
-		IdentityStore: app.store,
-		ChannelStore:  app.store,
-		Cluster:       app.channelLog,
-		MetaRefresher: app.channelMetaSync,
-		Online:        onlineRegistry,
-		CommittedDispatcher: asyncCommittedDispatcher{
-			localNodeID: cfg.Node.ID,
-			channelLog:  app.channelLog,
-			delivery:    app.deliveryApp,
-			nodeClient:  app.nodeClient,
-		},
+		IdentityStore:       app.store,
+		ChannelStore:        app.store,
+		Cluster:             app.channelLog,
+		MetaRefresher:       app.channelMetaSync,
+		Online:              onlineRegistry,
+		CommittedDispatcher: committedDispatcher,
 		DeliveryAck: ackRouting{
 			localNodeID: cfg.Node.ID,
 			local:       app.deliveryApp,
@@ -201,9 +223,13 @@ func build(cfg Config) (_ *App, err error) {
 	})
 	if cfg.API.ListenAddr != "" {
 		app.api = accessapi.New(accessapi.Options{
-			ListenAddr: cfg.API.ListenAddr,
-			Messages:   app.messageApp,
-			Users:      userApp,
+			ListenAddr:               cfg.API.ListenAddr,
+			Messages:                 app.messageApp,
+			Users:                    userApp,
+			Conversations:            app.conversationApp,
+			ConversationSyncEnabled:  cfg.Conversation.SyncEnabled,
+			ConversationDefaultLimit: cfg.Conversation.SyncDefaultLimit,
+			ConversationMaxLimit:     cfg.Conversation.SyncMaxLimit,
 		})
 	}
 	app.gatewayHandler = accessgateway.New(accessgateway.Options{
@@ -268,6 +294,101 @@ func (c ClusterConfig) runtimeGroups() []raftcluster.GroupConfig {
 		})
 	}
 	return groups
+}
+
+const conversationFetchMaxBytes = 1 << 20
+
+type channelLogConversationFacts struct {
+	cluster channellog.Cluster
+}
+
+func (f channelLogConversationFacts) LoadLatestMessages(ctx context.Context, keys []conversationusecase.ConversationKey) (map[conversationusecase.ConversationKey]channellog.Message, error) {
+	out := make(map[conversationusecase.ConversationKey]channellog.Message, len(keys))
+	for _, key := range keys {
+		msg, ok, err := f.loadLatestMessage(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out[key] = msg
+		}
+	}
+	return out, nil
+}
+
+func (f channelLogConversationFacts) LoadRecentMessages(ctx context.Context, key conversationusecase.ConversationKey, limit int) ([]channellog.Message, error) {
+	if f.cluster == nil || limit <= 0 {
+		return nil, nil
+	}
+
+	status, err := f.cluster.Status(channellog.ChannelKey{ChannelID: key.ChannelID, ChannelType: key.ChannelType})
+	if err != nil {
+		if errors.Is(err, channellog.ErrChannelNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if status.CommittedSeq == 0 {
+		return nil, nil
+	}
+
+	fromSeq := uint64(1)
+	if status.CommittedSeq >= uint64(limit) {
+		fromSeq = status.CommittedSeq - uint64(limit) + 1
+	}
+	fetch, err := f.cluster.Fetch(ctx, channellog.FetchRequest{
+		Key: channellog.ChannelKey{
+			ChannelID:   key.ChannelID,
+			ChannelType: key.ChannelType,
+		},
+		FromSeq:  fromSeq,
+		Limit:    limit,
+		MaxBytes: conversationFetchMaxBytes,
+	})
+	if err != nil {
+		if errors.Is(err, channellog.ErrChannelNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return append([]channellog.Message(nil), fetch.Messages...), nil
+}
+
+func (f channelLogConversationFacts) loadLatestMessage(ctx context.Context, key conversationusecase.ConversationKey) (channellog.Message, bool, error) {
+	if f.cluster == nil {
+		return channellog.Message{}, false, nil
+	}
+
+	status, err := f.cluster.Status(channellog.ChannelKey{ChannelID: key.ChannelID, ChannelType: key.ChannelType})
+	if err != nil {
+		if errors.Is(err, channellog.ErrChannelNotFound) {
+			return channellog.Message{}, false, nil
+		}
+		return channellog.Message{}, false, err
+	}
+	if status.CommittedSeq == 0 {
+		return channellog.Message{}, false, nil
+	}
+
+	fetch, err := f.cluster.Fetch(ctx, channellog.FetchRequest{
+		Key: channellog.ChannelKey{
+			ChannelID:   key.ChannelID,
+			ChannelType: key.ChannelType,
+		},
+		FromSeq:  status.CommittedSeq,
+		Limit:    1,
+		MaxBytes: conversationFetchMaxBytes,
+	})
+	if err != nil {
+		if errors.Is(err, channellog.ErrChannelNotFound) {
+			return channellog.Message{}, false, nil
+		}
+		return channellog.Message{}, false, err
+	}
+	if len(fetch.Messages) == 0 {
+		return channellog.Message{}, false, nil
+	}
+	return fetch.Messages[0], true, nil
 }
 
 func newStorageFactory(raftDB *raftstorage.DB) func(groupID multiraft.GroupID) (multiraft.Storage, error) {

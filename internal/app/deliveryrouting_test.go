@@ -262,6 +262,38 @@ func TestAsyncCommittedDispatcherSubmitsDurableMessageToLocalDelivery(t *testing
 	}, delivery.calls[0])
 }
 
+func TestAsyncCommittedDispatcherSubmitsToConversationProjector(t *testing.T) {
+	delivery := &recordingCommittedSubmitter{}
+	conversation := &recordingCommittedSubmitter{}
+	dispatcher := asyncCommittedDispatcher{
+		localNodeID: 1,
+		channelLog: &stubChannelLogCluster{
+			status: channellog.ChannelRuntimeStatus{
+				Leader: 1,
+			},
+		},
+		delivery:     delivery,
+		conversation: conversation,
+	}
+
+	msg := channellog.Message{
+		ChannelID:   "u1@u2",
+		ChannelType: wkframe.ChannelTypePerson,
+		MessageID:   99,
+		MessageSeq:  8,
+		ClientMsgNo: "c1",
+		FromUID:     "u1",
+		Payload:     []byte("hello projector"),
+	}
+	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), msg))
+
+	require.Eventually(t, func() bool {
+		return len(delivery.calls) == 1 && len(conversation.calls) == 1
+	}, time.Second, 10*time.Millisecond)
+	require.Equal(t, msg, delivery.calls[0])
+	require.Equal(t, msg, conversation.calls[0])
+}
+
 func TestBuildRealtimeRecvPacketUsesDurableTimestampAndPersonChannelView(t *testing.T) {
 	packet := buildRealtimeRecvPacket(channellog.Message{
 		MessageID:   88,

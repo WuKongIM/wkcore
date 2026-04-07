@@ -235,6 +235,44 @@ func TestAppLifecycleStartsPresenceWorkerBeforeGateway(t *testing.T) {
 	require.Equal(t, []string{"cluster.start", "presence.start", "gateway.start"}, calls)
 }
 
+func TestStartStopIncludesConversationProjector(t *testing.T) {
+	var calls []string
+
+	app := &App{
+		cluster: &raftcluster.Cluster{},
+		gateway: &gateway.Gateway{},
+		startClusterFn: func() error {
+			calls = append(calls, "cluster.start")
+			return nil
+		},
+		startConversationProjectorFn: func() error {
+			calls = append(calls, "conversation.start")
+			return nil
+		},
+		startGatewayFn: func() error {
+			calls = append(calls, "gateway.start")
+			return nil
+		},
+		stopGatewayFn: func() error {
+			calls = append(calls, "gateway.stop")
+			return nil
+		},
+		stopConversationProjectorFn: func() error {
+			calls = append(calls, "conversation.stop")
+			return nil
+		},
+		stopClusterFn: func() {
+			calls = append(calls, "cluster.stop")
+		},
+	}
+
+	require.NoError(t, app.Start())
+	require.Equal(t, []string{"cluster.start", "conversation.start", "gateway.start"}, calls)
+
+	require.NoError(t, app.Stop())
+	require.Equal(t, []string{"cluster.start", "conversation.start", "gateway.start", "gateway.stop", "conversation.stop", "cluster.stop"}, calls)
+}
+
 func TestStartRollsBackClusterWhenGatewayStartFails(t *testing.T) {
 	var calls []string
 	startErr := errors.New("gateway start failed")

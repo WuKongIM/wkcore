@@ -10,7 +10,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metafsm"
 )
 
-const userConversationStateRPCServiceID uint8 = 5
+const userConversationStateRPCServiceID uint8 = 11
 
 const (
 	userConversationStateRPCGet      = "get"

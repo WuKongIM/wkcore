@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
+	conversationusecase "github.com/WuKongIM/WuKongIM/internal/usecase/conversation"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/user"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
@@ -302,6 +304,127 @@ func TestUpdateTokenReturnsLegacyMissingUserUsecaseEnvelope(t *testing.T) {
 	require.JSONEq(t, `{"msg":"user usecase not configured","status":400}`, rec.Body.String())
 }
 
+func TestConversationSyncMapsLegacyRequestToUsecaseQuery(t *testing.T) {
+	conversations := &recordingConversationUsecase{
+		result: conversationusecase.SyncResult{
+			Conversations: []conversationusecase.SyncConversation{},
+		},
+	}
+	srv := New(Options{
+		Conversations:            conversations,
+		ConversationSyncEnabled:  true,
+		ConversationDefaultLimit: 200,
+		ConversationMaxLimit:     500,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/conversation/sync", bytes.NewBufferString(`{"uid":"u1","version":123,"last_msg_seqs":"u2:1:9|g1:2:7","msg_count":3,"only_unread":1,"exclude_channel_types":[3],"limit":999}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `[]`, rec.Body.String())
+	require.Len(t, conversations.queries, 1)
+	require.Equal(t, conversationusecase.SyncQuery{
+		UID:     "u1",
+		Version: 123,
+		LastMsgSeqs: map[conversationusecase.ConversationKey]uint64{
+			{ChannelID: runtimechannelid.EncodePersonChannel("u1", "u2"), ChannelType: wkframe.ChannelTypePerson}: 9,
+			{ChannelID: "g1", ChannelType: 2}: 7,
+		},
+		MsgCount:            3,
+		OnlyUnread:          true,
+		ExcludeChannelTypes: []uint8{3},
+		Limit:               500,
+	}, conversations.queries[0])
+}
+
+func TestConversationSyncRejectsInvalidLastMsgSeqs(t *testing.T) {
+	srv := New(Options{
+		Conversations:            &recordingConversationUsecase{},
+		ConversationSyncEnabled:  true,
+		ConversationDefaultLimit: 200,
+		ConversationMaxLimit:     500,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/conversation/sync", bytes.NewBufferString(`{"uid":"u1","last_msg_seqs":"bad-format"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"error":"invalid last_msg_seqs"}`, rec.Body.String())
+}
+
+func TestConversationSyncReturnsLegacyArrayResponse(t *testing.T) {
+	conversations := &recordingConversationUsecase{
+		result: conversationusecase.SyncResult{
+			Conversations: []conversationusecase.SyncConversation{
+				{
+					ChannelID:       "u2",
+					ChannelType:     wkframe.ChannelTypePerson,
+					Unread:          2,
+					Timestamp:       123,
+					LastMsgSeq:      7,
+					LastClientMsgNo: "c1",
+					ReadedToMsgSeq:  5,
+					Version:         999,
+					Recents: []channellog.Message{
+						{
+							Framer:      wkframe.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
+							Setting:     3,
+							MessageID:   88,
+							MessageSeq:  7,
+							ClientMsgNo: "c1",
+							FromUID:     "u1",
+							ChannelID:   runtimechannelid.EncodePersonChannel("u1", "u2"),
+							ChannelType: wkframe.ChannelTypePerson,
+							Expire:      60,
+							Timestamp:   123,
+							Payload:     []byte("hello"),
+						},
+					},
+				},
+			},
+		},
+	}
+	srv := New(Options{
+		Conversations:            conversations,
+		ConversationSyncEnabled:  true,
+		ConversationDefaultLimit: 200,
+		ConversationMaxLimit:     500,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/conversation/sync", bytes.NewBufferString(`{"uid":"u1","msg_count":1}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `[{"channel_id":"u2","channel_type":1,"unread":2,"timestamp":123,"last_msg_seq":7,"last_client_msg_no":"c1","offset_msg_seq":0,"readed_to_msg_seq":5,"version":999,"recents":[{"header":{"no_persist":1,"red_dot":1,"sync_once":1},"setting":3,"message_id":88,"message_idstr":"88","client_msg_no":"c1","message_seq":7,"from_uid":"u1","channel_id":"u2","channel_type":1,"expire":60,"timestamp":123,"payload":"aGVsbG8="}]}]`, rec.Body.String())
+}
+
+func TestConversationSyncReturns503WhenSyncGateDisabled(t *testing.T) {
+	srv := New(Options{
+		Conversations:            &recordingConversationUsecase{},
+		ConversationSyncEnabled:  false,
+		ConversationDefaultLimit: 200,
+		ConversationMaxLimit:     500,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/conversation/sync", bytes.NewBufferString(`{"uid":"u1"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.JSONEq(t, `{"error":"conversation sync not enabled"}`, rec.Body.String())
+}
+
 type recordingMessageUsecase struct {
 	calls        []message.SendCommand
 	sendContexts []context.Context
@@ -327,4 +450,15 @@ type recordingUserUsecase struct {
 func (r *recordingUserUsecase) UpdateToken(_ context.Context, cmd user.UpdateTokenCommand) error {
 	r.calls = append(r.calls, cmd)
 	return r.err
+}
+
+type recordingConversationUsecase struct {
+	queries []conversationusecase.SyncQuery
+	result  conversationusecase.SyncResult
+	err     error
+}
+
+func (r *recordingConversationUsecase) Sync(_ context.Context, query conversationusecase.SyncQuery) (conversationusecase.SyncResult, error) {
+	r.queries = append(r.queries, query)
+	return r.result, r.err
 }
