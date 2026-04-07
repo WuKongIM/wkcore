@@ -61,6 +61,32 @@ func mustAppendStoredMessages(t *testing.T, store *Store, payloads ...string) {
 	}
 }
 
+func mustAppendMessages(t *testing.T, store *Store, messages ...Message) {
+	t.Helper()
+
+	raw := make([][]byte, 0, len(messages))
+	for _, message := range messages {
+		encoded, err := encodeMessage(message)
+		if err != nil {
+			t.Fatalf("encodeMessage() error = %v", err)
+		}
+		raw = append(raw, encoded)
+	}
+	if _, err := store.appendPayloads(raw); err != nil {
+		t.Fatalf("appendPayloads() error = %v", err)
+	}
+}
+
+func mustEncodeDurableMessage(t testing.TB, message Message) []byte {
+	t.Helper()
+
+	payload, err := encodeMessage(message)
+	if err != nil {
+		t.Fatalf("encodeMessage() error = %v", err)
+	}
+	return payload
+}
+
 func mustStoreCheckpoint(t *testing.T, store *Store, checkpoint isr.Checkpoint) {
 	t.Helper()
 	if err := store.storeCheckpoint(checkpoint); err != nil {

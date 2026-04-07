@@ -53,7 +53,7 @@ func (c *cluster) Fetch(_ context.Context, req FetchRequest) (FetchResult, error
 	}
 
 	result := FetchResult{
-		Messages:     make([]ChannelMessage, 0, len(records)),
+		Messages:     make([]Message, 0, len(records)),
 		NextSeq:      startSeq,
 		CommittedSeq: committedSeq,
 	}
@@ -61,17 +61,11 @@ func (c *cluster) Fetch(_ context.Context, req FetchRequest) (FetchResult, error
 		if record.Offset >= state.HW {
 			break
 		}
-		message, err := decodeStoredMessageView(record.Payload)
+		message, err := decodeMessageRecord(record)
 		if err != nil {
 			return FetchResult{}, err
 		}
-		result.Messages = append(result.Messages, ChannelMessage{
-			MessageID:   message.MessageID,
-			MessageSeq:  record.Offset + 1,
-			SenderUID:   message.SenderUID,
-			ClientMsgNo: message.ClientMsgNo,
-			Payload:     message.Payload,
-		})
+		result.Messages = append(result.Messages, message)
 		result.NextSeq = record.Offset + 2
 	}
 	return result, nil

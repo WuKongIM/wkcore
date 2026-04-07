@@ -15,21 +15,23 @@ func TestCheckpointBridgeReplaysCommittedRecordsIntoIdempotencyState(t *testing.
 		records: []LogRecord{
 			{
 				Offset: 0,
-				Payload: mustEncodeStoredMessage(t, storedMessage{
+				Payload: mustEncodeDurableMessage(t, Message{
 					MessageID:   11,
-					SenderUID:   "u1",
+					ChannelID:   "c1",
+					ChannelType: 1,
+					FromUID:     "u1",
 					ClientMsgNo: "m1",
-					PayloadHash: hashPayload([]byte("one")),
 					Payload:     []byte("one"),
 				}),
 			},
 			{
 				Offset: 1,
-				Payload: mustEncodeStoredMessage(t, storedMessage{
+				Payload: mustEncodeDurableMessage(t, Message{
 					MessageID:   12,
-					SenderUID:   "u1",
+					ChannelID:   "c1",
+					ChannelType: 1,
+					FromUID:     "u1",
 					ClientMsgNo: "m2",
-					PayloadHash: hashPayload([]byte("two")),
 					Payload:     []byte("two"),
 				}),
 			},
@@ -68,11 +70,12 @@ func TestCheckpointBridgeUsesAtomicCheckpointCommitWhenSupported(t *testing.T) {
 		records: []LogRecord{
 			{
 				Offset: 0,
-				Payload: mustEncodeStoredMessage(t, storedMessage{
+				Payload: mustEncodeDurableMessage(t, Message{
 					MessageID:   11,
-					SenderUID:   "u1",
+					ChannelID:   "c1",
+					ChannelType: 1,
+					FromUID:     "u1",
 					ClientMsgNo: "m1",
-					PayloadHash: hashPayload([]byte("one")),
 					Payload:     []byte("one"),
 				}),
 			},

@@ -95,7 +95,7 @@ func (b *checkpointBridge) readCommittedBatch(nextHW uint64) ([]appliedMessage, 
 
 	batch := make([]appliedMessage, 0, len(records))
 	for _, record := range records {
-		message, err := decodeStoredMessage(record.Payload)
+		message, err := decodeMessageRecord(record)
 		if err != nil {
 			return nil, err
 		}
@@ -103,12 +103,12 @@ func (b *checkpointBridge) readCommittedBatch(nextHW uint64) ([]appliedMessage, 
 			key: IdempotencyKey{
 				ChannelID:   b.key.ChannelID,
 				ChannelType: b.key.ChannelType,
-				SenderUID:   message.SenderUID,
+				SenderUID:   message.FromUID,
 				ClientMsgNo: message.ClientMsgNo,
 			},
 			entry: IdempotencyEntry{
 				MessageID:  message.MessageID,
-				MessageSeq: record.Offset + 1,
+				MessageSeq: message.MessageSeq,
 				Offset:     record.Offset,
 			},
 		})

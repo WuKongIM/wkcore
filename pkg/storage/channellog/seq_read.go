@@ -148,17 +148,21 @@ func (s *Store) committedHW() (uint64, error) {
 }
 
 func decodeChannelMessage(record LogRecord) (ChannelMessage, error) {
-	message, err := decodeStoredMessageView(record.Payload)
+	message, err := decodeMessageRecord(record)
 	if err != nil {
 		return ChannelMessage{}, err
 	}
-	return ChannelMessage{
-		MessageID:   message.MessageID,
-		MessageSeq:  record.Offset + 1,
-		SenderUID:   message.SenderUID,
-		ClientMsgNo: message.ClientMsgNo,
-		Payload:     message.Payload,
-	}, nil
+	return message, nil
+}
+
+func decodeMessageRecord(record LogRecord) (Message, error) {
+	view, err := decodeMessageView(record.Payload)
+	if err != nil {
+		return Message{}, err
+	}
+	message := view.Message
+	message.MessageSeq = record.Offset + 1
+	return message, nil
 }
 
 func (s *Store) loadRangeMsgs(startSeq, endSeq uint64, limit int) ([]ChannelMessage, error) {

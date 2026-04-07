@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
@@ -41,6 +42,31 @@ func TestFetchRejectsInvalidBudget(t *testing.T) {
 	}
 }
 
+func TestFetchReturnsDurableMessageFields(t *testing.T) {
+	env := newFetchEnv(t)
+
+	result, err := env.cluster.Fetch(context.Background(), FetchRequest{
+		Key:      env.key,
+		FromSeq:  1,
+		Limit:    1,
+		MaxBytes: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if len(result.Messages) != 1 {
+		t.Fatalf("len(Messages) = %d, want 1", len(result.Messages))
+	}
+
+	msg := result.Messages[0]
+	if msg.FromUID != "u1" {
+		t.Fatalf("FromUID = %q, want %q", msg.FromUID, "u1")
+	}
+	if msg.MsgKey != "k1" {
+		t.Fatalf("MsgKey = %q, want %q", msg.MsgKey, "k1")
+	}
+}
+
 type fetchEnv struct {
 	cluster *cluster
 	key     ChannelKey
@@ -53,31 +79,49 @@ func newFetchEnv(t *testing.T) *fetchEnv {
 		records: []LogRecord{
 			{
 				Offset: 0,
-				Payload: mustEncodeStoredMessage(t, storedMessage{
+				Payload: mustEncodeDurableMessage(t, Message{
 					MessageID:   11,
-					SenderUID:   "u1",
+					Framer:      wkframe.Framer{RedDot: true},
+					Setting:     1,
+					MsgKey:      "k1",
+					ClientSeq:   101,
 					ClientMsgNo: "m1",
-					PayloadHash: hashPayload([]byte("one")),
+					StreamNo:    "stream-1",
+					StreamID:    1001,
+					StreamFlag:  wkframe.StreamFlagEnd,
+					Timestamp:   111,
+					ChannelID:   "c1",
+					ChannelType: 1,
+					Topic:       "topic-1",
+					FromUID:     "u1",
 					Payload:     []byte("one"),
 				}),
 			},
 			{
 				Offset: 1,
-				Payload: mustEncodeStoredMessage(t, storedMessage{
+				Payload: mustEncodeDurableMessage(t, Message{
 					MessageID:   12,
-					SenderUID:   "u1",
+					MsgKey:      "k2",
+					ClientSeq:   102,
 					ClientMsgNo: "m2",
-					PayloadHash: hashPayload([]byte("two")),
+					ChannelID:   "c1",
+					ChannelType: 1,
+					Topic:       "topic-2",
+					FromUID:     "u1",
 					Payload:     []byte("two"),
 				}),
 			},
 			{
 				Offset: 2,
-				Payload: mustEncodeStoredMessage(t, storedMessage{
+				Payload: mustEncodeDurableMessage(t, Message{
 					MessageID:   13,
-					SenderUID:   "u1",
+					MsgKey:      "k3",
+					ClientSeq:   103,
 					ClientMsgNo: "m3",
-					PayloadHash: hashPayload([]byte("three")),
+					ChannelID:   "c1",
+					ChannelType: 1,
+					Topic:       "topic-3",
+					FromUID:     "u1",
 					Payload:     []byte("three"),
 				}),
 			},

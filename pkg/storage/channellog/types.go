@@ -97,16 +97,10 @@ type Message struct {
 	Payload     []byte
 }
 
-type ChannelMessage struct {
-	MessageID   uint64
-	MessageSeq  uint64
-	SenderUID   string
-	ClientMsgNo string
-	Payload     []byte
-}
+type ChannelMessage = Message
 
 type FetchResult struct {
-	Messages     []ChannelMessage
+	Messages     []Message
 	NextSeq      uint64
 	CommittedSeq uint64
 }

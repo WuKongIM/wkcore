@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
@@ -41,6 +42,40 @@ func TestLoadNextRangeMsgsCapsByCommittedHW(t *testing.T) {
 	}
 	if msgs[0].MessageSeq != 1 || msgs[1].MessageSeq != 2 {
 		t.Fatalf("seqs = %+v", msgs)
+	}
+}
+
+func TestLoadMsgReturnsDurableFields(t *testing.T) {
+	store := openTestStore(t, ChannelKey{ChannelID: "c1", ChannelType: 1})
+	mustAppendMessages(t, store, Message{
+		MessageID:   1,
+		Framer:      wkframe.Framer{RedDot: true, SyncOnce: true},
+		Setting:     2,
+		MsgKey:      "k1",
+		ClientSeq:   101,
+		ClientMsgNo: "m1",
+		StreamNo:    "stream-1",
+		StreamID:    1001,
+		StreamFlag:  wkframe.StreamFlagEnd,
+		Timestamp:   123,
+		ChannelID:   "c1",
+		ChannelType: 1,
+		Topic:       "topic-1",
+		FromUID:     "u1",
+		Payload:     []byte("one"),
+	})
+	mustStoreCheckpoint(t, store, isr.Checkpoint{Epoch: 1, HW: 1})
+
+	msg, err := store.LoadMsg(1)
+	if err != nil {
+		t.Fatalf("LoadMsg(1) error = %v", err)
+	}
+
+	if msg.FromUID != "u1" {
+		t.Fatalf("FromUID = %q, want %q", msg.FromUID, "u1")
+	}
+	if msg.MsgKey != "k1" {
+		t.Fatalf("MsgKey = %q, want %q", msg.MsgKey, "k1")
 	}
 }
 
