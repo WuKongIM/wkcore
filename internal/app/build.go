@@ -151,7 +151,6 @@ func build(cfg Config) (_ *App, err error) {
 				online:        onlineRegistry,
 				localNodeID:   cfg.Node.ID,
 				gatewayBootID: app.gatewayBootID,
-				now:           time.Now,
 			},
 			client: app.nodeClient,
 		},

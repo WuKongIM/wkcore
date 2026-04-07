@@ -398,10 +398,10 @@ func reserveNodeAddrs(t *testing.T, count int) map[uint64]string {
 	return addrs
 }
 
-func waitForCommittedMessage(t *testing.T, store *Store, seq uint64, timeout time.Duration) ChannelMessage {
+func waitForCommittedMessage(t *testing.T, store *Store, seq uint64, timeout time.Duration) Message {
 	t.Helper()
 
-	var msg ChannelMessage
+	var msg Message
 	require.Eventually(t, func() bool {
 		loaded, err := store.LoadMsg(seq)
 		if err != nil {

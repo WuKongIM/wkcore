@@ -3,17 +3,16 @@ package delivery
 import (
 	"context"
 
-	runtimedelivery "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
-	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 )
 
-func (a *App) SubmitCommitted(ctx context.Context, env message.CommittedMessageEnvelope) error {
+func (a *App) SubmitCommitted(ctx context.Context, msg channellog.Message) error {
 	if a == nil || a.runtime == nil {
 		return nil
 	}
-	return a.runtime.Submit(ctx, committedEnvelopeFromMessage(env))
+	return a.runtime.Submit(ctx, msg)
 }
 
-func (noopRuntime) Submit(context.Context, runtimedelivery.CommittedEnvelope) error {
+func (noopRuntime) Submit(context.Context, channellog.Message) error {
 	return nil
 }

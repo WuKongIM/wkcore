@@ -4,28 +4,11 @@ import (
 	"context"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 )
 
 type ChannelKey = channellog.ChannelKey
-
-type CommittedEnvelope struct {
-	ChannelID   string
-	ChannelType uint8
-	MessageID   uint64
-	MessageSeq  uint64
-	SenderUID   string
-	ClientMsgNo string
-	Topic       string
-	Payload     []byte
-	Framer      wkframe.Framer
-	Setting     wkframe.Setting
-	MsgKey      string
-	Expire      uint32
-	StreamNo    string
-	ClientSeq   uint64
-}
+type CommittedEnvelope = channellog.Message
 
 type RouteKey struct {
 	UID       string

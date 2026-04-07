@@ -97,8 +97,6 @@ type Message struct {
 	Payload     []byte
 }
 
-type ChannelMessage = Message
-
 type FetchResult struct {
 	Messages     []Message
 	NextSeq      uint64

@@ -9,6 +9,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 )
 
 type authoritativeRPCResponse interface {
@@ -106,9 +107,9 @@ func (c *Client) ApplyRouteAction(ctx context.Context, action presence.RouteActi
 	return nil
 }
 
-func (c *Client) SubmitCommitted(ctx context.Context, nodeID uint64, env message.CommittedMessageEnvelope) error {
+func (c *Client) SubmitCommitted(ctx context.Context, nodeID uint64, msg channellog.Message) error {
 	resp, err := callDeliveryDirect(ctx, c, nodeID, deliverySubmitRPCServiceID, deliverySubmitRequest{
-		Envelope: env,
+		Message: msg,
 	}, decodeDeliveryResponse)
 	if err != nil {
 		return err

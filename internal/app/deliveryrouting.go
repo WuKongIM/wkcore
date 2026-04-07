@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"time"
 
 	accessnode "github.com/WuKongIM/WuKongIM/internal/access/node"
 	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
@@ -28,7 +27,7 @@ type asyncCommittedDispatcher struct {
 	nodeClient  *accessnode.Client
 }
 
-func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, env message.CommittedMessageEnvelope) error {
+func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, msg channellog.Message) error {
 	if d.delivery == nil {
 		return nil
 	}
@@ -39,13 +38,13 @@ func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, env messa
 	}
 	go func() {
 		if d.channelLog == nil {
-			_ = d.delivery.SubmitCommitted(ctx, env)
+			_ = d.delivery.SubmitCommitted(ctx, msg)
 			return
 		}
 
 		status, err := d.channelLog.Status(channellog.ChannelKey{
-			ChannelID:   env.ChannelID,
-			ChannelType: env.ChannelType,
+			ChannelID:   msg.ChannelID,
+			ChannelType: msg.ChannelType,
 		})
 		if err != nil || status.Leader == 0 {
 			return
@@ -53,13 +52,13 @@ func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, env messa
 
 		ownerNodeID := uint64(status.Leader)
 		if ownerNodeID == d.localNodeID {
-			_ = d.delivery.SubmitCommitted(ctx, env)
+			_ = d.delivery.SubmitCommitted(ctx, msg)
 			return
 		}
 		if d.nodeClient == nil {
 			return
 		}
-		_ = d.nodeClient.SubmitCommitted(ctx, ownerNodeID, env)
+		_ = d.nodeClient.SubmitCommitted(ctx, ownerNodeID, msg)
 	}()
 	return nil
 }
@@ -181,11 +180,10 @@ type localDeliveryPush struct {
 	online        online.Registry
 	localNodeID   uint64
 	gatewayBootID uint64
-	now           func() time.Time
 }
 
 func (p localDeliveryPush) Push(_ context.Context, cmd deliveryruntime.PushCommand) (deliveryruntime.PushResult, error) {
-	frame := buildRealtimeRecvPacket(cmd.Envelope, p.nowFn()())
+	frame := buildRealtimeRecvPacket(cmd.Envelope, recipientUIDForRoutes(cmd.Routes))
 	return p.pushFrame(frame, cmd.Routes), nil
 }
 
@@ -213,13 +211,6 @@ func (p localDeliveryPush) pushFrame(frame wkframe.Frame, routes []deliveryrunti
 	return result
 }
 
-func (p localDeliveryPush) nowFn() func() time.Time {
-	if p.now == nil {
-		return time.Now
-	}
-	return p.now
-}
-
 type distributedDeliveryPush struct {
 	localNodeID uint64
 	local       localDeliveryPush
@@ -231,7 +222,7 @@ func (p distributedDeliveryPush) Push(ctx context.Context, cmd deliveryruntime.P
 	if p.codec == nil {
 		p.codec = wkcodec.New()
 	}
-	frame := buildRealtimeRecvPacket(cmd.Envelope, p.local.nowFn()())
+	frame := buildRealtimeRecvPacket(cmd.Envelope, recipientUIDForRoutes(cmd.Routes))
 	frameBytes, err := p.codec.EncodeFrame(frame, wkframe.LatestVersion)
 	if err != nil {
 		return deliveryruntime.PushResult{}, err
@@ -362,32 +353,41 @@ type deliveryOwnerNotifier interface {
 }
 
 type committedSubmitter interface {
-	SubmitCommitted(ctx context.Context, env message.CommittedMessageEnvelope) error
+	SubmitCommitted(ctx context.Context, msg channellog.Message) error
 }
 
-func buildRealtimeRecvPacket(env deliveryruntime.CommittedEnvelope, now time.Time) *wkframe.RecvPacket {
-	framer := env.Framer
+func recipientUIDForRoutes(routes []deliveryruntime.RouteKey) string {
+	if len(routes) == 0 {
+		return ""
+	}
+	return routes[0].UID
+}
+
+func buildRealtimeRecvPacket(msg channellog.Message, recipientUID string) *wkframe.RecvPacket {
+	framer := msg.Framer
 	framer.FrameType = wkframe.RECV
 
 	packet := &wkframe.RecvPacket{
 		Framer:      framer,
-		Setting:     env.Setting,
-		MsgKey:      env.MsgKey,
-		Expire:      env.Expire,
-		MessageID:   int64(env.MessageID),
-		MessageSeq:  env.MessageSeq,
-		ClientMsgNo: env.ClientMsgNo,
-		StreamNo:    env.StreamNo,
-		Timestamp:   int32(now.Unix()),
-		ChannelID:   env.ChannelID,
-		ChannelType: env.ChannelType,
-		Topic:       env.Topic,
-		FromUID:     env.SenderUID,
-		Payload:     append([]byte(nil), env.Payload...),
-		ClientSeq:   env.ClientSeq,
+		Setting:     msg.Setting,
+		MsgKey:      msg.MsgKey,
+		Expire:      msg.Expire,
+		MessageID:   int64(msg.MessageID),
+		MessageSeq:  msg.MessageSeq,
+		ClientMsgNo: msg.ClientMsgNo,
+		StreamNo:    msg.StreamNo,
+		StreamId:    msg.StreamID,
+		StreamFlag:  msg.StreamFlag,
+		Timestamp:   msg.Timestamp,
+		ChannelID:   msg.ChannelID,
+		ChannelType: msg.ChannelType,
+		Topic:       msg.Topic,
+		FromUID:     msg.FromUID,
+		Payload:     append([]byte(nil), msg.Payload...),
+		ClientSeq:   msg.ClientSeq,
 	}
-	if env.ChannelType == wkframe.ChannelTypePerson {
-		packet.ChannelID = env.SenderUID
+	if msg.ChannelType == wkframe.ChannelTypePerson && recipientUID != "" {
+		packet.ChannelID = msg.FromUID
 		packet.ChannelType = wkframe.ChannelTypePerson
 	}
 	return packet

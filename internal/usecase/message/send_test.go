@@ -59,11 +59,31 @@ func TestSendReturnsClusterRequiredWhenClusterNotConfigured(t *testing.T) {
 	require.Equal(t, SendResult{}, result)
 }
 
-func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedEnvelope(t *testing.T) {
+func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testing.T) {
 	dispatcher := &recordingCommittedDispatcher{}
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{result: channellog.SendResult{MessageID: 99, MessageSeq: 7}},
+			{result: channellog.SendResult{
+				MessageID:  99,
+				MessageSeq: 7,
+				Message: channellog.Message{
+					MessageID:   99,
+					MessageSeq:  7,
+					Framer:      wkframe.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
+					Setting:     wkframe.SettingReceiptEnabled,
+					MsgKey:      "k1",
+					Expire:      60,
+					ClientSeq:   9,
+					ClientMsgNo: "m1",
+					StreamNo:    "stream-1",
+					Timestamp:   int32(fixedSendNow.Unix()),
+					ChannelID:   "u2@u1",
+					ChannelType: wkframe.ChannelTypePerson,
+					Topic:       "chat",
+					FromUID:     "u1",
+					Payload:     []byte("hi"),
+				},
+			}},
 		},
 	}
 	app := New(Options{
@@ -105,21 +125,22 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedEnvelope(t *testi
 	require.Equal(t, "u1", cluster.sendRequests[0].Message.FromUID)
 	require.Equal(t, []byte("hi"), cluster.sendRequests[0].Message.Payload)
 	require.Len(t, dispatcher.calls, 1)
-	require.Equal(t, CommittedMessageEnvelope{
-		ChannelID:   "u2@u1",
-		ChannelType: wkframe.ChannelTypePerson,
+	require.Equal(t, channellog.Message{
 		MessageID:   99,
 		MessageSeq:  7,
-		SenderUID:   "u1",
-		ClientMsgNo: "m1",
-		Topic:       "chat",
-		Payload:     []byte("hi"),
 		Framer:      wkframe.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
 		Setting:     wkframe.SettingReceiptEnabled,
 		MsgKey:      "k1",
 		Expire:      60,
-		StreamNo:    "stream-1",
 		ClientSeq:   9,
+		ClientMsgNo: "m1",
+		StreamNo:    "stream-1",
+		Timestamp:   int32(fixedSendNow.Unix()),
+		ChannelID:   "u2@u1",
+		ChannelType: wkframe.ChannelTypePerson,
+		Topic:       "chat",
+		FromUID:     "u1",
+		Payload:     []byte("hi"),
 	}, dispatcher.calls[0])
 }
 
@@ -196,6 +217,48 @@ func TestSendReturnsSuccessWhenCommittedSubmitFails(t *testing.T) {
 	require.Len(t, dispatcher.calls, 1)
 }
 
+func TestSendSubmitsCommittedMessageFromClusterResult(t *testing.T) {
+	dispatcher := &recordingCommittedDispatcher{}
+	cluster := &fakeChannelCluster{
+		sendReplies: []fakeChannelClusterSendReply{
+			{result: channellog.SendResult{
+				MessageID:  88,
+				MessageSeq: 7,
+				Message: channellog.Message{
+					MessageID:   88,
+					MessageSeq:  7,
+					ChannelID:   "u2@u1",
+					ChannelType: wkframe.ChannelTypePerson,
+					FromUID:     "committed-sender",
+					ClientMsgNo: "committed-1",
+					Topic:       "committed-topic",
+					Payload:     []byte("committed-payload"),
+				},
+			}},
+		},
+	}
+	app := New(Options{
+		Now:                 fixedNowFn,
+		Cluster:             cluster,
+		CommittedDispatcher: dispatcher,
+	})
+
+	_, err := app.Send(context.Background(), SendCommand{
+		SenderUID:   "u1",
+		ChannelID:   "u2",
+		ChannelType: wkframe.ChannelTypePerson,
+		ClientMsgNo: "draft-1",
+		Topic:       "draft-topic",
+		Payload:     []byte("draft-payload"),
+	})
+
+	require.NoError(t, err)
+	require.Len(t, dispatcher.calls, 1)
+	require.Equal(t, "committed-sender", dispatcher.calls[0].FromUID)
+	require.Equal(t, "committed-topic", dispatcher.calls[0].Topic)
+	require.Equal(t, []byte("committed-payload"), dispatcher.calls[0].Payload)
+}
+
 func TestSendDoesNotPerformSynchronousDeliveryAfterDurableWrite(t *testing.T) {
 	reg := &fakeRegistry{
 		byUID: map[string][]online.OnlineConn{
@@ -252,7 +315,20 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
 			{err: channellog.ErrStaleMeta},
-			{result: channellog.SendResult{MessageID: 201, MessageSeq: 7}},
+			{result: channellog.SendResult{
+				MessageID:  201,
+				MessageSeq: 7,
+				Message: channellog.Message{
+					MessageID:   201,
+					MessageSeq:  7,
+					ChannelID:   "u2@u1",
+					ChannelType: wkframe.ChannelTypePerson,
+					FromUID:     "u1",
+					ClientMsgNo: "m6",
+					Payload:     []byte("hi"),
+					ClientSeq:   21,
+				},
+			}},
 		},
 	}
 	refresher := &fakeMetaRefresher{
@@ -291,12 +367,12 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	require.Zero(t, cluster.sendRequests[0].ExpectedChannelEpoch)
 	require.Equal(t, uint64(11), cluster.sendRequests[1].ExpectedChannelEpoch)
 	require.Equal(t, uint64(3), cluster.sendRequests[1].ExpectedLeaderEpoch)
-	require.Equal(t, []CommittedMessageEnvelope{{
-		ChannelID:   "u2@u1",
-		ChannelType: wkframe.ChannelTypePerson,
+	require.Equal(t, []channellog.Message{{
 		MessageID:   201,
 		MessageSeq:  7,
-		SenderUID:   "u1",
+		ChannelID:   "u2@u1",
+		ChannelType: wkframe.ChannelTypePerson,
+		FromUID:     "u1",
 		ClientMsgNo: "m6",
 		Payload:     []byte("hi"),
 		ClientSeq:   21,
@@ -556,13 +632,13 @@ func (d *recordingRemoteDelivery) DeliverRemote(_ context.Context, cmd RemoteDel
 }
 
 type recordingCommittedDispatcher struct {
-	calls []CommittedMessageEnvelope
+	calls []channellog.Message
 	err   error
 }
 
-func (d *recordingCommittedDispatcher) SubmitCommitted(_ context.Context, env CommittedMessageEnvelope) error {
-	copied := env
-	copied.Payload = append([]byte(nil), env.Payload...)
+func (d *recordingCommittedDispatcher) SubmitCommitted(_ context.Context, msg channellog.Message) error {
+	copied := msg
+	copied.Payload = append([]byte(nil), msg.Payload...)
 	d.calls = append(d.calls, copied)
 	return d.err
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
 )
 
@@ -28,7 +29,7 @@ type Presence interface {
 }
 
 type DeliverySubmit interface {
-	SubmitCommitted(ctx context.Context, env message.CommittedMessageEnvelope) error
+	SubmitCommitted(ctx context.Context, msg channellog.Message) error
 }
 
 type DeliveryAck interface {

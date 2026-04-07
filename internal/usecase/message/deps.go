@@ -37,7 +37,7 @@ type RemoteDelivery interface {
 }
 
 type CommittedMessageDispatcher interface {
-	SubmitCommitted(ctx context.Context, env CommittedMessageEnvelope) error
+	SubmitCommitted(ctx context.Context, msg channellog.Message) error
 }
 
 type DeliveryAck interface {

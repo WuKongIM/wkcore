@@ -42,7 +42,7 @@ func TestManagerPromotesHighActivityChannelToDedicatedLane(t *testing.T) {
 			ChannelType: wkframe.ChannelTypeGroup,
 			MessageID:   uint64(i + 1),
 			MessageSeq:  uint64(i + 1),
-			SenderUID:   "u1",
+			FromUID:   "u1",
 			Payload:     []byte("hot"),
 		}))
 	}
@@ -68,7 +68,7 @@ func TestManagerSubmitKeepsShardLockUntilActorIsLocked(t *testing.T) {
 			ChannelType: key.ChannelType,
 			MessageID:   701,
 			MessageSeq:  1,
-			SenderUID:   "u1",
+			FromUID:   "u1",
 			Payload:     []byte("race"),
 		})
 	}()
@@ -268,7 +268,7 @@ func testEnvelope(messageID, messageSeq uint64) CommittedEnvelope {
 		ChannelType: wkframe.ChannelTypePerson,
 		MessageID:   messageID,
 		MessageSeq:  messageSeq,
-		SenderUID:   "u1",
+		FromUID:   "u1",
 		ClientMsgNo: "m1",
 		Payload:     []byte("hi"),
 		ClientSeq:   9,

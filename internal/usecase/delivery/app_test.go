@@ -7,31 +7,32 @@ import (
 	runtimedelivery "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 	"github.com/stretchr/testify/require"
 )
 
-func TestSubmitCommittedDelegatesToRuntime(t *testing.T) {
+func TestSubmitCommittedDelegatesToRuntimeWithDurableMessage(t *testing.T) {
 	runtime := &recordingRuntime{}
 	app := New(Options{Runtime: runtime})
 
-	err := app.SubmitCommitted(context.Background(), message.CommittedMessageEnvelope{
+	err := app.SubmitCommitted(context.Background(), channellog.Message{
 		ChannelID:   "u1@u2",
 		ChannelType: wkframe.ChannelTypePerson,
 		MessageID:   101,
 		MessageSeq:  7,
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ClientMsgNo: "m1",
 		Payload:     []byte("hi"),
 		ClientSeq:   9,
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, []runtimedelivery.CommittedEnvelope{{
+	require.Equal(t, []channellog.Message{{
 		ChannelID:   "u1@u2",
 		ChannelType: wkframe.ChannelTypePerson,
 		MessageID:   101,
 		MessageSeq:  7,
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ClientMsgNo: "m1",
 		Payload:     []byte("hi"),
 		ClientSeq:   9,
@@ -75,14 +76,14 @@ func TestSessionClosedDelegatesToRuntime(t *testing.T) {
 }
 
 type recordingRuntime struct {
-	submits []runtimedelivery.CommittedEnvelope
+	submits []channellog.Message
 	acks    []runtimedelivery.RouteAck
 	closed  []runtimedelivery.SessionClosed
 }
 
-func (r *recordingRuntime) Submit(_ context.Context, env runtimedelivery.CommittedEnvelope) error {
-	copied := env
-	copied.Payload = append([]byte(nil), env.Payload...)
+func (r *recordingRuntime) Submit(_ context.Context, msg channellog.Message) error {
+	copied := msg
+	copied.Payload = append([]byte(nil), msg.Payload...)
 	r.submits = append(r.submits, copied)
 	return nil
 }

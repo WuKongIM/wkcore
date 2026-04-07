@@ -111,7 +111,7 @@ func TestActorResolvesSubscribersPageByPageAndOnlyTracksOnlineRoutes(t *testing.
 		ChannelType: 2,
 		MessageID:   101,
 		MessageSeq:  1,
-		SenderUID:   "u1",
+		FromUID:   "u1",
 		Payload:     []byte("hello group"),
 	}))
 
@@ -140,7 +140,7 @@ func TestActorDropsRealtimeRoutesWhenInflightBudgetExceeded(t *testing.T) {
 		ChannelType: 2,
 		MessageID:   201,
 		MessageSeq:  1,
-		SenderUID:   "u1",
+		FromUID:   "u1",
 		Payload:     []byte("budget"),
 	}))
 
@@ -158,7 +158,7 @@ func TestActorDispatchesFirstObservedSequenceWithoutWaitingForSequenceOne(t *tes
 		ChannelType: 2,
 		MessageID:   209,
 		MessageSeq:  9,
-		SenderUID:   "u1",
+		FromUID:   "u1",
 		Payload:     []byte("gap"),
 	}))
 
@@ -176,7 +176,7 @@ func TestActorDispatchesLateLowerSequenceInsteadOfDroppingIt(t *testing.T) {
 		ChannelType: 2,
 		MessageID:   209,
 		MessageSeq:  9,
-		SenderUID:   "u1",
+		FromUID:   "u1",
 		Payload:     []byte("gap"),
 	}))
 	require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
@@ -184,7 +184,7 @@ func TestActorDispatchesLateLowerSequenceInsteadOfDroppingIt(t *testing.T) {
 		ChannelType: 2,
 		MessageID:   208,
 		MessageSeq:  8,
-		SenderUID:   "u1",
+		FromUID:   "u1",
 		Payload:     []byte("late"),
 	}))
 
@@ -202,7 +202,7 @@ func TestActorSuppressesDuplicateLateLowerSequenceAfterCompletion(t *testing.T) 
 		ChannelType: 2,
 		MessageID:   209,
 		MessageSeq:  9,
-		SenderUID:   "u1",
+		FromUID:   "u1",
 		Payload:     []byte("gap"),
 	}))
 	require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
@@ -210,7 +210,7 @@ func TestActorSuppressesDuplicateLateLowerSequenceAfterCompletion(t *testing.T) 
 		ChannelType: 2,
 		MessageID:   208,
 		MessageSeq:  8,
-		SenderUID:   "u1",
+		FromUID:   "u1",
 		Payload:     []byte("late"),
 	}))
 
@@ -226,7 +226,7 @@ func TestActorSuppressesDuplicateLateLowerSequenceAfterCompletion(t *testing.T) 
 		ChannelType: 2,
 		MessageID:   208,
 		MessageSeq:  8,
-		SenderUID:   "u1",
+		FromUID:   "u1",
 		Payload:     []byte("late"),
 	}))
 
@@ -255,7 +255,7 @@ func TestActorResolveFailureRetriesBeforeLaterMessages(t *testing.T) {
 		ChannelType: 2,
 		MessageID:   101,
 		MessageSeq:  1,
-		SenderUID:   "u1",
+		FromUID:   "u1",
 		Payload:     []byte("first"),
 	}))
 
@@ -264,7 +264,7 @@ func TestActorResolveFailureRetriesBeforeLaterMessages(t *testing.T) {
 		ChannelType: 2,
 		MessageID:   102,
 		MessageSeq:  2,
-		SenderUID:   "u1",
+		FromUID:   "u1",
 		Payload:     []byte("second"),
 	}))
 
@@ -307,7 +307,7 @@ func TestActorContinuesResolvingPagesAfterAckReleasesBudget(t *testing.T) {
 		ChannelType: 2,
 		MessageID:   301,
 		MessageSeq:  1,
-		SenderUID:   "u1",
+		FromUID:   "u1",
 		Payload:     []byte("budget"),
 	}))
 	require.Equal(t, []uint64{2}, pusher.acceptedSessionIDs(301))
@@ -351,7 +351,7 @@ func TestActorResumesLaterMessageWhenAckReleasesBudget(t *testing.T) {
 		ChannelType: 2,
 		MessageID:   401,
 		MessageSeq:  1,
-		SenderUID:   "u1",
+		FromUID:   "u1",
 		Payload:     []byte("first"),
 	}))
 	require.Len(t, pusher.calls, 1)
@@ -363,7 +363,7 @@ func TestActorResumesLaterMessageWhenAckReleasesBudget(t *testing.T) {
 		ChannelType: 2,
 		MessageID:   402,
 		MessageSeq:  2,
-		SenderUID:   "u1",
+		FromUID:   "u1",
 		Payload:     []byte("second"),
 	}))
 	require.Len(t, pusher.calls, 1)
@@ -419,7 +419,7 @@ func TestActorContinuesResolvingPagesAfterRetryDropReleasesBudget(t *testing.T) 
 		ChannelType: 2,
 		MessageID:   501,
 		MessageSeq:  1,
-		SenderUID:   "u1",
+		FromUID:   "u1",
 		Payload:     []byte("first"),
 	}))
 	require.Len(t, pusher.calls, 1)

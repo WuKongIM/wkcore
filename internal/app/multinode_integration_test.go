@@ -299,7 +299,7 @@ func TestThreeNodeAppHotGroupDoesNotBlockNormalGroupDelivery(t *testing.T) {
 			ChannelType: hotKey.ChannelType,
 			MessageID:   uint64(i + 1),
 			MessageSeq:  uint64(i + 1),
-			SenderUID:   "hot-sender",
+			FromUID:   "hot-sender",
 			Payload:     []byte("hot"),
 		}))
 	}
@@ -558,10 +558,10 @@ func readAppWKProtoFrameWithin(t *testing.T, conn net.Conn, timeout time.Duratio
 	return frame
 }
 
-func waitForAppCommittedMessage(t *testing.T, store *channellog.Store, seq uint64, timeout time.Duration) channellog.ChannelMessage {
+func waitForAppCommittedMessage(t *testing.T, store *channellog.Store, seq uint64, timeout time.Duration) channellog.Message {
 	t.Helper()
 
-	var msg channellog.ChannelMessage
+	var msg channellog.Message
 	require.Eventually(t, func() bool {
 		loaded, err := store.LoadMsg(seq)
 		if err != nil {

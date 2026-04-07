@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 )
 
 type deliverySubmitRequest struct {
-	Envelope message.CommittedMessageEnvelope `json:"envelope"`
+	Message channellog.Message `json:"message"`
 }
 
 func (a *Adapter) handleDeliverySubmitRPC(ctx context.Context, body []byte) ([]byte, error) {
@@ -17,7 +17,7 @@ func (a *Adapter) handleDeliverySubmitRPC(ctx context.Context, body []byte) ([]b
 		return nil, err
 	}
 	if a.deliverySubmit != nil {
-		if err := a.deliverySubmit.SubmitCommitted(ctx, req.Envelope); err != nil {
+		if err := a.deliverySubmit.SubmitCommitted(ctx, req.Message); err != nil {
 			return nil, err
 		}
 	}

@@ -9,32 +9,32 @@ import (
 
 const seqReadChunkLimit = 256
 
-func (s *Store) LoadMsg(seq uint64) (ChannelMessage, error) {
+func (s *Store) LoadMsg(seq uint64) (Message, error) {
 	if err := s.validate(); err != nil {
-		return ChannelMessage{}, err
+		return Message{}, err
 	}
 	if seq == 0 {
-		return ChannelMessage{}, ErrInvalidArgument
+		return Message{}, ErrInvalidArgument
 	}
 	hw, err := s.committedHW()
 	if err != nil {
-		return ChannelMessage{}, err
+		return Message{}, err
 	}
 	if seq > hw {
-		return ChannelMessage{}, ErrMessageNotFound
+		return Message{}, ErrMessageNotFound
 	}
 
 	records, err := s.readOffsets(seq-1, 1, math.MaxInt)
 	if err != nil {
-		return ChannelMessage{}, err
+		return Message{}, err
 	}
 	if len(records) == 0 {
-		return ChannelMessage{}, ErrMessageNotFound
+		return Message{}, ErrMessageNotFound
 	}
-	return decodeChannelMessage(records[0])
+	return decodeCommittedMessage(records[0])
 }
 
-func (s *Store) LoadNextRangeMsgs(startSeq, endSeq uint64, limit int) ([]ChannelMessage, error) {
+func (s *Store) LoadNextRangeMsgs(startSeq, endSeq uint64, limit int) ([]Message, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
@@ -63,7 +63,7 @@ func (s *Store) LoadNextRangeMsgs(startSeq, endSeq uint64, limit int) ([]Channel
 	return s.loadRangeMsgs(startSeq, maxSeq, limit)
 }
 
-func (s *Store) LoadPrevRangeMsgs(startSeq, endSeq uint64, limit int) ([]ChannelMessage, error) {
+func (s *Store) LoadPrevRangeMsgs(startSeq, endSeq uint64, limit int) ([]Message, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
@@ -147,10 +147,10 @@ func (s *Store) committedHW() (uint64, error) {
 	return checkpoint.HW, nil
 }
 
-func decodeChannelMessage(record LogRecord) (ChannelMessage, error) {
+func decodeCommittedMessage(record LogRecord) (Message, error) {
 	message, err := decodeMessageRecord(record)
 	if err != nil {
-		return ChannelMessage{}, err
+		return Message{}, err
 	}
 	return message, nil
 }
@@ -165,12 +165,12 @@ func decodeMessageRecord(record LogRecord) (Message, error) {
 	return message, nil
 }
 
-func (s *Store) loadRangeMsgs(startSeq, endSeq uint64, limit int) ([]ChannelMessage, error) {
+func (s *Store) loadRangeMsgs(startSeq, endSeq uint64, limit int) ([]Message, error) {
 	if startSeq > endSeq {
 		return nil, nil
 	}
 
-	msgs := make([]ChannelMessage, 0, initialRangeMsgCapacity(limit))
+	msgs := make([]Message, 0, initialRangeMsgCapacity(limit))
 	nextSeq := startSeq
 	remaining := limit
 
@@ -189,7 +189,7 @@ func (s *Store) loadRangeMsgs(startSeq, endSeq uint64, limit int) ([]ChannelMess
 			if seq > endSeq {
 				return msgs, nil
 			}
-			msg, err := decodeChannelMessage(record)
+			msg, err := decodeCommittedMessage(record)
 			if err != nil {
 				return nil, err
 			}

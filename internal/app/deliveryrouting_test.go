@@ -10,6 +10,7 @@ import (
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
 	"github.com/stretchr/testify/require"
 )
@@ -201,7 +202,7 @@ func TestAsyncCommittedDispatcherDropsRealtimeWhenOwnerIsUnknown(t *testing.T) {
 		delivery: delivery,
 	}
 
-	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), message.CommittedMessageEnvelope{
+	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), channellog.Message{
 		ChannelID:   "g1",
 		ChannelType: 2,
 		MessageID:   101,
@@ -211,6 +212,78 @@ func TestAsyncCommittedDispatcherDropsRealtimeWhenOwnerIsUnknown(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return delivery.submitCalls == 0
 	}, time.Second, 10*time.Millisecond)
+}
+
+func TestAsyncCommittedDispatcherSubmitsDurableMessageToLocalDelivery(t *testing.T) {
+	delivery := &recordingCommittedSubmitter{}
+	dispatcher := asyncCommittedDispatcher{
+		localNodeID: 1,
+		channelLog: &stubChannelLogCluster{
+			status: channellog.ChannelRuntimeStatus{
+				Leader: 1,
+			},
+		},
+		delivery: delivery,
+	}
+
+	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), channellog.Message{
+		MessageID:   88,
+		MessageSeq:  7,
+		Framer:      message.SendCommand{}.Framer,
+		Setting:     3,
+		MsgKey:      "k1",
+		Expire:      60,
+		ClientSeq:   9,
+		ClientMsgNo: "m1",
+		ChannelID:   "u1@u2",
+		ChannelType: 1,
+		Topic:       "chat",
+		FromUID:     "u1",
+		Payload:     []byte("hello"),
+	}))
+
+	require.Eventually(t, func() bool {
+		return len(delivery.calls) == 1
+	}, time.Second, 10*time.Millisecond)
+	require.Equal(t, channellog.Message{
+		ChannelID:   "u1@u2",
+		ChannelType: 1,
+		MessageID:   88,
+		MessageSeq:  7,
+		FromUID:     "u1",
+		ClientMsgNo: "m1",
+		Topic:       "chat",
+		Payload:     []byte("hello"),
+		Framer:      message.SendCommand{}.Framer,
+		Setting:     3,
+		MsgKey:      "k1",
+		Expire:      60,
+		ClientSeq:   9,
+	}, delivery.calls[0])
+}
+
+func TestBuildRealtimeRecvPacketUsesDurableTimestampAndPersonChannelView(t *testing.T) {
+	packet := buildRealtimeRecvPacket(channellog.Message{
+		MessageID:   88,
+		MessageSeq:  7,
+		Setting:     1,
+		MsgKey:      "k1",
+		Expire:      60,
+		ClientSeq:   9,
+		ClientMsgNo: "m1",
+		Timestamp:   123,
+		ChannelID:   "u1@u2",
+		ChannelType: wkframe.ChannelTypePerson,
+		Topic:       "chat",
+		FromUID:     "u1",
+		Payload:     []byte("hello"),
+	}, "u2")
+
+	require.Equal(t, int32(123), packet.Timestamp)
+	require.Equal(t, "u1", packet.ChannelID)
+	require.Equal(t, wkframe.ChannelTypePerson, packet.ChannelType)
+	require.Equal(t, "u1", packet.FromUID)
+	require.Equal(t, []byte("hello"), packet.Payload)
 }
 
 func TestLocalDeliveryResolverSplitsExpandedRoutesAcrossPages(t *testing.T) {
@@ -301,10 +374,14 @@ func (r *recordingSessionCloser) SessionClosed(_ context.Context, cmd message.Se
 
 type recordingCommittedSubmitter struct {
 	submitCalls int
+	calls       []channellog.Message
 }
 
-func (r *recordingCommittedSubmitter) SubmitCommitted(_ context.Context, _ message.CommittedMessageEnvelope) error {
+func (r *recordingCommittedSubmitter) SubmitCommitted(_ context.Context, msg channellog.Message) error {
 	r.submitCalls++
+	copied := msg
+	copied.Payload = append([]byte(nil), msg.Payload...)
+	r.calls = append(r.calls, copied)
 	return nil
 }
 
