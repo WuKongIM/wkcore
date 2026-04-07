@@ -6,6 +6,9 @@ const (
 	defaultActiveScanLimit       = 2000
 	defaultChannelProbeBatchSize = 512
 	defaultColdThreshold         = 30 * 24 * time.Hour
+	defaultFlushInterval         = 200 * time.Millisecond
+	defaultFlushDirtyLimit       = 1024
+	defaultSubscriberPageSize    = 512
 )
 
 type Options struct {

@@ -125,7 +125,7 @@ func (s *Store) DeleteChannelUpdateLogs(ctx context.Context, keys []metadb.Conve
 
 func (s *Store) batchGetChannelUpdateLogsAuthoritative(ctx context.Context, groupID multiraft.GroupID, keys []metadb.ConversationKey) (map[metadb.ConversationKey]metadb.ChannelUpdateLog, error) {
 	if s.shouldServeGroupLocally(groupID) {
-		return s.db.ForSlot(uint64(groupID)).BatchGetChannelUpdateLogs(ctx, keys)
+		return s.batchGetChannelUpdateLogsLocal(ctx, uint64(groupID), keys)
 	}
 
 	resp, err := s.callChannelUpdateLogRPC(ctx, groupID, channelUpdateLogRPCRequest{
@@ -171,7 +171,7 @@ func (s *Store) handleChannelUpdateLogRPC(ctx context.Context, body []byte) ([]b
 
 	switch req.Op {
 	case channelUpdateLogRPCBatchGet:
-		entriesByKey, err := s.db.ForSlot(uint64(groupID)).BatchGetChannelUpdateLogs(ctx, req.Keys)
+		entriesByKey, err := s.batchGetChannelUpdateLogsLocal(ctx, uint64(groupID), req.Keys)
 		if err != nil {
 			return nil, err
 		}
@@ -210,4 +210,37 @@ func decodeChannelUpdateLogRPCResponse(body []byte) (channelUpdateLogRPCResponse
 		return channelUpdateLogRPCResponse{}, err
 	}
 	return resp, nil
+}
+
+func (s *Store) batchGetChannelUpdateLogsLocal(ctx context.Context, slot uint64, keys []metadb.ConversationKey) (map[metadb.ConversationKey]metadb.ChannelUpdateLog, error) {
+	entries := make(map[metadb.ConversationKey]metadb.ChannelUpdateLog, len(keys))
+	missing := make([]metadb.ConversationKey, 0, len(keys))
+
+	if s.channelUpdateOverlay != nil {
+		hotEntries, err := s.channelUpdateOverlay.BatchGetHotChannelUpdates(ctx, keys)
+		if err == nil {
+			for key, entry := range hotEntries {
+				entries[key] = entry
+			}
+		}
+	}
+
+	for _, key := range keys {
+		if _, ok := entries[key]; ok {
+			continue
+		}
+		missing = append(missing, key)
+	}
+	if len(missing) == 0 {
+		return entries, nil
+	}
+
+	coldEntries, err := s.db.ForSlot(slot).BatchGetChannelUpdateLogs(ctx, missing)
+	if err != nil {
+		return nil, err
+	}
+	for key, entry := range coldEntries {
+		entries[key] = entry
+	}
+	return entries, nil
 }

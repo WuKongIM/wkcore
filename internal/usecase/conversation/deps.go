@@ -22,3 +22,10 @@ type MessageFactsStore interface {
 	LoadLatestMessages(ctx context.Context, keys []ConversationKey) (map[ConversationKey]channellog.Message, error)
 	LoadRecentMessages(ctx context.Context, key ConversationKey, limit int) ([]channellog.Message, error)
 }
+
+type ProjectorStore interface {
+	BatchGetChannelUpdateLogs(ctx context.Context, keys []metadb.ConversationKey) (map[metadb.ConversationKey]metadb.ChannelUpdateLog, error)
+	UpsertChannelUpdateLogs(ctx context.Context, entries []metadb.ChannelUpdateLog) error
+	TouchUserConversationActiveAt(ctx context.Context, patches []metadb.UserConversationActivePatch) error
+	ListChannelSubscribers(ctx context.Context, channelID string, channelType int64, afterUID string, limit int) ([]string, string, bool, error)
+}

@@ -12,8 +12,13 @@ import (
 // Store provides business-level distributed storage APIs
 // built on top of raftcluster's generic Propose mechanism.
 type Store struct {
-	cluster *raftcluster.Cluster
-	db      *metadb.DB
+	cluster              *raftcluster.Cluster
+	db                   *metadb.DB
+	channelUpdateOverlay ChannelUpdateOverlay
+}
+
+type ChannelUpdateOverlay interface {
+	BatchGetHotChannelUpdates(ctx context.Context, keys []metadb.ConversationKey) (map[metadb.ConversationKey]metadb.ChannelUpdateLog, error)
 }
 
 // New creates a Store.
@@ -27,6 +32,13 @@ func New(cluster *raftcluster.Cluster, db *metadb.DB) *Store {
 		cluster.RPCMux().Handle(channelUpdateLogRPCServiceID, store.handleChannelUpdateLogRPC)
 	}
 	return store
+}
+
+func (s *Store) RegisterChannelUpdateOverlay(overlay ChannelUpdateOverlay) {
+	if s == nil {
+		return
+	}
+	s.channelUpdateOverlay = overlay
 }
 
 func (s *Store) CreateChannel(ctx context.Context, channelID string, channelType int64) error {
