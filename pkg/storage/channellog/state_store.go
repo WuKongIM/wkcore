@@ -91,7 +91,7 @@ func (s *stateStore) Snapshot(offset uint64) ([]byte, error) {
 			continue
 		}
 		entries = append(entries, stateSnapshotEntry{
-			SenderUID:   key.SenderUID,
+			FromUID:     key.FromUID,
 			ClientMsgNo: key.ClientMsgNo,
 			Entry:       entry,
 		})
@@ -123,7 +123,7 @@ func (s *stateStore) Restore(snapshot []byte) error {
 		key := IdempotencyKey{
 			ChannelID:   s.store.key.ChannelID,
 			ChannelType: s.store.key.ChannelType,
-			SenderUID:   entry.SenderUID,
+			FromUID:     entry.FromUID,
 			ClientMsgNo: entry.ClientMsgNo,
 		}
 		if err := batch.Set(

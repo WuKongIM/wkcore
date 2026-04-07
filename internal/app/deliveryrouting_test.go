@@ -442,8 +442,8 @@ func (s *stubChannelLogCluster) ApplyMeta(channellog.ChannelMeta) error {
 	return nil
 }
 
-func (s *stubChannelLogCluster) Send(context.Context, channellog.SendRequest) (channellog.SendResult, error) {
-	return channellog.SendResult{}, nil
+func (s *stubChannelLogCluster) Append(context.Context, channellog.AppendRequest) (channellog.AppendResult, error) {
+	return channellog.AppendResult{}, nil
 }
 
 func (s *stubChannelLogCluster) Fetch(context.Context, channellog.FetchRequest) (channellog.FetchResult, error) {

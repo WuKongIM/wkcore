@@ -24,7 +24,7 @@ func mapSendCommand(ctx *coregateway.Context, pkt *wkframe.SendPacket) (message.
 
 	if pkt == nil {
 		return message.SendCommand{
-			SenderUID:       senderUID,
+			FromUID:         senderUID,
 			ProtocolVersion: protocolVersion,
 		}, nil
 	}
@@ -43,7 +43,7 @@ func mapSendCommand(ctx *coregateway.Context, pkt *wkframe.SendPacket) (message.
 		Setting:         pkt.Setting,
 		MsgKey:          pkt.MsgKey,
 		Expire:          pkt.Expire,
-		SenderUID:       senderUID,
+		FromUID:         senderUID,
 		ClientSeq:       pkt.ClientSeq,
 		ClientMsgNo:     pkt.ClientMsgNo,
 		StreamNo:        pkt.StreamNo,

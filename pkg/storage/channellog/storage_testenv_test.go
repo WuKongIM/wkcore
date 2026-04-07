@@ -46,7 +46,7 @@ func mustAppendStoredMessages(t *testing.T, store *Store, payloads ...string) {
 	for i, payload := range payloads {
 		encoded, err := encodeStoredMessage(storedMessage{
 			MessageID:   uint64(i + 1),
-			SenderUID:   "u1",
+			FromUID:     "u1",
 			ClientMsgNo: fmt.Sprintf("m%d", i+1),
 			PayloadHash: hashPayload([]byte(payload)),
 			Payload:     []byte(payload),

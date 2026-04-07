@@ -54,7 +54,7 @@ func encodeIdempotencyPrefix(groupKey isr.GroupKey) []byte {
 
 func encodeIdempotencyKey(groupKey isr.GroupKey, key IdempotencyKey) []byte {
 	encoded := encodeIdempotencyPrefix(groupKey)
-	encoded = appendKeyString(encoded, key.SenderUID)
+	encoded = appendKeyString(encoded, key.FromUID)
 	encoded = appendKeyString(encoded, key.ClientMsgNo)
 	return encoded
 }
@@ -77,7 +77,7 @@ func decodeIdempotencyKey(raw []byte, prefix []byte) (IdempotencyKey, error) {
 		return IdempotencyKey{}, ErrCorruptValue
 	}
 	return IdempotencyKey{
-		SenderUID:   senderUID,
+		FromUID:     senderUID,
 		ClientMsgNo: clientMsgNo,
 	}, nil
 }

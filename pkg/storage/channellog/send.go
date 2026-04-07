@@ -10,7 +10,7 @@ import (
 
 const maxLegacyMessageSeq = uint64(^uint32(0))
 
-func (c *cluster) Send(ctx context.Context, req SendRequest) (SendResult, error) {
+func (c *cluster) Append(ctx context.Context, req AppendRequest) (AppendResult, error) {
 	draft := req.Message
 	draft.ChannelID = req.ChannelID
 	draft.ChannelType = req.ChannelType
@@ -23,66 +23,66 @@ func (c *cluster) Send(ctx context.Context, req SendRequest) (SendResult, error)
 
 	meta, err := c.metaForKey(key)
 	if err != nil {
-		return SendResult{}, err
+		return AppendResult{}, err
 	}
 	if err := compatibleWithExpectation(meta, req.ExpectedChannelEpoch, req.ExpectedLeaderEpoch); err != nil {
-		return SendResult{}, err
+		return AppendResult{}, err
 	}
 	switch meta.Status {
 	case ChannelStatusDeleting:
-		return SendResult{}, ErrChannelDeleting
+		return AppendResult{}, ErrChannelDeleting
 	case ChannelStatusDeleted:
-		return SendResult{}, ErrChannelNotFound
+		return AppendResult{}, ErrChannelNotFound
 	}
 	if meta.Features.MessageSeqFormat == MessageSeqFormatU64 && !req.SupportsMessageSeqU64 {
-		return SendResult{}, ErrProtocolUpgradeRequired
+		return AppendResult{}, ErrProtocolUpgradeRequired
 	}
 
 	group, ok := c.cfg.Runtime.Group(groupKey)
 	if !ok {
-		return SendResult{}, ErrStaleMeta
+		return AppendResult{}, ErrStaleMeta
 	}
 	state := group.Status()
 	if state.Role != isr.RoleLeader {
-		return SendResult{}, ErrNotLeader
+		return AppendResult{}, ErrNotLeader
 	}
 	if meta.Features.MessageSeqFormat == MessageSeqFormatLegacyU32 && state.HW >= maxLegacyMessageSeq {
-		return SendResult{}, ErrMessageSeqExhausted
+		return AppendResult{}, ErrMessageSeqExhausted
 	}
 
 	store, err := c.cfg.States.ForChannel(key)
 	if err != nil {
-		return SendResult{}, err
+		return AppendResult{}, err
 	}
 	if draft.ClientMsgNo != "" {
 		idKey := IdempotencyKey{
 			ChannelID:   req.ChannelID,
 			ChannelType: req.ChannelType,
-			SenderUID:   draft.FromUID,
+			FromUID:     draft.FromUID,
 			ClientMsgNo: draft.ClientMsgNo,
 		}
 		entry, ok, err := store.GetIdempotency(idKey)
 		if err != nil {
-			return SendResult{}, err
+			return AppendResult{}, err
 		}
 		if ok {
 			view, err := c.loadMessageViewAtOffset(groupKey, entry.Offset)
 			if err != nil {
-				return SendResult{}, err
+				return AppendResult{}, err
 			}
 			if view.PayloadHash != hashPayload(draft.Payload) {
-				return SendResult{}, ErrIdempotencyConflict
+				return AppendResult{}, ErrIdempotencyConflict
 			}
 			message := view.Message
 			message.MessageSeq = entry.MessageSeq
-			return SendResult{MessageID: message.MessageID, MessageSeq: message.MessageSeq, Message: message}, nil
+			return AppendResult{MessageID: message.MessageID, MessageSeq: message.MessageSeq, Message: message}, nil
 		}
 	}
 
 	draft.MessageID = c.cfg.MessageIDs.Next()
 	encoded, err := encodeMessage(draft)
 	if err != nil {
-		return SendResult{}, err
+		return AppendResult{}, err
 	}
 
 	commit, err := group.Append(ctx, []isr.Record{{
@@ -91,24 +91,24 @@ func (c *cluster) Send(ctx context.Context, req SendRequest) (SendResult, error)
 	}})
 	if err != nil {
 		if errors.Is(err, isr.ErrNotLeader) || errors.Is(err, isr.ErrLeaseExpired) {
-			return SendResult{}, ErrNotLeader
+			return AppendResult{}, ErrNotLeader
 		}
-		return SendResult{}, err
+		return AppendResult{}, err
 	}
 
 	messageSeq := commit.NextCommitHW
 	if meta.Features.MessageSeqFormat == MessageSeqFormatLegacyU32 && messageSeq > maxLegacyMessageSeq {
-		return SendResult{}, ErrMessageSeqExhausted
+		return AppendResult{}, ErrMessageSeqExhausted
 	}
 	currentMeta, err := c.metaForKey(key)
 	if err != nil {
-		return SendResult{}, err
+		return AppendResult{}, err
 	}
 	switch currentMeta.Status {
 	case ChannelStatusDeleting:
-		return SendResult{}, ErrChannelDeleting
+		return AppendResult{}, ErrChannelDeleting
 	case ChannelStatusDeleted:
-		return SendResult{}, ErrChannelNotFound
+		return AppendResult{}, ErrChannelNotFound
 	}
 
 	committed := draft
@@ -118,18 +118,18 @@ func (c *cluster) Send(ctx context.Context, req SendRequest) (SendResult, error)
 		if err := store.PutIdempotency(IdempotencyKey{
 			ChannelID:   req.ChannelID,
 			ChannelType: req.ChannelType,
-			SenderUID:   draft.FromUID,
+			FromUID:     draft.FromUID,
 			ClientMsgNo: draft.ClientMsgNo,
 		}, IdempotencyEntry{
 			MessageID:  committed.MessageID,
 			MessageSeq: messageSeq,
 			Offset:     messageSeq - 1,
 		}); err != nil {
-			return SendResult{}, err
+			return AppendResult{}, err
 		}
 	}
 
-	return SendResult{MessageID: committed.MessageID, MessageSeq: messageSeq, Message: committed}, nil
+	return AppendResult{MessageID: committed.MessageID, MessageSeq: messageSeq, Message: committed}, nil
 }
 
 func (c *cluster) metaForKey(key ChannelKey) (ChannelMeta, error) {

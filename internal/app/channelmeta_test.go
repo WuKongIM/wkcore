@@ -588,8 +588,8 @@ func (f *fakeChannelMetaCluster) ApplyMeta(meta channellog.ChannelMeta) error {
 	return f.applyErr
 }
 
-func (f *fakeChannelMetaCluster) Send(context.Context, channellog.SendRequest) (channellog.SendResult, error) {
-	return channellog.SendResult{}, nil
+func (f *fakeChannelMetaCluster) Append(context.Context, channellog.AppendRequest) (channellog.AppendResult, error) {
+	return channellog.AppendResult{}, nil
 }
 
 func (f *fakeChannelMetaCluster) Fetch(context.Context, channellog.FetchRequest) (channellog.FetchResult, error) {

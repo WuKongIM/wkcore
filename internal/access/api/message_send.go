@@ -11,10 +11,11 @@ import (
 )
 
 type sendMessageRequest struct {
-	SenderUID   string `json:"sender_uid"`
-	ChannelID   string `json:"channel_id"`
-	ChannelType uint8  `json:"channel_type"`
-	Payload     string `json:"payload"`
+	FromUID       string `json:"from_uid"`
+	LegacyFromUID string `json:"sender_uid"`
+	ChannelID     string `json:"channel_id"`
+	ChannelType   uint8  `json:"channel_type"`
+	Payload       string `json:"payload"`
 }
 
 type sendMessageResponse struct {
@@ -29,7 +30,10 @@ func (s *Server) handleSendMessage(c *gin.Context) {
 		writeJSONError(c, http.StatusBadRequest, "invalid request")
 		return
 	}
-	if req.SenderUID == "" || req.ChannelID == "" || req.ChannelType == 0 || req.Payload == "" {
+	if req.FromUID == "" {
+		req.FromUID = req.LegacyFromUID
+	}
+	if req.FromUID == "" || req.ChannelID == "" || req.ChannelType == 0 || req.Payload == "" {
 		writeJSONError(c, http.StatusBadRequest, "invalid request")
 		return
 	}
@@ -47,7 +51,7 @@ func (s *Server) handleSendMessage(c *gin.Context) {
 
 	channelID := req.ChannelID
 	if req.ChannelType == wkframe.ChannelTypePerson {
-		channelID, err = runtimechannelid.NormalizePersonChannel(req.SenderUID, req.ChannelID)
+		channelID, err = runtimechannelid.NormalizePersonChannel(req.FromUID, req.ChannelID)
 		if err != nil {
 			writeJSONError(c, http.StatusBadRequest, "invalid channel id")
 			return
@@ -55,7 +59,7 @@ func (s *Server) handleSendMessage(c *gin.Context) {
 	}
 
 	result, err := s.messages.Send(c.Request.Context(), message.SendCommand{
-		SenderUID:       req.SenderUID,
+		FromUID:         req.FromUID,
 		ChannelID:       channelID,
 		ChannelType:     req.ChannelType,
 		Payload:         payload,

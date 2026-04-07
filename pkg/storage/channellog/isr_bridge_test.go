@@ -256,7 +256,7 @@ func mustStoredRecord(t testing.TB, messageID uint64, payload string) isr.Record
 
 	encoded, err := encodeStoredMessage(storedMessage{
 		MessageID:   messageID,
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ClientMsgNo: payload,
 		PayloadHash: hashPayload([]byte(payload)),
 		Payload:     []byte(payload),

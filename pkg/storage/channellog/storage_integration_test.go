@@ -8,7 +8,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
-func TestClusterWithRealStoreSendFetchAndSeqReads(t *testing.T) {
+func TestClusterWithRealStoreAppendFetchAndSeqReads(t *testing.T) {
 	db := openTestDB(t)
 	key := ChannelKey{ChannelID: "c1", ChannelType: 1}
 	store := db.ForChannel(key)
@@ -23,17 +23,17 @@ func TestClusterWithRealStoreSendFetchAndSeqReads(t *testing.T) {
 	}
 
 	cluster := newRealStoreCluster(t, db, key, replica, 3, 7)
-	first, err := cluster.Send(context.Background(), realStoreSendRequest(key, "one"))
+	first, err := cluster.Append(context.Background(), realStoreAppendRequest(key, "one"))
 	if err != nil {
-		t.Fatalf("first Send() error = %v", err)
+		t.Fatalf("first Append() error = %v", err)
 	}
-	second, err := cluster.Send(context.Background(), realStoreSendRequest(key, "two"))
+	second, err := cluster.Append(context.Background(), realStoreAppendRequest(key, "two"))
 	if err != nil {
-		t.Fatalf("second Send() error = %v", err)
+		t.Fatalf("second Append() error = %v", err)
 	}
-	duplicate, err := cluster.Send(context.Background(), realStoreSendRequest(key, "one"))
+	duplicate, err := cluster.Append(context.Background(), realStoreAppendRequest(key, "one"))
 	if err != nil {
-		t.Fatalf("duplicate Send() error = %v", err)
+		t.Fatalf("duplicate Append() error = %v", err)
 	}
 	if first.MessageSeq != 1 || second.MessageSeq != 2 {
 		t.Fatalf("send results = first:%+v second:%+v", first, second)
@@ -82,7 +82,7 @@ func TestClusterWithRealStoreSendFetchAndSeqReads(t *testing.T) {
 	entry, ok, err := stateStore.GetIdempotency(IdempotencyKey{
 		ChannelID:   key.ChannelID,
 		ChannelType: key.ChannelType,
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ClientMsgNo: "msg-one",
 	})
 	if err != nil {
@@ -188,8 +188,8 @@ func newRealStoreCluster(t testing.TB, db *DB, key ChannelKey, replica isr.Repli
 	return c
 }
 
-func realStoreSendRequest(key ChannelKey, payload string) SendRequest {
-	return SendRequest{
+func realStoreAppendRequest(key ChannelKey, payload string) AppendRequest {
+	return AppendRequest{
 		ChannelID:   key.ChannelID,
 		ChannelType: key.ChannelType,
 		Message: Message{

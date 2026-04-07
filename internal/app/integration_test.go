@@ -118,7 +118,7 @@ func TestAppStartWiresMessageSendThroughDurableChannelLog(t *testing.T) {
 	})
 
 	result, err := app.Message().Send(context.Background(), message.SendCommand{
-		SenderUID:   "sender",
+		FromUID:     "sender",
 		ChannelID:   "durable-user",
 		ChannelType: key.ChannelType,
 		ClientMsgNo: "durable-1",
@@ -159,7 +159,7 @@ func TestAppSendReturnsBeforeRealtimeAckArrives(t *testing.T) {
 	t.Cleanup(func() { _ = recipientConn.Close() })
 
 	result, err := app.Message().Send(context.Background(), message.SendCommand{
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ChannelID:   channelID,
 		ChannelType: wkframe.ChannelTypePerson,
 		ClientMsgNo: "async-1",
@@ -205,7 +205,7 @@ func TestAppRecvAckCompletesLocalInflightRoute(t *testing.T) {
 	sessionID := waitForPresenceSessionID(t, app, "u2")
 
 	result, err := app.Message().Send(context.Background(), message.SendCommand{
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ChannelID:   channelID,
 		ChannelType: wkframe.ChannelTypePerson,
 		ClientMsgNo: "async-ack-1",
@@ -247,7 +247,7 @@ func TestAppSessionCloseDropsRealtimeRouteAndDoesNotBlockSend(t *testing.T) {
 	sessionID := waitForPresenceSessionID(t, app, "u2")
 
 	first, err := app.Message().Send(context.Background(), message.SendCommand{
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ChannelID:   channelID,
 		ChannelType: wkframe.ChannelTypePerson,
 		ClientMsgNo: "async-close-1",
@@ -271,7 +271,7 @@ func TestAppSessionCloseDropsRealtimeRouteAndDoesNotBlockSend(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 
 	second, err := app.Message().Send(context.Background(), message.SendCommand{
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ChannelID:   channelID,
 		ChannelType: wkframe.ChannelTypePerson,
 		ClientMsgNo: "async-close-2",

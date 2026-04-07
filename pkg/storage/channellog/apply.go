@@ -103,7 +103,7 @@ func (b *checkpointBridge) readCommittedBatch(nextHW uint64) ([]appliedMessage, 
 			key: IdempotencyKey{
 				ChannelID:   b.key.ChannelID,
 				ChannelType: b.key.ChannelType,
-				SenderUID:   message.FromUID,
+				FromUID:     message.FromUID,
 				ClientMsgNo: message.ClientMsgNo,
 			},
 			entry: IdempotencyEntry{

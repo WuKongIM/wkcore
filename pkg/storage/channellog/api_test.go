@@ -15,12 +15,12 @@ func TestNewValidatesRequiredDependencies(t *testing.T) {
 	}
 }
 
-func TestClusterSurfaceExposesMetaSendFetchStatus(t *testing.T) {
+func TestClusterSurfaceExposesMetaAppendFetchStatus(t *testing.T) {
 	var c channellog.Cluster
 
 	compileClusterSurface := func(cluster channellog.Cluster) {
 		_ = cluster.ApplyMeta(channellog.ChannelMeta{})
-		_, _ = cluster.Send(context.Background(), channellog.SendRequest{})
+		_, _ = cluster.Append(context.Background(), channellog.AppendRequest{})
 		_, _ = cluster.Fetch(context.Background(), channellog.FetchRequest{})
 		_, _ = cluster.Status(channellog.ChannelKey{})
 	}

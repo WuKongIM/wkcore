@@ -7,7 +7,7 @@ type SendCommand struct {
 	Setting              wkframe.Setting
 	MsgKey               string
 	Expire               uint32
-	SenderUID            string
+	FromUID              string
 	ClientSeq            uint64
 	ClientMsgNo          string
 	StreamNo             string
@@ -25,7 +25,7 @@ type CommittedMessageEnvelope struct {
 	ChannelType uint8
 	MessageID   uint64
 	MessageSeq  uint64
-	SenderUID   string
+	FromUID     string
 	ClientMsgNo string
 	Topic       string
 	Payload     []byte

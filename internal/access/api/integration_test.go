@@ -23,7 +23,7 @@ func TestAPIServerSendMessageWithRealMessageApp(t *testing.T) {
 		IdentityStore: &fakeIdentityStore{},
 		ChannelStore:  &fakeChannelStore{},
 		Cluster: &fakeChannelCluster{
-			result: channellog.SendResult{MessageID: 66, MessageSeq: 7},
+			result: channellog.AppendResult{MessageID: 66, MessageSeq: 7},
 		},
 	})
 	require.NoError(t, msgApp.OnlineRegistry().Register(online.OnlineConn{
@@ -51,7 +51,7 @@ func TestAPIServerSendMessageWithRealMessageApp(t *testing.T) {
 	}, 2*time.Second, 20*time.Millisecond)
 
 	body := map[string]any{
-		"sender_uid":   "u1",
+		"from_uid":     "u1",
 		"channel_id":   "u2",
 		"channel_type": float64(wkframe.ChannelTypePerson),
 		"payload":      base64.StdEncoding.EncodeToString([]byte("hi")),
@@ -89,7 +89,7 @@ func (*fakeChannelStore) GetChannel(context.Context, string, int64) (metadb.Chan
 }
 
 type fakeChannelCluster struct {
-	result channellog.SendResult
+	result channellog.AppendResult
 	err    error
 }
 
@@ -97,6 +97,6 @@ func (*fakeChannelCluster) ApplyMeta(channellog.ChannelMeta) error {
 	return nil
 }
 
-func (f *fakeChannelCluster) Send(context.Context, channellog.SendRequest) (channellog.SendResult, error) {
+func (f *fakeChannelCluster) Append(context.Context, channellog.AppendRequest) (channellog.AppendResult, error) {
 	return f.result, f.err
 }

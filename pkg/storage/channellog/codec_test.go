@@ -176,7 +176,7 @@ func TestDecodeMessageViewRejectsUnknownVersion(t *testing.T) {
 func TestDecodeStoredMessageViewParsesEncodedMessage(t *testing.T) {
 	encoded := mustEncodeStoredMessage(t, storedMessage{
 		MessageID:   42,
-		SenderUID:   "u-42",
+		FromUID:     "u-42",
 		ClientMsgNo: "m-42",
 		PayloadHash: hashPayload([]byte("payload")),
 		Payload:     []byte("payload"),
@@ -190,8 +190,8 @@ func TestDecodeStoredMessageViewParsesEncodedMessage(t *testing.T) {
 	if view.MessageID != 42 {
 		t.Fatalf("MessageID = %d, want 42", view.MessageID)
 	}
-	if view.SenderUID != "u-42" {
-		t.Fatalf("SenderUID = %q, want %q", view.SenderUID, "u-42")
+	if view.FromUID != "u-42" {
+		t.Fatalf("FromUID = %q, want %q", view.FromUID, "u-42")
 	}
 	if view.ClientMsgNo != "m-42" {
 		t.Fatalf("ClientMsgNo = %q, want %q", view.ClientMsgNo, "m-42")
@@ -204,7 +204,7 @@ func TestDecodeStoredMessageViewParsesEncodedMessage(t *testing.T) {
 func TestEncodeStoredMessagePreservesProvidedPayloadHash(t *testing.T) {
 	encoded := mustEncodeStoredMessage(t, storedMessage{
 		MessageID:   42,
-		SenderUID:   "u-42",
+		FromUID:     "u-42",
 		ClientMsgNo: "m-42",
 		PayloadHash: 99,
 		Payload:     []byte("payload"),
@@ -232,7 +232,7 @@ func mustEncodeMessage(t *testing.T, message Message) []byte {
 func TestDecodeStoredMessageViewReusesPayloadBacking(t *testing.T) {
 	encoded := mustEncodeStoredMessage(t, storedMessage{
 		MessageID:   7,
-		SenderUID:   "u-7",
+		FromUID:     "u-7",
 		ClientMsgNo: "m-7",
 		PayloadHash: hashPayload([]byte("payload")),
 		Payload:     []byte("payload"),
@@ -256,7 +256,7 @@ func TestDecodeStoredMessageViewReusesPayloadBacking(t *testing.T) {
 func TestDecodeStoredMessageViewRejectsTruncatedPayload(t *testing.T) {
 	encoded := mustEncodeStoredMessage(t, storedMessage{
 		MessageID:   9,
-		SenderUID:   "u-9",
+		FromUID:     "u-9",
 		ClientMsgNo: "m-9",
 		PayloadHash: hashPayload([]byte("payload")),
 		Payload:     []byte("payload"),

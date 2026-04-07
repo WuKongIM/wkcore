@@ -9,12 +9,12 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
-func TestSendReturnsCommittedMessageSeqFromHW(t *testing.T) {
-	env := newSendEnv(t)
+func TestAppendReturnsCommittedMessageSeqFromHW(t *testing.T) {
+	env := newAppendEnv(t)
 
-	result, err := env.cluster.Send(context.Background(), testSendRequest())
+	result, err := env.cluster.Append(context.Background(), testAppendRequest())
 	if err != nil {
-		t.Fatalf("Send() error = %v", err)
+		t.Fatalf("Append() error = %v", err)
 	}
 	if result.MessageSeq != 1 {
 		t.Fatalf("MessageSeq = %d, want 1", result.MessageSeq)
@@ -36,16 +36,16 @@ func TestSendReturnsCommittedMessageSeqFromHW(t *testing.T) {
 	}
 }
 
-func TestSendReturnsExistingEntryOnIdempotentRetry(t *testing.T) {
-	env := newSendEnv(t)
+func TestAppendReturnsExistingEntryOnIdempotentRetry(t *testing.T) {
+	env := newAppendEnv(t)
 
-	first, err := env.cluster.Send(context.Background(), testSendRequest())
+	first, err := env.cluster.Append(context.Background(), testAppendRequest())
 	if err != nil {
-		t.Fatalf("first Send() error = %v", err)
+		t.Fatalf("first Append() error = %v", err)
 	}
-	second, err := env.cluster.Send(context.Background(), testSendRequest())
+	second, err := env.cluster.Append(context.Background(), testAppendRequest())
 	if err != nil {
-		t.Fatalf("second Send() error = %v", err)
+		t.Fatalf("second Append() error = %v", err)
 	}
 	if first.MessageID != second.MessageID || first.MessageSeq != second.MessageSeq {
 		t.Fatalf("results differ: first=%+v second=%+v", first, second)
@@ -64,42 +64,42 @@ func TestSendReturnsExistingEntryOnIdempotentRetry(t *testing.T) {
 	}
 }
 
-func TestSendReturnsErrNotLeaderWhenGroupRoleIsFollower(t *testing.T) {
-	env := newSendEnv(t)
+func TestAppendReturnsErrNotLeaderWhenGroupRoleIsFollower(t *testing.T) {
+	env := newAppendEnv(t)
 	env.group.state.Role = isr.RoleFollower
 
-	_, err := env.cluster.Send(context.Background(), testSendRequest())
+	_, err := env.cluster.Append(context.Background(), testAppendRequest())
 	if !errors.Is(err, ErrNotLeader) {
 		t.Fatalf("expected ErrNotLeader, got %v", err)
 	}
 }
 
-func TestSendReturnsErrStaleMetaWhenChannelMissing(t *testing.T) {
+func TestAppendReturnsErrStaleMetaWhenChannelMissing(t *testing.T) {
 	c := newTestCluster()
 
-	_, err := c.Send(context.Background(), testSendRequest())
+	_, err := c.Append(context.Background(), testAppendRequest())
 	if !errors.Is(err, ErrStaleMeta) {
 		t.Fatalf("expected ErrStaleMeta, got %v", err)
 	}
 }
 
-func TestSendReturnsErrIdempotencyConflictWhenPayloadChanges(t *testing.T) {
-	env := newSendEnv(t)
-	_, err := env.cluster.Send(context.Background(), testSendRequest())
+func TestAppendReturnsErrIdempotencyConflictWhenPayloadChanges(t *testing.T) {
+	env := newAppendEnv(t)
+	_, err := env.cluster.Append(context.Background(), testAppendRequest())
 	if err != nil {
-		t.Fatalf("first Send() error = %v", err)
+		t.Fatalf("first Append() error = %v", err)
 	}
 
-	req := testSendRequest()
+	req := testAppendRequest()
 	req.Message.Payload = []byte("different")
-	_, err = env.cluster.Send(context.Background(), req)
+	_, err = env.cluster.Append(context.Background(), req)
 	if !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("expected ErrIdempotencyConflict, got %v", err)
 	}
 }
 
-func TestSendReturnsErrChannelDeleting(t *testing.T) {
-	env := newSendEnv(t)
+func TestAppendReturnsErrChannelDeleting(t *testing.T) {
+	env := newAppendEnv(t)
 	meta := env.meta
 	meta.ChannelEpoch++
 	meta.Status = ChannelStatusDeleting
@@ -107,14 +107,14 @@ func TestSendReturnsErrChannelDeleting(t *testing.T) {
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}
 
-	_, err := env.cluster.Send(context.Background(), testSendRequest())
+	_, err := env.cluster.Append(context.Background(), testAppendRequest())
 	if !errors.Is(err, ErrChannelDeleting) {
 		t.Fatalf("expected ErrChannelDeleting, got %v", err)
 	}
 }
 
-func TestSendReturnsErrProtocolUpgradeRequiredForLegacyClientOnU64Channel(t *testing.T) {
-	env := newSendEnv(t)
+func TestAppendReturnsErrProtocolUpgradeRequiredForLegacyClientOnU64Channel(t *testing.T) {
+	env := newAppendEnv(t)
 	meta := env.meta
 	meta.ChannelEpoch++
 	meta.Features.MessageSeqFormat = MessageSeqFormatU64
@@ -122,33 +122,33 @@ func TestSendReturnsErrProtocolUpgradeRequiredForLegacyClientOnU64Channel(t *tes
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}
 
-	req := testSendRequest()
+	req := testAppendRequest()
 	req.SupportsMessageSeqU64 = false
 
-	_, err := env.cluster.Send(context.Background(), req)
+	_, err := env.cluster.Append(context.Background(), req)
 	if !errors.Is(err, ErrProtocolUpgradeRequired) {
 		t.Fatalf("expected ErrProtocolUpgradeRequired, got %v", err)
 	}
 }
 
-func TestSendReturnsErrMessageSeqExhaustedAtLegacyLimit(t *testing.T) {
-	env := newSendEnv(t)
+func TestAppendReturnsErrMessageSeqExhaustedAtLegacyLimit(t *testing.T) {
+	env := newAppendEnv(t)
 	env.group.state.HW = maxLegacyMessageSeq
 
-	_, err := env.cluster.Send(context.Background(), testSendRequest())
+	_, err := env.cluster.Append(context.Background(), testAppendRequest())
 	if !errors.Is(err, ErrMessageSeqExhausted) {
 		t.Fatalf("expected ErrMessageSeqExhausted, got %v", err)
 	}
 }
 
-type sendEnv struct {
+type appendEnv struct {
 	cluster *cluster
 	group   *fakeGroupHandle
 	log     *fakeMessageLog
 	meta    ChannelMeta
 }
 
-func newSendEnv(t *testing.T) *sendEnv {
+func newAppendEnv(t *testing.T) *appendEnv {
 	t.Helper()
 
 	log := &fakeMessageLog{}
@@ -197,7 +197,7 @@ func newSendEnv(t *testing.T) *sendEnv {
 	if err := c.ApplyMeta(meta); err != nil {
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}
-	return &sendEnv{
+	return &appendEnv{
 		cluster: c,
 		group:   group,
 		log:     log,
@@ -205,8 +205,8 @@ func newSendEnv(t *testing.T) *sendEnv {
 	}
 }
 
-func testSendRequest() SendRequest {
-	return SendRequest{
+func testAppendRequest() AppendRequest {
+	return AppendRequest{
 		ChannelID:   "c1",
 		ChannelType: 1,
 		Message: Message{

@@ -5,15 +5,15 @@ import (
 	"testing"
 )
 
-func BenchmarkClusterSend(b *testing.B) {
+func BenchmarkClusterAppend(b *testing.B) {
 	fixture := newBenchmarkClusterFixture(b, benchmarkClusterFixtureConfig{})
 	payload := benchmarkPayload(benchmarkDefaultPayloadBytes)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := fixture.cluster.Send(context.Background(), benchmarkSendRequest(fixture.key, payload)); err != nil {
-			b.Fatalf("Send(%d): %v", i, err)
+		if _, err := fixture.cluster.Append(context.Background(), benchmarkAppendRequest(fixture.key, payload)); err != nil {
+			b.Fatalf("Append(%d): %v", i, err)
 		}
 	}
 }

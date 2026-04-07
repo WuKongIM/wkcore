@@ -12,7 +12,7 @@ import (
 
 type storedMessage struct {
 	MessageID   uint64
-	SenderUID   string
+	FromUID     string
 	ClientMsgNo string
 	PayloadHash uint64
 	Payload     []byte
@@ -20,7 +20,7 @@ type storedMessage struct {
 
 type storedMessageView struct {
 	MessageID   uint64
-	SenderUID   string
+	FromUID     string
 	ClientMsgNo string
 	PayloadHash uint64
 	Payload     []byte
@@ -187,7 +187,7 @@ func encodeStoredMessage(message storedMessage) ([]byte, error) {
 	return encodeMessageWithPayloadHash(Message{
 		MessageID:   message.MessageID,
 		ClientMsgNo: message.ClientMsgNo,
-		FromUID:     message.SenderUID,
+		FromUID:     message.FromUID,
 		Payload:     message.Payload,
 	}, message.PayloadHash)
 }
@@ -199,7 +199,7 @@ func decodeStoredMessage(payload []byte) (storedMessage, error) {
 	}
 	return storedMessage{
 		MessageID:   view.MessageID,
-		SenderUID:   view.FromUID,
+		FromUID:     view.FromUID,
 		ClientMsgNo: view.ClientMsgNo,
 		PayloadHash: view.PayloadHash,
 		Payload:     append([]byte(nil), view.Payload...),
@@ -213,7 +213,7 @@ func decodeStoredMessageView(payload []byte) (storedMessageView, error) {
 	}
 	return storedMessageView{
 		MessageID:   view.MessageID,
-		SenderUID:   view.FromUID,
+		FromUID:     view.FromUID,
 		ClientMsgNo: view.ClientMsgNo,
 		PayloadHash: view.PayloadHash,
 		Payload:     view.Payload,

@@ -49,7 +49,7 @@ type ChannelMeta struct {
 	Features     ChannelFeatures
 }
 
-type SendRequest struct {
+type AppendRequest struct {
 	ChannelID             string
 	ChannelType           uint8
 	Message               Message
@@ -58,7 +58,7 @@ type SendRequest struct {
 	ExpectedLeaderEpoch   uint64
 }
 
-type SendResult struct {
+type AppendResult struct {
 	MessageID  uint64
 	MessageSeq uint64
 	Message    Message
@@ -74,10 +74,10 @@ type FetchRequest struct {
 }
 
 type Message struct {
-	MessageID   uint64
+	MessageID uint64
 	// MessageSeq is derived from the committed log offset and is not encoded in
 	// the durable record payload.
-	MessageSeq  uint64
+	MessageSeq uint64
 	// Framer persists only durable flag bits; transport/runtime sizing fields
 	// are rebuilt by the realtime view layer.
 	Framer      wkframe.Framer
@@ -115,7 +115,7 @@ type ChannelRuntimeStatus struct {
 type IdempotencyKey struct {
 	ChannelID   string
 	ChannelType uint8
-	SenderUID   string
+	FromUID     string
 	ClientMsgNo string
 }
 
@@ -168,7 +168,7 @@ type Config struct {
 
 type Cluster interface {
 	ApplyMeta(meta ChannelMeta) error
-	Send(ctx context.Context, req SendRequest) (SendResult, error)
+	Append(ctx context.Context, req AppendRequest) (AppendResult, error)
 	Fetch(ctx context.Context, req FetchRequest) (FetchResult, error)
 	Status(key ChannelKey) (ChannelRuntimeStatus, error)
 }

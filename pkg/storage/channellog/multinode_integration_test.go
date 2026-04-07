@@ -16,13 +16,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestThreeNodeClusterSendCommitsBeforeAckAndSurvivesFollowerRestart(t *testing.T) {
+func TestThreeNodeClusterAppendCommitsBeforeAckAndSurvivesFollowerRestart(t *testing.T) {
 	harness := newThreeNodeChannelHarness(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := harness.leader.cluster.Send(ctx, SendRequest{
+	result, err := harness.leader.cluster.Append(ctx, AppendRequest{
 		ChannelID:   harness.key.ChannelID,
 		ChannelType: harness.key.ChannelType,
 		Message: Message{

@@ -9,7 +9,7 @@ import (
 const stateSnapshotVersion byte = 1
 
 type stateSnapshotEntry struct {
-	SenderUID   string
+	FromUID     string
 	ClientMsgNo string
 	Entry       IdempotencyEntry
 }
@@ -74,7 +74,7 @@ func encodeStateSnapshot(entries []stateSnapshotEntry) []byte {
 	payload = append(payload, stateSnapshotVersion)
 	payload = binary.AppendUvarint(payload, uint64(len(entries)))
 	for _, entry := range entries {
-		payload = appendKeyString(payload, entry.SenderUID)
+		payload = appendKeyString(payload, entry.FromUID)
 		payload = appendKeyString(payload, entry.ClientMsgNo)
 		payload = append(payload, encodeIdempotencyEntry(entry.Entry)...)
 	}
@@ -114,7 +114,7 @@ func decodeStateSnapshot(payload []byte) ([]stateSnapshotEntry, error) {
 			return nil, err
 		}
 		entries = append(entries, stateSnapshotEntry{
-			SenderUID:   senderUID,
+			FromUID:     senderUID,
 			ClientMsgNo: clientMsgNo,
 			Entry:       entry,
 		})

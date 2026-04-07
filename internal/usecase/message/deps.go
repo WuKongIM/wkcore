@@ -50,7 +50,7 @@ type DeliveryOffline interface {
 
 type ChannelCluster interface {
 	ApplyMeta(meta channellog.ChannelMeta) error
-	Send(ctx context.Context, req channellog.SendRequest) (channellog.SendResult, error)
+	Append(ctx context.Context, req channellog.AppendRequest) (channellog.AppendResult, error)
 }
 
 type MetaRefresher interface {

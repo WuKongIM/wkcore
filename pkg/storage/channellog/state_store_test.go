@@ -14,7 +14,7 @@ func TestStoreStateFactoryPersistsIdempotencyAndRestoresSnapshotAtOffset(t *test
 	firstKey := IdempotencyKey{
 		ChannelID:   "u1",
 		ChannelType: 1,
-		SenderUID:   "s1",
+		FromUID:     "s1",
 		ClientMsgNo: "m1",
 	}
 	firstEntry := IdempotencyEntry{
@@ -29,7 +29,7 @@ func TestStoreStateFactoryPersistsIdempotencyAndRestoresSnapshotAtOffset(t *test
 	secondKey := IdempotencyKey{
 		ChannelID:   "u1",
 		ChannelType: 1,
-		SenderUID:   "s1",
+		FromUID:     "s1",
 		ClientMsgNo: "m2",
 	}
 	secondEntry := IdempotencyEntry{
@@ -102,7 +102,7 @@ func TestStoreStateFactoryRoundTripsFullIdempotencyStateAtCurrentOffset(t *testi
 	firstKey := IdempotencyKey{
 		ChannelID:   "u1",
 		ChannelType: 1,
-		SenderUID:   "s1",
+		FromUID:     "s1",
 		ClientMsgNo: "m1",
 	}
 	firstEntry := IdempotencyEntry{
@@ -117,7 +117,7 @@ func TestStoreStateFactoryRoundTripsFullIdempotencyStateAtCurrentOffset(t *testi
 	secondKey := IdempotencyKey{
 		ChannelID:   "u1",
 		ChannelType: 1,
-		SenderUID:   "s1",
+		FromUID:     "s1",
 		ClientMsgNo: "m2",
 	}
 	secondEntry := IdempotencyEntry{

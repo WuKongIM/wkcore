@@ -12,7 +12,7 @@ import (
 )
 
 func (a *App) Send(ctx context.Context, cmd SendCommand) (SendResult, error) {
-	if cmd.SenderUID == "" {
+	if cmd.FromUID == "" {
 		return SendResult{}, ErrUnauthenticatedSender
 	}
 
@@ -20,7 +20,7 @@ func (a *App) Send(ctx context.Context, cmd SendCommand) (SendResult, error) {
 		return SendResult{Reason: wkframe.ReasonNotSupportChannelType}, nil
 	}
 	if cmd.ChannelType == wkframe.ChannelTypePerson {
-		channelID, err := runtimechannelid.NormalizePersonChannel(cmd.SenderUID, cmd.ChannelID)
+		channelID, err := runtimechannelid.NormalizePersonChannel(cmd.FromUID, cmd.ChannelID)
 		if err != nil {
 			return SendResult{}, err
 		}
@@ -36,7 +36,7 @@ func (a *App) Send(ctx context.Context, cmd SendCommand) (SendResult, error) {
 
 func (a *App) sendDurable(ctx context.Context, cmd SendCommand) (SendResult, error) {
 	draft := buildDurableMessage(cmd, a.now())
-	result, err := sendWithMetaRefreshRetry(ctx, a.cluster, a.refresher, channellog.SendRequest{
+	result, err := sendWithMetaRefreshRetry(ctx, a.cluster, a.refresher, channellog.AppendRequest{
 		ChannelID:             cmd.ChannelID,
 		ChannelType:           cmd.ChannelType,
 		Message:               draft,
@@ -73,7 +73,7 @@ func buildDurableMessage(cmd SendCommand, now time.Time) channellog.Message {
 		ChannelID:   cmd.ChannelID,
 		ChannelType: cmd.ChannelType,
 		Topic:       cmd.Topic,
-		FromUID:     cmd.SenderUID,
+		FromUID:     cmd.FromUID,
 		Payload:     append([]byte(nil), cmd.Payload...),
 	}
 }
@@ -161,10 +161,10 @@ func buildPersonRecvPacket(cmd SendCommand, msgID int64, msgSeq uint64, now time
 		ClientMsgNo: cmd.ClientMsgNo,
 		StreamNo:    cmd.StreamNo,
 		Timestamp:   int32(now.Unix()),
-		ChannelID:   cmd.SenderUID,
+		ChannelID:   cmd.FromUID,
 		ChannelType: wkframe.ChannelTypePerson,
 		Topic:       cmd.Topic,
-		FromUID:     cmd.SenderUID,
+		FromUID:     cmd.FromUID,
 		Payload:     cmd.Payload,
 		ClientSeq:   cmd.ClientSeq,
 	}

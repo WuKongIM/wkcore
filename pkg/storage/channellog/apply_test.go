@@ -49,7 +49,7 @@ func TestCheckpointBridgeReplaysCommittedRecordsIntoIdempotencyState(t *testing.
 	entry, ok, err := store.GetIdempotency(IdempotencyKey{
 		ChannelID:   "c1",
 		ChannelType: 1,
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ClientMsgNo: "m2",
 	})
 	if err != nil {

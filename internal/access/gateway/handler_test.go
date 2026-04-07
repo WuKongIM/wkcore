@@ -145,7 +145,7 @@ func TestHandlerOnFrameSendMapsCommandAndWritesSendack(t *testing.T) {
 
 	msgs := handler.messages.(*fakeMessageUsecase)
 	require.Len(t, msgs.sendCommands, 1)
-	require.Equal(t, "u1", msgs.sendCommands[0].SenderUID)
+	require.Equal(t, "u1", msgs.sendCommands[0].FromUID)
 	require.Equal(t, "u2@u1", msgs.sendCommands[0].ChannelID)
 	require.Equal(t, wkframe.ChannelTypePerson, msgs.sendCommands[0].ChannelType)
 	require.Equal(t, uint64(13), msgs.sendCommands[0].ClientSeq)
@@ -389,7 +389,7 @@ func TestHandlerOnFramePingIsNoop(t *testing.T) {
 }
 
 func TestNewSharesOnlineRegistryWithInjectedMessageApp(t *testing.T) {
-	msgApp := newClusterBackedMessageApp(channellog.SendResult{
+	msgApp := newClusterBackedMessageApp(channellog.AppendResult{
 		MessageID:  88,
 		MessageSeq: 9,
 	})
@@ -595,7 +595,7 @@ func (*fakeChannelStore) GetChannel(context.Context, string, int64) (metadb.Chan
 }
 
 type fakeChannelCluster struct {
-	result channellog.SendResult
+	result channellog.AppendResult
 	err    error
 }
 
@@ -603,15 +603,15 @@ func (f *fakeChannelCluster) ApplyMeta(channellog.ChannelMeta) error {
 	return nil
 }
 
-func (f *fakeChannelCluster) Send(context.Context, channellog.SendRequest) (channellog.SendResult, error) {
+func (f *fakeChannelCluster) Append(context.Context, channellog.AppendRequest) (channellog.AppendResult, error) {
 	return f.result, f.err
 }
 
-func newClusterBackedMessageApp(result channellog.SendResult) *message.App {
+func newClusterBackedMessageApp(result channellog.AppendResult) *message.App {
 	return newClusterBackedMessageAppWithOnline(nil, result)
 }
 
-func newClusterBackedMessageAppWithOnline(registry online.Registry, result channellog.SendResult) *message.App {
+func newClusterBackedMessageAppWithOnline(registry online.Registry, result channellog.AppendResult) *message.App {
 	return message.New(message.Options{
 		IdentityStore: &fakeIdentityStore{},
 		ChannelStore:  &fakeChannelStore{},

@@ -32,7 +32,7 @@ func TestSendReturnsUnsupportedChannelType(t *testing.T) {
 	app := New(Options{Now: fixedNowFn})
 
 	result, err := app.Send(context.Background(), SendCommand{
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ChannelID:   "group-1",
 		ChannelType: 99,
 		ClientSeq:   12,
@@ -49,7 +49,7 @@ func TestSendReturnsClusterRequiredWhenClusterNotConfigured(t *testing.T) {
 	app := New(Options{Now: fixedNowFn})
 
 	result, err := app.Send(context.Background(), SendCommand{
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ChannelID:   "u2",
 		ChannelType: wkframe.ChannelTypePerson,
 		Payload:     []byte("hi"),
@@ -63,7 +63,7 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 	dispatcher := &recordingCommittedDispatcher{}
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{result: channellog.SendResult{
+			{result: channellog.AppendResult{
 				MessageID:  99,
 				MessageSeq: 7,
 				Message: channellog.Message{
@@ -97,7 +97,7 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 		Setting:     wkframe.SettingReceiptEnabled,
 		MsgKey:      "k1",
 		Expire:      60,
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ChannelID:   "u2",
 		ChannelType: wkframe.ChannelTypePerson,
 		Topic:       "chat",
@@ -147,7 +147,7 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 func TestSendRecanonicalizesPrecomposedPersonChannelBeforeDurableWrite(t *testing.T) {
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{result: channellog.SendResult{MessageID: 88, MessageSeq: 12}},
+			{result: channellog.AppendResult{MessageID: 88, MessageSeq: 12}},
 		},
 	}
 	app := New(Options{
@@ -156,7 +156,7 @@ func TestSendRecanonicalizesPrecomposedPersonChannelBeforeDurableWrite(t *testin
 	})
 
 	result, err := app.Send(context.Background(), SendCommand{
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ChannelID:   "u1@u2",
 		ChannelType: wkframe.ChannelTypePerson,
 		Payload:     []byte("hi"),
@@ -176,7 +176,7 @@ func TestSendRejectsThirdPartyPrecomposedPersonChannel(t *testing.T) {
 	})
 
 	result, err := app.Send(context.Background(), SendCommand{
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ChannelID:   "u3@u4",
 		ChannelType: wkframe.ChannelTypePerson,
 		Payload:     []byte("hi"),
@@ -191,7 +191,7 @@ func TestSendReturnsSuccessWhenCommittedSubmitFails(t *testing.T) {
 	dispatcher := &recordingCommittedDispatcher{err: errors.New("queue full")}
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{result: channellog.SendResult{MessageID: 101, MessageSeq: 5}},
+			{result: channellog.AppendResult{MessageID: 101, MessageSeq: 5}},
 		},
 	}
 	app := New(Options{
@@ -201,7 +201,7 @@ func TestSendReturnsSuccessWhenCommittedSubmitFails(t *testing.T) {
 	})
 
 	result, err := app.Send(context.Background(), SendCommand{
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ChannelID:   "u2",
 		ChannelType: wkframe.ChannelTypePerson,
 		Payload:     []byte("hi"),
@@ -221,7 +221,7 @@ func TestSendSubmitsCommittedMessageFromClusterResult(t *testing.T) {
 	dispatcher := &recordingCommittedDispatcher{}
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{result: channellog.SendResult{
+			{result: channellog.AppendResult{
 				MessageID:  88,
 				MessageSeq: 7,
 				Message: channellog.Message{
@@ -244,7 +244,7 @@ func TestSendSubmitsCommittedMessageFromClusterResult(t *testing.T) {
 	})
 
 	_, err := app.Send(context.Background(), SendCommand{
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ChannelID:   "u2",
 		ChannelType: wkframe.ChannelTypePerson,
 		ClientMsgNo: "draft-1",
@@ -272,7 +272,7 @@ func TestSendDoesNotPerformSynchronousDeliveryAfterDurableWrite(t *testing.T) {
 	remote := &recordingRemoteDelivery{}
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{result: channellog.SendResult{MessageID: 601, MessageSeq: 22}},
+			{result: channellog.AppendResult{MessageID: 601, MessageSeq: 22}},
 		},
 	}
 	recipients := fakeRecipientDirectory{
@@ -296,7 +296,7 @@ func TestSendDoesNotPerformSynchronousDeliveryAfterDurableWrite(t *testing.T) {
 	})
 
 	result, err := app.Send(context.Background(), SendCommand{
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ChannelID:   "u2",
 		ChannelType: wkframe.ChannelTypePerson,
 		Payload:     []byte("hi"),
@@ -315,7 +315,7 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
 			{err: channellog.ErrStaleMeta},
-			{result: channellog.SendResult{
+			{result: channellog.AppendResult{
 				MessageID:  201,
 				MessageSeq: 7,
 				Message: channellog.Message{
@@ -347,7 +347,7 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	})
 
 	result, err := app.Send(context.Background(), SendCommand{
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ChannelID:   "u2",
 		ChannelType: wkframe.ChannelTypePerson,
 		Payload:     []byte("hi"),
@@ -385,7 +385,7 @@ func TestSendDurablePersonPropagatesRequestContextToClusterAndMetaRefresh(t *tes
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
 			{err: channellog.ErrStaleMeta},
-			{result: channellog.SendResult{MessageID: 401, MessageSeq: 19}},
+			{result: channellog.AppendResult{MessageID: 401, MessageSeq: 19}},
 		},
 	}
 	refresher := &fakeMetaRefresher{
@@ -404,7 +404,7 @@ func TestSendDurablePersonPropagatesRequestContextToClusterAndMetaRefresh(t *tes
 
 	ctx := context.WithValue(context.Background(), ctxKey("request"), "durable-send")
 	result, err := app.Send(ctx, SendCommand{
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ChannelID:   "u2",
 		ChannelType: wkframe.ChannelTypePerson,
 		ClientMsgNo: "m9",
@@ -422,9 +422,9 @@ func TestSendDurablePersonPropagatesRequestContextToClusterAndMetaRefresh(t *tes
 
 func TestSendDurablePersonReturnsContextCanceled(t *testing.T) {
 	cluster := &fakeChannelCluster{
-		sendFn: func(ctx context.Context, _ channellog.SendRequest) (channellog.SendResult, error) {
+		sendFn: func(ctx context.Context, _ channellog.AppendRequest) (channellog.AppendResult, error) {
 			<-ctx.Done()
-			return channellog.SendResult{}, ctx.Err()
+			return channellog.AppendResult{}, ctx.Err()
 		},
 	}
 	app := New(Options{
@@ -436,7 +436,7 @@ func TestSendDurablePersonReturnsContextCanceled(t *testing.T) {
 	cancel()
 
 	result, err := app.Send(ctx, SendCommand{
-		SenderUID:   "u1",
+		FromUID:     "u1",
 		ChannelID:   "u2",
 		ChannelType: wkframe.ChannelTypePerson,
 		ClientMsgNo: "m10",
@@ -470,7 +470,7 @@ func TestSendReturnsProtocolUpgradeRequiredWhenClusterRejectsLegacyClient(t *tes
 	})
 
 	result, err := app.Send(context.Background(), SendCommand{
-		SenderUID:       "u1",
+		FromUID:         "u1",
 		ChannelID:       "u2",
 		ChannelType:     wkframe.ChannelTypePerson,
 		Payload:         []byte("hi"),
@@ -672,16 +672,16 @@ func (*fakeChannelStore) GetChannel(context.Context, string, int64) (metadb.Chan
 }
 
 type fakeChannelClusterSendReply struct {
-	result channellog.SendResult
+	result channellog.AppendResult
 	err    error
 }
 
 type fakeChannelCluster struct {
 	appliedMetas []channellog.ChannelMeta
-	sendRequests []channellog.SendRequest
+	sendRequests []channellog.AppendRequest
 	sendContexts []context.Context
 	sendReplies  []fakeChannelClusterSendReply
-	sendFn       func(context.Context, channellog.SendRequest) (channellog.SendResult, error)
+	sendFn       func(context.Context, channellog.AppendRequest) (channellog.AppendResult, error)
 	applyErr     error
 }
 
@@ -690,14 +690,14 @@ func (f *fakeChannelCluster) ApplyMeta(meta channellog.ChannelMeta) error {
 	return f.applyErr
 }
 
-func (f *fakeChannelCluster) Send(ctx context.Context, req channellog.SendRequest) (channellog.SendResult, error) {
+func (f *fakeChannelCluster) Append(ctx context.Context, req channellog.AppendRequest) (channellog.AppendResult, error) {
 	f.sendContexts = append(f.sendContexts, ctx)
 	f.sendRequests = append(f.sendRequests, req)
 	if f.sendFn != nil {
 		return f.sendFn(ctx, req)
 	}
 	if len(f.sendReplies) == 0 {
-		return channellog.SendResult{}, nil
+		return channellog.AppendResult{}, nil
 	}
 	reply := f.sendReplies[0]
 	f.sendReplies = f.sendReplies[1:]

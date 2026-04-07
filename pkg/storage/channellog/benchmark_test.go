@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	benchmarkDefaultPayloadBytes     = 256
+	benchmarkDefaultPayloadBytes      = 256
 	benchmarkDefaultPreloadedMessages = 4096
 	benchmarkDefaultPageLimit         = 64
 	benchmarkDefaultFetchBytes        = 1 << 20
@@ -188,7 +188,7 @@ func mustBenchmarkStoredPayload(tb testing.TB, messageID uint64, payload []byte)
 
 	encoded, err := encodeStoredMessage(storedMessage{
 		MessageID:   messageID,
-		SenderUID:   "bench-u1",
+		FromUID:     "bench-u1",
 		ClientMsgNo: fmt.Sprintf("bench-m%d", messageID),
 		PayloadHash: hashPayload(payload),
 		Payload:     append([]byte(nil), payload...),
@@ -217,8 +217,8 @@ func benchmarkTailSeq(iteration, total, pageLimit int) uint64 {
 	return benchmarkReadOffset(iteration, total, pageLimit) + uint64(pageLimit)
 }
 
-func benchmarkSendRequest(key ChannelKey, payload []byte) SendRequest {
-	return SendRequest{
+func benchmarkAppendRequest(key ChannelKey, payload []byte) AppendRequest {
+	return AppendRequest{
 		ChannelID:   key.ChannelID,
 		ChannelType: key.ChannelType,
 		Message: Message{

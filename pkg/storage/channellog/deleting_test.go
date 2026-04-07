@@ -8,13 +8,13 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
 
-func TestDeletingFencesNewSendAndFetchRequests(t *testing.T) {
+func TestDeletingFencesNewAppendAndFetchRequests(t *testing.T) {
 	env := newDeletingEnv(t)
 	env.applyDeletingMeta(t)
 
-	_, err := env.cluster.Send(context.Background(), testSendRequest())
+	_, err := env.cluster.Append(context.Background(), testAppendRequest())
 	if !errors.Is(err, ErrChannelDeleting) {
-		t.Fatalf("expected ErrChannelDeleting from Send, got %v", err)
+		t.Fatalf("expected ErrChannelDeleting from Append, got %v", err)
 	}
 
 	_, err = env.cluster.Fetch(context.Background(), FetchRequest{
@@ -25,7 +25,7 @@ func TestDeletingFencesNewSendAndFetchRequests(t *testing.T) {
 	}
 }
 
-func TestInFlightSendReturnsDeletingWhenFenceWinsBeforeCommit(t *testing.T) {
+func TestInFlightAppendReturnsDeletingWhenFenceWinsBeforeCommit(t *testing.T) {
 	env := newDeletingEnv(t)
 
 	started := make(chan struct{}, 1)
@@ -51,7 +51,7 @@ func TestInFlightSendReturnsDeletingWhenFenceWinsBeforeCommit(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := env.cluster.Send(context.Background(), testSendRequest())
+		_, err := env.cluster.Append(context.Background(), testAppendRequest())
 		errCh <- err
 	}()
 
@@ -75,16 +75,16 @@ type deletingEnv struct {
 func newDeletingEnv(t *testing.T) *deletingEnv {
 	t.Helper()
 
-	sendEnv := newSendEnv(t)
+	appendEnv := newAppendEnv(t)
 	return &deletingEnv{
-		cluster: sendEnv.cluster,
-		group:   sendEnv.group,
-		log:     sendEnv.log,
+		cluster: appendEnv.cluster,
+		group:   appendEnv.group,
+		log:     appendEnv.log,
 		key: ChannelKey{
-			ChannelID:   sendEnv.meta.ChannelID,
-			ChannelType: sendEnv.meta.ChannelType,
+			ChannelID:   appendEnv.meta.ChannelID,
+			ChannelType: appendEnv.meta.ChannelType,
 		},
-		meta: sendEnv.meta,
+		meta: appendEnv.meta,
 	}
 }
 

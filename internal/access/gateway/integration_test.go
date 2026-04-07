@@ -19,7 +19,7 @@ import (
 
 const (
 	gatewayTestListenerName = "tcp-wkproto-access-gateway"
-	gatewayTestSenderUID    = "u1"
+	gatewayTestFromUID      = "u1"
 	gatewayTestRecipientUID = "u2"
 	gatewayTestClientMsgNo  = "m1"
 	gatewayTestPayload      = "hi"
@@ -29,7 +29,7 @@ const (
 func TestGatewayWKProtoHandlerAcknowledgesDurablePersonSend(t *testing.T) {
 	registry := online.NewRegistry()
 	handler := newGatewayIntegrationHandler(
-		newClusterBackedMessageAppWithOnline(registry, channellog.SendResult{
+		newClusterBackedMessageAppWithOnline(registry, channellog.AppendResult{
 			MessageID:  88,
 			MessageSeq: 9,
 		}),
@@ -54,7 +54,7 @@ func TestGatewayWKProtoHandlerAcknowledgesDurablePersonSend(t *testing.T) {
 	recipientConn := dialGateway(t, gw, gatewayTestListenerName)
 	t.Cleanup(func() { _ = recipientConn.Close() })
 
-	senderConnack := connectWKProtoClient(t, senderConn, gatewayTestSenderUID)
+	senderConnack := connectWKProtoClient(t, senderConn, gatewayTestFromUID)
 	require.Equal(t, wkframe.ReasonSuccess, senderConnack.ReasonCode)
 
 	recipientConnack := connectWKProtoClient(t, recipientConn, gatewayTestRecipientUID)
@@ -95,7 +95,7 @@ func TestGatewayVersion5ClientGetsUpgradeRequiredOnSend(t *testing.T) {
 	conn := dialGateway(t, gw, gatewayTestListenerName)
 	t.Cleanup(func() { _ = conn.Close() })
 
-	connack := connectWKProtoClientVersion(t, conn, gatewayTestSenderUID, wkframe.LegacyMessageSeqVersion)
+	connack := connectWKProtoClientVersion(t, conn, gatewayTestFromUID, wkframe.LegacyMessageSeqVersion)
 	require.Equal(t, wkframe.ReasonSuccess, connack.ReasonCode)
 	require.Equal(t, uint8(wkframe.LegacyMessageSeqVersion), connack.ServerVersion)
 
@@ -136,7 +136,7 @@ func TestGatewayWKProtoHandlerPropagatesRequestContextToUsecase(t *testing.T) {
 	conn := dialGateway(t, gw, gatewayTestListenerName)
 	t.Cleanup(func() { _ = conn.Close() })
 
-	connack := connectWKProtoClient(t, conn, gatewayTestSenderUID)
+	connack := connectWKProtoClient(t, conn, gatewayTestFromUID)
 	require.Equal(t, wkframe.ReasonSuccess, connack.ReasonCode)
 
 	sendWKProtoFrame(t, conn, &wkframe.SendPacket{
@@ -187,7 +187,7 @@ func TestGatewayWKProtoHandlerCancelsInFlightSendOnTimeout(t *testing.T) {
 	t.Cleanup(func() { _ = gw.Stop() })
 
 	conn := dialGateway(t, gw, gatewayTestListenerName)
-	connack := connectWKProtoClient(t, conn, gatewayTestSenderUID)
+	connack := connectWKProtoClient(t, conn, gatewayTestFromUID)
 	require.Equal(t, wkframe.ReasonSuccess, connack.ReasonCode)
 
 	sendWKProtoFrame(t, conn, &wkframe.SendPacket{
@@ -281,7 +281,7 @@ func TestGatewayWKProtoHandlerCancelsInFlightSendOnGatewayStop(t *testing.T) {
 	conn := dialGateway(t, gw, gatewayTestListenerName)
 	t.Cleanup(func() { _ = conn.Close() })
 
-	connack := connectWKProtoClient(t, conn, gatewayTestSenderUID)
+	connack := connectWKProtoClient(t, conn, gatewayTestFromUID)
 	require.Equal(t, wkframe.ReasonSuccess, connack.ReasonCode)
 
 	sendWKProtoFrame(t, conn, &wkframe.SendPacket{

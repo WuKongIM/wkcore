@@ -40,7 +40,7 @@ func TestSendMessageMapsJSONToUsecaseCommand(t *testing.T) {
 	srv := New(Options{Messages: msgs})
 
 	body := map[string]any{
-		"sender_uid":   "u1",
+		"from_uid":     "u1",
 		"channel_id":   "u2",
 		"channel_type": float64(wkframe.ChannelTypePerson),
 		"payload":      base64.StdEncoding.EncodeToString([]byte("hi")),
@@ -57,7 +57,7 @@ func TestSendMessageMapsJSONToUsecaseCommand(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.JSONEq(t, `{"message_id":99,"message_seq":4294967302,"reason":1}`, rec.Body.String())
 	require.Len(t, msgs.calls, 1)
-	require.Equal(t, "u1", msgs.calls[0].SenderUID)
+	require.Equal(t, "u1", msgs.calls[0].FromUID)
 	require.Equal(t, "u2@u1", msgs.calls[0].ChannelID)
 	require.Equal(t, uint8(wkframe.ChannelTypePerson), msgs.calls[0].ChannelType)
 	require.Equal(t, []byte("hi"), msgs.calls[0].Payload)
