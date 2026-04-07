@@ -73,12 +73,18 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedEnvelope(t *testi
 	})
 
 	result, err := app.Send(context.Background(), SendCommand{
+		Framer:      wkframe.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
+		Setting:     wkframe.SettingReceiptEnabled,
+		MsgKey:      "k1",
+		Expire:      60,
 		SenderUID:   "u1",
 		ChannelID:   "u2",
 		ChannelType: wkframe.ChannelTypePerson,
+		Topic:       "chat",
 		Payload:     []byte("hi"),
 		ClientSeq:   9,
 		ClientMsgNo: "m1",
+		StreamNo:    "stream-1",
 	})
 
 	require.NoError(t, err)
@@ -87,6 +93,17 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedEnvelope(t *testi
 	require.Equal(t, uint64(7), result.MessageSeq)
 	require.Len(t, cluster.sendRequests, 1)
 	require.Equal(t, "u2@u1", cluster.sendRequests[0].ChannelID)
+	require.Equal(t, wkframe.Framer{NoPersist: true, RedDot: true, SyncOnce: true}, cluster.sendRequests[0].Message.Framer)
+	require.Equal(t, wkframe.SettingReceiptEnabled, cluster.sendRequests[0].Message.Setting)
+	require.Equal(t, "k1", cluster.sendRequests[0].Message.MsgKey)
+	require.Equal(t, uint32(60), cluster.sendRequests[0].Message.Expire)
+	require.Equal(t, uint64(9), cluster.sendRequests[0].Message.ClientSeq)
+	require.Equal(t, "m1", cluster.sendRequests[0].Message.ClientMsgNo)
+	require.Equal(t, "stream-1", cluster.sendRequests[0].Message.StreamNo)
+	require.Equal(t, int32(fixedSendNow.Unix()), cluster.sendRequests[0].Message.Timestamp)
+	require.Equal(t, "chat", cluster.sendRequests[0].Message.Topic)
+	require.Equal(t, "u1", cluster.sendRequests[0].Message.FromUID)
+	require.Equal(t, []byte("hi"), cluster.sendRequests[0].Message.Payload)
 	require.Len(t, dispatcher.calls, 1)
 	require.Equal(t, CommittedMessageEnvelope{
 		ChannelID:   "u2@u1",
@@ -95,7 +112,13 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedEnvelope(t *testi
 		MessageSeq:  7,
 		SenderUID:   "u1",
 		ClientMsgNo: "m1",
+		Topic:       "chat",
 		Payload:     []byte("hi"),
+		Framer:      wkframe.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
+		Setting:     wkframe.SettingReceiptEnabled,
+		MsgKey:      "k1",
+		Expire:      60,
+		StreamNo:    "stream-1",
 		ClientSeq:   9,
 	}, dispatcher.calls[0])
 }

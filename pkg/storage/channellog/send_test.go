@@ -1,6 +1,7 @@
 package channellog
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -21,6 +22,18 @@ func TestSendReturnsCommittedMessageSeqFromHW(t *testing.T) {
 	if result.MessageID != 1 {
 		t.Fatalf("MessageID = %d, want 1", result.MessageID)
 	}
+	if result.Message.MessageID != 1 || result.Message.MessageSeq != 1 {
+		t.Fatalf("Message = %+v, want committed identifiers", result.Message)
+	}
+	if result.Message.FromUID != "u1" {
+		t.Fatalf("FromUID = %q, want %q", result.Message.FromUID, "u1")
+	}
+	if result.Message.ClientMsgNo != "m1" {
+		t.Fatalf("ClientMsgNo = %q, want %q", result.Message.ClientMsgNo, "m1")
+	}
+	if !bytes.Equal(result.Message.Payload, []byte("payload")) {
+		t.Fatalf("Payload = %q, want %q", result.Message.Payload, "payload")
+	}
 }
 
 func TestSendReturnsExistingEntryOnIdempotentRetry(t *testing.T) {
@@ -34,11 +47,20 @@ func TestSendReturnsExistingEntryOnIdempotentRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Send() error = %v", err)
 	}
-	if first != second {
+	if first.MessageID != second.MessageID || first.MessageSeq != second.MessageSeq {
 		t.Fatalf("results differ: first=%+v second=%+v", first, second)
+	}
+	if first.Message.MessageID != second.Message.MessageID || first.Message.MessageSeq != second.Message.MessageSeq {
+		t.Fatalf("committed messages differ: first=%+v second=%+v", first.Message, second.Message)
+	}
+	if first.Message.FromUID != second.Message.FromUID || !bytes.Equal(first.Message.Payload, second.Message.Payload) {
+		t.Fatalf("committed payloads differ: first=%+v second=%+v", first.Message, second.Message)
 	}
 	if env.group.appendCalls != 1 {
 		t.Fatalf("appendCalls = %d, want 1", env.group.appendCalls)
+	}
+	if env.log.readCalls != 1 {
+		t.Fatalf("readCalls = %d, want 1", env.log.readCalls)
 	}
 }
 
@@ -69,7 +91,7 @@ func TestSendReturnsErrIdempotencyConflictWhenPayloadChanges(t *testing.T) {
 	}
 
 	req := testSendRequest()
-	req.Payload = []byte("different")
+	req.Message.Payload = []byte("different")
 	_, err = env.cluster.Send(context.Background(), req)
 	if !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("expected ErrIdempotencyConflict, got %v", err)
@@ -187,8 +209,12 @@ func testSendRequest() SendRequest {
 	return SendRequest{
 		ChannelID:   "c1",
 		ChannelType: 1,
-		SenderUID:   "u1",
-		ClientMsgNo: "m1",
-		Payload:     []byte("payload"),
+		Message: Message{
+			ChannelID:   "c1",
+			ChannelType: 1,
+			FromUID:     "u1",
+			ClientMsgNo: "m1",
+			Payload:     []byte("payload"),
+		},
 	}
 }

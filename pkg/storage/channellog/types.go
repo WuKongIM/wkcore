@@ -52,9 +52,7 @@ type ChannelMeta struct {
 type SendRequest struct {
 	ChannelID             string
 	ChannelType           uint8
-	SenderUID             string
-	ClientMsgNo           string
-	Payload               []byte
+	Message               Message
 	SupportsMessageSeqU64 bool
 	ExpectedChannelEpoch  uint64
 	ExpectedLeaderEpoch   uint64
@@ -63,6 +61,7 @@ type SendRequest struct {
 type SendResult struct {
 	MessageID  uint64
 	MessageSeq uint64
+	Message    Message
 }
 
 type FetchRequest struct {

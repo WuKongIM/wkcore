@@ -221,7 +221,11 @@ func benchmarkSendRequest(key ChannelKey, payload []byte) SendRequest {
 	return SendRequest{
 		ChannelID:   key.ChannelID,
 		ChannelType: key.ChannelType,
-		SenderUID:   "bench-u1",
-		Payload:     payload,
+		Message: Message{
+			ChannelID:   key.ChannelID,
+			ChannelType: key.ChannelType,
+			FromUID:     "bench-u1",
+			Payload:     payload,
+		},
 	}
 }

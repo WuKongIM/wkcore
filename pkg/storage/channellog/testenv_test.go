@@ -42,9 +42,11 @@ func (f *fakeRuntime) Group(groupKey isr.GroupKey) (GroupHandle, bool) {
 
 type fakeMessageLog struct {
 	records []LogRecord
+	readCalls int
 }
 
 func (f *fakeMessageLog) Read(_ isr.GroupKey, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
+	f.readCalls++
 	if limit <= 0 || fromOffset >= uint64(len(f.records)) {
 		return nil, nil
 	}

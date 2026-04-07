@@ -3,6 +3,7 @@ package channellog
 import (
 	"context"
 	"errors"
+	"math"
 
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
@@ -10,6 +11,10 @@ import (
 const maxLegacyMessageSeq = uint64(^uint32(0))
 
 func (c *cluster) Send(ctx context.Context, req SendRequest) (SendResult, error) {
+	draft := req.Message
+	draft.ChannelID = req.ChannelID
+	draft.ChannelType = req.ChannelType
+
 	key := ChannelKey{
 		ChannelID:   req.ChannelID,
 		ChannelType: req.ChannelType,
@@ -49,41 +54,33 @@ func (c *cluster) Send(ctx context.Context, req SendRequest) (SendResult, error)
 	if err != nil {
 		return SendResult{}, err
 	}
-	if req.ClientMsgNo != "" {
+	if draft.ClientMsgNo != "" {
 		idKey := IdempotencyKey{
 			ChannelID:   req.ChannelID,
 			ChannelType: req.ChannelType,
-			SenderUID:   req.SenderUID,
-			ClientMsgNo: req.ClientMsgNo,
+			SenderUID:   draft.FromUID,
+			ClientMsgNo: draft.ClientMsgNo,
 		}
 		entry, ok, err := store.GetIdempotency(idKey)
 		if err != nil {
 			return SendResult{}, err
 		}
 		if ok {
-			match, err := c.idempotentPayloadMatches(groupKey, entry.Offset, req.Payload)
+			view, err := c.loadMessageViewAtOffset(groupKey, entry.Offset)
 			if err != nil {
 				return SendResult{}, err
 			}
-			if !match {
+			if view.PayloadHash != hashPayload(draft.Payload) {
 				return SendResult{}, ErrIdempotencyConflict
 			}
-			return SendResult{
-				MessageID:  entry.MessageID,
-				MessageSeq: entry.MessageSeq,
-			}, nil
+			message := view.Message
+			message.MessageSeq = entry.MessageSeq
+			return SendResult{MessageID: message.MessageID, MessageSeq: message.MessageSeq, Message: message}, nil
 		}
 	}
 
-	messageID := c.cfg.MessageIDs.Next()
-	payloadHash := hashPayload(req.Payload)
-	encoded, err := encodeStoredMessage(storedMessage{
-		MessageID:   messageID,
-		SenderUID:   req.SenderUID,
-		ClientMsgNo: req.ClientMsgNo,
-		PayloadHash: payloadHash,
-		Payload:     req.Payload,
-	})
+	draft.MessageID = c.cfg.MessageIDs.Next()
+	encoded, err := encodeMessage(draft)
 	if err != nil {
 		return SendResult{}, err
 	}
@@ -114,14 +111,17 @@ func (c *cluster) Send(ctx context.Context, req SendRequest) (SendResult, error)
 		return SendResult{}, ErrChannelNotFound
 	}
 
-	if req.ClientMsgNo != "" {
+	committed := draft
+	committed.MessageSeq = messageSeq
+
+	if draft.ClientMsgNo != "" {
 		if err := store.PutIdempotency(IdempotencyKey{
 			ChannelID:   req.ChannelID,
 			ChannelType: req.ChannelType,
-			SenderUID:   req.SenderUID,
-			ClientMsgNo: req.ClientMsgNo,
+			SenderUID:   draft.FromUID,
+			ClientMsgNo: draft.ClientMsgNo,
 		}, IdempotencyEntry{
-			MessageID:  messageID,
+			MessageID:  committed.MessageID,
 			MessageSeq: messageSeq,
 			Offset:     messageSeq - 1,
 		}); err != nil {
@@ -129,10 +129,7 @@ func (c *cluster) Send(ctx context.Context, req SendRequest) (SendResult, error)
 		}
 	}
 
-	return SendResult{
-		MessageID:  messageID,
-		MessageSeq: messageSeq,
-	}, nil
+	return SendResult{MessageID: committed.MessageID, MessageSeq: messageSeq, Message: committed}, nil
 }
 
 func (c *cluster) metaForKey(key ChannelKey) (ChannelMeta, error) {
@@ -145,17 +142,23 @@ func (c *cluster) metaForKey(key ChannelKey) (ChannelMeta, error) {
 	return meta, nil
 }
 
-func (c *cluster) idempotentPayloadMatches(groupKey isr.GroupKey, offset uint64, payload []byte) (bool, error) {
-	records, err := c.cfg.Log.Read(groupKey, offset, 1, len(payload)+1024)
+func (c *cluster) loadMessageViewAtOffset(groupKey isr.GroupKey, offset uint64) (messageView, error) {
+	records, err := c.cfg.Log.Read(groupKey, offset, 1, math.MaxInt)
 	if err != nil {
-		return false, err
+		return messageView{}, err
 	}
 	if len(records) == 0 {
-		return false, ErrStaleMeta
+		return messageView{}, ErrStaleMeta
 	}
-	message, err := decodeStoredMessageView(records[0].Payload)
+	return decodeMessageView(records[0].Payload)
+}
+
+func (c *cluster) loadMessageAtOffset(groupKey isr.GroupKey, offset uint64) (Message, error) {
+	view, err := c.loadMessageViewAtOffset(groupKey, offset)
 	if err != nil {
-		return false, err
+		return Message{}, err
 	}
-	return message.PayloadHash == hashPayload(payload), nil
+	msg := view.Message
+	msg.MessageSeq = offset + 1
+	return msg, nil
 }

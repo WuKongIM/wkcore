@@ -38,8 +38,11 @@ func TestClusterWithRealStoreSendFetchAndSeqReads(t *testing.T) {
 	if first.MessageSeq != 1 || second.MessageSeq != 2 {
 		t.Fatalf("send results = first:%+v second:%+v", first, second)
 	}
-	if duplicate != first {
+	if duplicate.MessageID != first.MessageID || duplicate.MessageSeq != first.MessageSeq {
 		t.Fatalf("duplicate send result = %+v, want %+v", duplicate, first)
+	}
+	if duplicate.Message.MessageID != first.Message.MessageID || duplicate.Message.MessageSeq != first.Message.MessageSeq {
+		t.Fatalf("duplicate committed message = %+v, want %+v", duplicate.Message, first.Message)
 	}
 
 	result, err := cluster.Fetch(context.Background(), FetchRequest{
@@ -189,9 +192,13 @@ func realStoreSendRequest(key ChannelKey, payload string) SendRequest {
 	return SendRequest{
 		ChannelID:   key.ChannelID,
 		ChannelType: key.ChannelType,
-		SenderUID:   "u1",
-		ClientMsgNo: "msg-" + payload,
-		Payload:     []byte(payload),
+		Message: Message{
+			ChannelID:   key.ChannelID,
+			ChannelType: key.ChannelType,
+			FromUID:     "u1",
+			ClientMsgNo: "msg-" + payload,
+			Payload:     []byte(payload),
+		},
 	}
 }
 

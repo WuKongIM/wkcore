@@ -25,9 +25,13 @@ func TestThreeNodeClusterSendCommitsBeforeAckAndSurvivesFollowerRestart(t *testi
 	result, err := harness.leader.cluster.Send(ctx, SendRequest{
 		ChannelID:   harness.key.ChannelID,
 		ChannelType: harness.key.ChannelType,
-		SenderUID:   "sender",
-		ClientMsgNo: "three-node-1",
-		Payload:     []byte("hello durable cluster"),
+		Message: Message{
+			ChannelID:   harness.key.ChannelID,
+			ChannelType: harness.key.ChannelType,
+			FromUID:     "sender",
+			ClientMsgNo: "three-node-1",
+			Payload:     []byte("hello durable cluster"),
+		},
 	})
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), result.MessageSeq)

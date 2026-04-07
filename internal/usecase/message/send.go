@@ -35,12 +35,11 @@ func (a *App) Send(ctx context.Context, cmd SendCommand) (SendResult, error) {
 }
 
 func (a *App) sendDurable(ctx context.Context, cmd SendCommand) (SendResult, error) {
+	draft := buildDurableMessage(cmd, a.now())
 	result, err := sendWithMetaRefreshRetry(ctx, a.cluster, a.refresher, channellog.SendRequest{
 		ChannelID:             cmd.ChannelID,
 		ChannelType:           cmd.ChannelType,
-		SenderUID:             cmd.SenderUID,
-		ClientMsgNo:           cmd.ClientMsgNo,
-		Payload:               cmd.Payload,
+		Message:               draft,
 		SupportsMessageSeqU64: supportsMessageSeqU64(cmd.ProtocolVersion),
 		ExpectedChannelEpoch:  cmd.ExpectedChannelEpoch,
 		ExpectedLeaderEpoch:   cmd.ExpectedLeaderEpoch,
@@ -59,6 +58,24 @@ func (a *App) sendDurable(ctx context.Context, cmd SendCommand) (SendResult, err
 		_ = a.dispatcher.SubmitCommitted(ctx, committedEnvelopeFromSend(cmd, result))
 	}
 	return sendResult, nil
+}
+
+func buildDurableMessage(cmd SendCommand, now time.Time) channellog.Message {
+	return channellog.Message{
+		Framer:      cmd.Framer,
+		Setting:     cmd.Setting,
+		MsgKey:      cmd.MsgKey,
+		Expire:      cmd.Expire,
+		ClientSeq:   cmd.ClientSeq,
+		ClientMsgNo: cmd.ClientMsgNo,
+		StreamNo:    cmd.StreamNo,
+		Timestamp:   int32(now.Unix()),
+		ChannelID:   cmd.ChannelID,
+		ChannelType: cmd.ChannelType,
+		Topic:       cmd.Topic,
+		FromUID:     cmd.SenderUID,
+		Payload:     append([]byte(nil), cmd.Payload...),
+	}
 }
 
 func committedEnvelopeFromSend(cmd SendCommand, result channellog.SendResult) CommittedMessageEnvelope {
