@@ -32,6 +32,7 @@
 ## 已确认约束
 
 - 分布式日志就是消息，日志项必须承载完整消息语义
+- 这里的“消息”特指已提交日志，不包含本地未提交尾部
 - `pkg/storage/channellog` 需要有自己的稳定消息模型，不直接把 `wkframe.RecvPacket` 作为存储对象
 - 当前已落盘 `channellog` 数据不需要兼容读取
 - 发送热路径不能在提交成功后为每条消息再回库查询一次
@@ -54,6 +55,7 @@
 - 不在本轮为历史消息增加次级索引或搜索能力
 - 不在本轮改变 `messageSeq = offset + 1` 这一语义
 - 不在本轮把个人频道的接收者视角改写固化进 durable log
+- 不在本轮改变 ISR 对未提交冲突尾部的截断语义
 
 ## 核心决策
 
@@ -183,7 +185,35 @@ type SendRequest struct {
 
 而不是每条实时发送。
 
-### 7. `Fetch` / `Store` 统一返回完整消息
+### 7. “消息就是日志”以 committed prefix 为边界
+
+本设计对“消息就是分布式日志”的严格定义是：
+
+```text
+消息 = HW 以内的已提交日志记录
+```
+
+而不是：
+
+```text
+消息 = 所有已经 append 到本地 log 的记录
+```
+
+原因是 ISR 现有实现明确允许在冲突恢复时截断未提交尾部：
+
+- leader 在 `Fetch` 中会根据 epoch history 计算分歧点，并要求 follower `TruncateTo`
+- follower 在 `ApplyFetch` 中会先截断未提交冲突尾部，再追加 leader 记录
+- replica 重启恢复时，如果 `LEO > checkpoint.HW`，也会把 dirty tail 截断到 `HW`
+
+因此：
+
+- 未提交尾部即使已经本地 append，也不能被视为 durable message
+- durable message 的可见性必须严格受 `HW` 约束
+- 任何面向业务的 `SendAck`、`Fetch`、`LoadMsg`、异步投递提交都只能基于已提交消息
+
+这个边界必须体现在 API、实现和测试里，不能只停留在口头约定。
+
+### 8. `Fetch` / `Store` 统一返回完整消息
 
 以下 API 全部统一返回完整 `Message`：
 
@@ -200,7 +230,7 @@ type ChannelMessage = Message
 
 但最终应收敛为单一消息类型，避免语义重复。
 
-### 8. realtime `RecvPacket` 是 durable `Message` 的视图
+### 9. realtime `RecvPacket` 是 durable `Message` 的视图
 
 `wkframe.RecvPacket` 不是存储模型，而是在线投递视图。
 
@@ -225,7 +255,7 @@ durable Message -> realtime RecvPacket
 SendCommand -> realtime RecvPacket
 ```
 
-### 9. 实时投递链路不再依赖 `CommittedMessageEnvelope`
+### 10. 实时投递链路不再依赖 `CommittedMessageEnvelope`
 
 当前 `CommittedMessageEnvelope` 基本是在把 `SendCommand` 再镜像一遍。
 
@@ -245,7 +275,7 @@ type CommittedMessage struct {
 - 投递链路必须以 durable `Message` 为输入
 - 不再以 `SendCommand` 派生 envelope 为输入
 
-### 10. 幂等键不变，幂等结果提升为完整消息语义
+### 11. 幂等键不变，幂等结果提升为完整消息语义
 
 幂等键仍然使用：
 
@@ -300,6 +330,14 @@ type CommittedMessage struct {
 
 它不再负责基于 `SendCommand` 拼 `CommittedMessageEnvelope`。
 
+这里的“已提交”不是泛指 append 成功，而是必须已经拿到 `commit.NextCommitHW`。
+
+也就是说：
+
+- 未进入 committed prefix 的日志记录不能向上冒泡成业务消息
+- 未提交记录不能产生 `SendAck`
+- 未提交记录不能进入 realtime 投递链路
+
 ### 3. `channellog.Send`
 
 `Send` 完成后应返回：
@@ -318,6 +356,8 @@ type SendResult struct {
 ```
 
 如果不希望公开暴露 `Message`，则至少需要在包内有等价返回对象供上层复用。
+
+`SendResult.Message` 必须是 committed message，而不是“刚 encode 完准备写入的 message 草稿”。
 
 ## 存储编码
 
@@ -347,11 +387,15 @@ type SendResult struct {
 - `MessageSeq = record.Offset + 1`
 - 其他字段全部从消息 payload 解出
 
+`Fetch` 不得暴露 `HW` 之外的未提交尾部。当前 `channellog.Fetch` 已按 `state.HW` 做 committed fencing，新模型必须保持这一点。
+
 ### `Store.LoadMsg` / Range APIs
 
 本地读取接口同样统一为完整 `Message`。
 
 这样历史读取与集群读取不再出现两套消息语义。
+
+本地读取同样必须继续受 checkpoint `HW` 约束，避免把冲突恢复前的 dirty tail 误当成历史消息。
 
 ## realtime 投递视图
 
@@ -370,6 +414,22 @@ func MessageToRecvPacket(msg channellog.Message, recipientUID string) *wkframe.R
 
 这样 `buildRealtimeRecvPacket` 的责任变成“视图变换”，不再承担“重建消息”。
 
+## ISR 冲突语义
+
+消息模型收敛为完整消息后，仍然必须保留并显式承认 ISR 冲突语义：
+
+1. follower 复制时如果发现和 leader 在某个 offset 之后发生分歧，leader 会要求 follower 先截断到匹配点，再继续复制
+2. 节点重启时如果本地 `LEO > checkpoint.HW`，恢复过程会主动截断 dirty tail 到 `HW`
+3. `ApplyFetch` 明确禁止把日志截断到 `HW` 以下，因此已提交前缀不能被冲突破坏
+
+这意味着：
+
+- 允许消失的只有未提交消息
+- 不允许消失的是任何已经暴露给业务的 committed message
+- `messageSeq` 的业务可见性以 committed offset 为准，而不是 append 顺序为准
+
+换句话说，本设计不会试图“屏蔽 ISR 冲突”，而是把冲突后的真值边界明确限定为 committed prefix。
+
 ## `dispatchLate` 语义修正
 
 `internal/runtime/delivery/actor.dispatchLate` 当前注释基于“日志里无法还原完整消息”的前提。
@@ -387,6 +447,7 @@ func MessageToRecvPacket(msg channellog.Message, recipientUID string) *wkframe.R
 - ISR append 成功后若幂等状态写入失败，仍按当前一致性语义返回错误，由调用方决定重试
 - `Fetch` / `LoadMsg` 解码失败时返回显式错误，不返回半消息对象
 - `MessageID` 到 `RecvPacket.MessageID(int64)` 的转换需要保证生成器不会溢出 `int64`；若后续生成器语义变化，应显式加边界保护
+- 如果 ISR 冲突导致 follower 或恢复流程截断 dirty tail，被截断记录必须被视为“未提交草稿”，而不是“已存在后又回滚的消息”
 
 ## 测试设计
 
@@ -399,6 +460,8 @@ func MessageToRecvPacket(msg channellog.Message, recipientUID string) *wkframe.R
 - `Fetch` 返回完整消息
 - `LoadMsg` / `LoadNextRangeMsgs` / `LoadPrevRangeMsgs` 返回完整消息
 - 幂等命中返回同一消息语义
+- 冲突截断后未提交尾部不可见
+- 恢复截断后未提交尾部不可见
 
 完整消息断言至少覆盖：
 
@@ -426,6 +489,7 @@ func MessageToRecvPacket(msg channellog.Message, recipientUID string) *wkframe.R
 
 - `Send` 用例测试改为断言提交给异步投递链路的是 durable `Message`
 - 补 `Timestamp` 稳定性测试，确保提交后实时投递不重新取当前时间
+- 补“只在 committed 后才进入投递链路”的测试
 
 ### `internal/app` / realtime 投递
 
@@ -434,6 +498,7 @@ func MessageToRecvPacket(msg channellog.Message, recipientUID string) *wkframe.R
 - `Message -> RecvPacket` 转换测试
 - 个人频道 `ChannelID` 按接收者视角改写测试
 - 远端 owner 提交完整消息测试
+- 冲突恢复后不会对已被截断的未提交消息继续投递的测试
 
 ## 分步实施建议
 
