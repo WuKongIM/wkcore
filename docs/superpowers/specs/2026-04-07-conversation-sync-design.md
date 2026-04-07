@@ -325,11 +325,18 @@ projector 运行在 committed message 异步路径上。
 
 工作集读取边界：
 
-- `UserConversationState` 必须基于 `(uid, active_at desc)` 索引 seek 读取
-- 读取时必须过滤 `active_at > 0`
-- 单次 sync 默认只读取前 `working_set_scan_limit` 条最近激活记录
-- `working_set_scan_limit` 应明显大于请求 `limit`，用于吸收 `exclude_channel_types` 和 `only_unread` 过滤后的损耗
-- 推荐默认值：`min(max(limit * 4, 128), 512)`
+- `UserConversationState` 必须基于 `(uid, active_at desc)` 索引读取该用户全部 `active_at > 0` 记录
+- 为防止单个用户数据过大拖垮系统，读取必须受 `active_scan_limit` 硬上限保护
+- 当 `active_at > 0` 的记录数超过上限时，只保留 `active_at` 最新的前 `active_scan_limit` 条
+- `active_scan_limit` 默认值：`2000`
+- 这一步是“全量活跃窗口读取”，不是按 `limit` 截断的分页读取
+
+active working set 冷检查：
+
+- 对本次读取到的全部 active rows，必须批量查询对应 `ChannelUpdateLog.last_msg_at`
+- 若 `last_msg_at <= now - cold_threshold`，则该会话视为冷会话，不进入本次 active working set 候选
+- 对这些冷会话，异步把 `UserConversationState.active_at` 置为 `0`
+- 该回写不要求阻塞当前 `sync` 响应，但必须最终完成
 
 增量探测边界：
 
@@ -647,38 +654,44 @@ client known overlay 示例：
 1. 路由到 `uid owner`
 2. 解析 `last_msg_seqs`
 3. 拉取：
-   - `UserConversationState(active_at > 0 order by active_at desc limit working_set_scan_limit)`
+   - `UserConversationState(uid=?, active_at > 0 order by active_at desc limit active_scan_limit)`
    - client known channels
-4. 若 `version > 0`：
+4. 对 active rows 批量查询对应 `ChannelUpdateLog.last_msg_at`
+5. 若 `last_msg_at <= now - cold_threshold`：
+   - 本次从 active working set 候选中剔除
+   - 异步回写 `UserConversationState.active_at = 0`
+6. 若 `version > 0`：
    - 分页扫描该用户的 `UserConversationState` channel 目录
    - 按 `channel_probe_batch_size` 批量查询这些 channel 的 hot/cold `ChannelUpdateLog`
    - 若 `UserConversationState.updated_at > version`，直接纳入增量候选
    - 若 `ChannelUpdateLog.updated_at > version` 且仍处于 hot window，纳入增量候选
    - 用 TopN/heap 保留高优先级增量候选，避免全量载入内存
-5. 若 `version == 0` 且 `last_msg_seqs` 为空：
+7. 若 `version == 0` 且 `last_msg_seqs` 为空：
    - 不做用户全量目录扫描
    - 仅以 `working set` 作为默认候选来源
-6. 合并候选集合并去重
-7. 先按 `exclude_channel_types` 过滤候选集合
-8. 对过滤后的候选集合读取最小消息事实，至少包括：
+8. 合并候选集合并去重
+9. 先按 `exclude_channel_types` 过滤候选集合
+10. 对过滤后的候选集合读取最小消息事实，至少包括：
    - `read_seq`
    - `last_msg_seq`
    - last message metadata
-9. 基于消息事实计算 `unread`
-10. 在完成 unread 计算后应用 `only_unread`
-11. 对剩余候选按显示排序键排序
-12. 截取前 `limit` 个频道
-13. 只对最终返回的频道读取：
+11. 基于消息事实计算 `unread`
+12. 在完成 unread 计算后应用 `only_unread`
+13. 对剩余候选按显示排序键排序
+14. 截取前 `limit` 个频道
+15. 只对最终返回的频道读取：
    - `channellog.Status`
    - last message
    - recent messages
    - 用户目录状态
-14. `msg_count` 仅决定每个会话 `recents` 的窗口大小，不影响候选选择和排序
-15. 返回旧版兼容数组响应
+16. `msg_count` 仅决定每个会话 `recents` 的窗口大小，不影响候选选择和排序
+17. 返回旧版兼容数组响应
 
-### Optional Cold Demotion
+### Cold Demotion
 
-为了控制 `UserConversationState.active_at` 候选集规模，可以实现后台冷降级任务：
+主路径要求在 `sync` 中对 active working set 做一次 lazy cold demotion。
+
+此外可以实现后台补充 janitor：
 
 - 输入：按批扫描 `active_at > 0` 的用户会话
 - 判断：若关联 `ChannelUpdateLog.last_msg_at <= now - cold_threshold`
