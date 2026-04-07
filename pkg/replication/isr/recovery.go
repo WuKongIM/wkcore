@@ -36,20 +36,16 @@ func (r *replica) recoverFromStores() error {
 	}
 
 	if leo > checkpoint.HW {
-		if err := r.log.Truncate(checkpoint.HW); err != nil {
+		if err := r.truncateLogToLocked(checkpoint.HW); err != nil {
 			return err
 		}
-		if err := r.log.Sync(); err != nil {
-			return err
-		}
-		leo = r.log.LEO()
-		if leo != checkpoint.HW {
-			return ErrCorruptState
-		}
+		leo = checkpoint.HW
+		history = trimEpochHistoryToLEO(history, leo)
 	}
 
 	r.state.Role = RoleFollower
 	r.state.Epoch = checkpoint.Epoch
+	r.state.OffsetEpoch = offsetEpochForLEO(history, leo)
 	r.state.LogStartOffset = checkpoint.LogStartOffset
 	r.state.HW = checkpoint.HW
 	r.state.LEO = leo
@@ -110,6 +106,7 @@ func (r *replica) InstallSnapshot(ctx context.Context, snap Snapshot) error {
 	leo := r.log.LEO()
 	r.state.Role = RoleFollower
 	r.state.Epoch = snap.Epoch
+	r.state.OffsetEpoch = snap.Epoch
 	r.state.LogStartOffset = snap.EndOffset
 	r.state.HW = snap.EndOffset
 	r.state.LEO = leo

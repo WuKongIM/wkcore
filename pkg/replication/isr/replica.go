@@ -98,37 +98,21 @@ func (r *replica) BecomeLeader(meta GroupMeta) error {
 		return ErrCorruptState
 	}
 	if leo > recoveryCutoff {
-		if err := r.log.Truncate(recoveryCutoff); err != nil {
+		if err := r.truncateLogToLocked(recoveryCutoff); err != nil {
 			return err
 		}
-		if err := r.log.Sync(); err != nil {
-			return err
-		}
-		leo = r.log.LEO()
-		if leo != recoveryCutoff {
-			return ErrCorruptState
-		}
+		leo = recoveryCutoff
 	}
 
 	point := EpochPoint{Epoch: normalized.Epoch, StartOffset: leo}
-	if err := r.history.Append(point); err != nil {
+	if err := r.appendEpochPointLocked(point); err != nil {
 		return err
 	}
 
-	nextHistory := append([]EpochPoint(nil), r.epochHistory...)
-	if len(nextHistory) == 0 {
-		nextHistory = append(nextHistory, point)
-	} else {
-		last := nextHistory[len(nextHistory)-1]
-		if last.Epoch != point.Epoch || last.StartOffset != point.StartOffset {
-			nextHistory = append(nextHistory, point)
-		}
-	}
-
 	r.commitMetaLocked(normalized)
-	r.epochHistory = nextHistory
 	r.state.Role = RoleLeader
 	r.state.LEO = leo
+	r.state.OffsetEpoch = offsetEpochForLEO(r.epochHistory, leo)
 	r.seedLeaderProgressLocked(normalized.ISR, leo, recoveryCutoff)
 	if !r.now().Before(normalized.LeaseUntil) {
 		r.state.Role = RoleFencedLeader

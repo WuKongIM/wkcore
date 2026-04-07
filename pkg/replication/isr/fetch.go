@@ -30,6 +30,7 @@ func (r *replica) Fetch(_ context.Context, req FetchRequest) (FetchResult, error
 
 	leaderLEO := r.log.LEO()
 	r.state.LEO = leaderLEO
+	r.state.OffsetEpoch = offsetEpochForLEO(r.epochHistory, leaderLEO)
 	r.setReplicaProgressLocked(r.localNode, leaderLEO)
 
 	matchOffset, truncateTo := r.divergenceStateLocked(req.FetchOffset, req.OffsetEpoch, leaderLEO)

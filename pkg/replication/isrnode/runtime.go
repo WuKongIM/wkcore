@@ -253,7 +253,7 @@ func (r *runtime) processReplication(groupKey isr.GroupKey) {
 				Generation:  g.generation,
 				ReplicaID:   r.cfg.LocalNode,
 				FetchOffset: meta.LEO,
-				OffsetEpoch: meta.Epoch,
+				OffsetEpoch: meta.OffsetEpoch,
 				MaxBytes:    defaultFetchMaxBytes,
 			},
 		})

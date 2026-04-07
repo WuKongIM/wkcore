@@ -36,6 +36,7 @@ func TestReplicationRequestPopulatesFetchRequestEnvelope(t *testing.T) {
 	replica.mu.Lock()
 	replica.state.LEO = 6
 	replica.state.Epoch = 4
+	replica.state.OffsetEpoch = 4
 	replica.mu.Unlock()
 
 	env.runtime.enqueueReplication(testGroupKey(27), 2)
@@ -65,6 +66,32 @@ func TestReplicationRequestPopulatesFetchRequestEnvelope(t *testing.T) {
 	}
 	if session.last.FetchRequest.MaxBytes <= 0 {
 		t.Fatalf("FetchRequest.MaxBytes = %d, want > 0", session.last.FetchRequest.MaxBytes)
+	}
+}
+
+func TestReplicationRequestUsesReplicaOffsetEpochInsteadOfGroupMetaEpoch(t *testing.T) {
+	env := newSessionTestEnv(t)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(271, 4, 1, []isr.NodeID{1, 2}))
+
+	replica := env.factory.replicas[0]
+	replica.mu.Lock()
+	replica.state.LEO = 6
+	replica.state.Epoch = 4
+	replica.state.OffsetEpoch = 3
+	replica.mu.Unlock()
+
+	env.runtime.enqueueReplication(testGroupKey(271), 2)
+	env.runtime.runScheduler()
+
+	session := env.sessions.session(2)
+	if session.sendCount() != 1 {
+		t.Fatalf("expected one fetch request send, got %d", session.sendCount())
+	}
+	if session.last.FetchRequest == nil {
+		t.Fatal("expected fetch request payload")
+	}
+	if session.last.FetchRequest.OffsetEpoch != 3 {
+		t.Fatalf("FetchRequest.OffsetEpoch = %d, want 3", session.last.FetchRequest.OffsetEpoch)
 	}
 }
 
@@ -351,10 +378,11 @@ func (f *sessionReplicaFactory) New(cfg GroupConfig) (isr.Replica, error) {
 	defer f.mu.Unlock()
 	replica := &sessionReplica{
 		state: isr.ReplicaState{
-			GroupKey: cfg.GroupKey,
-			Role:     isr.RoleLeader,
-			Epoch:    cfg.Meta.Epoch,
-			Leader:   cfg.Meta.Leader,
+			GroupKey:    cfg.GroupKey,
+			Role:        isr.RoleLeader,
+			Epoch:       cfg.Meta.Epoch,
+			OffsetEpoch: cfg.Meta.Epoch,
+			Leader:      cfg.Meta.Leader,
 		},
 	}
 	f.replicas = append(f.replicas, replica)

@@ -31,6 +31,7 @@ type ReplicaState struct {
 	GroupKey       GroupKey
 	Role           Role
 	Epoch          uint64
+	OffsetEpoch    uint64
 	Leader         NodeID
 	LogStartOffset uint64
 	HW             uint64
@@ -111,6 +112,7 @@ type CheckpointStore interface {
 type EpochHistoryStore interface {
 	Load() ([]EpochPoint, error)
 	Append(point EpochPoint) error
+	TruncateTo(leo uint64) error
 }
 
 type ReplicaConfig struct {

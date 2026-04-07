@@ -49,6 +49,7 @@ func (r *replica) Append(ctx context.Context, batch []Record) (CommitResult, err
 
 	leo := base + uint64(len(batch))
 	r.state.LEO = leo
+	r.state.OffsetEpoch = offsetEpochForLEO(r.epochHistory, leo)
 	r.setReplicaProgressLocked(r.localNode, leo)
 
 	waiter := &appendWaiter{

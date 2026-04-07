@@ -3,6 +3,7 @@ package channellog
 import (
 	"bytes"
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -210,6 +211,60 @@ func TestStoreBridgesReplicaInstallSnapshotPersistsPayloadAndOffsets(t *testing.
 	status := reloadedReplica.Status()
 	if status.LogStartOffset != 3 || status.HW != 3 || status.LEO != 3 {
 		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestStoreRecoveryTrimsEpochHistoryAlongsideDirtyTail(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	}()
+
+	key := ChannelKey{ChannelID: "c1", ChannelType: 1}
+	store := db.ForChannel(key)
+
+	if _, err := store.appendPayloads([][]byte{
+		[]byte("one"),
+		[]byte("two"),
+		[]byte("three"),
+		[]byte("four"),
+		[]byte("five"),
+		[]byte("six"),
+	}); err != nil {
+		t.Fatalf("appendPayloads() error = %v", err)
+	}
+	if err := store.storeCheckpoint(isr.Checkpoint{
+		Epoch:          7,
+		LogStartOffset: 0,
+		HW:             4,
+	}); err != nil {
+		t.Fatalf("storeCheckpoint() error = %v", err)
+	}
+	if err := store.appendEpochPoint(isr.EpochPoint{Epoch: 7, StartOffset: 0}); err != nil {
+		t.Fatalf("appendEpochPoint(7@0) error = %v", err)
+	}
+	if err := store.appendEpochPoint(isr.EpochPoint{Epoch: 8, StartOffset: 5}); err != nil {
+		t.Fatalf("appendEpochPoint(8@5) error = %v", err)
+	}
+
+	replica := newStoreReplica(t, store, 1)
+	status := replica.Status()
+	if status.HW != 4 || status.LEO != 4 {
+		t.Fatalf("status = %+v", status)
+	}
+
+	points, err := store.loadEpochHistory()
+	if err != nil {
+		t.Fatalf("loadEpochHistory() error = %v", err)
+	}
+	if want := []isr.EpochPoint{{Epoch: 7, StartOffset: 0}}; !reflect.DeepEqual(points, want) {
+		t.Fatalf("epoch history = %+v, want %+v", points, want)
 	}
 }
 

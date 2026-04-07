@@ -27,19 +27,18 @@ func (r *replica) ApplyFetch(_ context.Context, req ApplyFetchRequest) error {
 		if *req.TruncateTo < r.state.HW || *req.TruncateTo > leo {
 			return ErrCorruptState
 		}
-		if err := r.log.Truncate(*req.TruncateTo); err != nil {
+		if err := r.truncateLogToLocked(*req.TruncateTo); err != nil {
 			return err
 		}
-		if err := r.log.Sync(); err != nil {
-			return err
-		}
-		leo = r.log.LEO()
-		if leo != *req.TruncateTo {
-			return ErrCorruptState
-		}
+		leo = *req.TruncateTo
 	}
 
 	if len(req.Records) > 0 {
+		if len(r.epochHistory) == 0 || r.epochHistory[len(r.epochHistory)-1].Epoch != req.Epoch {
+			if err := r.appendEpochPointLocked(EpochPoint{Epoch: req.Epoch, StartOffset: leo}); err != nil {
+				return err
+			}
+		}
 		if _, err := r.log.Append(req.Records); err != nil {
 			return err
 		}
@@ -68,5 +67,6 @@ func (r *replica) ApplyFetch(_ context.Context, req ApplyFetchRequest) error {
 
 	r.state.LEO = leo
 	r.state.HW = nextHW
+	r.state.OffsetEpoch = offsetEpochForLEO(r.epochHistory, leo)
 	return nil
 }

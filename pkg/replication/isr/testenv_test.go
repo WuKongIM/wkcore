@@ -134,6 +134,7 @@ type fakeEpochHistoryStore struct {
 	points   []EpochPoint
 	loadErr  error
 	appended []EpochPoint
+	truncate []uint64
 	calls    *callLog
 }
 
@@ -151,6 +152,9 @@ func (f *fakeEpochHistoryStore) Append(point EpochPoint) error {
 		last := f.points[len(f.points)-1]
 		switch {
 		case point.Epoch > last.Epoch:
+			if point.StartOffset < last.StartOffset {
+				return ErrCorruptState
+			}
 			f.points = append(f.points, point)
 		case point.Epoch == last.Epoch && point.StartOffset == last.StartOffset:
 			// Idempotent replay.
@@ -163,6 +167,22 @@ func (f *fakeEpochHistoryStore) Append(point EpochPoint) error {
 	f.appended = append(f.appended, point)
 	if f.calls != nil {
 		f.calls.add(fmt.Sprintf("history.append:%d@%d", point.Epoch, point.StartOffset))
+	}
+	return nil
+}
+
+func (f *fakeEpochHistoryStore) TruncateTo(leo uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	end := 0
+	for end < len(f.points) && f.points[end].StartOffset <= leo {
+		end++
+	}
+	f.points = append([]EpochPoint(nil), f.points[:end]...)
+	f.truncate = append(f.truncate, leo)
+	if f.calls != nil {
+		f.calls.add(fmt.Sprintf("history.truncate:%d", leo))
 	}
 	return nil
 }

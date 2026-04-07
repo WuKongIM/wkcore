@@ -128,6 +128,9 @@ func (b *isrEpochHistoryStoreBridge) Append(point isr.EpochPoint) error {
 		last := points[len(points)-1]
 		switch {
 		case point.Epoch > last.Epoch:
+			if point.StartOffset < last.StartOffset {
+				return isr.ErrCorruptState
+			}
 		case point.Epoch == last.Epoch && point.StartOffset == last.StartOffset:
 			return nil
 		default:
@@ -135,6 +138,10 @@ func (b *isrEpochHistoryStoreBridge) Append(point isr.EpochPoint) error {
 		}
 	}
 	return b.store.appendEpochPoint(point)
+}
+
+func (b *isrEpochHistoryStoreBridge) TruncateTo(leo uint64) error {
+	return b.store.truncateEpochHistoryTo(leo)
 }
 
 func (b *isrSnapshotApplierBridge) InstallSnapshot(_ context.Context, snap isr.Snapshot) error {

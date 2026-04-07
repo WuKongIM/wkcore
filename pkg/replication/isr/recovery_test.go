@@ -63,6 +63,7 @@ func TestBecomeLeaderTruncatesThenSyncsThenAppendsEpochPoint(t *testing.T) {
 	if got := env.calls.snapshot(); !reflect.DeepEqual(got, []string{
 		"log.truncate:4",
 		"log.sync",
+		"history.truncate:4",
 		"history.append:7@4",
 	}) {
 		t.Fatalf("call order = %v", got)

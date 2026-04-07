@@ -42,6 +42,13 @@ func (s *Store) appendEpochPoint(point isr.EpochPoint) error {
 	return s.db.db.Set(encodeHistoryKey(s.groupKey, point.StartOffset), encodeEpochPoint(point), pebble.Sync)
 }
 
+func (s *Store) truncateEpochHistoryTo(leo uint64) error {
+	if leo == ^uint64(0) {
+		return nil
+	}
+	return s.trimEpochHistoryAfter(leo + 1)
+}
+
 func (s *Store) trimEpochHistoryAfter(startOffset uint64) error {
 	if err := s.validate(); err != nil {
 		return err
