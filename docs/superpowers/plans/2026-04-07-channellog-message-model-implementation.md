@@ -15,20 +15,21 @@
 ## 执行说明
 
 - 每个任务都使用 `@superpowers/test-driven-development`：先补失败测试，再写最小实现，再跑测试确认通过。
+- 每个任务提交都必须保持可编译；跨层接口翻转要么同任务同步调用方，要么先加临时桥接/别名，再在后续任务清理。
 - 保持 AGENTS 约束的依赖方向：`access -> usecase/runtime`，`usecase -> runtime/pkg`，`app -> all`。
 - 不要为正常发送热路径增加“提交成功后回库读取消息”的额外随机读。
 - `消息 = 已提交日志记录`。任何 `HW` 之外的 dirty tail 都不能向业务层暴露，也不能进入 realtime 投递。
 - 不要把 `wkframe.RecvPacket` 直接塞进 `pkg/storage/channellog` 作为存储模型；持久化模型必须是 `channellog.Message`。
 - 不要擅自发明新的 `StreamID/StreamFlag` 业务语义；如果当前入口没有提供更强语义，就保持当前零值/默认值行为，并让测试把这一点锁住。
 - 个人频道的 `RecvPacket.ChannelID` 改写仍然只属于 realtime 视图层，不得写回 durable log。
-- 因为当前 harness 只有在用户明确要求时才允许启动子代理，本计划写完后执行本地自审，不派发计划审阅子代理。
+- 计划编写阶段默认执行本地自审；若用户显式要求，则补充子代理审阅并把结论回灌到计划里。
 - 最终交付前运行 `@superpowers/verification-before-completion`。
 
 ## 文件映射
 
 | 路径 | 责任 |
 |------|------|
-| `pkg/storage/channellog/types.go` | 定义公开 `Message`、更新 `SendRequest` / `SendResult` / `FetchResult` 类型边界 |
+| `pkg/storage/channellog/types.go` | 定义公开 `Message`、过渡期保留 `type ChannelMessage = Message`、更新 `SendRequest` / `SendResult` / `FetchResult` 类型边界 |
 | `pkg/storage/channellog/codec.go` | 以完整消息为输入/输出的日志编码与视图解码 |
 | `pkg/storage/channellog/send.go` | 基于完整消息执行 committed append、幂等命中与 committed message 返回 |
 | `pkg/storage/channellog/fetch.go` | 返回 committed full messages，而不是瘦 `ChannelMessage` |
@@ -60,6 +61,7 @@
 | `internal/access/node/delivery_submit_rpc_test.go` | full message RPC 路由覆盖 |
 | `internal/app/build.go` | wiring 适配新的 committed message 提交签名 |
 | `internal/app/integration_test.go` | 单节点 durable send / fetch / realtime packet 一致性覆盖 |
+| `internal/app/multinode_integration_test.go` | 多节点 app 场景下 committed message 读取 helper 与断言迁移 |
 | `internal/access/gateway/handler_test.go` | cluster fake 返回值跟随新 `SendResult` 结构更新 |
 | `internal/access/api/integration_test.go` | API fake cluster 返回值跟随新 `SendResult` 结构更新 |
 
@@ -144,6 +146,14 @@ type Message struct {
 }
 ```
 
+为保证 Task 1 到 Task 5 之间的中间提交持续可编译，先保留过渡别名：
+
+```go
+type ChannelMessage = Message
+```
+
+该别名只用于迁移窗口；等 Task 6 把 `internal/app/multinode_integration_test.go` 等剩余旧调用点清理完后再删除。
+
 在 `pkg/storage/channellog/codec.go` 中：
 
 - 把旧 `storedMessage` 收敛成内部编码载体，例如：
@@ -164,6 +174,7 @@ func decodeMessageView(payload []byte) (messageView, error)
 ```
 
 - 保留内部 `PayloadHash`，但不要把它暴露到公开 `Message`。
+- 为了不在 Task 1 一次性打穿 `send.go` / `fetch.go` / `apply.go` 与相关测试，先保留 `storedMessage`、`storedMessageView`、`encodeStoredMessage`、`decodeStoredMessage`、`decodeStoredMessageView` 这组内部兼容 wrapper，让它们转调新 codec；等 Task 2/Task 3 把调用点迁走后再删除。
 
 - [ ] **Step 4: 重新跑聚焦测试，确认通过**
 
@@ -178,14 +189,17 @@ git add pkg/storage/channellog/types.go pkg/storage/channellog/codec.go pkg/stor
 git commit -m "refactor(channellog): add durable message codec"
 ```
 
-## Task 2: 改造 `channellog.Send`，返回 committed full message
+## Task 2: 改造 `channellog.Send`，返回 committed full message，并同步迁移 `SendRequest` 构造点
 
 **Files:**
 - Modify: `pkg/storage/channellog/types.go`
 - Modify: `pkg/storage/channellog/send.go`
 - Modify: `pkg/storage/channellog/send_test.go`
 - Modify: `pkg/storage/channellog/benchmark_test.go`
+- Modify: `pkg/storage/channellog/storage_integration_test.go`
+- Modify: `pkg/storage/channellog/multinode_integration_test.go`
 - Modify: `pkg/storage/channellog/storage_testenv_test.go`
+- Modify: `internal/usecase/message/send.go`
 
 - [ ] **Step 1: 先写失败测试，锁定 committed message 返回值**
 
@@ -232,7 +246,7 @@ func TestSendReturnsCommittedMessageWithDurableFields(t *testing.T) {
 
 Run: `go test ./pkg/storage/channellog -run "TestSendReturnsCommittedMessage|TestSendDuplicateReturnsOriginalCommittedMessage" -count=1`
 
-Expected: FAIL，因为 `SendRequest` / `SendResult` 还没有承载 `Message`。
+Expected: FAIL，因为 `SendRequest` / `SendResult` 还没有承载 `Message`，现有构造点仍在写旧字段。
 
 - [ ] **Step 3: 写最小实现**
 
@@ -286,6 +300,35 @@ duplicate path helper：
 func (c *cluster) loadMessageAtOffset(groupKey isr.GroupKey, offset uint64) (Message, error)
 ```
 
+同一个任务里同步迁移现存 `SendRequest` 构造点，避免提交后树处于不可编译状态：
+
+- `internal/usecase/message/send.go` 先做最小兼容填充，只把当前已有 durable 字段写入 `req.Message`，暂不翻转 `CommittedMessageDispatcher`
+- `pkg/storage/channellog/storage_integration_test.go`
+- `pkg/storage/channellog/multinode_integration_test.go`
+- `pkg/storage/channellog/benchmark_test.go`
+
+`internal/usecase/message/send.go` 在本任务只需要做到：
+
+```go
+draft := channellog.Message{
+	ClientMsgNo: cmd.ClientMsgNo,
+	ChannelID:   cmd.ChannelID,
+	ChannelType: cmd.ChannelType,
+	FromUID:     cmd.SenderUID,
+	Payload:     append([]byte(nil), cmd.Payload...),
+}
+result, err := sendWithMetaRefreshRetry(ctx, a.cluster, a.refresher, channellog.SendRequest{
+	ChannelID:             cmd.ChannelID,
+	ChannelType:           cmd.ChannelType,
+	Message:               draft,
+	SupportsMessageSeqU64: supportsMessageSeqU64(cmd.ProtocolVersion),
+	ExpectedChannelEpoch:  cmd.ExpectedChannelEpoch,
+	ExpectedLeaderEpoch:   cmd.ExpectedLeaderEpoch,
+})
+```
+
+完整的 durable message builder、`Timestamp` / `MsgKey` / `Framer` 等字段收敛，以及 committed message 调度签名翻转，留到 Task 4 一次性处理。
+
 - [ ] **Step 4: 重新跑聚焦测试，确认通过**
 
 Run: `go test ./pkg/storage/channellog -run "TestSendReturnsCommittedMessage|TestSendDuplicateReturnsOriginalCommittedMessage" -count=1`
@@ -295,7 +338,7 @@ Expected: PASS
 - [ ] **Step 5: 提交**
 
 ```bash
-git add pkg/storage/channellog/types.go pkg/storage/channellog/send.go pkg/storage/channellog/send_test.go pkg/storage/channellog/benchmark_test.go pkg/storage/channellog/storage_testenv_test.go
+git add pkg/storage/channellog/types.go pkg/storage/channellog/send.go pkg/storage/channellog/send_test.go pkg/storage/channellog/benchmark_test.go pkg/storage/channellog/storage_integration_test.go pkg/storage/channellog/multinode_integration_test.go pkg/storage/channellog/storage_testenv_test.go internal/usecase/message/send.go
 git commit -m "refactor(channellog): return committed durable message"
 ```
 
@@ -359,11 +402,13 @@ Expected: FAIL，因为当前读取路径仍然返回瘦 `ChannelMessage`，`app
 
 ```go
 func decodeLogRecordMessage(record LogRecord) (Message, error) {
-	msg, err := decodeMessageView(record.Payload)
+	view, err := decodeMessageView(record.Payload)
 	if err != nil {
 		return Message{}, err
 	}
-	return withMessageSeq(msg.Message, record.Offset+1), nil
+	msg := view.Message
+	msg.MessageSeq = record.Offset + 1
+	return msg, nil
 }
 ```
 
@@ -392,7 +437,7 @@ git add pkg/storage/channellog/fetch.go pkg/storage/channellog/seq_read.go pkg/s
 git commit -m "refactor(channellog): return full messages from read paths"
 ```
 
-## Task 4: 让 `internal/usecase/message` 在发送前构造 durable message，并在 committed 后提交
+## Task 4: 让 `internal/usecase/message` 在发送前构造 durable message，并把 committed dispatcher 翻转到 `Message`（含 app 兼容适配）
 
 **Files:**
 - Modify: `internal/usecase/message/command.go`
@@ -401,6 +446,9 @@ git commit -m "refactor(channellog): return full messages from read paths"
 - Modify: `internal/usecase/message/send_test.go`
 - Modify: `internal/access/gateway/handler_test.go`
 - Modify: `internal/access/api/integration_test.go`
+- Modify: `internal/app/deliveryrouting.go`
+- Modify: `internal/app/deliveryrouting_test.go`
+- Modify: `internal/app/build.go`
 
 - [ ] **Step 1: 先写失败测试，锁定 durable message 构造和提交时机**
 
@@ -409,6 +457,10 @@ git commit -m "refactor(channellog): return full messages from read paths"
 - `TestSendBuildsDurableMessageBeforeClusterSend`
 - `TestSendSubmitsCommittedMessageFromClusterResult`
 - `TestSendDoesNotDispatchUncommittedDraftMessage`
+
+并在 `internal/app/deliveryrouting_test.go` 增加过渡桥测试：
+
+- `TestAsyncCommittedDispatcherBridgesDurableMessageToLegacyEnvelope`
 
 测试骨架：
 
@@ -451,9 +503,9 @@ func TestSendSubmitsCommittedMessageFromClusterResult(t *testing.T) {
 
 - [ ] **Step 2: 跑聚焦测试，确认当前实现失败**
 
-Run: `go test ./internal/usecase/message ./internal/access/gateway ./internal/access/api -run "TestSendBuildsDurableMessage|TestSendSubmitsCommittedMessage|TestSendDoesNotDispatchUncommittedDraftMessage" -count=1`
+Run: `go test ./internal/usecase/message ./internal/access/gateway ./internal/access/api ./internal/app -run "TestSendBuildsDurableMessage|TestSendSubmitsCommittedMessage|TestSendDoesNotDispatchUncommittedDraftMessage|TestAsyncCommittedDispatcher" -count=1`
 
-Expected: FAIL，因为当前 `message.Send` 仍然传瘦 `SendRequest`，并从 `SendCommand` 派生 `CommittedMessageEnvelope`。
+Expected: FAIL，因为当前 `message.Send` 仍然从 `SendCommand` 派生 `CommittedMessageEnvelope`，`internal/app` wiring 也还没跟上 `CommittedMessageDispatcher` 的新签名。
 
 - [ ] **Step 3: 写最小实现**
 
@@ -504,22 +556,48 @@ if a.dispatcher != nil {
 }
 ```
 
-同步更新 fake cluster / handler test / api test 的构造值。
+同一个任务里同步更新 `internal/app` 适配层，保证接口翻转后仍然可编译：
+
+```go
+func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, msg channellog.Message) error {
+	env := message.CommittedMessageEnvelope{
+		ChannelID:   msg.ChannelID,
+		ChannelType: msg.ChannelType,
+		MessageID:   msg.MessageID,
+		MessageSeq:  msg.MessageSeq,
+		SenderUID:   msg.FromUID,
+		ClientMsgNo: msg.ClientMsgNo,
+		Topic:       msg.Topic,
+		Payload:     append([]byte(nil), msg.Payload...),
+		Framer:      msg.Framer,
+		Setting:     msg.Setting,
+		MsgKey:      msg.MsgKey,
+		Expire:      msg.Expire,
+		StreamNo:    msg.StreamNo,
+		ClientSeq:   msg.ClientSeq,
+	}
+	// 其余 owner routing 逻辑保持不变
+}
+```
+
+也就是说，Task 4 只翻转 `message -> app dispatcher` 这一段边界；`app -> delivery/node/runtime` 先保留旧 envelope，等 Task 5 再整段切成 `channellog.Message`，并删除这段过渡桥。
+
+同步更新 fake cluster / handler test / api test / deliveryrouting test 的构造值。
 
 - [ ] **Step 4: 重新跑聚焦测试，确认通过**
 
-Run: `go test ./internal/usecase/message ./internal/access/gateway ./internal/access/api -run "TestSendBuildsDurableMessage|TestSendSubmitsCommittedMessage|TestSendDoesNotDispatchUncommittedDraftMessage" -count=1`
+Run: `go test ./internal/usecase/message ./internal/access/gateway ./internal/access/api ./internal/app -run "TestSendBuildsDurableMessage|TestSendSubmitsCommittedMessage|TestSendDoesNotDispatchUncommittedDraftMessage|TestAsyncCommittedDispatcher" -count=1`
 
 Expected: PASS
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add internal/usecase/message/command.go internal/usecase/message/deps.go internal/usecase/message/send.go internal/usecase/message/send_test.go internal/access/gateway/handler_test.go internal/access/api/integration_test.go
+git add internal/usecase/message/command.go internal/usecase/message/deps.go internal/usecase/message/send.go internal/usecase/message/send_test.go internal/access/gateway/handler_test.go internal/access/api/integration_test.go internal/app/deliveryrouting.go internal/app/deliveryrouting_test.go internal/app/build.go
 git commit -m "refactor(message): send durable committed messages"
 ```
 
-## Task 5: 让 delivery / node / app 全链路直接消费 durable message，并统一 realtime 视图转换
+## Task 5: 让 delivery / node / app 下游链路直接消费 durable message，并删除 Task 4 的兼容桥
 
 **Files:**
 - Modify: `internal/usecase/delivery/deps.go`
@@ -538,7 +616,6 @@ git commit -m "refactor(message): send durable committed messages"
 - Modify: `internal/access/node/client.go`
 - Modify: `internal/access/node/delivery_submit_rpc.go`
 - Modify: `internal/access/node/delivery_submit_rpc_test.go`
-- Modify: `internal/app/build.go`
 - Modify: `internal/app/integration_test.go`
 
 - [ ] **Step 1: 先写失败测试，锁定 realtime packet 由 durable message 生成**
@@ -630,7 +707,7 @@ func buildRealtimeRecvPacket(msg channellog.Message, recipientUID string) *wkfra
 - delivery runtime 的 `manager.go` / `shard.go` / `actor.go`
 - node submit RPC 的 request struct
 - `asyncCommittedDispatcher` / `recordingCommittedSubmitter`
-- `build.go` wiring
+- 删除 Task 4 中 `Message -> CommittedMessageEnvelope` 的临时桥接，让 app 下游直接消费 `channellog.Message`
 
 - [ ] **Step 4: 重新跑聚焦测试，确认通过**
 
@@ -641,16 +718,18 @@ Expected: PASS
 - [ ] **Step 5: 提交**
 
 ```bash
-git add internal/usecase/delivery/deps.go internal/usecase/delivery/types.go internal/usecase/delivery/submit.go internal/usecase/delivery/app_test.go internal/runtime/delivery/types.go internal/runtime/delivery/manager.go internal/runtime/delivery/shard.go internal/runtime/delivery/actor.go internal/runtime/delivery/manager_test.go internal/runtime/delivery/actor_test.go internal/app/deliveryrouting.go internal/app/deliveryrouting_test.go internal/access/node/options.go internal/access/node/client.go internal/access/node/delivery_submit_rpc.go internal/access/node/delivery_submit_rpc_test.go internal/app/build.go internal/app/integration_test.go
+git add internal/usecase/delivery/deps.go internal/usecase/delivery/types.go internal/usecase/delivery/submit.go internal/usecase/delivery/app_test.go internal/runtime/delivery/types.go internal/runtime/delivery/manager.go internal/runtime/delivery/shard.go internal/runtime/delivery/actor.go internal/runtime/delivery/manager_test.go internal/runtime/delivery/actor_test.go internal/app/deliveryrouting.go internal/app/deliveryrouting_test.go internal/access/node/options.go internal/access/node/client.go internal/access/node/delivery_submit_rpc.go internal/access/node/delivery_submit_rpc_test.go internal/app/integration_test.go
 git commit -m "refactor(delivery): use durable messages end to end"
 ```
 
 ## Task 6: 跑受影响回归并修正冲突语义遗漏
 
 **Files:**
+- Modify: `pkg/storage/channellog/types.go`
 - Modify: `pkg/storage/channellog/storage_integration_test.go`
 - Modify: `pkg/storage/channellog/multinode_integration_test.go`
 - Modify: `internal/app/integration_test.go`
+- Modify: `internal/app/multinode_integration_test.go`
 - Modify: 其他在全量受影响测试中暴露编译或断言漂移的文件
 
 - [ ] **Step 1: 先跑受影响回归，记录失败点**
@@ -670,6 +749,8 @@ Expected: 初次运行可能 FAIL，暴露遗漏的 fake、断言字段、老类
 - dirty tail 截断后 `Fetch` / `LoadMsg` 仍不可见
 - 多节点恢复后读取到的是 full message，而不是瘦消息
 - 单节点 app 集成测试中 `Fetch` 返回的消息字段与 realtime packet 一致
+- 清理仍引用 `ChannelMessage` 旧名的 helper / 断言，至少包含 `internal/app/multinode_integration_test.go`
+- 删除 Task 1 引入的 `type ChannelMessage = Message` 过渡别名
 
 示例断言：
 
@@ -704,7 +785,7 @@ Expected: 全部 PASS
 - [ ] **Step 5: 提交**
 
 ```bash
-git add pkg/storage/channellog/storage_integration_test.go pkg/storage/channellog/multinode_integration_test.go internal/app/integration_test.go
+git add pkg/storage/channellog/types.go pkg/storage/channellog/storage_integration_test.go pkg/storage/channellog/multinode_integration_test.go internal/app/integration_test.go internal/app/multinode_integration_test.go
 git add -u
 git commit -m "test: cover durable message model regressions"
 ```
@@ -712,6 +793,7 @@ git commit -m "test: cover durable message model regressions"
 ## 本地审查清单
 
 - [ ] `pkg/storage/channellog` 不再向外暴露瘦 `ChannelMessage` 语义
+- [ ] `type ChannelMessage = Message` 过渡别名已删除
 - [ ] 正常发送热路径没有新增“提交后回库读消息”的逻辑
 - [ ] duplicate path 如需读一条日志，仅发生在幂等命中分支
 - [ ] `SendAck` 只基于 committed message 返回
