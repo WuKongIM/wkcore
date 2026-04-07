@@ -632,6 +632,190 @@ func TestStoreListChannelRuntimeMetaReadsAuthoritativeAllSlots(t *testing.T) {
 	require.ElementsMatch(t, []metadb.ChannelRuntimeMeta{first, second}, got)
 }
 
+func TestStoreListUserConversationActiveReadsAuthoritativeSlot(t *testing.T) {
+	ctx := context.Background()
+	nodes := startTwoNodeShardedStores(t)
+
+	uid := findUIDForSlot(t, nodes[0].cluster, 2, "remote-active")
+	require.NoError(t, nodes[1].db.ForSlot(2).UpsertUserConversationState(ctx, metadb.UserConversationState{
+		UID:         uid,
+		ChannelID:   "g1",
+		ChannelType: 2,
+		ActiveAt:    100,
+		UpdatedAt:   10,
+	}))
+	require.NoError(t, nodes[1].db.ForSlot(2).UpsertUserConversationState(ctx, metadb.UserConversationState{
+		UID:         uid,
+		ChannelID:   "g2",
+		ChannelType: 2,
+		ActiveAt:    300,
+		UpdatedAt:   30,
+	}))
+	require.NoError(t, nodes[1].db.ForSlot(2).UpsertUserConversationState(ctx, metadb.UserConversationState{
+		UID:         uid,
+		ChannelID:   "g3",
+		ChannelType: 2,
+		ActiveAt:    200,
+		UpdatedAt:   20,
+	}))
+
+	store, ok := any(nodes[0].store).(interface {
+		ListUserConversationActive(ctx context.Context, uid string, limit int) ([]metadb.UserConversationState, error)
+	})
+	require.True(t, ok, "conversation store methods missing")
+
+	got, err := store.ListUserConversationActive(ctx, uid, 10)
+	require.NoError(t, err)
+	require.Equal(t, []metadb.UserConversationState{
+		{UID: uid, ChannelID: "g2", ChannelType: 2, ActiveAt: 300, UpdatedAt: 30},
+		{UID: uid, ChannelID: "g3", ChannelType: 2, ActiveAt: 200, UpdatedAt: 20},
+		{UID: uid, ChannelID: "g1", ChannelType: 2, ActiveAt: 100, UpdatedAt: 10},
+	}, got)
+}
+
+func TestStoreScanUserConversationStatePageReadsAuthoritativeSlot(t *testing.T) {
+	ctx := context.Background()
+	nodes := startTwoNodeShardedStores(t)
+
+	uid := findUIDForSlot(t, nodes[0].cluster, 2, "remote-scan")
+	require.NoError(t, nodes[1].db.ForSlot(2).UpsertUserConversationState(ctx, metadb.UserConversationState{
+		UID:         uid,
+		ChannelID:   "g1",
+		ChannelType: 2,
+		UpdatedAt:   10,
+	}))
+	require.NoError(t, nodes[1].db.ForSlot(2).UpsertUserConversationState(ctx, metadb.UserConversationState{
+		UID:         uid,
+		ChannelID:   "g2",
+		ChannelType: 2,
+		UpdatedAt:   20,
+	}))
+	require.NoError(t, nodes[1].db.ForSlot(2).UpsertUserConversationState(ctx, metadb.UserConversationState{
+		UID:         uid,
+		ChannelID:   "g3",
+		ChannelType: 2,
+		UpdatedAt:   30,
+	}))
+
+	store, ok := any(nodes[0].store).(interface {
+		ScanUserConversationStatePage(ctx context.Context, uid string, after metadb.ConversationCursor, limit int) ([]metadb.UserConversationState, metadb.ConversationCursor, bool, error)
+	})
+	require.True(t, ok, "conversation store methods missing")
+
+	page1, cursor, done, err := store.ScanUserConversationStatePage(ctx, uid, metadb.ConversationCursor{}, 2)
+	require.NoError(t, err)
+	require.False(t, done)
+	require.Equal(t, []metadb.UserConversationState{
+		{UID: uid, ChannelID: "g1", ChannelType: 2, UpdatedAt: 10},
+		{UID: uid, ChannelID: "g2", ChannelType: 2, UpdatedAt: 20},
+	}, page1)
+	require.Equal(t, metadb.ConversationCursor{ChannelID: "g2", ChannelType: 2}, cursor)
+
+	page2, cursor, done, err := store.ScanUserConversationStatePage(ctx, uid, cursor, 2)
+	require.NoError(t, err)
+	require.True(t, done)
+	require.Equal(t, []metadb.UserConversationState{
+		{UID: uid, ChannelID: "g3", ChannelType: 2, UpdatedAt: 30},
+	}, page2)
+	require.Equal(t, metadb.ConversationCursor{ChannelID: "g3", ChannelType: 2}, cursor)
+}
+
+func TestStoreBatchGetChannelUpdateLogsGroupsByChannelSlot(t *testing.T) {
+	ctx := context.Background()
+	nodes := startTwoNodeShardedStores(t)
+
+	slot1ChannelID := findChannelIDForSlot(t, nodes[0].cluster, 1, "slot1-update")
+	slot2ChannelID := findChannelIDForSlot(t, nodes[0].cluster, 2, "slot2-update")
+
+	require.NoError(t, nodes[0].db.ForSlot(1).UpsertChannelUpdateLog(ctx, metadb.ChannelUpdateLog{
+		ChannelID:       slot1ChannelID,
+		ChannelType:     1,
+		UpdatedAt:       101,
+		LastMsgSeq:      11,
+		LastClientMsgNo: "c1",
+		LastMsgAt:       201,
+	}))
+	require.NoError(t, nodes[1].db.ForSlot(2).UpsertChannelUpdateLog(ctx, metadb.ChannelUpdateLog{
+		ChannelID:       slot2ChannelID,
+		ChannelType:     1,
+		UpdatedAt:       102,
+		LastMsgSeq:      12,
+		LastClientMsgNo: "c2",
+		LastMsgAt:       202,
+	}))
+
+	store, ok := any(nodes[0].store).(interface {
+		BatchGetChannelUpdateLogs(ctx context.Context, keys []metadb.ConversationKey) (map[metadb.ConversationKey]metadb.ChannelUpdateLog, error)
+	})
+	require.True(t, ok, "channel update log store methods missing")
+
+	got, err := store.BatchGetChannelUpdateLogs(ctx, []metadb.ConversationKey{
+		{ChannelID: slot1ChannelID, ChannelType: 1},
+		{ChannelID: slot2ChannelID, ChannelType: 1},
+	})
+	require.NoError(t, err)
+	require.Equal(t, map[metadb.ConversationKey]metadb.ChannelUpdateLog{
+		{ChannelID: slot1ChannelID, ChannelType: 1}: {
+			ChannelID:       slot1ChannelID,
+			ChannelType:     1,
+			UpdatedAt:       101,
+			LastMsgSeq:      11,
+			LastClientMsgNo: "c1",
+			LastMsgAt:       201,
+		},
+		{ChannelID: slot2ChannelID, ChannelType: 1}: {
+			ChannelID:       slot2ChannelID,
+			ChannelType:     1,
+			UpdatedAt:       102,
+			LastMsgSeq:      12,
+			LastClientMsgNo: "c2",
+			LastMsgAt:       202,
+		},
+	}, got)
+}
+
+func TestStoreTouchUserConversationActiveAtGroupsByUIDSlot(t *testing.T) {
+	ctx := context.Background()
+	nodes := startTwoNodeShardedStores(t)
+
+	localUID := findUIDForSlot(t, nodes[0].cluster, 1, "local-touch")
+	remoteUID := findUIDForSlot(t, nodes[0].cluster, 2, "remote-touch")
+	require.NoError(t, nodes[0].db.ForSlot(1).UpsertUserConversationState(ctx, metadb.UserConversationState{
+		UID:         localUID,
+		ChannelID:   "g1",
+		ChannelType: 2,
+		ActiveAt:    100,
+		UpdatedAt:   10,
+	}))
+	require.NoError(t, nodes[1].db.ForSlot(2).UpsertUserConversationState(ctx, metadb.UserConversationState{
+		UID:         remoteUID,
+		ChannelID:   "g2",
+		ChannelType: 2,
+		ActiveAt:    200,
+		UpdatedAt:   20,
+	}))
+
+	store, ok := any(nodes[0].store).(interface {
+		TouchUserConversationActiveAt(ctx context.Context, patches []metadb.UserConversationActivePatch) error
+	})
+	require.True(t, ok, "conversation store methods missing")
+
+	require.NoError(t, store.TouchUserConversationActiveAt(ctx, []metadb.UserConversationActivePatch{
+		{UID: localUID, ChannelID: "g1", ChannelType: 2, ActiveAt: 300},
+		{UID: remoteUID, ChannelID: "g2", ChannelType: 2, ActiveAt: 250},
+	}))
+
+	got, err := nodes[0].db.ForSlot(1).GetUserConversationState(ctx, localUID, "g1", 2)
+	require.NoError(t, err)
+	require.Equal(t, int64(300), got.ActiveAt)
+	require.Equal(t, int64(10), got.UpdatedAt)
+
+	got, err = nodes[1].db.ForSlot(2).GetUserConversationState(ctx, remoteUID, "g2", 2)
+	require.NoError(t, err)
+	require.Equal(t, int64(250), got.ActiveAt)
+	require.Equal(t, int64(20), got.UpdatedAt)
+}
+
 func TestPebbleBackedGroupDoesNotRecoverDeletedBusinessStateWithoutSnapshot(t *testing.T) {
 	ctx := context.Background()
 	groupID := multiraft.GroupID(62)

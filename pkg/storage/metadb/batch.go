@@ -178,6 +178,98 @@ func (b *WriteBatch) UpsertUserConversationState(slot uint64, state UserConversa
 	return nil
 }
 
+// TouchUserConversationActiveAt advances active_at for each patch without
+// mutating updated_at or other persisted conversation fields.
+func (b *WriteBatch) TouchUserConversationActiveAt(slot uint64, patches []UserConversationActivePatch) error {
+	if err := validateSlot(slot); err != nil {
+		return err
+	}
+
+	for _, patch := range patches {
+		if err := validateConversationUID(patch.UID); err != nil {
+			return err
+		}
+		if err := validateConversationKey(ConversationKey{ChannelID: patch.ChannelID, ChannelType: patch.ChannelType}); err != nil {
+			return err
+		}
+
+		primaryKey := encodeUserConversationStatePrimaryKey(slot, patch.UID, patch.ChannelType, patch.ChannelID, userConversationStatePrimaryFamilyID)
+		current, exists, err := b.loadUserConversationState(slot, primaryKey, patch.UID, patch.ChannelID, patch.ChannelType)
+		if err != nil {
+			return err
+		}
+		if exists && patch.ActiveAt <= current.ActiveAt {
+			continue
+		}
+
+		next := current
+		if !exists {
+			next = UserConversationState{
+				UID:         patch.UID,
+				ChannelID:   patch.ChannelID,
+				ChannelType: patch.ChannelType,
+			}
+		}
+		next.ActiveAt = patch.ActiveAt
+
+		if exists && current.ActiveAt > 0 {
+			oldIndexKey := encodeUserConversationActiveIndexKey(slot, patch.UID, current.ActiveAt, patch.ChannelType, patch.ChannelID)
+			if err := b.batch.Delete(oldIndexKey, nil); err != nil {
+				return err
+			}
+		}
+		if err := b.batch.Set(primaryKey, encodeUserConversationStateFamilyValue(next, primaryKey), nil); err != nil {
+			return err
+		}
+		if next.ActiveAt > 0 {
+			indexKey := encodeUserConversationActiveIndexKey(slot, patch.UID, next.ActiveAt, patch.ChannelType, patch.ChannelID)
+			if err := b.batch.Set(indexKey, []byte{}, nil); err != nil {
+				return err
+			}
+		}
+		b.rememberUserConversationState(primaryKey, next, true)
+	}
+	return nil
+}
+
+// ClearUserConversationActiveAt zeros active_at for the provided uid-scoped keys
+// while preserving updated_at and other conversation fields.
+func (b *WriteBatch) ClearUserConversationActiveAt(slot uint64, uid string, keys []ConversationKey) error {
+	if err := validateSlot(slot); err != nil {
+		return err
+	}
+	if err := validateConversationUID(uid); err != nil {
+		return err
+	}
+
+	normalized, err := normalizeConversationKeys(keys)
+	if err != nil {
+		return err
+	}
+	for _, key := range normalized {
+		primaryKey := encodeUserConversationStatePrimaryKey(slot, uid, key.ChannelType, key.ChannelID, userConversationStatePrimaryFamilyID)
+		current, exists, err := b.loadUserConversationState(slot, primaryKey, uid, key.ChannelID, key.ChannelType)
+		if err != nil {
+			return err
+		}
+		if !exists || current.ActiveAt <= 0 {
+			continue
+		}
+
+		oldIndexKey := encodeUserConversationActiveIndexKey(slot, uid, current.ActiveAt, key.ChannelType, key.ChannelID)
+		if err := b.batch.Delete(oldIndexKey, nil); err != nil {
+			return err
+		}
+
+		current.ActiveAt = 0
+		if err := b.batch.Set(primaryKey, encodeUserConversationStateFamilyValue(current, primaryKey), nil); err != nil {
+			return err
+		}
+		b.rememberUserConversationState(primaryKey, current, true)
+	}
+	return nil
+}
+
 // UpsertChannelUpdateLog encodes and stages a channel update log write.
 func (b *WriteBatch) UpsertChannelUpdateLog(slot uint64, entry ChannelUpdateLog) error {
 	if err := validateSlot(slot); err != nil {

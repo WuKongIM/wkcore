@@ -23,6 +23,8 @@ func New(cluster *raftcluster.Cluster, db *metadb.DB) *Store {
 		cluster.RPCMux().Handle(runtimeMetaRPCServiceID, store.handleRuntimeMetaRPC)
 		cluster.RPCMux().Handle(identityRPCServiceID, store.handleIdentityRPC)
 		cluster.RPCMux().Handle(subscriberRPCServiceID, store.handleSubscriberRPC)
+		cluster.RPCMux().Handle(userConversationStateRPCServiceID, store.handleUserConversationStateRPC)
+		cluster.RPCMux().Handle(channelUpdateLogRPCServiceID, store.handleChannelUpdateLogRPC)
 	}
 	return store
 }

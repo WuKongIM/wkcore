@@ -789,6 +789,120 @@ func TestApplyBatchCreateUserDoesNotOverwritePriorUpsertWithinBatch(t *testing.T
 	}
 }
 
+func TestApplyBatchTouchUserConversationActiveAtPreservesUpdatedAt(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	bsm, ok := mustNewStateMachine(t, db, 11).(multiraft.BatchStateMachine)
+	if !ok {
+		t.Fatal("state machine does not implement multiraft.BatchStateMachine")
+	}
+
+	if err := db.ForSlot(11).UpsertUserConversationState(ctx, metadb.UserConversationState{
+		UID:         "u1",
+		ChannelID:   "g1",
+		ChannelType: 2,
+		ReadSeq:     10,
+		DeletedToSeq: 3,
+		ActiveAt:    100,
+		UpdatedAt:   200,
+	}); err != nil {
+		t.Fatalf("UpsertUserConversationState() error = %v", err)
+	}
+
+	cmds := []multiraft.Command{
+		{
+			GroupID: 11,
+			Index:   1,
+			Term:    1,
+			Data: EncodeTouchUserConversationActiveAtCommand([]metadb.UserConversationActivePatch{
+				{UID: "u1", ChannelID: "g1", ChannelType: 2, ActiveAt: 300},
+			}),
+		},
+	}
+
+	results, err := bsm.ApplyBatch(ctx, cmds)
+	if err != nil {
+		t.Fatalf("ApplyBatch() error = %v", err)
+	}
+	if len(results) != 1 || string(results[0]) != ApplyResultOK {
+		t.Fatalf("ApplyBatch() results = %q", results)
+	}
+
+	got, err := db.ForSlot(11).GetUserConversationState(ctx, "u1", "g1", 2)
+	if err != nil {
+		t.Fatalf("GetUserConversationState() error = %v", err)
+	}
+	if got.ActiveAt != 300 {
+		t.Fatalf("ActiveAt = %d, want 300", got.ActiveAt)
+	}
+	if got.UpdatedAt != 200 {
+		t.Fatalf("UpdatedAt = %d, want 200", got.UpdatedAt)
+	}
+	if got.ReadSeq != 10 || got.DeletedToSeq != 3 {
+		t.Fatalf("state = %#v", got)
+	}
+}
+
+func TestApplyBatchUpsertChannelUpdateLogs(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	bsm, ok := mustNewStateMachine(t, db, 11).(multiraft.BatchStateMachine)
+	if !ok {
+		t.Fatal("state machine does not implement multiraft.BatchStateMachine")
+	}
+
+	cmds := []multiraft.Command{
+		{
+			GroupID: 11,
+			Index:   1,
+			Term:    1,
+			Data: EncodeUpsertChannelUpdateLogsCommand([]metadb.ChannelUpdateLog{
+				{ChannelID: "g1", ChannelType: 2, UpdatedAt: 100, LastMsgSeq: 10, LastClientMsgNo: "c1", LastMsgAt: 200},
+				{ChannelID: "g1", ChannelType: 2, UpdatedAt: 110, LastMsgSeq: 11, LastClientMsgNo: "c2", LastMsgAt: 210},
+				{ChannelID: "g2", ChannelType: 2, UpdatedAt: 120, LastMsgSeq: 20, LastClientMsgNo: "c3", LastMsgAt: 220},
+			}),
+		},
+	}
+
+	results, err := bsm.ApplyBatch(ctx, cmds)
+	if err != nil {
+		t.Fatalf("ApplyBatch() error = %v", err)
+	}
+	if len(results) != 1 || string(results[0]) != ApplyResultOK {
+		t.Fatalf("ApplyBatch() results = %q", results)
+	}
+
+	got, err := db.ForSlot(11).BatchGetChannelUpdateLogs(ctx, []metadb.ConversationKey{
+		{ChannelID: "g1", ChannelType: 2},
+		{ChannelID: "g2", ChannelType: 2},
+	})
+	if err != nil {
+		t.Fatalf("BatchGetChannelUpdateLogs() error = %v", err)
+	}
+
+	want := map[metadb.ConversationKey]metadb.ChannelUpdateLog{
+		{ChannelID: "g1", ChannelType: 2}: {
+			ChannelID:       "g1",
+			ChannelType:     2,
+			UpdatedAt:       110,
+			LastMsgSeq:      11,
+			LastClientMsgNo: "c2",
+			LastMsgAt:       210,
+		},
+		{ChannelID: "g2", ChannelType: 2}: {
+			ChannelID:       "g2",
+			ChannelType:     2,
+			UpdatedAt:       120,
+			LastMsgSeq:      20,
+			LastClientMsgNo: "c3",
+			LastMsgAt:       220,
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("BatchGetChannelUpdateLogs() = %#v, want %#v", got, want)
+	}
+}
+
 // --- Encode/decode edge case tests ---
 
 func TestEncodeDecodeEdgeCases(t *testing.T) {
