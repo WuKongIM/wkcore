@@ -135,6 +135,62 @@ func (b *WriteBatch) UpsertChannelRuntimeMeta(slot uint64, meta ChannelRuntimeMe
 	return b.batch.Set(key, value, nil)
 }
 
+// UpsertUserConversationState encodes and stages a user conversation state write.
+func (b *WriteBatch) UpsertUserConversationState(slot uint64, state UserConversationState) error {
+	if err := validateSlot(slot); err != nil {
+		return err
+	}
+	if err := validateUserConversationState(state); err != nil {
+		return err
+	}
+
+	primaryKey := encodeUserConversationStatePrimaryKey(slot, state.UID, state.ChannelType, state.ChannelID, userConversationStatePrimaryFamilyID)
+	value := encodeUserConversationStateFamilyValue(state, primaryKey)
+	if err := b.batch.Set(primaryKey, value, nil); err != nil {
+		return err
+	}
+	if state.ActiveAt > 0 {
+		indexKey := encodeUserConversationActiveIndexKey(slot, state.UID, state.ActiveAt, state.ChannelType, state.ChannelID)
+		if err := b.batch.Set(indexKey, []byte{}, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UpsertChannelUpdateLog encodes and stages a channel update log write.
+func (b *WriteBatch) UpsertChannelUpdateLog(slot uint64, entry ChannelUpdateLog) error {
+	if err := validateSlot(slot); err != nil {
+		return err
+	}
+	if err := validateChannelUpdateLog(entry); err != nil {
+		return err
+	}
+
+	key := encodeChannelUpdateLogPrimaryKey(slot, entry.ChannelID, entry.ChannelType, channelUpdateLogPrimaryFamilyID)
+	value := encodeChannelUpdateLogFamilyValue(entry, key)
+	return b.batch.Set(key, value, nil)
+}
+
+// DeleteChannelUpdateLogs removes channel update log rows for the provided keys.
+func (b *WriteBatch) DeleteChannelUpdateLogs(slot uint64, keys []ConversationKey) error {
+	if err := validateSlot(slot); err != nil {
+		return err
+	}
+
+	normalized, err := normalizeConversationKeys(keys)
+	if err != nil {
+		return err
+	}
+	for _, key := range normalized {
+		primaryKey := encodeChannelUpdateLogPrimaryKey(slot, key.ChannelID, key.ChannelType, channelUpdateLogPrimaryFamilyID)
+		if err := b.batch.Delete(primaryKey, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // DeleteChannelRuntimeMeta removes the runtime metadata record for a channel.
 func (b *WriteBatch) DeleteChannelRuntimeMeta(slot uint64, channelID string, channelType int64) error {
 	if err := validateSlot(slot); err != nil {

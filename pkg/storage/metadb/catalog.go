@@ -1,11 +1,13 @@
 package metadb
 
 const (
-	TableIDUser               uint32 = 1
-	TableIDChannel            uint32 = 2
-	TableIDChannelRuntimeMeta uint32 = 3
-	TableIDDevice             uint32 = 4
-	TableIDSubscriber         uint32 = 5
+	TableIDUser                  uint32 = 1
+	TableIDChannel               uint32 = 2
+	TableIDChannelRuntimeMeta    uint32 = 3
+	TableIDDevice                uint32 = 4
+	TableIDSubscriber            uint32 = 5
+	TableIDUserConversationState uint32 = 6
+	TableIDChannelUpdateLog      uint32 = 7
 
 	maxKeyStringLen = 1<<16 - 1
 )
@@ -62,6 +64,32 @@ const (
 	subscriberColumnIDChannelID uint16 = 1
 	subscriberColumnIDType      uint16 = 2
 	subscriberColumnIDUID       uint16 = 3
+)
+
+const (
+	userConversationStatePrimaryFamilyID uint16 = 0
+	userConversationStatePrimaryIndexID  uint16 = 1
+	userConversationStateActiveIndexID   uint16 = 2
+
+	userConversationStateColumnIDUID          uint16 = 1
+	userConversationStateColumnIDChannelID    uint16 = 2
+	userConversationStateColumnIDChannelType  uint16 = 3
+	userConversationStateColumnIDReadSeq      uint16 = 4
+	userConversationStateColumnIDDeletedToSeq uint16 = 5
+	userConversationStateColumnIDActiveAt     uint16 = 6
+	userConversationStateColumnIDUpdatedAt    uint16 = 7
+)
+
+const (
+	channelUpdateLogPrimaryFamilyID uint16 = 0
+	channelUpdateLogPrimaryIndexID  uint16 = 1
+
+	channelUpdateLogColumnIDChannelID       uint16 = 1
+	channelUpdateLogColumnIDChannelType     uint16 = 2
+	channelUpdateLogColumnIDUpdatedAt       uint16 = 3
+	channelUpdateLogColumnIDLastMsgSeq      uint16 = 4
+	channelUpdateLogColumnIDLastClientMsgNo uint16 = 5
+	channelUpdateLogColumnIDLastMsgAt       uint16 = 6
 )
 
 type ColumnType int
@@ -253,5 +281,70 @@ var SubscriberTable = &TableDesc{
 		Unique:    true,
 		Primary:   true,
 		ColumnIDs: []uint16{subscriberColumnIDChannelID, subscriberColumnIDType, subscriberColumnIDUID},
+	},
+}
+
+var UserConversationStateTable = &TableDesc{
+	ID:   TableIDUserConversationState,
+	Name: "user_conversation_state",
+	Columns: []ColumnDesc{
+		{ID: userConversationStateColumnIDUID, Name: "uid", Type: ColumnString},
+		{ID: userConversationStateColumnIDChannelType, Name: "channel_type", Type: ColumnInt64},
+		{ID: userConversationStateColumnIDChannelID, Name: "channel_id", Type: ColumnString},
+		{ID: userConversationStateColumnIDReadSeq, Name: "read_seq", Type: ColumnUint64},
+		{ID: userConversationStateColumnIDDeletedToSeq, Name: "deleted_to_seq", Type: ColumnUint64},
+		{ID: userConversationStateColumnIDActiveAt, Name: "active_at", Type: ColumnInt64},
+		{ID: userConversationStateColumnIDUpdatedAt, Name: "updated_at", Type: ColumnInt64},
+	},
+	Families: []ColumnFamilyDesc{
+		{
+			ID:              userConversationStatePrimaryFamilyID,
+			Name:            "primary",
+			ColumnIDs:       []uint16{userConversationStateColumnIDReadSeq, userConversationStateColumnIDDeletedToSeq, userConversationStateColumnIDActiveAt, userConversationStateColumnIDUpdatedAt},
+			DefaultColumnID: userConversationStateColumnIDReadSeq,
+		},
+	},
+	PrimaryIndex: IndexDesc{
+		ID:        userConversationStatePrimaryIndexID,
+		Name:      "pk_user_conversation_state",
+		Unique:    true,
+		Primary:   true,
+		ColumnIDs: []uint16{userConversationStateColumnIDUID, userConversationStateColumnIDChannelType, userConversationStateColumnIDChannelID},
+	},
+	SecondaryIndexes: []IndexDesc{
+		{
+			ID:        userConversationStateActiveIndexID,
+			Name:      "idx_user_conversation_active",
+			Unique:    false,
+			ColumnIDs: []uint16{userConversationStateColumnIDUID, userConversationStateColumnIDActiveAt, userConversationStateColumnIDChannelType, userConversationStateColumnIDChannelID},
+		},
+	},
+}
+
+var ChannelUpdateLogTable = &TableDesc{
+	ID:   TableIDChannelUpdateLog,
+	Name: "channel_update_log",
+	Columns: []ColumnDesc{
+		{ID: channelUpdateLogColumnIDChannelType, Name: "channel_type", Type: ColumnInt64},
+		{ID: channelUpdateLogColumnIDChannelID, Name: "channel_id", Type: ColumnString},
+		{ID: channelUpdateLogColumnIDUpdatedAt, Name: "updated_at", Type: ColumnInt64},
+		{ID: channelUpdateLogColumnIDLastMsgSeq, Name: "last_msg_seq", Type: ColumnUint64},
+		{ID: channelUpdateLogColumnIDLastClientMsgNo, Name: "last_client_msg_no", Type: ColumnString},
+		{ID: channelUpdateLogColumnIDLastMsgAt, Name: "last_msg_at", Type: ColumnInt64},
+	},
+	Families: []ColumnFamilyDesc{
+		{
+			ID:              channelUpdateLogPrimaryFamilyID,
+			Name:            "primary",
+			ColumnIDs:       []uint16{channelUpdateLogColumnIDUpdatedAt, channelUpdateLogColumnIDLastMsgSeq, channelUpdateLogColumnIDLastClientMsgNo, channelUpdateLogColumnIDLastMsgAt},
+			DefaultColumnID: channelUpdateLogColumnIDUpdatedAt,
+		},
+	},
+	PrimaryIndex: IndexDesc{
+		ID:        channelUpdateLogPrimaryIndexID,
+		Name:      "pk_channel_update_log",
+		Unique:    true,
+		Primary:   true,
+		ColumnIDs: []uint16{channelUpdateLogColumnIDChannelType, channelUpdateLogColumnIDChannelID},
 	},
 }
