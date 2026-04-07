@@ -155,6 +155,9 @@ func (b *WriteBatch) UpsertUserConversationState(slot uint64, state UserConversa
 	if err != nil {
 		return err
 	}
+	if exists && state.ActiveAt < existing.ActiveAt {
+		state.ActiveAt = existing.ActiveAt
+	}
 	value := encodeUserConversationStateFamilyValue(state, primaryKey)
 	if exists && existing.ActiveAt > 0 && existing.ActiveAt != state.ActiveAt {
 		oldIndexKey := encodeUserConversationActiveIndexKey(slot, state.UID, existing.ActiveAt, state.ChannelType, state.ChannelID)

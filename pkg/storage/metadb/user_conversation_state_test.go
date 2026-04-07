@@ -82,10 +82,10 @@ func TestShardListUserConversationStatePageReturnsStableCursor(t *testing.T) {
 	shard := openConversationTestShard(t)
 
 	states := []UserConversationState{
-		{UID: "u1", ChannelID: "g3", ChannelType: 2, ActiveAt: 500, UpdatedAt: 30},
-		{UID: "u1", ChannelID: "g1", ChannelType: 2, ActiveAt: 500, UpdatedAt: 10},
-		{UID: "u1", ChannelID: "g2", ChannelType: 2, ActiveAt: 500, UpdatedAt: 20},
-		{UID: "u2", ChannelID: "g4", ChannelType: 2, ActiveAt: 500, UpdatedAt: 40},
+		{UID: "u1", ChannelID: "g3", ChannelType: 2, UpdatedAt: 30},
+		{UID: "u1", ChannelID: "g1", ChannelType: 2, UpdatedAt: 10},
+		{UID: "u1", ChannelID: "g2", ChannelType: 2, UpdatedAt: 20},
+		{UID: "u2", ChannelID: "g4", ChannelType: 2, UpdatedAt: 40},
 	}
 	for _, state := range states {
 		require.NoError(t, shard.UpsertUserConversationState(ctx, state))
@@ -95,18 +95,18 @@ func TestShardListUserConversationStatePageReturnsStableCursor(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, done)
 	require.Equal(t, []UserConversationState{
-		{UID: "u1", ChannelID: "g1", ChannelType: 2, ActiveAt: 500, UpdatedAt: 10},
-		{UID: "u1", ChannelID: "g2", ChannelType: 2, ActiveAt: 500, UpdatedAt: 20},
+		{UID: "u1", ChannelID: "g1", ChannelType: 2, UpdatedAt: 10},
+		{UID: "u1", ChannelID: "g2", ChannelType: 2, UpdatedAt: 20},
 	}, page1)
-	require.Equal(t, ConversationCursor{ActiveAt: 500, ChannelType: 2, ChannelID: "g2"}, cursor)
+	require.Equal(t, ConversationCursor{ChannelType: 2, ChannelID: "g2"}, cursor)
 
 	page2, cursor, done, err := shard.ListUserConversationStatePage(ctx, "u1", cursor, 2)
 	require.NoError(t, err)
 	require.True(t, done)
 	require.Equal(t, []UserConversationState{
-		{UID: "u1", ChannelID: "g3", ChannelType: 2, ActiveAt: 500, UpdatedAt: 30},
+		{UID: "u1", ChannelID: "g3", ChannelType: 2, UpdatedAt: 30},
 	}, page2)
-	require.Equal(t, ConversationCursor{ActiveAt: 500, ChannelType: 2, ChannelID: "g3"}, cursor)
+	require.Equal(t, ConversationCursor{ChannelType: 2, ChannelID: "g3"}, cursor)
 }
 
 func TestShardClearUserConversationActiveAtZeroesOnlyActiveField(t *testing.T) {
@@ -186,6 +186,31 @@ func TestWriteBatchUpsertUserConversationStateReplacesActiveIndex(t *testing.T) 
 	}, got)
 }
 
+func TestShardUpsertUserConversationStatePreservesMaxActiveAt(t *testing.T) {
+	shard := openConversationTestShard(t)
+	ctx := context.Background()
+
+	require.NoError(t, shard.UpsertUserConversationState(ctx, UserConversationState{
+		UID:         "u1",
+		ChannelID:   "g1",
+		ChannelType: 2,
+		ActiveAt:    300,
+		UpdatedAt:   10,
+	}))
+	require.NoError(t, shard.UpsertUserConversationState(ctx, UserConversationState{
+		UID:         "u1",
+		ChannelID:   "g1",
+		ChannelType: 2,
+		ActiveAt:    100,
+		UpdatedAt:   20,
+	}))
+
+	got, err := shard.GetUserConversationState(ctx, "u1", "g1", 2)
+	require.NoError(t, err)
+	require.Equal(t, int64(300), got.ActiveAt)
+	require.Equal(t, int64(20), got.UpdatedAt)
+}
+
 func TestWriteBatchUpsertUserConversationStateReplacesActiveIndexWithinBatch(t *testing.T) {
 	db := openTestDB(t)
 	shard := db.ForSlot(7)
@@ -208,6 +233,63 @@ func TestWriteBatchUpsertUserConversationStateReplacesActiveIndexWithinBatch(t *
 		UpdatedAt:   10,
 	}))
 	require.NoError(t, wb.Commit())
+
+	got, err := shard.ListUserConversationActive(ctx, "u1", 10)
+	require.NoError(t, err)
+	require.Equal(t, []UserConversationState{
+		{UID: "u1", ChannelID: "g1", ChannelType: 2, ActiveAt: 200, UpdatedAt: 10},
+	}, got)
+}
+
+func TestWriteBatchUpsertUserConversationStatePreservesMaxActiveAt(t *testing.T) {
+	db := openTestDB(t)
+	shard := db.ForSlot(7)
+	ctx := context.Background()
+
+	wb := db.NewWriteBatch()
+	defer wb.Close()
+	require.NoError(t, wb.UpsertUserConversationState(7, UserConversationState{
+		UID:         "u1",
+		ChannelID:   "g1",
+		ChannelType: 2,
+		ActiveAt:    300,
+		UpdatedAt:   10,
+	}))
+	require.NoError(t, wb.UpsertUserConversationState(7, UserConversationState{
+		UID:         "u1",
+		ChannelID:   "g1",
+		ChannelType: 2,
+		ActiveAt:    100,
+		UpdatedAt:   20,
+	}))
+	require.NoError(t, wb.Commit())
+
+	got, err := shard.GetUserConversationState(ctx, "u1", "g1", 2)
+	require.NoError(t, err)
+	require.Equal(t, int64(300), got.ActiveAt)
+	require.Equal(t, int64(20), got.UpdatedAt)
+}
+
+func TestShardListUserConversationActiveSkipsStaleIndexEntries(t *testing.T) {
+	db := openTestDB(t)
+	shard := db.ForSlot(7)
+	ctx := context.Background()
+
+	require.NoError(t, shard.UpsertUserConversationState(ctx, UserConversationState{
+		UID:         "u1",
+		ChannelID:   "g1",
+		ChannelType: 2,
+		ActiveAt:    200,
+		UpdatedAt:   10,
+	}))
+
+	db.mu.Lock()
+	batch := db.db.NewBatch()
+	indexKey := encodeUserConversationActiveIndexKey(7, "u1", 100, 2, "g1")
+	require.NoError(t, batch.Set(indexKey, nil, nil))
+	require.NoError(t, batch.Commit(nil))
+	require.NoError(t, batch.Close())
+	db.mu.Unlock()
 
 	got, err := shard.ListUserConversationActive(ctx, "u1", 10)
 	require.NoError(t, err)

@@ -26,9 +26,15 @@ type ConversationKey struct {
 }
 
 type ConversationCursor struct {
-	ActiveAt    int64
-	ChannelType int64
 	ChannelID   string
+	ChannelType int64
+}
+
+type UserConversationActivePatch struct {
+	UID         string
+	ChannelID   string
+	ChannelType int64
+	ActiveAt    int64
 }
 
 func (s *ShardStore) GetUserConversationState(ctx context.Context, uid, channelID string, channelType int64) (UserConversationState, error) {
@@ -82,31 +88,39 @@ func (s *ShardStore) UpsertUserConversationState(ctx context.Context, state User
 	s.db.mu.Lock()
 	defer s.db.mu.Unlock()
 
-	primaryKey := encodeUserConversationStatePrimaryKey(s.slot, state.UID, state.ChannelType, state.ChannelID, userConversationStatePrimaryFamilyID)
 	existing, err := s.getUserConversationStateLocked(state.UID, state.ChannelID, state.ChannelType)
-	if err != nil && err != ErrNotFound {
-		return err
-	}
-	if err == ErrNotFound {
+	switch {
+	case err == nil:
+		if state.ActiveAt < existing.ActiveAt {
+			state.ActiveAt = existing.ActiveAt
+		}
+	case err == ErrNotFound:
 		s.db.runAfterExistenceCheckHook()
 		if err := s.db.checkContext(ctx); err != nil {
 			return err
 		}
+	default:
+		return err
 	}
+
+	primaryKey := encodeUserConversationStatePrimaryKey(s.slot, state.UID, state.ChannelType, state.ChannelID, userConversationStatePrimaryFamilyID)
+	value := encodeUserConversationStateFamilyValue(state, primaryKey)
 
 	batch := s.db.db.NewBatch()
 	defer batch.Close()
 
 	if err == nil && existing.ActiveAt > 0 && existing.ActiveAt != state.ActiveAt {
-		if err := batch.Delete(encodeUserConversationActiveIndexKey(s.slot, state.UID, existing.ActiveAt, state.ChannelType, state.ChannelID), nil); err != nil {
+		oldIndexKey := encodeUserConversationActiveIndexKey(s.slot, state.UID, existing.ActiveAt, state.ChannelType, state.ChannelID)
+		if err := batch.Delete(oldIndexKey, nil); err != nil {
 			return err
 		}
 	}
-	if err := batch.Set(primaryKey, encodeUserConversationStateFamilyValue(state, primaryKey), nil); err != nil {
+	if err := batch.Set(primaryKey, value, nil); err != nil {
 		return err
 	}
 	if state.ActiveAt > 0 {
-		if err := batch.Set(encodeUserConversationActiveIndexKey(s.slot, state.UID, state.ActiveAt, state.ChannelType, state.ChannelID), []byte{}, nil); err != nil {
+		indexKey := encodeUserConversationActiveIndexKey(s.slot, state.UID, state.ActiveAt, state.ChannelType, state.ChannelID)
+		if err := batch.Set(indexKey, nil, nil); err != nil {
 			return err
 		}
 	}
@@ -131,29 +145,45 @@ func (s *ShardStore) TouchUserConversationActiveAt(ctx context.Context, uid, cha
 	defer s.db.mu.Unlock()
 
 	current, err := s.getUserConversationStateLocked(uid, channelID, channelType)
-	if err != nil {
+	switch {
+	case err == nil:
+	case err == ErrNotFound:
+		current = UserConversationState{
+			UID:         uid,
+			ChannelID:   channelID,
+			ChannelType: channelType,
+		}
+		s.db.runAfterExistenceCheckHook()
+		if err := s.db.checkContext(ctx); err != nil {
+			return err
+		}
+	default:
 		return err
 	}
+
 	if activeAt <= current.ActiveAt {
 		return nil
 	}
 
-	prevActiveAt := current.ActiveAt
-	current.ActiveAt = activeAt
+	updated := current
+	updated.ActiveAt = activeAt
+
 	primaryKey := encodeUserConversationStatePrimaryKey(s.slot, uid, channelType, channelID, userConversationStatePrimaryFamilyID)
+	value := encodeUserConversationStateFamilyValue(updated, primaryKey)
 
 	batch := s.db.db.NewBatch()
 	defer batch.Close()
 
-	if prevActiveAt > 0 {
-		if err := batch.Delete(encodeUserConversationActiveIndexKey(s.slot, uid, prevActiveAt, channelType, channelID), nil); err != nil {
+	if current.ActiveAt > 0 {
+		oldIndexKey := encodeUserConversationActiveIndexKey(s.slot, uid, current.ActiveAt, channelType, channelID)
+		if err := batch.Delete(oldIndexKey, nil); err != nil {
 			return err
 		}
 	}
-	if err := batch.Set(primaryKey, encodeUserConversationStateFamilyValue(current, primaryKey), nil); err != nil {
+	if err := batch.Set(primaryKey, value, nil); err != nil {
 		return err
 	}
-	if err := batch.Set(encodeUserConversationActiveIndexKey(s.slot, uid, activeAt, channelType, channelID), []byte{}, nil); err != nil {
+	if err := batch.Set(encodeUserConversationActiveIndexKey(s.slot, uid, activeAt, channelType, channelID), nil, nil); err != nil {
 		return err
 	}
 	return batch.Commit(pebble.Sync)
@@ -186,13 +216,20 @@ func (s *ShardStore) ClearUserConversationActiveAt(ctx context.Context, uid stri
 
 	for _, key := range normalized {
 		state, err := s.getUserConversationStateLocked(uid, key.ChannelID, key.ChannelType)
-		if err != nil {
+		switch {
+		case err == nil:
+		case err == ErrNotFound:
+			continue
+		default:
 			return err
 		}
-		if state.ActiveAt > 0 {
-			if err := batch.Delete(encodeUserConversationActiveIndexKey(s.slot, uid, state.ActiveAt, key.ChannelType, key.ChannelID), nil); err != nil {
-				return err
-			}
+		if state.ActiveAt <= 0 {
+			continue
+		}
+
+		oldIndexKey := encodeUserConversationActiveIndexKey(s.slot, uid, state.ActiveAt, key.ChannelType, key.ChannelID)
+		if err := batch.Delete(oldIndexKey, nil); err != nil {
+			return err
 		}
 		state.ActiveAt = 0
 		primaryKey := encodeUserConversationStatePrimaryKey(s.slot, uid, key.ChannelType, key.ChannelID, userConversationStatePrimaryFamilyID)
@@ -204,8 +241,62 @@ func (s *ShardStore) ClearUserConversationActiveAt(ctx context.Context, uid stri
 }
 
 func (s *ShardStore) ListUserConversationActive(ctx context.Context, uid string, limit int) ([]UserConversationState, error) {
-	page, _, _, err := s.ListUserConversationStatePage(ctx, uid, ConversationCursor{}, limit)
-	return page, err
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
+	if err := s.db.checkContext(ctx); err != nil {
+		return nil, err
+	}
+	if err := validateConversationUID(uid); err != nil {
+		return nil, err
+	}
+	if err := validateConversationLimit(limit); err != nil {
+		return nil, err
+	}
+
+	s.db.mu.RLock()
+	defer s.db.mu.RUnlock()
+
+	prefix := encodeUserConversationActiveIndexPrefix(s.slot, uid)
+	iter, err := s.db.db.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: nextPrefix(prefix),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+
+	states := make([]UserConversationState, 0, limit)
+	for ok := iter.First(); ok && len(states) < limit; ok = iter.Next() {
+		if err := s.db.checkContext(ctx); err != nil {
+			return nil, err
+		}
+
+		key := iter.Key()
+		if !bytes.HasPrefix(key, prefix) {
+			break
+		}
+		activeAt, conversationKey, err := decodeUserConversationActiveIndexKey(key, prefix)
+		if err != nil {
+			return nil, err
+		}
+		state, err := s.getUserConversationStateLocked(uid, conversationKey.ChannelID, conversationKey.ChannelType)
+		if err != nil {
+			if err == ErrNotFound {
+				continue
+			}
+			return nil, err
+		}
+		if state.ActiveAt <= 0 || state.ActiveAt != activeAt {
+			continue
+		}
+		states = append(states, state)
+	}
+	if err := iter.Error(); err != nil {
+		return nil, err
+	}
+	return states, nil
 }
 
 func (s *ShardStore) ListUserConversationStatePage(ctx context.Context, uid string, after ConversationCursor, limit int) ([]UserConversationState, ConversationCursor, bool, error) {
@@ -218,6 +309,9 @@ func (s *ShardStore) ListUserConversationStatePage(ctx context.Context, uid stri
 	if err := validateConversationUID(uid); err != nil {
 		return nil, ConversationCursor{}, false, err
 	}
+	if err := validateConversationCursor(after); err != nil {
+		return nil, ConversationCursor{}, false, err
+	}
 	if err := validateConversationLimit(limit); err != nil {
 		return nil, ConversationCursor{}, false, err
 	}
@@ -225,14 +319,10 @@ func (s *ShardStore) ListUserConversationStatePage(ctx context.Context, uid stri
 	s.db.mu.RLock()
 	defer s.db.mu.RUnlock()
 
-	return s.listUserConversationStatePageLocked(ctx, uid, after, limit)
-}
-
-func (s *ShardStore) listUserConversationStatePageLocked(ctx context.Context, uid string, after ConversationCursor, limit int) ([]UserConversationState, ConversationCursor, bool, error) {
-	prefix := encodeUserConversationActiveIndexPrefix(s.slot, uid)
+	prefix := encodeUserConversationStatePrimaryPrefix(s.slot, uid)
 	lowerBound := prefix
 	if after != (ConversationCursor{}) {
-		lowerBound = nextPrefix(encodeUserConversationActiveIndexKey(s.slot, uid, after.ActiveAt, after.ChannelType, after.ChannelID))
+		lowerBound = nextPrefix(encodeUserConversationStatePrimaryKey(s.slot, uid, after.ChannelType, after.ChannelID, userConversationStatePrimaryFamilyID))
 	}
 
 	iter, err := s.db.db.NewIter(&pebble.IterOptions{
@@ -254,18 +344,15 @@ func (s *ShardStore) listUserConversationStatePageLocked(ctx context.Context, ui
 		if !bytes.HasPrefix(key, prefix) {
 			break
 		}
-		cursor, keyInfo, err := decodeUserConversationActiveIndexKey(key, prefix)
+		value, err := iter.ValueAndErr()
 		if err != nil {
 			return nil, ConversationCursor{}, false, err
 		}
-		state, err := s.getUserConversationStateLocked(uid, keyInfo.ChannelID, keyInfo.ChannelType)
+		state, err := decodeUserConversationStateRecord(key, value, prefix)
 		if err != nil {
-			if err == ErrNotFound {
-				continue
-			}
 			return nil, ConversationCursor{}, false, err
 		}
-		state.ActiveAt = cursor.ActiveAt
+		state.UID = uid
 		states = append(states, state)
 		if len(states) > limit {
 			return states[:limit], stateToCursor(states[limit-1]), false, nil
@@ -306,6 +393,16 @@ func validateConversationKey(key ConversationKey) error {
 	return nil
 }
 
+func validateConversationCursor(cursor ConversationCursor) error {
+	if cursor == (ConversationCursor{}) {
+		return nil
+	}
+	return validateConversationKey(ConversationKey{
+		ChannelID:   cursor.ChannelID,
+		ChannelType: cursor.ChannelType,
+	})
+}
+
 func validateConversationLimit(limit int) error {
 	if limit <= 0 {
 		return ErrInvalidArgument
@@ -334,27 +431,68 @@ func normalizeConversationKeys(keys []ConversationKey) ([]ConversationKey, error
 		if normalized[i].ChannelType != normalized[j].ChannelType {
 			return normalized[i].ChannelType < normalized[j].ChannelType
 		}
-		return normalized[i].ChannelID < normalized[j].ChannelID
+		return encodedConversationStringLess(normalized[i].ChannelID, normalized[j].ChannelID)
 	})
 	return normalized, nil
 }
 
+func encodedConversationStringLess(left, right string) bool {
+	if len(left) != len(right) {
+		return len(left) < len(right)
+	}
+	return left < right
+}
+
 func stateToCursor(state UserConversationState) ConversationCursor {
 	return ConversationCursor{
-		ActiveAt:    state.ActiveAt,
-		ChannelType: state.ChannelType,
 		ChannelID:   state.ChannelID,
+		ChannelType: state.ChannelType,
 	}
 }
 
-func encodeUserConversationStatePrimaryKey(slot uint64, uid string, channelType int64, channelID string, familyID uint16) []byte {
-	key := make([]byte, 0, 64)
+func encodeUserConversationStatePrimaryPrefix(slot uint64, uid string) []byte {
+	key := make([]byte, 0, 48)
 	key = encodeStatePrefix(slot, UserConversationStateTable.ID)
 	key = appendKeyString(key, uid)
+	return key
+}
+
+func encodeUserConversationStatePrimaryKey(slot uint64, uid string, channelType int64, channelID string, familyID uint16) []byte {
+	key := encodeUserConversationStatePrimaryPrefix(slot, uid)
 	key = appendKeyInt64Ordered(key, channelType)
 	key = appendKeyString(key, channelID)
 	key = binary.AppendUvarint(key, uint64(familyID))
 	return key
+}
+
+func decodeUserConversationStateRecord(key, value, prefix []byte) (UserConversationState, error) {
+	rest := key[len(prefix):]
+	channelType, rest, err := decodeOrderedInt64(rest)
+	if err != nil {
+		return UserConversationState{}, err
+	}
+	channelID, rest, err := decodeKeyString(rest)
+	if err != nil {
+		return UserConversationState{}, err
+	}
+	familyID, n := binary.Uvarint(rest)
+	if n <= 0 {
+		return UserConversationState{}, ErrCorruptValue
+	}
+	if familyID != uint64(userConversationStatePrimaryFamilyID) {
+		return UserConversationState{}, fmt.Errorf("%w: invalid conversation state family %d", ErrCorruptValue, familyID)
+	}
+	if len(rest[n:]) != 0 {
+		return UserConversationState{}, ErrCorruptValue
+	}
+
+	state, err := decodeUserConversationStateFamilyValue(key, value)
+	if err != nil {
+		return UserConversationState{}, err
+	}
+	state.ChannelID = channelID
+	state.ChannelType = channelType
+	return state, nil
 }
 
 func encodeUserConversationActiveIndexPrefix(slot uint64, uid string) []byte {
@@ -372,24 +510,24 @@ func encodeUserConversationActiveIndexKey(slot uint64, uid string, activeAt int6
 	return key
 }
 
-func decodeUserConversationActiveIndexKey(key, prefix []byte) (ConversationCursor, ConversationKey, error) {
+func decodeUserConversationActiveIndexKey(key, prefix []byte) (int64, ConversationKey, error) {
 	rest := key[len(prefix):]
 	activeAt, rest, err := decodeOrderedInt64Desc(rest)
 	if err != nil {
-		return ConversationCursor{}, ConversationKey{}, err
+		return 0, ConversationKey{}, err
 	}
 	channelType, rest, err := decodeOrderedInt64(rest)
 	if err != nil {
-		return ConversationCursor{}, ConversationKey{}, err
+		return 0, ConversationKey{}, err
 	}
 	channelID, rest, err := decodeKeyString(rest)
 	if err != nil {
-		return ConversationCursor{}, ConversationKey{}, err
+		return 0, ConversationKey{}, err
 	}
 	if len(rest) != 0 {
-		return ConversationCursor{}, ConversationKey{}, fmt.Errorf("%w: malformed conversation active index key", ErrCorruptValue)
+		return 0, ConversationKey{}, fmt.Errorf("%w: malformed conversation active index key", ErrCorruptValue)
 	}
-	return ConversationCursor{ActiveAt: activeAt, ChannelType: channelType, ChannelID: channelID}, ConversationKey{ChannelID: channelID, ChannelType: channelType}, nil
+	return activeAt, ConversationKey{ChannelID: channelID, ChannelType: channelType}, nil
 }
 
 func encodeUserConversationStateFamilyValue(state UserConversationState, key []byte) []byte {
@@ -434,6 +572,7 @@ func decodeUserConversationStateFamilyValue(key, value []byte) (UserConversation
 				return UserConversationState{}, fmt.Errorf("metadb: invalid uint payload")
 			}
 			payload = payload[n:]
+
 			switch colID {
 			case userConversationStateColumnIDReadSeq:
 				state.ReadSeq = raw
@@ -450,6 +589,7 @@ func decodeUserConversationStateFamilyValue(key, value []byte) (UserConversation
 				return UserConversationState{}, fmt.Errorf("metadb: invalid int payload")
 			}
 			payload = payload[n:]
+
 			switch colID {
 			case userConversationStateColumnIDActiveAt:
 				state.ActiveAt = decodeZigZagInt64(raw)
