@@ -247,7 +247,9 @@ func decodeGroupRuntimeView(key, data []byte) (GroupRuntimeView, error) {
 }
 
 func encodeReconcileTask(task ReconcileTask) []byte {
-	data := make([]byte, 0, 40+len(task.LastError))
+	task = normalizeReconcileTask(task)
+
+	data := make([]byte, 0, 56+len(task.LastError))
 	data = append(data, recordVersion)
 	data = append(data, byte(task.Kind))
 	data = append(data, byte(task.Step))
@@ -255,6 +257,8 @@ func encodeReconcileTask(task ReconcileTask) []byte {
 	data = binary.BigEndian.AppendUint64(data, task.TargetNode)
 	data = binary.BigEndian.AppendUint32(data, task.Attempt)
 	data = appendString(data, task.LastError)
+	data = append(data, byte(task.Status))
+	data = appendInt64(data, task.NextRunAt.UnixNano())
 	return data
 }
 
@@ -281,7 +285,24 @@ func decodeReconcileTask(key, data []byte) (ReconcileTask, error) {
 	attempt := binary.BigEndian.Uint32(rest[:4])
 	rest = rest[4:]
 	lastError, rest, err := readString(rest)
-	if err != nil || len(rest) != 0 {
+	if err != nil {
+		return ReconcileTask{}, ErrCorruptValue
+	}
+	status := TaskStatusPending
+	var nextRunAt time.Time
+	switch len(rest) {
+	case 0:
+	case 9:
+		status = TaskStatus(rest[0])
+		if !validTaskStatus(status) {
+			return ReconcileTask{}, ErrCorruptValue
+		}
+		nextRunAtUnix, remaining, err := readInt64(rest[1:])
+		if err != nil || len(remaining) != 0 {
+			return ReconcileTask{}, ErrCorruptValue
+		}
+		nextRunAt = time.Unix(0, nextRunAtUnix)
+	default:
 		return ReconcileTask{}, ErrCorruptValue
 	}
 
@@ -292,6 +313,8 @@ func decodeReconcileTask(key, data []byte) (ReconcileTask, error) {
 		SourceNode: sourceNode,
 		TargetNode: targetNode,
 		Attempt:    attempt,
+		NextRunAt:  nextRunAt,
+		Status:     status,
 		LastError:  lastError,
 	}, nil
 }
@@ -336,6 +359,13 @@ func normalizeGroupRuntimeView(view GroupRuntimeView) GroupRuntimeView {
 	return view
 }
 
+func normalizeReconcileTask(task ReconcileTask) ReconcileTask {
+	if task.Status == TaskStatusUnknown {
+		task.Status = TaskStatusPending
+	}
+	return task
+}
+
 func normalizeUint64Set(values []uint64) []uint64 {
 	if len(values) == 0 {
 		return nil
@@ -367,6 +397,10 @@ func validTaskKind(kind TaskKind) bool {
 
 func validTaskStep(step TaskStep) bool {
 	return step >= TaskStepAddLearner && step <= TaskStepRemoveOld
+}
+
+func validTaskStatus(status TaskStatus) bool {
+	return status >= TaskStatusPending && status <= TaskStatusFailed
 }
 
 func validateRequiredPeerSet(values []uint64, invalid error) error {

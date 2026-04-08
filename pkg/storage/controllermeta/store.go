@@ -371,7 +371,8 @@ func (s *Store) UpsertTask(ctx context.Context, task ReconcileTask) error {
 	if err := s.checkContext(ctx); err != nil {
 		return err
 	}
-	if task.GroupID == 0 || !validTaskKind(task.Kind) || !validTaskStep(task.Step) {
+	task = normalizeReconcileTask(task)
+	if task.GroupID == 0 || !validTaskKind(task.Kind) || !validTaskStep(task.Step) || !validTaskStatus(task.Status) {
 		return ErrInvalidArgument
 	}
 

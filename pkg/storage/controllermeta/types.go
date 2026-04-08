@@ -43,6 +43,15 @@ const (
 	TaskStepRemoveOld
 )
 
+type TaskStatus uint8
+
+const (
+	TaskStatusUnknown TaskStatus = iota
+	TaskStatusPending
+	TaskStatusRetrying
+	TaskStatusFailed
+)
+
 type ClusterNode struct {
 	NodeID          uint64
 	Addr            string
@@ -79,5 +88,7 @@ type ReconcileTask struct {
 	SourceNode uint64
 	TargetNode uint64
 	Attempt    uint32
+	NextRunAt  time.Time
+	Status     TaskStatus
 	LastError  string
 }
