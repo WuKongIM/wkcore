@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
@@ -155,6 +156,88 @@ func TestClusterWithRealStoreFetchHidesDirtyTailAfterReplicaRecovery(t *testing.
 	}
 }
 
+func TestClusterAppendDoesNotFailAfterAtomicCheckpointIdempotencyCommit(t *testing.T) {
+	db := openTestDB(t)
+	key := ChannelKey{ChannelID: "c1", ChannelType: 1}
+	store := db.ForChannel(key)
+	state := &atomicCheckpointOnlyStateStore{
+		directPutErr: errors.New("direct put should be skipped after checkpoint commit"),
+	}
+
+	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), db, key, state, channelGroupKey(key))
+	if err != nil {
+		t.Fatalf("newCheckpointBridge() error = %v", err)
+	}
+	replica, err := isr.NewReplica(isr.ReplicaConfig{
+		LocalNode:         1,
+		LogStore:          store.isrLogStore(),
+		CheckpointStore:   checkpoints,
+		EpochHistoryStore: store.isrEpochHistoryStore(),
+		SnapshotApplier:   newSnapshotBridge(store.isrSnapshotApplier(), state),
+		Now:               func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+	})
+	if err != nil {
+		t.Fatalf("NewReplica() error = %v", err)
+	}
+
+	meta := singleReplicaMeta(store.groupKey, 7, 1)
+	if err := replica.ApplyMeta(meta); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+	if err := replica.BecomeLeader(meta); err != nil {
+		t.Fatalf("BecomeLeader() error = %v", err)
+	}
+
+	got, err := New(Config{
+		Runtime: &realRuntime{
+			groups: map[isr.GroupKey]GroupHandle{
+				channelGroupKey(key): replica,
+			},
+		},
+		Log:        db,
+		States:     &singleStateStoreFactory{store: state},
+		MessageIDs: &fakeMessageIDGenerator{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	cluster := got.(*cluster)
+	if err := cluster.ApplyMeta(realStoreChannelMeta(key, 3, 7)); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+
+	result, err := cluster.Append(context.Background(), realStoreAppendRequest(key, "one"))
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	if result.MessageSeq != 1 {
+		t.Fatalf("MessageSeq = %d, want 1", result.MessageSeq)
+	}
+	if state.atomicCommits != 1 {
+		t.Fatalf("atomicCommits = %d, want 1", state.atomicCommits)
+	}
+	if state.directPutCalls != 0 {
+		t.Fatalf("directPutCalls = %d, want 0", state.directPutCalls)
+	}
+
+	entry, ok, err := state.GetIdempotency(IdempotencyKey{
+		ChannelID:   key.ChannelID,
+		ChannelType: key.ChannelType,
+		FromUID:     "u1",
+		ClientMsgNo: "msg-one",
+	})
+	if err != nil {
+		t.Fatalf("GetIdempotency() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected idempotency entry")
+	}
+	if entry.MessageSeq != 1 || entry.Offset != 0 {
+		t.Fatalf("idempotency entry = %+v", entry)
+	}
+}
+
 type realRuntime struct {
 	groups map[isr.GroupKey]GroupHandle
 }
@@ -217,4 +300,55 @@ func realStoreChannelMeta(key ChannelKey, channelEpoch, leaderEpoch uint64) Chan
 			MessageSeqFormat: MessageSeqFormatLegacyU32,
 		},
 	}
+}
+
+type singleStateStoreFactory struct {
+	store ChannelStateStore
+}
+
+func (f *singleStateStoreFactory) ForChannel(ChannelKey) (ChannelStateStore, error) {
+	return f.store, nil
+}
+
+type atomicCheckpointOnlyStateStore struct {
+	idempotency    map[IdempotencyKey]IdempotencyEntry
+	directPutErr   error
+	directPutCalls int
+	atomicCommits  int
+}
+
+func (s *atomicCheckpointOnlyStateStore) PutIdempotency(key IdempotencyKey, entry IdempotencyEntry) error {
+	s.directPutCalls++
+	if s.directPutErr != nil {
+		return s.directPutErr
+	}
+	if s.idempotency == nil {
+		s.idempotency = make(map[IdempotencyKey]IdempotencyEntry)
+	}
+	s.idempotency[key] = entry
+	return nil
+}
+
+func (s *atomicCheckpointOnlyStateStore) GetIdempotency(key IdempotencyKey) (IdempotencyEntry, bool, error) {
+	entry, ok := s.idempotency[key]
+	return entry, ok, nil
+}
+
+func (s *atomicCheckpointOnlyStateStore) Snapshot(uint64) ([]byte, error) {
+	return nil, nil
+}
+
+func (s *atomicCheckpointOnlyStateStore) Restore([]byte) error {
+	return nil
+}
+
+func (s *atomicCheckpointOnlyStateStore) CommitCommittedWithCheckpoint(_ isr.Checkpoint, batch []appliedMessage) error {
+	s.atomicCommits++
+	if s.idempotency == nil {
+		s.idempotency = make(map[IdempotencyKey]IdempotencyEntry)
+	}
+	for _, msg := range batch {
+		s.idempotency[msg.key] = msg.entry
+	}
+	return nil
 }

@@ -117,14 +117,147 @@ func TestQueuedReplicationRecomputesReplicaProgressBetweenSends(t *testing.T) {
 	env.runtime.enqueueReplication(testGroupKey(272), 2)
 	env.runtime.runScheduler()
 
-	if got := session.sendCount(); got != 2 {
-		t.Fatalf("expected two fetch request sends, got %d", got)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected same group to keep one fetch request in flight until response, got %d sends", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("expected follow-up same-group replication to queue behind in-flight fetch, got %d", got)
 	}
 	if got := session.sent[0].FetchRequest.FetchOffset; got != 6 {
 		t.Fatalf("first FetchOffset = %d, want 6", got)
 	}
+
+	env.runtime.releasePeerInflight(2)
+	env.runtime.releaseGroupInflight(testGroupKey(272), 2)
+	env.runtime.drainPeerQueue(2)
+
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("expected queued same-group fetch request to send after inflight release, got %d sends", got)
+	}
 	if got := session.sent[1].FetchRequest.FetchOffset; got != 7 {
-		t.Fatalf("second FetchOffset = %d, want 7", got)
+		t.Fatalf("second FetchOffset after queued drain = %d, want 7", got)
+	}
+}
+
+func TestQueuedReplicationRecomputesReplicaProgressAfterInflightQueueing(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Limits.MaxFetchInflightPeer = 1
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(273, 4, 1, []isr.NodeID{1, 2}))
+
+	replica := env.factory.replicas[0]
+	replica.mu.Lock()
+	replica.state.LEO = 6
+	replica.state.Epoch = 4
+	replica.state.OffsetEpoch = 4
+	replica.mu.Unlock()
+
+	env.runtime.enqueueReplication(testGroupKey(273), 2)
+	env.runtime.enqueueReplication(testGroupKey(273), 2)
+	env.runtime.runScheduler()
+
+	session := env.sessions.session(2)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected one immediate fetch request send before draining queued inflight work, got %d", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("expected one queued peer request, got %d", got)
+	}
+	if got := session.sent[0].FetchRequest.FetchOffset; got != 6 {
+		t.Fatalf("first FetchOffset = %d, want 6", got)
+	}
+
+	replica.mu.Lock()
+	replica.state.LEO = 7
+	replica.mu.Unlock()
+
+	env.runtime.releasePeerInflight(2)
+	env.runtime.releaseGroupInflight(testGroupKey(273), 2)
+	env.runtime.drainPeerQueue(2)
+
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("expected drained queued fetch request to send once inflight is released, got %d sends", got)
+	}
+	if got := session.sent[1].FetchRequest.FetchOffset; got != 7 {
+		t.Fatalf("second FetchOffset after queued drain = %d, want 7", got)
+	}
+}
+
+func TestQueuedReplicationCoalescesSameGroupRequestsWhileInflight(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Limits.MaxFetchInflightPeer = 1
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2731, 4, 1, []isr.NodeID{1, 2}))
+
+	replica := env.factory.replicas[0]
+	replica.mu.Lock()
+	replica.state.LEO = 6
+	replica.state.Epoch = 4
+	replica.state.OffsetEpoch = 4
+	replica.mu.Unlock()
+
+	env.runtime.enqueueReplication(testGroupKey(2731), 2)
+	env.runtime.enqueueReplication(testGroupKey(2731), 2)
+	env.runtime.enqueueReplication(testGroupKey(2731), 2)
+	env.runtime.runScheduler()
+
+	session := env.sessions.session(2)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected one immediate fetch request send, got %d", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("expected queued same-group fetches to coalesce to one request, got %d", got)
+	}
+}
+
+func TestConcurrentPeerInflightStillSerializesSameGroupReplication(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Limits.MaxFetchInflightPeer = 2
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(274, 4, 1, []isr.NodeID{1, 2}))
+
+	replica := env.factory.replicas[0]
+	replica.mu.Lock()
+	replica.state.LEO = 6
+	replica.state.Epoch = 4
+	replica.state.OffsetEpoch = 4
+	replica.mu.Unlock()
+
+	env.runtime.enqueueReplication(testGroupKey(274), 2)
+	env.runtime.enqueueReplication(testGroupKey(274), 2)
+	env.runtime.runScheduler()
+
+	session := env.sessions.session(2)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected same group replication to keep one in-flight fetch even when peer limit is 2, got %d sends", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("expected follow-up replication for same group to remain queued behind in-flight fetch, got %d", got)
+	}
+	if got := session.sent[0].FetchRequest.FetchOffset; got != 6 {
+		t.Fatalf("first FetchOffset = %d, want 6", got)
+	}
+
+	replica.mu.Lock()
+	replica.state.LEO = 7
+	replica.mu.Unlock()
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		GroupKey:   testGroupKey(274),
+		Generation: 1,
+		Epoch:      4,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 7,
+		},
+	})
+
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("expected queued same-group replication to send after first fetch completes, got %d sends", got)
+	}
+	if got := session.sent[1].FetchRequest.FetchOffset; got != 7 {
+		t.Fatalf("second FetchOffset after same-group drain = %d, want 7", got)
 	}
 }
 
@@ -266,6 +399,41 @@ func TestFetchResponseDecodesPayloadIntoApplyFetch(t *testing.T) {
 	}
 	if len(got.Records) != 1 || string(got.Records[0].Payload) != "ok" {
 		t.Fatalf("unexpected records: %+v", got.Records)
+	}
+}
+
+func TestFetchResponseQueuesImmediateFollowerRefetch(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(251, 4, 2, []isr.NodeID{1, 2}))
+
+	session := env.sessions.session(2)
+	env.runtime.runScheduler()
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected initial follower fetch request, got %d sends", got)
+	}
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		GroupKey:   testGroupKey(251),
+		Generation: 1,
+		Epoch:      4,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 1,
+			Records:  []isr.Record{{Payload: []byte("ok"), SizeBytes: 2}},
+		},
+	})
+
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("expected immediate follower re-fetch after apply, got %d sends", got)
+	}
+	if session.last.Kind != MessageKindFetchRequest {
+		t.Fatalf("last kind = %v, want fetch request", session.last.Kind)
+	}
+	if session.last.GroupKey != testGroupKey(251) {
+		t.Fatalf("last group = %q, want %q", session.last.GroupKey, testGroupKey(251))
 	}
 }
 

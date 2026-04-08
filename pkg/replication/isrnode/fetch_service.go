@@ -25,18 +25,18 @@ func (r *runtime) ServeFetch(ctx context.Context, req FetchRequestEnvelope) (Fet
 		return FetchResponseEnvelope{}, isr.ErrStaleMeta
 	}
 
-	result, err := g.replica.Fetch(ctx, isr.FetchRequest{
+	fetchReq := isr.FetchRequest{
 		GroupKey:    req.GroupKey,
 		Epoch:       req.Epoch,
 		ReplicaID:   req.ReplicaID,
 		FetchOffset: req.FetchOffset,
 		OffsetEpoch: req.OffsetEpoch,
 		MaxBytes:    req.MaxBytes,
-	})
+	}
+	result, err := g.replica.Fetch(ctx, fetchReq)
 	if err != nil {
 		return FetchResponseEnvelope{}, err
 	}
-
 	return FetchResponseEnvelope{
 		GroupKey:   req.GroupKey,
 		Epoch:      result.Epoch,

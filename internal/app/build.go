@@ -92,7 +92,7 @@ func build(cfg Config) (_ *App, err error) {
 		PeerSessions:     app.isrTransport,
 		AutoRunScheduler: true,
 		Limits: isrnode.Limits{
-			MaxFetchInflightPeer: 1,
+			MaxFetchInflightPeer: dataPlaneMaxFetchInflightPeer(cfg.Cluster.PoolSize),
 			MaxSnapshotInflight:  1,
 		},
 		Tombstones: isrnode.TombstonePolicy{
@@ -254,6 +254,13 @@ func build(cfg Config) (_ *App, err error) {
 	}
 
 	return app, nil
+}
+
+func dataPlaneMaxFetchInflightPeer(poolSize int) int {
+	if poolSize > 2 {
+		return poolSize
+	}
+	return 2
 }
 
 func (c ClusterConfig) runtimeConfig(db *metadb.DB, raftDB *raftstorage.DB, nodeID uint64) raftcluster.Config {

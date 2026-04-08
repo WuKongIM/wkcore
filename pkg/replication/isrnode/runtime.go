@@ -288,6 +288,10 @@ func (r *runtime) releasePeerInflight(peer isr.NodeID) {
 	r.peerRequests.release(peer)
 }
 
+func (r *runtime) releaseGroupInflight(groupKey isr.GroupKey, peer isr.NodeID) {
+	r.peerRequests.releaseGroup(groupKey, peer)
+}
+
 func (r *runtime) drainPeerQueue(peer isr.NodeID) {
 	env, ok := r.peerRequests.popQueued(peer)
 	if !ok {

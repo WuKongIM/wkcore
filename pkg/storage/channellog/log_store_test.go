@@ -93,3 +93,63 @@ func TestStoreCachedLEOTracksAppendAndTruncate(t *testing.T) {
 		t.Fatalf("cachedLEO after reappend = %d, want 2", store.cachedLEO)
 	}
 }
+
+func TestStoreSyncAvoidsFlushAndPreservesTrimmedLogAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	key := ChannelKey{ChannelID: "c1", ChannelType: 1}
+	store := db.ForChannel(key)
+
+	if _, err := store.appendPayloads([][]byte{[]byte("one"), []byte("two")}); err != nil {
+		t.Fatalf("appendPayloads() error = %v", err)
+	}
+	if err := store.truncateOffsets(1); err != nil {
+		t.Fatalf("truncateOffsets() error = %v", err)
+	}
+
+	beforeFlush := db.db.Metrics().Flush.Count
+	if err := store.sync(); err != nil {
+		t.Fatalf("sync() error = %v", err)
+	}
+	afterFlush := db.db.Metrics().Flush.Count
+	if afterFlush != beforeFlush {
+		t.Fatalf("Flush.Count changed from %d to %d", beforeFlush, afterFlush)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open(reopen) error = %v", err)
+	}
+	defer func() {
+		if err := reopened.Close(); err != nil {
+			t.Fatalf("Close(reopen) error = %v", err)
+		}
+	}()
+
+	reloadedStore := reopened.ForChannel(key)
+	leo, err := reloadedStore.leo()
+	if err != nil {
+		t.Fatalf("leo() error = %v", err)
+	}
+	if leo != 1 {
+		t.Fatalf("leo = %d, want 1", leo)
+	}
+
+	records, err := reloadedStore.readOffsets(0, 10, 1024)
+	if err != nil {
+		t.Fatalf("readOffsets() error = %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1", len(records))
+	}
+	if string(records[0].Payload) != "one" {
+		t.Fatalf("records[0].Payload = %q, want %q", records[0].Payload, "one")
+	}
+}

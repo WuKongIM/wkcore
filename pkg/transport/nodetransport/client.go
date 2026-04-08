@@ -13,7 +13,7 @@ import (
 type Client struct {
 	pool      *Pool
 	nextReqID atomic.Uint64
-	pending   sync.Map // requestID → chan rpcResponse
+	pending   sync.Map // requestID → pendingRPC
 	readLoops sync.Map // readLoopKey → net.Conn
 	stopCh    chan struct{}
 	wg        sync.WaitGroup
@@ -22,6 +22,11 @@ type Client struct {
 type rpcResponse struct {
 	body []byte
 	err  error
+}
+
+type pendingRPC struct {
+	key uint64
+	ch  chan rpcResponse
 }
 
 // NewClient creates a Client bound to the given Pool.
@@ -49,14 +54,15 @@ func (c *Client) Send(nodeID NodeID, shardKey uint64, msgType uint8, body []byte
 // RPC sends a request and waits for a response.
 func (c *Client) RPC(ctx context.Context, nodeID NodeID, shardKey uint64, payload []byte) ([]byte, error) {
 	reqID := c.nextReqID.Add(1)
-	respCh := make(chan rpcResponse, 1)
-	c.pending.Store(reqID, respCh)
-	defer c.pending.Delete(reqID)
-
 	conn, idx, err := c.pool.Get(nodeID, shardKey)
 	if err != nil {
 		return nil, err
 	}
+
+	key := readLoopKey(nodeID, idx)
+	respCh := make(chan rpcResponse, 1)
+	c.pending.Store(reqID, pendingRPC{key: key, ch: respCh})
+	defer c.pending.Delete(reqID)
 
 	c.ensureReadLoop(nodeID, idx, conn)
 
@@ -97,9 +103,9 @@ func (c *Client) Stop() {
 		return true
 	})
 	c.pending.Range(func(key, value any) bool {
-		ch := value.(chan rpcResponse)
+		pending := value.(pendingRPC)
 		select {
-		case ch <- rpcResponse{err: ErrStopped}:
+		case pending.ch <- rpcResponse{err: ErrStopped}:
 		default:
 		}
 		return true
@@ -144,6 +150,7 @@ func (c *Client) readLoop(key uint64, conn net.Conn) {
 
 		msgType, body, err := ReadMessage(conn)
 		if err != nil {
+			c.failPendingForKey(key, err)
 			return
 		}
 		if msgType != MsgTypeRPCResponse {
@@ -158,7 +165,7 @@ func (c *Client) readLoop(key uint64, conn net.Conn) {
 		data := body[9:]
 
 		if v, ok := c.pending.LoadAndDelete(requestID); ok {
-			ch := v.(chan rpcResponse)
+			pending := v.(pendingRPC)
 			var resp rpcResponse
 			if errCode != 0 {
 				resp.err = fmt.Errorf("nodetransport: remote handler error: %s", data)
@@ -166,7 +173,24 @@ func (c *Client) readLoop(key uint64, conn net.Conn) {
 			} else {
 				resp.body = data
 			}
-			ch <- resp
+			pending.ch <- resp
 		}
 	}
+}
+
+func (c *Client) failPendingForKey(key uint64, err error) {
+	c.pending.Range(func(requestID, value any) bool {
+		pending := value.(pendingRPC)
+		if pending.key != key {
+			return true
+		}
+		if v, ok := c.pending.LoadAndDelete(requestID); ok {
+			pending = v.(pendingRPC)
+			select {
+			case pending.ch <- rpcResponse{err: err}:
+			default:
+			}
+		}
+		return true
+	})
 }

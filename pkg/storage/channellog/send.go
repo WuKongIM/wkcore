@@ -54,8 +54,9 @@ func (c *cluster) Append(ctx context.Context, req AppendRequest) (AppendResult, 
 	if err != nil {
 		return AppendResult{}, err
 	}
+	var idKey IdempotencyKey
 	if draft.ClientMsgNo != "" {
-		idKey := IdempotencyKey{
+		idKey = IdempotencyKey{
 			ChannelID:   req.ChannelID,
 			ChannelType: req.ChannelType,
 			FromUID:     draft.FromUID,
@@ -115,12 +116,15 @@ func (c *cluster) Append(ctx context.Context, req AppendRequest) (AppendResult, 
 	committed.MessageSeq = messageSeq
 
 	if draft.ClientMsgNo != "" {
-		if err := store.PutIdempotency(IdempotencyKey{
-			ChannelID:   req.ChannelID,
-			ChannelType: req.ChannelType,
-			FromUID:     draft.FromUID,
-			ClientMsgNo: draft.ClientMsgNo,
-		}, IdempotencyEntry{
+		if entry, ok, err := store.GetIdempotency(idKey); err != nil {
+			return AppendResult{}, err
+		} else if ok {
+			if entry.MessageID != committed.MessageID || entry.MessageSeq != messageSeq || entry.Offset != messageSeq-1 {
+				return AppendResult{}, isr.ErrCorruptState
+			}
+			return AppendResult{MessageID: committed.MessageID, MessageSeq: messageSeq, Message: committed}, nil
+		}
+		if err := store.PutIdempotency(idKey, IdempotencyEntry{
 			MessageID:  committed.MessageID,
 			MessageSeq: messageSeq,
 			Offset:     messageSeq - 1,

@@ -154,11 +154,12 @@ func (a *App) startChannelMetaSync() error {
 		a.dataPlanePool = nodetransport.NewPool(discovery, poolSize, dialTimeout)
 		a.dataPlaneClient = nodetransport.NewClient(a.dataPlanePool)
 		adapter, err := isrnodetransport.New(isrnodetransport.Options{
-			LocalNode:    isr.NodeID(a.cfg.Node.ID),
-			Client:       a.dataPlaneClient,
-			RPCMux:       a.cluster.RPCMux(),
-			FetchService: a.isrRuntime,
-			RPCTimeout:   a.cfg.Cluster.DataPlaneRPCTimeout,
+			LocalNode:          isr.NodeID(a.cfg.Node.ID),
+			Client:             a.dataPlaneClient,
+			RPCMux:             a.cluster.RPCMux(),
+			FetchService:       a.isrRuntime,
+			RPCTimeout:         a.cfg.Cluster.DataPlaneRPCTimeout,
+			MaxPendingFetchRPC: dataPlaneMaxFetchInflightPeer(a.cfg.Cluster.PoolSize),
 		})
 		if err != nil {
 			a.dataPlaneClient.Stop()

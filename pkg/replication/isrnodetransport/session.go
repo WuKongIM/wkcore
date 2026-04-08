@@ -9,8 +9,6 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isrnode"
 )
 
-const fetchRPCShardKey uint64 = 0
-
 type sessionManager struct {
 	adapter *Adapter
 
@@ -73,9 +71,7 @@ func (s *peerSession) Send(env isrnode.Envelope) error {
 	ctx, cancel := context.WithTimeout(context.Background(), s.adapter.rpcTimeout)
 	defer cancel()
 
-	// V1 intentionally serializes one in-flight fetch RPC per peer, so a single
-	// stable shard key is enough for this path.
-	respBody, err := s.adapter.client.RPCService(ctx, uint64(s.peer), fetchRPCShardKey, RPCServiceFetch, body)
+	respBody, err := s.adapter.client.RPCService(ctx, uint64(s.peer), fetchRPCShardKey(env.GroupKey), RPCServiceFetch, body)
 	if err != nil {
 		return err
 	}
@@ -114,7 +110,7 @@ func (s *peerSession) Backpressure() isrnode.BackpressureState {
 		PendingRequests: s.pendingRequests,
 		PendingBytes:    s.pendingBytes,
 	}
-	if s.pendingRequests > 0 {
+	if s.adapter.maxPending > 0 && s.pendingRequests >= s.adapter.maxPending {
 		state.Level = isrnode.BackpressureHard
 	}
 	return state
@@ -142,4 +138,18 @@ func (s *peerSession) releasePending(bytes int64) {
 	if s.pendingBytes < 0 {
 		s.pendingBytes = 0
 	}
+}
+
+func fetchRPCShardKey(groupKey isr.GroupKey) uint64 {
+	const (
+		fnvOffset64 = 14695981039346656037
+		fnvPrime64  = 1099511628211
+	)
+
+	hash := uint64(fnvOffset64)
+	for i := 0; i < len(groupKey); i++ {
+		hash ^= uint64(groupKey[i])
+		hash *= fnvPrime64
+	}
+	return hash
 }

@@ -70,6 +70,30 @@ func TestApplyFetchAdvancesCheckpointToMinLeaderHWAndLEO(t *testing.T) {
 	}
 }
 
+func TestApplyFetchSkipsCheckpointWriteWhenHWDoesNotAdvance(t *testing.T) {
+	env := newFollowerEnv(t)
+
+	err := env.replica.ApplyFetch(context.Background(), ApplyFetchRequest{
+		GroupKey: "group-10",
+		Epoch:    7,
+		Leader:   1,
+		Records:  []Record{{Payload: []byte("a"), SizeBytes: 1}},
+		LeaderHW: 0,
+	})
+	if err != nil {
+		t.Fatalf("ApplyFetch() error = %v", err)
+	}
+	if got := len(env.checkpoints.stored); got != 0 {
+		t.Fatalf("checkpoint writes = %d, want 0", got)
+	}
+	if got := env.replica.state.HW; got != 0 {
+		t.Fatalf("HW = %d, want 0", got)
+	}
+	if got := env.replica.state.LEO; got != 1 {
+		t.Fatalf("LEO = %d, want 1", got)
+	}
+}
+
 func TestApplyFetchRejectsStaleEpoch(t *testing.T) {
 	env := newFollowerEnv(t)
 

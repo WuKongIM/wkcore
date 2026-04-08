@@ -55,6 +55,11 @@ func (r *replica) ApplyFetch(_ context.Context, req ApplyFetchRequest) error {
 	if nextHW < r.state.HW {
 		return ErrCorruptState
 	}
+	if nextHW == r.state.HW {
+		r.state.LEO = leo
+		r.state.OffsetEpoch = offsetEpochForLEO(r.epochHistory, leo)
+		return nil
+	}
 
 	checkpoint := Checkpoint{
 		Epoch:          req.Epoch,

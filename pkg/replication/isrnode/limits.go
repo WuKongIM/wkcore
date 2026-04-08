@@ -9,6 +9,7 @@ import (
 type peerRequestState struct {
 	mu       sync.Mutex
 	inflight map[isr.NodeID]int
+	groups   map[groupPeerKey]struct{}
 	queued   map[isr.NodeID]*peerEnvelopeQueue
 }
 
@@ -17,9 +18,15 @@ type peerEnvelopeQueue struct {
 	head  int
 }
 
+type groupPeerKey struct {
+	groupKey isr.GroupKey
+	peer     isr.NodeID
+}
+
 func newPeerRequestState() peerRequestState {
 	return peerRequestState{
 		inflight: make(map[isr.NodeID]int),
+		groups:   make(map[groupPeerKey]struct{}),
 		queued:   make(map[isr.NodeID]*peerEnvelopeQueue),
 	}
 }
@@ -45,6 +52,18 @@ func (s *peerRequestState) enqueue(env Envelope) {
 	queue.enqueue(env)
 }
 
+func (s *peerRequestState) tryAcquireGroup(groupKey isr.GroupKey, peer isr.NodeID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := groupPeerKey{groupKey: groupKey, peer: peer}
+	if _, ok := s.groups[key]; ok {
+		return false
+	}
+	s.groups[key] = struct{}{}
+	return true
+}
+
 func (s *peerRequestState) queuedCount(peer isr.NodeID) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -61,6 +80,12 @@ func (s *peerRequestState) release(peer isr.NodeID) {
 	if s.inflight[peer] > 0 {
 		s.inflight[peer]--
 	}
+}
+
+func (s *peerRequestState) releaseGroup(groupKey isr.GroupKey, peer isr.NodeID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.groups, groupPeerKey{groupKey: groupKey, peer: peer})
 }
 
 func (s *peerRequestState) popQueued(peer isr.NodeID) (Envelope, bool) {
@@ -83,6 +108,14 @@ func (s *peerRequestState) queueLocked(peer isr.NodeID) *peerEnvelopeQueue {
 }
 
 func (q *peerEnvelopeQueue) enqueue(env Envelope) {
+	if env.Kind == MessageKindFetchRequest {
+		for i := q.head; i < len(q.items); i++ {
+			if q.items[i].Kind == MessageKindFetchRequest && q.items[i].GroupKey == env.GroupKey {
+				q.items[i] = env
+				return
+			}
+		}
+	}
 	if q.head == len(q.items) {
 		q.items = q.items[:0]
 		q.head = 0

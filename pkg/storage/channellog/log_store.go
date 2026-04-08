@@ -42,7 +42,7 @@ func (s *Store) appendPayloads(payloads [][]byte) (uint64, error) {
 			return 0, err
 		}
 	}
-	if err := batch.Commit(pebble.NoSync); err != nil {
+	if err := batch.Commit(pebble.Sync); err != nil {
 		return 0, err
 	}
 	s.cachedLEO = base + uint64(len(payloads))
@@ -116,7 +116,7 @@ func (s *Store) truncateOffsets(to uint64) error {
 	if err := batch.DeleteRange(encodeLogRecordKey(s.groupKey, to), keyUpperBound(prefix), pebble.NoSync); err != nil {
 		return err
 	}
-	if err := batch.Commit(pebble.NoSync); err != nil {
+	if err := batch.Commit(pebble.Sync); err != nil {
 		return err
 	}
 	s.cachedLEO = to
@@ -128,7 +128,7 @@ func (s *Store) sync() error {
 	if err := s.validate(); err != nil {
 		return err
 	}
-	return s.db.db.Flush()
+	return nil
 }
 
 func (db *DB) Read(groupKey isr.GroupKey, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {

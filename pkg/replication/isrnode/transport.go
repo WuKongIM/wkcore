@@ -2,6 +2,7 @@ package isrnode
 
 import (
 	"context"
+	"errors"
 
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
 )
@@ -25,6 +26,7 @@ func (r *runtime) handleEnvelope(env Envelope) {
 
 	if env.Kind == MessageKindFetchResponse && knownDrop {
 		r.releasePeerInflight(env.Peer)
+		r.releaseGroupInflight(env.GroupKey, env.Peer)
 		r.drainPeerQueue(env.Peer)
 		return
 	}
@@ -36,6 +38,7 @@ func (r *runtime) handleEnvelope(env Envelope) {
 	if env.Kind == MessageKindFetchResponse {
 		if r.deliverEnvelope(g, env) {
 			r.releasePeerInflight(env.Peer)
+			r.releaseGroupInflight(env.GroupKey, env.Peer)
 			r.drainPeerQueue(env.Peer)
 		}
 		return
@@ -72,7 +75,27 @@ func (r *runtime) applyFetchResponseEnvelope(g *group, peer isr.NodeID, env Fetc
 
 	meta := g.metaSnapshot()
 	if meta.Leader != r.cfg.LocalNode {
-		r.scheduleFollowerReplication(g.id, meta.Leader)
+		state := g.Status()
+		err := r.sendEnvelope(Envelope{
+			Peer:       meta.Leader,
+			GroupKey:   g.id,
+			Epoch:      meta.Epoch,
+			Generation: g.generation,
+			RequestID:  r.requestID.Add(1),
+			Kind:       MessageKindFetchRequest,
+			FetchRequest: &FetchRequestEnvelope{
+				GroupKey:    g.id,
+				Epoch:       meta.Epoch,
+				Generation:  g.generation,
+				ReplicaID:   r.cfg.LocalNode,
+				FetchOffset: state.LEO,
+				OffsetEpoch: state.OffsetEpoch,
+				MaxBytes:    defaultFetchMaxBytes,
+			},
+		})
+		if err != nil && !errors.Is(err, ErrBackpressured) {
+			r.retryReplication(g.id, meta.Leader, true)
+		}
 	}
 	return nil
 }

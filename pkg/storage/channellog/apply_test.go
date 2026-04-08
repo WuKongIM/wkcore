@@ -106,6 +106,56 @@ func TestCheckpointBridgeUsesAtomicCheckpointCommitWhenSupported(t *testing.T) {
 	}
 }
 
+func TestCheckpointBridgeSkipsMessagesWithoutClientMsgNo(t *testing.T) {
+	store := &fakeStateStore{}
+	key := ChannelKey{ChannelID: "c1", ChannelType: 1}
+	log := &fakeMessageLog{
+		records: []LogRecord{
+			{
+				Offset: 0,
+				Payload: mustEncodeDurableMessage(t, Message{
+					MessageID:   11,
+					ChannelID:   "c1",
+					ChannelType: 1,
+					FromUID:     "u1",
+					Payload:     []byte("one"),
+				}),
+			},
+			{
+				Offset: 1,
+				Payload: mustEncodeDurableMessage(t, Message{
+					MessageID:   12,
+					ChannelID:   "c1",
+					ChannelType: 1,
+					FromUID:     "u1",
+					ClientMsgNo: "m2",
+					Payload:     []byte("two"),
+				}),
+			},
+		},
+	}
+
+	bridge, err := newCheckpointBridge(&memoryCheckpointStore{}, log, key, store, channelGroupKey(key))
+	if err != nil {
+		t.Fatalf("newCheckpointBridge() error = %v", err)
+	}
+	if err := bridge.Store(isr.Checkpoint{Epoch: 3, HW: 2}); err != nil {
+		t.Fatalf("Store() error = %v", err)
+	}
+
+	if len(store.idempotency) != 1 {
+		t.Fatalf("len(idempotency) = %d, want 1", len(store.idempotency))
+	}
+	if _, ok := store.idempotency[IdempotencyKey{
+		ChannelID:   "c1",
+		ChannelType: 1,
+		FromUID:     "u1",
+		ClientMsgNo: "",
+	}]; ok {
+		t.Fatal("expected empty client_msg_no entry to be skipped")
+	}
+}
+
 func TestSnapshotBridgeRestoresStateBeforeServingRecoveredReads(t *testing.T) {
 	store := &fakeStateStore{}
 	base := &recordingSnapshotApplier{}

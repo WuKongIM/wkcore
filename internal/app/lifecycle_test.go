@@ -65,6 +65,32 @@ func TestNewBuildsChannelLogDataPlane(t *testing.T) {
 	require.NotNil(t, app.ChannelLog())
 }
 
+func TestNewConfiguresISRMaxFetchInflightPeerWithMinimumConcurrency(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Cluster.PoolSize = 1
+
+	app, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, app.Stop())
+	})
+
+	require.Equal(t, 2, appISRMaxFetchInflightPeerLimit(t, app))
+}
+
+func TestNewConfiguresISRMaxFetchInflightPeerFromClusterPoolSize(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Cluster.PoolSize = 4
+
+	app, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, app.Stop())
+	})
+
+	require.Equal(t, 4, appISRMaxFetchInflightPeerLimit(t, app))
+}
+
 func TestBuildCreatesPresenceAppAndNodeAccess(t *testing.T) {
 	cfg := testConfig(t)
 
@@ -667,4 +693,27 @@ func setAppFuncField(t *testing.T, app *App, name string, fn any) {
 	}
 	ptr := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
 	ptr.Set(reflect.ValueOf(fn))
+}
+
+func appISRMaxFetchInflightPeerLimit(t *testing.T, app *App) int {
+	t.Helper()
+
+	rt := reflect.ValueOf(app.isrRuntime)
+	if rt.Kind() != reflect.Pointer || rt.IsNil() {
+		t.Fatalf("isrRuntime is %s, want non-nil pointer", rt.Kind())
+	}
+	cfgField := rt.Elem().FieldByName("cfg")
+	if !cfgField.IsValid() {
+		t.Fatal("isr runtime missing cfg field")
+	}
+	cfg := reflect.NewAt(cfgField.Type(), unsafe.Pointer(cfgField.UnsafeAddr())).Elem()
+	limits := cfg.FieldByName("Limits")
+	if !limits.IsValid() {
+		t.Fatal("isr runtime config missing Limits field")
+	}
+	maxInflight := limits.FieldByName("MaxFetchInflightPeer")
+	if !maxInflight.IsValid() {
+		t.Fatal("isr runtime limits missing MaxFetchInflightPeer field")
+	}
+	return int(maxInflight.Int())
 }

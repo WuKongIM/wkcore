@@ -99,6 +99,9 @@ func (b *checkpointBridge) readCommittedBatch(nextHW uint64) ([]appliedMessage, 
 		if err != nil {
 			return nil, err
 		}
+		if message.ClientMsgNo == "" {
+			continue
+		}
 		batch = append(batch, appliedMessage{
 			key: IdempotencyKey{
 				ChannelID:   b.key.ChannelID,

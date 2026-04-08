@@ -14,11 +14,12 @@ import (
 const defaultRPCTimeout = 5 * time.Second
 
 type Options struct {
-	LocalNode    isr.NodeID
-	Client       *nodetransport.Client
-	RPCMux       *nodetransport.RPCMux
-	FetchService isrnode.FetchService
-	RPCTimeout   time.Duration
+	LocalNode          isr.NodeID
+	Client             *nodetransport.Client
+	RPCMux             *nodetransport.RPCMux
+	FetchService       isrnode.FetchService
+	RPCTimeout         time.Duration
+	MaxPendingFetchRPC int
 }
 
 type Adapter struct {
@@ -26,6 +27,7 @@ type Adapter struct {
 	client       *nodetransport.Client
 	fetchService isrnode.FetchService
 	rpcTimeout   time.Duration
+	maxPending   int
 
 	mu      sync.RWMutex
 	handler func(isrnode.Envelope)
@@ -51,12 +53,16 @@ func New(opts Options) (*Adapter, error) {
 	if opts.RPCTimeout <= 0 {
 		opts.RPCTimeout = defaultRPCTimeout
 	}
+	if opts.MaxPendingFetchRPC <= 0 {
+		opts.MaxPendingFetchRPC = 1
+	}
 
 	adapter := &Adapter{
 		localNode:    opts.LocalNode,
 		client:       opts.Client,
 		fetchService: opts.FetchService,
 		rpcTimeout:   opts.RPCTimeout,
+		maxPending:   opts.MaxPendingFetchRPC,
 	}
 	adapter.sessions = newSessionManager(adapter)
 	opts.RPCMux.Handle(RPCServiceFetch, adapter.handleRPC)
