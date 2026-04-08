@@ -8,20 +8,26 @@ import (
 )
 
 type Controller struct {
-	store   *controllermeta.Store
-	planner *Planner
-	now     func() time.Time
+	store    *controllermeta.Store
+	planner  *Planner
+	now      func() time.Time
+	isLeader func() bool
 }
 
 func NewController(store *controllermeta.Store, cfg PlannerConfig) *Controller {
 	return &Controller{
-		store:   store,
-		planner: NewPlanner(cfg),
-		now:     time.Now,
+		store:    store,
+		planner:  NewPlanner(cfg),
+		now:      time.Now,
+		isLeader: func() bool { return true },
 	}
 }
 
 func (c *Controller) Tick(ctx context.Context) error {
+	if c != nil && c.isLeader != nil && !c.isLeader() {
+		return nil
+	}
+
 	state, err := c.snapshot(ctx)
 	if err != nil {
 		return err

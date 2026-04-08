@@ -3,6 +3,7 @@ package groupcontroller
 import (
 	"context"
 	"sort"
+	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/storage/controllermeta"
 )
@@ -25,7 +26,9 @@ func (p *Planner) ReconcileGroup(_ context.Context, state PlannerState, groupID 
 	view, hasView := state.Runtime[groupID]
 	if task, ok := state.Tasks[groupID]; ok && task.Status != controllermeta.TaskStatusFailed {
 		decision.Assignment = assignment
-		decision.Task = &task
+		if taskRunnable(state.Now, task) {
+			decision.Task = &task
+		}
 		return decision, nil
 	}
 	if !hasAssignment && !hasView {
@@ -89,7 +92,7 @@ func (p *Planner) NextDecision(ctx context.Context, state PlannerState) (Decisio
 		if err != nil {
 			return Decision{}, err
 		}
-		if decision.Degraded || decision.Task != nil {
+		if decision.Task != nil {
 			return decision, nil
 		}
 	}
@@ -121,6 +124,17 @@ func (p *Planner) nextRebalanceDecision(state PlannerState) Decision {
 	})
 	for _, assignment := range candidates {
 		if task, ok := state.Tasks[assignment.GroupID]; ok && task.Status != controllermeta.TaskStatusFailed {
+			if !taskRunnable(state.Now, task) {
+				continue
+			}
+			decision := Decision{
+				GroupID:    assignment.GroupID,
+				Assignment: assignment,
+				Task:       &task,
+			}
+			return decision
+		}
+		if view, ok := state.Runtime[assignment.GroupID]; ok && !view.HasQuorum {
 			continue
 		}
 		if p.firstPeerNeedingRepair(state, assignment.DesiredPeers) != 0 {
@@ -253,4 +267,15 @@ func replacePeer(peers []uint64, source, target uint64) []uint64 {
 	next = append(next, target)
 	sort.Slice(next, func(i, j int) bool { return next[i] < next[j] })
 	return next
+}
+
+func taskRunnable(now time.Time, task controllermeta.ReconcileTask) bool {
+	switch task.Status {
+	case controllermeta.TaskStatusPending:
+		return true
+	case controllermeta.TaskStatusRetrying:
+		return !task.NextRunAt.After(now)
+	default:
+		return false
+	}
 }

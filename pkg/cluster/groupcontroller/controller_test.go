@@ -91,6 +91,64 @@ func TestPlannerStopsAutomaticChangesAfterQuorumLoss(t *testing.T) {
 	require.True(t, decision.Degraded)
 }
 
+func TestPlannerSkipsDegradedGroupAndReturnsLaterRepairDecision(t *testing.T) {
+	planner := NewPlanner(PlannerConfig{GroupCount: 2, ReplicaN: 3})
+	state := testState(
+		aliveNode(1), aliveNode(2), deadNode(3), aliveNode(4), deadNode(5),
+		withAssignment(1, 1, 2, 3),
+		withAssignment(2, 1, 4, 5),
+		withRuntimeView(1, []uint64{1, 2}, false),
+		withRuntimeView(2, []uint64{1, 4, 5}, true),
+	)
+
+	decision, err := planner.NextDecision(context.Background(), state)
+	require.NoError(t, err)
+	require.Equal(t, uint32(2), decision.GroupID)
+	require.NotNil(t, decision.Task)
+	require.Equal(t, controllermeta.TaskKindRepair, decision.Task.Kind)
+	require.False(t, decision.Degraded)
+}
+
+func TestPlannerDoesNotReissueRetryingTaskBeforeNextRunAt(t *testing.T) {
+	planner := NewPlanner(PlannerConfig{GroupCount: 1, ReplicaN: 3})
+	state := testState(
+		aliveNode(1), aliveNode(2), deadNode(3), aliveNode(4),
+		withAssignment(1, 1, 2, 3),
+		withRuntimeView(1, []uint64{1, 2, 3}, true),
+		withTask(controllermeta.ReconcileTask{
+			GroupID:    1,
+			Kind:       controllermeta.TaskKindRepair,
+			Step:       controllermeta.TaskStepAddLearner,
+			SourceNode: 3,
+			TargetNode: 4,
+			Status:     controllermeta.TaskStatusRetrying,
+			NextRunAt:  time.Unix(200, 0),
+		}),
+	)
+
+	decision, err := planner.NextDecision(context.Background(), state)
+	require.NoError(t, err)
+	require.Zero(t, decision.GroupID)
+	require.Nil(t, decision.Task)
+
+	state.Now = time.Unix(200, 0)
+	decision, err = planner.NextDecision(context.Background(), state)
+	require.NoError(t, err)
+	require.Equal(t, uint32(1), decision.GroupID)
+	require.NotNil(t, decision.Task)
+	require.Equal(t, controllermeta.TaskStatusRetrying, decision.Task.Status)
+}
+
+func TestControllerTickNoOpsWhenNotLeader(t *testing.T) {
+	store := openControllerStore(t)
+	require.NoError(t, store.Close())
+
+	controller := NewController(store, PlannerConfig{GroupCount: 1, ReplicaN: 3})
+	controller.isLeader = func() bool { return false }
+
+	require.NoError(t, controller.Tick(context.Background()))
+}
+
 func TestStateMachineTransitionsNodeStatusFromSuspectToDeadToAlive(t *testing.T) {
 	store := openControllerStore(t)
 	sm := NewStateMachine(store, StateMachineConfig{
@@ -262,6 +320,12 @@ func withRuntimeView(groupID uint32, peers []uint64, hasQuorum bool) stateOption
 			ObservedConfigEpoch: 1,
 			LastReportAt:        state.Now,
 		}
+	}
+}
+
+func withTask(task controllermeta.ReconcileTask) stateOption {
+	return func(state *PlannerState) {
+		state.Tasks[task.GroupID] = task
 	}
 }
 
