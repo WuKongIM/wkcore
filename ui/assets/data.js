@@ -41,7 +41,7 @@ window.ADMIN_UI_DATA = {
         {
           key: "topology",
           text: "拓扑视图",
-          path: "placeholder/topology.html",
+          path: "topology.html",
           icon: "share-2",
         },
       ],
@@ -79,7 +79,7 @@ window.ADMIN_UI_DATA = {
     },
     topology: {
       title: "拓扑视图",
-      description: "该页面将在下一阶段扩展",
+      description: "把节点、Leader 分布和 Group 流向放在同一个视图里，帮助定位集中热点和链路风险。",
       tags: ["Node Graph", "Group 映射", "异常定位"],
     },
     connections: {
@@ -550,6 +550,87 @@ window.ADMIN_UI_DATA = {
           events: ["Queued writes spiked", "Reconnect twice", "Ack delay crossed threshold"],
         },
       },
+    ],
+  },
+  topology: {
+    metrics: [
+      { label: "节点拓扑总览", value: "3 Nodes", hint: "1 Leader heavy node · 2 follower peers" },
+      { label: "跨节点 Group 流向", value: "64", hint: "17 条热点流量路径" },
+      { label: "Leader Concentration", value: "34%", hint: "wk-node1 承载最高" },
+      { label: "风险拓扑点", value: "2", hint: "node3 latency · one pending handoff" },
+    ],
+    nodes: [
+      {
+        id: "topo-node-1",
+        name: "wk-node1",
+        role: "Leader-heavy",
+        status: "online",
+        groups: 22,
+        outbound: "82 MB/s",
+        x: "12%",
+        y: "48%",
+        detail: {
+          summary: "写入主节点，Leader 分布相对集中，当前仍在健康区间。",
+          metrics: [
+            { label: "Leader Groups", value: "22" },
+            { label: "Outbound", value: "82 MB/s" },
+            { label: "Fanout", value: "high" },
+          ],
+          links: ["to wk-node2 stable", "to wk-node3 hot path", "gateway ingress concentrated"],
+          events: ["Leader load +6%", "No lease flap", "Primary routing healthy"],
+        },
+      },
+      {
+        id: "topo-node-2",
+        name: "wk-node2",
+        role: "Balanced follower",
+        status: "online",
+        groups: 21,
+        outbound: "64 MB/s",
+        x: "72%",
+        y: "18%",
+        detail: {
+          summary: "整体均衡，是当前拓扑中的健康中枢。",
+          metrics: [
+            { label: "Leader Groups", value: "21" },
+            { label: "Outbound", value: "64 MB/s" },
+            { label: "Fanout", value: "medium" },
+          ],
+          links: ["to wk-node1 stable", "to wk-node3 mild jitter", "replay channel normal"],
+          events: ["No topology drift", "Follower replay healthy", "No queue buildup"],
+        },
+      },
+      {
+        id: "topo-node-3",
+        name: "wk-node3",
+        role: "Degraded follower",
+        status: "degraded",
+        groups: 21,
+        outbound: "49 MB/s",
+        x: "74%",
+        y: "76%",
+        detail: {
+          summary: "当前拓扑中的主要风险节点，慢链路和 follower lag 在此汇集。",
+          metrics: [
+            { label: "Leader Groups", value: "21" },
+            { label: "Outbound", value: "49 MB/s" },
+            { label: "Fanout", value: "unstable" },
+          ],
+          links: ["from wk-node1 degraded", "to wk-node2 stable", "return path jitter"],
+          events: ["Topology hotspot alert", "Lag aligned with slow link", "Pending handoff candidate"],
+        },
+      },
+    ],
+    flows: [
+      { label: "wk-node1 → wk-node2", tone: "online", width: "58%" },
+      { label: "wk-node1 → wk-node3", tone: "degraded", width: "74%" },
+      { label: "wk-node2 → wk-node3", tone: "warning", width: "46%" },
+      { label: "wk-node3 → wk-node1", tone: "warning", width: "41%" },
+    ],
+    incidents: [
+      { name: "wk-node3", summary: "slow follower path", status: "degraded" },
+      { name: "group-17", summary: "handoff candidate", status: "warning" },
+      { name: "wk-node1", summary: "leader concentration high", status: "online" },
     ],
   },
 };

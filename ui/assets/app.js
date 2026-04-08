@@ -434,6 +434,200 @@ function renderConnectionDrawer(connection) {
   `;
 }
 
+function renderTopologyDrawer(node) {
+  if (!node) {
+    return `
+      <div class="drawer-head">
+        <div>
+          <h2>拓扑节点详情</h2>
+          <p>选择节点后查看详情</p>
+        </div>
+      </div>
+    `;
+  }
+
+  const metrics = node.detail.metrics
+    .map(
+      (item) => `
+        <div class="drawer-metric">
+          <span>${item.label}</span>
+          <strong>${item.value}</strong>
+        </div>
+      `,
+    )
+    .join("");
+  const links = node.detail.links.map((item) => `<span class="mini-tag">${item}</span>`).join("");
+  const events = node.detail.events.map((event) => `<li>${event}</li>`).join("");
+
+  return `
+    <div class="drawer-head">
+      <div>
+        <h2>${node.name}</h2>
+        <p>${node.role} · ${node.status} · ${node.groups} groups</p>
+      </div>
+      <button class="icon-button" type="button" data-close-topology-drawer>关闭</button>
+    </div>
+    <div class="drawer-body">
+      <section class="drawer-section">
+        <h3>节点概览</h3>
+        <p>${node.detail.summary}</p>
+        <p>Outbound ${node.outbound} · Groups ${node.groups}</p>
+      </section>
+      <section class="drawer-section">
+        <h3>关键指标</h3>
+        <div class="drawer-metrics">${metrics}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>关键链路</h3>
+        <div class="mini-tags">${links}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>最近事件</h3>
+        <ul class="drawer-list">${events}</ul>
+      </section>
+    </div>
+  `;
+}
+
+function renderTopology() {
+  const topology = window.ADMIN_UI_DATA.topology;
+  const metrics = topology.metrics
+    .map(
+      (item) => `
+        <article class="metric-card">
+          <span class="metric-label">${item.label}</span>
+          <strong class="metric-value">${item.value}</strong>
+          <span class="metric-hint">${item.hint}</span>
+        </article>
+      `,
+    )
+    .join("");
+
+  const nodes = topology.nodes
+    .map(
+      (node) => `
+        <button
+          class="topology-node ${node.status}"
+          type="button"
+          data-open-topology-node="${node.id}"
+          style="left:${node.x};top:${node.y};"
+        >
+          <strong>${node.name}</strong>
+          <span>${node.role}</span>
+        </button>
+      `,
+    )
+    .join("");
+
+  const flows = topology.flows
+    .map(
+      (flow) => `
+        <div class="flow-row">
+          <div class="flow-copy">
+            <strong>${flow.label}</strong>
+          </div>
+          <div class="flow-bar">
+            <span class="flow-fill ${flow.tone}" style="width:${flow.width};"></span>
+          </div>
+        </div>
+      `,
+    )
+    .join("");
+
+  const incidents = topology.incidents
+    .map(
+      (item) => `
+        <div class="rank-row">
+          <div>
+            <strong>${item.name}</strong>
+            <span>${item.summary}</span>
+          </div>
+          <span class="inline-badge ${item.status}">${item.status}</span>
+        </div>
+      `,
+    )
+    .join("");
+
+  return `
+    <section data-view="topology" class="page-shell">
+      <header class="page-header">
+        <div>
+          <h1>拓扑视图</h1>
+          <p>把节点、Leader 分布和 Group 流向放在同一个视图里，帮助定位集中热点和链路风险。</p>
+        </div>
+      </header>
+
+      <section class="metric-grid">${metrics}</section>
+
+      <section class="dashboard-grid">
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>节点拓扑总览</h2>
+              <p>点击节点查看角色、负载和关键链路上下文</p>
+            </div>
+          </div>
+          <div class="topology-canvas">
+            <div class="topology-link link-a"></div>
+            <div class="topology-link link-b"></div>
+            <div class="topology-link link-c"></div>
+            ${nodes}
+          </div>
+        </article>
+
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>热点清单</h2>
+              <p>优先处理拓扑中的风险点和集中热点</p>
+            </div>
+          </div>
+          <div class="rank-list">${incidents}</div>
+        </article>
+      </section>
+
+      <section class="dashboard-grid lower-grid">
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>Group 流向</h2>
+              <p>观察热点 Group 在节点间的主要方向</p>
+            </div>
+          </div>
+          <div class="flow-list">${flows}</div>
+        </article>
+
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>角色分布</h2>
+              <p>当前 Leader 与 Follower 在节点间的分布情况</p>
+            </div>
+          </div>
+          <div class="drawer-metrics section-metrics">
+            ${topology.nodes
+              .map(
+                (node) => `
+                  <div class="drawer-metric">
+                    <span>${node.name}</span>
+                    <strong>${node.groups}</strong>
+                    <span>${node.role}</span>
+                  </div>
+                `,
+              )
+              .join("")}
+          </div>
+        </article>
+      </section>
+
+      <aside class="drawer" data-topology-drawer hidden></aside>
+      <div class="topology-actions">
+        <button class="table-link" type="button" data-open-topology-node="topo-node-3">查看拓扑节点</button>
+      </div>
+    </section>
+  `;
+}
+
 function renderConnections() {
   const connections = window.ADMIN_UI_DATA.connections;
   const metrics = connections.metrics
@@ -1129,9 +1323,39 @@ function bindConnectionDrawer() {
   });
 }
 
+function bindTopologyDrawer() {
+  const drawer = document.querySelector("[data-topology-drawer]");
+  if (!drawer) return;
+
+  const open = (id) => {
+    const node = window.ADMIN_UI_DATA.topology.nodes.find((item) => item.id === id);
+    drawer.innerHTML = renderTopologyDrawer(node);
+    drawer.hidden = false;
+    document.body.classList.add("drawer-open");
+    const closeButton = drawer.querySelector("[data-close-topology-drawer]");
+    if (closeButton) {
+      closeButton.addEventListener("click", close);
+    }
+  };
+
+  const close = () => {
+    drawer.hidden = true;
+    drawer.innerHTML = "";
+    document.body.classList.remove("drawer-open");
+  };
+
+  document.querySelectorAll("[data-open-topology-node]").forEach((button) => {
+    button.addEventListener("click", () => open(button.dataset.openTopologyNode));
+  });
+}
+
 function renderCurrentPage() {
   const page = document.body.dataset.page;
   const meta = currentPageMeta();
+
+  if (page === "topology") {
+    return renderTopology();
+  }
 
   if (page === "connections") {
     return renderConnections();
@@ -1166,6 +1390,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelector("[data-sidebar]").innerHTML = renderSidebar(page);
   document.querySelector("[data-topbar]").innerHTML = renderTopbar(window.ADMIN_UI_DATA.cluster);
   document.querySelector("[data-page-root]").innerHTML = renderCurrentPage();
+  bindTopologyDrawer();
   bindConnectionDrawer();
   bindLinkDrawer();
   bindGroupDrawer();

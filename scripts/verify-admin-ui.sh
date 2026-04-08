@@ -8,6 +8,7 @@ required_files=(
   "ui/groups.html"
   "ui/network.html"
   "ui/nodes.html"
+  "ui/topology.html"
   "ui/placeholder/groups.html"
   "ui/placeholder/network.html"
   "ui/placeholder/topology.html"
@@ -28,6 +29,7 @@ html_files=(
   "ui/groups.html"
   "ui/network.html"
   "ui/nodes.html"
+  "ui/topology.html"
   "ui/placeholder/groups.html"
   "ui/placeholder/network.html"
   "ui/placeholder/topology.html"
@@ -70,12 +72,14 @@ grep -q 'connections.html' ui/assets/data.js || { echo "missing connections nav 
 grep -q 'nodes.html' ui/assets/data.js || { echo "missing nodes nav target" >&2; exit 1; }
 grep -q 'groups.html' ui/assets/data.js || { echo "missing groups nav target" >&2; exit 1; }
 grep -q 'network.html' ui/assets/data.js || { echo "missing network nav target" >&2; exit 1; }
+grep -q 'topology.html' ui/assets/data.js || { echo "missing topology nav target" >&2; exit 1; }
 grep -q 'data-base="."' ui/index.html || { echo "index missing base marker" >&2; exit 1; }
 grep -q 'data-base="."' ui/connections.html || { echo "connections missing base marker" >&2; exit 1; }
 grep -q 'data-base="."' ui/dashboard.html || { echo "dashboard missing base marker" >&2; exit 1; }
 grep -q 'data-base="."' ui/groups.html || { echo "groups missing base marker" >&2; exit 1; }
 grep -q 'data-base="."' ui/network.html || { echo "network missing base marker" >&2; exit 1; }
 grep -q 'data-base="."' ui/nodes.html || { echo "nodes missing base marker" >&2; exit 1; }
+grep -q 'data-base="."' ui/topology.html || { echo "topology missing base marker" >&2; exit 1; }
 for file in ui/placeholder/*.html; do
   grep -q 'data-base=".."' "$file" || { echo "placeholder missing base marker: $file" >&2; exit 1; }
 done
@@ -109,3 +113,12 @@ grep -q '连接会话列表' ui/assets/app.js || { echo "missing session list se
 grep -q '查看连接' ui/assets/app.js || { echo "missing connection drawer trigger" >&2; exit 1; }
 grep -q 'data-connection-drawer' ui/assets/app.js || { echo "missing connection drawer container" >&2; exit 1; }
 grep -q 'conn-10f3' ui/assets/data.js || { echo "missing connections sample data" >&2; exit 1; }
+
+grep -q 'data-page="topology"' ui/topology.html || { echo "missing topology page marker" >&2; exit 1; }
+grep -q 'renderTopology' ui/assets/app.js || { echo "missing renderTopology" >&2; exit 1; }
+grep -q '拓扑视图' ui/assets/app.js || { echo "missing topology heading" >&2; exit 1; }
+grep -q '节点拓扑总览' ui/assets/app.js || { echo "missing topology overview section" >&2; exit 1; }
+grep -q 'Group 流向' ui/assets/app.js || { echo "missing topology flow section" >&2; exit 1; }
+grep -q '查看拓扑节点' ui/assets/app.js || { echo "missing topology drawer trigger" >&2; exit 1; }
+grep -q 'data-topology-drawer' ui/assets/app.js || { echo "missing topology drawer container" >&2; exit 1; }
+grep -q 'topo-node-3' ui/assets/data.js || { echo "missing topology sample data" >&2; exit 1; }
