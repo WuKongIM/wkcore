@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"math"
 	"os"
 	"os/exec"
@@ -168,6 +167,7 @@ func percentileSendStressDuration(sorted []time.Duration, pct float64) time.Dura
 }
 
 func TestSendStressConfigDefaultsAndOverrides(t *testing.T) {
+	clearSendStressConfigEnv(t)
 	defaultCfg := loadSendStressConfig(t)
 	defaultWorkers := max(4, runtime.GOMAXPROCS(0))
 	require.False(t, defaultCfg.Enabled)
@@ -196,6 +196,8 @@ func TestSendStressConfigDefaultsAndOverrides(t *testing.T) {
 	require.Equal(t, 2*time.Second, cfg.DialTimeout)
 	require.Equal(t, 1800*time.Millisecond, cfg.AckTimeout)
 	require.EqualValues(t, 42, cfg.Seed)
+
+	assertSendStressConfigRejectsInvalidEnabledValue(t)
 }
 
 func TestSendStressLatencySummaryPercentiles(t *testing.T) {
@@ -219,19 +221,48 @@ func TestSendStressOutcomeErrorRate(t *testing.T) {
 	require.InDelta(t, 20.0, outcome.ErrorRate(), 0.001)
 }
 
-func TestSendStressConfigRejectsInvalidEnabledValue(t *testing.T) {
-	cmd := exec.Command("go", "test", "./internal/app", "-run", "TestSendStressConfigRejectsInvalidEnabledValueHelper", "-count=1")
+func clearSendStressConfigEnv(t *testing.T) {
+	t.Helper()
+
+	if os.Getenv("WK_SEND_STRESS_SKIP_CLEAR") == "1" {
+		return
+	}
+
+	for _, name := range []string{
+		sendStressEnv,
+		sendStressDurationEnv,
+		sendStressWorkersEnv,
+		sendStressSendersEnv,
+		sendStressMessagesPerWorkerEnv,
+		sendStressDialTimeoutEnv,
+		sendStressAckTimeoutEnv,
+		sendStressSeedEnv,
+	} {
+		name := name
+		if value, ok := os.LookupEnv(name); ok {
+			if err := os.Unsetenv(name); err != nil {
+				t.Fatalf("clear %s: %v", name, err)
+			}
+			t.Cleanup(func() {
+				if err := os.Setenv(name, value); err != nil {
+					t.Fatalf("restore %s: %v", name, err)
+				}
+			})
+		}
+	}
+}
+
+func assertSendStressConfigRejectsInvalidEnabledValue(t *testing.T) {
+	t.Helper()
+
+	cmd := exec.Command("go", "test", "./internal/app", "-run", "TestSendStressConfigDefaultsAndOverrides", "-count=1")
 	cmd.Dir = filepath.Clean(filepath.Join("..", ".."))
-	cmd.Env = append(os.Environ(), "WK_SEND_STRESS=maybe")
-	var stderr bytes.Buffer
-	cmd.Stdout = &stderr
-	cmd.Stderr = &stderr
+	cmd.Env = append(os.Environ(), "WK_SEND_STRESS=maybe", "WK_SEND_STRESS_SKIP_CLEAR=1")
+	var output strings.Builder
+	cmd.Stdout = &output
+	cmd.Stderr = &output
 
 	err := cmd.Run()
 	require.Error(t, err)
-	require.Contains(t, stderr.String(), "parse WK_SEND_STRESS")
-}
-
-func TestSendStressConfigRejectsInvalidEnabledValueHelper(t *testing.T) {
-	_ = loadSendStressConfig(t)
+	require.Contains(t, output.String(), "parse WK_SEND_STRESS")
 }
