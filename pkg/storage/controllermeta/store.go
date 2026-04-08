@@ -52,6 +52,20 @@ func (s *Store) GetNode(ctx context.Context, nodeID uint64) (ClusterNode, error)
 	return decodeClusterNode(encodeNodeKey(nodeID), value)
 }
 
+func (s *Store) DeleteNode(ctx context.Context, nodeID uint64) error {
+	if nodeID == 0 {
+		return ErrInvalidArgument
+	}
+	if err := s.checkContext(ctx); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.deleteValueLocked(encodeNodeKey(nodeID))
+}
+
 func (s *Store) ListNodes(ctx context.Context) ([]ClusterNode, error) {
 	if err := s.checkContext(ctx); err != nil {
 		return nil, err
@@ -67,7 +81,7 @@ func (s *Store) UpsertNode(ctx context.Context, node ClusterNode) error {
 	if err := s.checkContext(ctx); err != nil {
 		return err
 	}
-	if node.NodeID == 0 || node.Addr == "" || node.CapacityWeight < 0 {
+	if node.NodeID == 0 || node.Addr == "" || node.CapacityWeight < 0 || !validNodeStatus(node.Status) {
 		return ErrInvalidArgument
 	}
 	node = normalizeClusterNode(node)
@@ -95,6 +109,20 @@ func (s *Store) GetAssignment(ctx context.Context, groupID uint32) (GroupAssignm
 		return GroupAssignment{}, err
 	}
 	return decodeGroupAssignment(key, value)
+}
+
+func (s *Store) DeleteAssignment(ctx context.Context, groupID uint32) error {
+	if groupID == 0 {
+		return ErrInvalidArgument
+	}
+	if err := s.checkContext(ctx); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.deleteValueLocked(encodeGroupKey(recordPrefixAssignment, groupID))
 }
 
 func (s *Store) ListAssignments(ctx context.Context) ([]GroupAssignment, error) {
@@ -160,6 +188,17 @@ func (s *Store) GetControllerMembership(ctx context.Context) (ControllerMembersh
 	return decodeControllerMembership(value)
 }
 
+func (s *Store) DeleteControllerMembership(ctx context.Context) error {
+	if err := s.checkContext(ctx); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.deleteValueLocked(membershipKey())
+}
+
 func (s *Store) ListRuntimeViews(ctx context.Context) ([]GroupRuntimeView, error) {
 	if err := s.checkContext(ctx); err != nil {
 		return nil, err
@@ -169,6 +208,20 @@ func (s *Store) ListRuntimeViews(ctx context.Context) ([]GroupRuntimeView, error
 	defer s.mu.RUnlock()
 
 	return s.listRuntimeViewsLocked(ctx)
+}
+
+func (s *Store) DeleteRuntimeView(ctx context.Context, groupID uint32) error {
+	if groupID == 0 {
+		return ErrInvalidArgument
+	}
+	if err := s.checkContext(ctx); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.deleteValueLocked(encodeGroupKey(recordPrefixRuntimeView, groupID))
 }
 
 func (s *Store) UpsertControllerMembership(ctx context.Context, membership ControllerMembership) error {
@@ -219,6 +272,20 @@ func (s *Store) GetTask(ctx context.Context, groupID uint32) (ReconcileTask, err
 	return decodeReconcileTask(key, value)
 }
 
+func (s *Store) DeleteTask(ctx context.Context, groupID uint32) error {
+	if groupID == 0 {
+		return ErrInvalidArgument
+	}
+	if err := s.checkContext(ctx); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.deleteValueLocked(encodeGroupKey(recordPrefixTask, groupID))
+}
+
 func (s *Store) ListTasks(ctx context.Context) ([]ReconcileTask, error) {
 	if err := s.checkContext(ctx); err != nil {
 		return nil, err
@@ -234,7 +301,7 @@ func (s *Store) UpsertTask(ctx context.Context, task ReconcileTask) error {
 	if err := s.checkContext(ctx); err != nil {
 		return err
 	}
-	if task.GroupID == 0 {
+	if task.GroupID == 0 || !validTaskKind(task.Kind) || !validTaskStep(task.Step) {
 		return ErrInvalidArgument
 	}
 
@@ -307,6 +374,25 @@ func (s *Store) getValueLocked(key []byte) ([]byte, error) {
 	defer closer.Close()
 
 	return append([]byte(nil), value...), nil
+}
+
+func (s *Store) deleteValueLocked(key []byte) error {
+	_, closer, err := s.db.Get(key)
+	if err != nil {
+		if errors.Is(err, pebble.ErrNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	closer.Close()
+
+	batch := s.db.NewBatch()
+	defer batch.Close()
+
+	if err := batch.Delete(key, nil); err != nil {
+		return err
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 func (s *Store) writeValueLocked(key, value []byte) error {

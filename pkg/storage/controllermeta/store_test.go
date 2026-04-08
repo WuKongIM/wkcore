@@ -170,6 +170,108 @@ func TestStoreControllerMembershipRoundTrip(t *testing.T) {
 	require.Equal(t, []uint64{1, 2, 3}, membership.Peers)
 }
 
+func TestStoreDeleteOperations(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpsertNode(ctx, ClusterNode{
+		NodeID:          1,
+		Addr:            "127.0.0.1:7000",
+		Status:          NodeStatusAlive,
+		LastHeartbeatAt: time.Unix(30, 0),
+	}))
+	require.NoError(t, store.UpsertControllerMembership(ctx, ControllerMembership{
+		Peers: []uint64{1, 2, 3},
+	}))
+	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{
+		GroupID:      1,
+		DesiredPeers: []uint64{1, 2, 3},
+	}))
+	require.NoError(t, store.UpsertRuntimeView(ctx, GroupRuntimeView{
+		GroupID:      1,
+		CurrentPeers: []uint64{1, 2, 3},
+	}))
+	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{
+		GroupID: 1,
+		Kind:    TaskKindRepair,
+		Step:    TaskStepAddLearner,
+	}))
+
+	require.NoError(t, store.DeleteNode(ctx, 1))
+	require.NoError(t, store.DeleteControllerMembership(ctx))
+	require.NoError(t, store.DeleteAssignment(ctx, 1))
+	require.NoError(t, store.DeleteRuntimeView(ctx, 1))
+	require.NoError(t, store.DeleteTask(ctx, 1))
+
+	_, err := store.GetNode(ctx, 1)
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = store.GetControllerMembership(ctx)
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = store.GetAssignment(ctx, 1)
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = store.GetRuntimeView(ctx, 1)
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = store.GetTask(ctx, 1)
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestImportSnapshotRejectsCorruptValues(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpsertNode(ctx, ClusterNode{
+		NodeID:          1,
+		Addr:            "127.0.0.1:7000",
+		Status:          NodeStatusAlive,
+		LastHeartbeatAt: time.Unix(40, 0),
+	}))
+
+	snap, err := store.ExportSnapshot(ctx)
+	require.NoError(t, err)
+
+	entries, err := decodeSnapshot(snap)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	entries[0].Value = []byte{recordVersion}
+
+	restored := openTestStore(t)
+	err = restored.ImportSnapshot(ctx, encodeSnapshot(entries))
+	require.ErrorIs(t, err, ErrCorruptValue)
+
+	_, err = restored.GetNode(ctx, 1)
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestDecodeRejectsInvalidPersistedEnums(t *testing.T) {
+	nodeValue := encodeClusterNode(ClusterNode{
+		NodeID:          1,
+		Addr:            "127.0.0.1:7000",
+		Status:          NodeStatusAlive,
+		LastHeartbeatAt: time.Unix(50, 0),
+	})
+	nodeValue[16] = 99
+	_, err := decodeClusterNode(encodeNodeKey(1), nodeValue)
+	require.ErrorIs(t, err, ErrCorruptValue)
+
+	viewValue := encodeGroupRuntimeView(GroupRuntimeView{
+		GroupID:      1,
+		CurrentPeers: []uint64{1, 2, 3},
+		HasQuorum:    true,
+	})
+	viewValue[13] = 2
+	_, err = decodeGroupRuntimeView(encodeGroupKey(recordPrefixRuntimeView, 1), viewValue)
+	require.ErrorIs(t, err, ErrCorruptValue)
+
+	taskValue := encodeReconcileTask(ReconcileTask{
+		GroupID: 1,
+		Kind:    TaskKindRepair,
+		Step:    TaskStepAddLearner,
+	})
+	taskValue[1] = 99
+	_, err = decodeReconcileTask(encodeGroupKey(recordPrefixTask, 1), taskValue)
+	require.ErrorIs(t, err, ErrCorruptValue)
+}
+
 func TestStoreCanonicalizesPeerOrdering(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

@@ -102,6 +102,9 @@ func decodeClusterNode(key, data []byte) (ClusterNode, error) {
 		return ClusterNode{}, ErrCorruptValue
 	}
 	status := NodeStatus(rest[0])
+	if !validNodeStatus(status) {
+		return ClusterNode{}, ErrCorruptValue
+	}
 	rest = rest[1:]
 
 	lastHeartbeatAt, rest, err := readInt64(rest)
@@ -195,6 +198,9 @@ func decodeGroupRuntimeView(key, data []byte) (GroupRuntimeView, error) {
 	rest = rest[8:]
 	healthyVoters := binary.BigEndian.Uint32(rest[:4])
 	rest = rest[4:]
+	if rest[0] != 0 && rest[0] != 1 {
+		return GroupRuntimeView{}, ErrCorruptValue
+	}
 	hasQuorum := rest[0] == 1
 	rest = rest[1:]
 	observedConfigEpoch := binary.BigEndian.Uint64(rest[:8])
@@ -243,6 +249,9 @@ func decodeReconcileTask(key, data []byte) (ReconcileTask, error) {
 
 	kind := TaskKind(rest[0])
 	step := TaskStep(rest[1])
+	if !validTaskKind(kind) || !validTaskStep(step) {
+		return ReconcileTask{}, ErrCorruptValue
+	}
 	rest = rest[2:]
 	sourceNode := binary.BigEndian.Uint64(rest[:8])
 	rest = rest[8:]
@@ -322,6 +331,18 @@ func normalizeUint64Set(values []uint64) []uint64 {
 		n++
 	}
 	return sorted[:n]
+}
+
+func validNodeStatus(status NodeStatus) bool {
+	return status >= NodeStatusUnknown && status <= NodeStatusDraining
+}
+
+func validTaskKind(kind TaskKind) bool {
+	return kind >= TaskKindUnknown && kind <= TaskKindRebalance
+}
+
+func validTaskStep(step TaskStep) bool {
+	return step >= TaskStepUnknown && step <= TaskStepRemoveOld
 }
 
 func appendString(dst []byte, value string) []byte {

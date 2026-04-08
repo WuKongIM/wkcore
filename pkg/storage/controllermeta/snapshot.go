@@ -42,6 +42,11 @@ func (s *Store) ImportSnapshot(ctx context.Context, data []byte) error {
 	if err != nil {
 		return err
 	}
+	for _, entry := range entries {
+		if err := validateSnapshotValue(entry.Key, entry.Value); err != nil {
+			return err
+		}
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -197,4 +202,29 @@ func decodeSnapshot(data []byte) ([]snapshotEntry, error) {
 		return nil, ErrCorruptValue
 	}
 	return entries, nil
+}
+
+func validateSnapshotValue(key, value []byte) error {
+	if len(key) == 0 {
+		return ErrCorruptValue
+	}
+	switch key[0] {
+	case recordPrefixNode:
+		_, err := decodeClusterNode(key, value)
+		return err
+	case recordPrefixMembership:
+		_, err := decodeControllerMembership(value)
+		return err
+	case recordPrefixAssignment:
+		_, err := decodeGroupAssignment(key, value)
+		return err
+	case recordPrefixRuntimeView:
+		_, err := decodeGroupRuntimeView(key, value)
+		return err
+	case recordPrefixTask:
+		_, err := decodeReconcileTask(key, value)
+		return err
+	default:
+		return ErrCorruptValue
+	}
 }
