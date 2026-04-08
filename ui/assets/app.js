@@ -379,6 +379,251 @@ function renderLinkDrawer(link) {
   `;
 }
 
+function renderConnectionDrawer(connection) {
+  if (!connection) {
+    return `
+      <div class="drawer-head">
+        <div>
+          <h2>连接详情</h2>
+          <p>选择连接后查看详情</p>
+        </div>
+      </div>
+    `;
+  }
+
+  const metrics = connection.detail.metrics
+    .map(
+      (item) => `
+        <div class="drawer-metric">
+          <span>${item.label}</span>
+          <strong>${item.value}</strong>
+        </div>
+      `,
+    )
+    .join("");
+  const tags = connection.detail.tags.map((tag) => `<span class="mini-tag">${tag}</span>`).join("");
+  const events = connection.detail.events.map((event) => `<li>${event}</li>`).join("");
+
+  return `
+    <div class="drawer-head">
+      <div>
+        <h2>${connection.id}</h2>
+        <p>${connection.uid} · ${connection.device} · ${connection.status}</p>
+      </div>
+      <button class="icon-button" type="button" data-close-connection-drawer>关闭</button>
+    </div>
+    <div class="drawer-body">
+      <section class="drawer-section">
+        <h3>连接摘要</h3>
+        <p>${connection.detail.summary}</p>
+        <p>Node ${connection.node} · Client ${connection.client} · Connected ${connection.since}</p>
+      </section>
+      <section class="drawer-section">
+        <h3>关键指标</h3>
+        <div class="drawer-metrics">${metrics}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>会话标签</h3>
+        <div class="mini-tags">${tags}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>最近事件</h3>
+        <ul class="drawer-list">${events}</ul>
+      </section>
+    </div>
+  `;
+}
+
+function renderConnections() {
+  const connections = window.ADMIN_UI_DATA.connections;
+  const metrics = connections.metrics
+    .map(
+      (item) => `
+        <article class="metric-card">
+          <span class="metric-label">${item.label}</span>
+          <strong class="metric-value">${item.value}</strong>
+          <span class="metric-hint">${item.hint}</span>
+        </article>
+      `,
+    )
+    .join("");
+
+  const deviceMix = connections.deviceMix
+    .map(
+      (item) => `
+        <div class="drawer-metric">
+          <span>${item.label}</span>
+          <strong>${item.value}</strong>
+        </div>
+      `,
+    )
+    .join("");
+
+  const nodeLoad = connections.nodeLoad
+    .map(
+      (row) => `
+        <div class="rank-row">
+          <div>
+            <strong>${row.node}</strong>
+            <span>${row.connections} 连接</span>
+          </div>
+          <span class="inline-badge ${row.status}">${row.status}</span>
+        </div>
+      `,
+    )
+    .join("");
+
+  const trendBars = connections.trend
+    .map(
+      (point) => `
+        <div class="trend-bar">
+          <span class="trend-fill" style="height: ${point.value}%;"></span>
+          <label>${point.label}</label>
+        </div>
+      `,
+    )
+    .join("");
+
+  const rows = connections.rows
+    .map(
+      (row) => `
+        <tr>
+          <td><strong>${row.id}</strong></td>
+          <td>${row.uid}</td>
+          <td>${row.device}</td>
+          <td>${row.node}</td>
+          <td>${statusBadge(row.status)}</td>
+          <td>${row.latency}</td>
+          <td>${row.client}</td>
+          <td>${row.since}</td>
+          <td><button class="table-link" type="button" data-open-connection="${row.id}">查看连接</button></td>
+        </tr>
+      `,
+    )
+    .join("");
+
+  return `
+    <section data-view="connections" class="page-shell">
+      <header class="page-header">
+        <div>
+          <h1>在线连接</h1>
+          <p>从连接、设备和节点三个维度查看当前在线会话，优先定位高风险连接。</p>
+        </div>
+      </header>
+
+      <section class="panel content-panel">
+        <div class="section-head">
+          <div>
+            <h2>活跃连接概况</h2>
+            <p>先看总体规模、异常连接数量和多端在线占比</p>
+          </div>
+        </div>
+        <div class="metric-grid section-metrics">${metrics}</div>
+      </section>
+
+      <section class="dashboard-grid lower-grid">
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>设备分布</h2>
+              <p>按设备类型看当前连接结构</p>
+            </div>
+          </div>
+          <div class="drawer-metrics section-metrics">${deviceMix}</div>
+        </article>
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>节点承载</h2>
+              <p>结合节点状态看连接负载是否偏斜</p>
+            </div>
+          </div>
+          <div class="rank-list">${nodeLoad}</div>
+        </article>
+      </section>
+
+      <section class="dashboard-grid">
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>活跃会话趋势</h2>
+              <p>最近 30 分钟在线连接数变化</p>
+            </div>
+          </div>
+          <div class="trend-chart">${trendBars}</div>
+        </article>
+
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>高风险连接</h2>
+              <p>优先查看 warning / degraded 会话</p>
+            </div>
+          </div>
+          <div class="risk-list">
+            ${connections.rows
+              .filter((row) => row.status !== "online")
+              .map(
+                (row) => `
+                  <div class="risk-item compact">
+                    <span class="risk-level ${row.status === "degraded" ? "critical" : "warning"}">${row.status}</span>
+                    <div class="risk-copy">
+                      <strong>${row.id}</strong>
+                      <span>${row.note} · ${row.device} · ${row.node}</span>
+                    </div>
+                    <button class="table-link" type="button" data-open-connection="${row.id}">查看连接</button>
+                  </div>
+                `,
+              )
+              .join("")}
+          </div>
+        </article>
+      </section>
+
+      <section class="panel toolbar-panel">
+        <div class="toolbar-row">
+          <div class="surface-pill search-pill">
+            <img class="nav-icon" src="${icon("search")}" alt="" />
+            <span>搜索连接ID / UID / 设备 / 节点</span>
+          </div>
+          <div class="toolbar-actions">
+            <button class="filter-pill" type="button">状态：全部</button>
+            <button class="filter-pill" type="button">设备：全部</button>
+            <button class="filter-pill" type="button">排序：Latency</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="section-head table-head">
+          <div>
+            <h2>连接会话列表</h2>
+            <p>按连接状态、设备和节点快速筛查在线会话</p>
+          </div>
+        </div>
+        <table class="node-table">
+          <thead>
+            <tr>
+              <th>连接ID</th>
+              <th>UID</th>
+              <th>设备</th>
+              <th>节点</th>
+              <th>状态</th>
+              <th>RTT</th>
+              <th>Client</th>
+              <th>在线时长</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </section>
+
+      <aside class="drawer" data-connection-drawer hidden></aside>
+    </section>
+  `;
+}
+
 function renderNetwork() {
   const network = window.ADMIN_UI_DATA.network;
   const metrics = network.metrics
@@ -858,9 +1103,39 @@ function bindLinkDrawer() {
   });
 }
 
+function bindConnectionDrawer() {
+  const drawer = document.querySelector("[data-connection-drawer]");
+  if (!drawer) return;
+
+  const open = (id) => {
+    const connection = window.ADMIN_UI_DATA.connections.rows.find((item) => item.id === id);
+    drawer.innerHTML = renderConnectionDrawer(connection);
+    drawer.hidden = false;
+    document.body.classList.add("drawer-open");
+    const closeButton = drawer.querySelector("[data-close-connection-drawer]");
+    if (closeButton) {
+      closeButton.addEventListener("click", close);
+    }
+  };
+
+  const close = () => {
+    drawer.hidden = true;
+    drawer.innerHTML = "";
+    document.body.classList.remove("drawer-open");
+  };
+
+  document.querySelectorAll("[data-open-connection]").forEach((button) => {
+    button.addEventListener("click", () => open(button.dataset.openConnection));
+  });
+}
+
 function renderCurrentPage() {
   const page = document.body.dataset.page;
   const meta = currentPageMeta();
+
+  if (page === "connections") {
+    return renderConnections();
+  }
 
   if (page === "dashboard") {
     return renderDashboard();
@@ -891,6 +1166,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelector("[data-sidebar]").innerHTML = renderSidebar(page);
   document.querySelector("[data-topbar]").innerHTML = renderTopbar(window.ADMIN_UI_DATA.cluster);
   document.querySelector("[data-page-root]").innerHTML = renderCurrentPage();
+  bindConnectionDrawer();
   bindLinkDrawer();
   bindGroupDrawer();
   bindNodeDrawer();

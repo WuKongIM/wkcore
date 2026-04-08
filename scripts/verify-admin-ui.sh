@@ -3,6 +3,7 @@ set -euo pipefail
 
 required_files=(
   "ui/index.html"
+  "ui/connections.html"
   "ui/dashboard.html"
   "ui/groups.html"
   "ui/network.html"
@@ -22,6 +23,7 @@ done
 
 html_files=(
   "ui/index.html"
+  "ui/connections.html"
   "ui/dashboard.html"
   "ui/groups.html"
   "ui/network.html"
@@ -64,10 +66,12 @@ grep -q 'Follower replication lag > threshold' ui/assets/data.js || { echo "miss
 
 grep -q 'pageHref' ui/assets/app.js || { echo "missing relative path helper" >&2; exit 1; }
 grep -q 'dashboard.html' ui/assets/data.js || { echo "missing dashboard nav target" >&2; exit 1; }
+grep -q 'connections.html' ui/assets/data.js || { echo "missing connections nav target" >&2; exit 1; }
 grep -q 'nodes.html' ui/assets/data.js || { echo "missing nodes nav target" >&2; exit 1; }
 grep -q 'groups.html' ui/assets/data.js || { echo "missing groups nav target" >&2; exit 1; }
 grep -q 'network.html' ui/assets/data.js || { echo "missing network nav target" >&2; exit 1; }
 grep -q 'data-base="."' ui/index.html || { echo "index missing base marker" >&2; exit 1; }
+grep -q 'data-base="."' ui/connections.html || { echo "connections missing base marker" >&2; exit 1; }
 grep -q 'data-base="."' ui/dashboard.html || { echo "dashboard missing base marker" >&2; exit 1; }
 grep -q 'data-base="."' ui/groups.html || { echo "groups missing base marker" >&2; exit 1; }
 grep -q 'data-base="."' ui/network.html || { echo "network missing base marker" >&2; exit 1; }
@@ -96,3 +100,12 @@ grep -q '链路矩阵' ui/assets/app.js || { echo "missing link matrix section" 
 grep -q '查看链路' ui/assets/app.js || { echo "missing network drawer trigger" >&2; exit 1; }
 grep -q 'data-link-drawer' ui/assets/app.js || { echo "missing network drawer container" >&2; exit 1; }
 grep -q 'node1→node3' ui/assets/data.js || { echo "missing network sample data" >&2; exit 1; }
+
+grep -q 'data-page="connections"' ui/connections.html || { echo "missing connections page marker" >&2; exit 1; }
+grep -q 'renderConnections' ui/assets/app.js || { echo "missing renderConnections" >&2; exit 1; }
+grep -q '在线连接' ui/assets/app.js || { echo "missing connections heading" >&2; exit 1; }
+grep -q '活跃连接概况' ui/assets/app.js || { echo "missing connections summary section" >&2; exit 1; }
+grep -q '连接会话列表' ui/assets/app.js || { echo "missing session list section" >&2; exit 1; }
+grep -q '查看连接' ui/assets/app.js || { echo "missing connection drawer trigger" >&2; exit 1; }
+grep -q 'data-connection-drawer' ui/assets/app.js || { echo "missing connection drawer container" >&2; exit 1; }
+grep -q 'conn-10f3' ui/assets/data.js || { echo "missing connections sample data" >&2; exit 1; }
