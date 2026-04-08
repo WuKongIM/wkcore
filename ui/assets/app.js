@@ -124,9 +124,144 @@ function renderStubPage(meta) {
   `;
 }
 
+function renderDashboard() {
+  const dashboard = window.ADMIN_UI_DATA.dashboard;
+  const windowPills = dashboard.windows
+    .map((label, index) => {
+      const activeClass = index === 0 ? " is-active" : "";
+      return `<button class="window-pill${activeClass}" type="button">${label}</button>`;
+    })
+    .join("");
+
+  const metrics = dashboard.metrics
+    .map((item) => {
+      const toneClass = item.tone ? ` ${item.tone}` : "";
+      return `
+        <article class="metric-card${toneClass}">
+          <span class="metric-label">${item.label}</span>
+          <strong class="metric-value">${item.value}</strong>
+          <span class="metric-hint">${item.hint}</span>
+        </article>
+      `;
+    })
+    .join("");
+
+  const risks = dashboard.risks
+    .map((risk) => {
+      return `
+        <a class="risk-item" href="${pageHref(risk.path)}">
+          <span class="risk-level ${risk.level}">${risk.level}</span>
+          <div class="risk-copy">
+            <strong>${risk.title}</strong>
+            <span>${risk.detail}</span>
+          </div>
+          <img class="nav-icon" src="${icon("arrow-up-right")}" alt="" />
+        </a>
+      `;
+    })
+    .join("");
+
+  const snapshotCells = dashboard.snapshot
+    .map((tone) => `<div class="snapshot-cell ${tone}"></div>`)
+    .join("");
+
+  const trendBars = dashboard.trend
+    .map(
+      (point) => `
+        <div class="trend-bar">
+          <span class="trend-fill" style="height: ${point.value}%;"></span>
+          <label>${point.label}</label>
+        </div>
+      `,
+    )
+    .join("");
+
+  const hotNodes = dashboard.hotNodes
+    .map(
+      (node) => `
+        <div class="rank-row">
+          <div>
+            <strong>${node.name}</strong>
+            <span>${node.meta}</span>
+          </div>
+          <span class="inline-badge ${node.status}">${node.status}</span>
+        </div>
+      `,
+    )
+    .join("");
+
+  return `
+    <section data-view="dashboard" class="page-shell">
+      <header class="page-header">
+        <div>
+          <h1>Dashboard</h1>
+          <p>把集群健康、异常线索和节点承载情况放在一个首屏里，先判断，再下钻。</p>
+        </div>
+        <div class="window-pills">${windowPills}</div>
+      </header>
+
+      <section class="metric-grid">${metrics}</section>
+
+      <section class="dashboard-grid">
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>风险摘要</h2>
+              <p>按优先级列出当前最值得处理的线索</p>
+            </div>
+            <a class="section-link" href="${pageHref("nodes.html")}">进入节点管理</a>
+          </div>
+          <div class="risk-list">${risks}</div>
+        </article>
+
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>集群快照</h2>
+              <p>用轻量热度矩阵观察 Group 分布与健康差异</p>
+            </div>
+          </div>
+          <div class="snapshot-grid">${snapshotCells}</div>
+          <div class="snapshot-legend">
+            <span><i class="legend-dot accent"></i>高负载</span>
+            <span><i class="legend-dot warning"></i>风险</span>
+            <span><i class="legend-dot healthy"></i>健康</span>
+          </div>
+        </article>
+      </section>
+
+      <section class="dashboard-grid lower-grid">
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>连接趋势</h2>
+              <p>最近 30 分钟内的连接波动</p>
+            </div>
+          </div>
+          <div class="trend-chart">${trendBars}</div>
+        </article>
+
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>异常节点排行</h2>
+              <p>优先查看需要下钻的节点</p>
+            </div>
+          </div>
+          <div class="rank-list">${hotNodes}</div>
+        </article>
+      </section>
+    </section>
+  `;
+}
+
 function renderCurrentPage() {
   const page = document.body.dataset.page;
   const meta = currentPageMeta();
+
+  if (page === "dashboard") {
+    return renderDashboard();
+  }
 
   if (["groups", "network", "topology", "connections"].includes(page)) {
     return renderPlaceholder(meta.title, meta.description, meta.tags);

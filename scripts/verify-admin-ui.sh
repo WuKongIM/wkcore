@@ -40,3 +40,13 @@ rg -n "unpkg.com/lucide-static@latest/icons/" ui >/dev/null || { echo "missing l
 for file in ui/placeholder/*.html; do
   grep -q '该页面将在下一阶段扩展' "$file" || { echo "missing placeholder copy: $file" >&2; exit 1; }
 done
+
+dashboard_files=("ui/index.html" "ui/dashboard.html")
+for file in "${dashboard_files[@]}"; do
+  grep -q 'data-page="dashboard"' "$file" || { echo "missing dashboard page marker: $file" >&2; exit 1; }
+done
+
+grep -q 'renderDashboard' ui/assets/app.js || { echo "missing renderDashboard" >&2; exit 1; }
+grep -q '在线节点数' ui/assets/data.js || { echo "missing dashboard metric copy" >&2; exit 1; }
+grep -q '风险摘要' ui/assets/app.js || { echo "missing risk section" >&2; exit 1; }
+grep -q '集群快照' ui/assets/app.js || { echo "missing cluster snapshot" >&2; exit 1; }
