@@ -184,7 +184,6 @@ controller 是唯一有权决定下列内容的组件：
 
 - `GroupID`
 - `DesiredPeers []NodeID`
-- `DesiredReplicaN`
 - `ConfigEpoch`
 - `BalanceVersion`
 
@@ -230,6 +229,7 @@ controller 是唯一有权决定下列内容的组件：
 
 - controller 不直接把大动作一次做完
 - 所有迁移都拆成显式的单步任务
+- `Bootstrap` 只用于业务 managed group 的首次创建
 
 ## controller 状态机输入
 
@@ -245,7 +245,7 @@ controller FSM 只接受两类输入：
 
 - 更新 assignment
 - 推进 reconcile task
-- 标记节点 `Draining/Dead/Recovered`
+- 标记节点 `Alive/Dead/Draining`
 
 这样可以保证：
 
@@ -274,6 +274,11 @@ controller FSM 只接受两类输入：
 - `Suspect` 不立刻触发迁移
 - `Dead` 才进入自动 repair
 - `Draining` 不再承载新 group，并逐步迁出已有 groups
+
+v1 不引入单独的 `Recovered` 状态：
+
+- 故障节点恢复心跳后，重新回到 `Alive`
+- `Draining` 节点只通过显式 `ResumeNode(nodeID)` 回到 `Alive`
 
 ## placement 与均衡策略
 
@@ -322,12 +327,39 @@ controller 的调度优先级必须固定：
 
 1. 启动 transport/server
 2. 启动 `multiraft.Runtime`
-3. 打开 bootstrap controller group
-4. 启动 `GroupController`
-5. 启动本地 `GroupAgent`
-6. `GroupAgent` 向 controller 注册并上报心跳
-7. `GroupAgent` 拉取 assignment
-8. 本地动态打开需要承载的 managed groups
+3. 若本地节点属于 controller bootstrap peers，则打开 controller group `0`
+4. 若本地节点属于 controller bootstrap peers，则启动本地 controller replica service
+5. 只有 controller leader 运行真正的 `GroupController` 决策逻辑
+6. 每个节点都启动本地 `GroupAgent`
+7. `GroupAgent` 向 controller leader 注册并上报心跳
+8. `GroupAgent` 拉取 assignment
+9. 本地动态打开需要承载的 managed groups
+
+v1 的节点角色边界需要写死：
+
+- controller bootstrap peers 才承载 controller Raft 副本，并有资格成为 controller leader
+- 只有 controller leader 运行 placement / reconcile 决策逻辑
+- 非 controller 节点只运行 `GroupAgent` 和轻量 controller client，不承载 controller 状态
+
+## brand-new managed group 的首次形成流程
+
+brand-new managed group 不能被 repair/rebalance 流程隐式代替，v1 需要单独的 bootstrap 语义。
+
+当某个业务 `GroupID` 还没有任何 runtime view，也没有历史 assignment 时：
+
+1. controller leader 先为该 group 计算第一版 `DesiredPeers`
+2. controller leader 创建 `ReconcileTask{Kind: Bootstrap}`
+3. 目标 peers 按 v1 placement 规则选出
+4. 被选中的 peer agent 先确保本地 storage/state machine 句柄存在
+5. 每个目标 peer 若本地没有该 group 的持久化 Raft 状态，则执行本地 `BootstrapGroup(groupID, voters)`
+6. controller 观察到该 group 已形成并选出 leader 后，才把 bootstrap task 标记完成
+
+职责边界是：
+
+- controller leader 决定初始 peer 集和 bootstrap epoch
+- controller leader 是首次 bootstrap 的唯一授权者，只有在它提交 `Bootstrap` task 后，peer agent 才能执行本地 bootstrap
+- 目标 peer agent 在“本地状态为空”时执行 bootstrap
+- 后续同一 group 的生命周期变化只再走 `Repair` / `Rebalance`，不再走 `Bootstrap`
 
 ## 安全重配流程
 
@@ -461,6 +493,49 @@ v1 明确不做自动救援式重建。
 - `WK_CLUSTER_CONTROLLER_BOOTSTRAP` 只用于启动 controller group
 - 普通业务 groups 不再手写 peers
 
+### bootstrap controller 配置
+
+v1 只有一个 bootstrap controller group，并保留一个保留 group id：
+
+- controller bootstrap group id 固定为 `0`
+- 业务 managed groups 仍然是 `1..GroupCount`
+
+`WK_CLUSTER_CONTROLLER_BOOTSTRAP` 的配置形态建议为：
+
+```json
+{"group_id":0,"peers":[1,2,3]}
+```
+
+规则：
+
+- `group_id` 必须固定为 `0`
+- `peers` 不能为空
+- `peers` 中的节点必须全部存在于 `WK_CLUSTER_NODES`
+- `WK_CLUSTER_GROUP_COUNT` 只描述业务 managed groups
+- 本地节点不要求一定属于 bootstrap controller peers；非 controller 节点也可以作为 managed-group worker 加入集群
+
+### 启动校验替换规则
+
+现有围绕静态 `cluster.groups` 的校验应替换为：
+
+- `WK_CLUSTER_NODES` 必须存在且包含本地节点
+- `WK_CLUSTER_GROUP_COUNT > 0`
+- `WK_CLUSTER_GROUP_REPLICA_N > 0`
+- `WK_CLUSTER_CONTROLLER_BOOTSTRAP` 必须存在且合法
+- 不再要求静态业务 groups peer 列表
+
+### 首次启动与重启语义
+
+controller bootstrap group 的语义：
+
+- 若本地已存在 group `0` 的持久化 Raft 状态，则直接打开
+- 否则按 `WK_CLUSTER_CONTROLLER_BOOTSTRAP` 做 bootstrap
+
+业务 managed groups 的语义：
+
+- 不再从静态配置 bootstrap
+- 等待 controller 下发 assignment 后，再按 controller 指令打开或 bootstrap
+
 ## 代码结构建议
 
 建议新增：
@@ -518,8 +593,8 @@ v1 明确不做自动救援式重建。
 ### FSM 测试
 
 - 心跳超时
-- `Suspect -> Dead -> Recovered`
-- `Draining -> Resume`
+- `Suspect -> Dead -> Alive`
+- `Draining -> Alive` through `ResumeNode`
 - assignment 版本推进
 
 ### 多节点集成测试

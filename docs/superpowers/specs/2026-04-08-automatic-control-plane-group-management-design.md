@@ -143,7 +143,6 @@ The controller manages placement and task progress, not channel business state.
 
 - `GroupID`
 - `DesiredPeers []NodeID`
-- `DesiredReplicaN`
 - `ConfigEpoch`
 - `BalanceVersion`
 
@@ -180,6 +179,8 @@ This is the observed state, reported by agents.
 - `LastError`
 
 Tasks make reconfiguration progress explicit and restart-safe.
+`Bootstrap` is reserved for first-time creation of a managed business group
+that has never been formed before.
 
 ## Controller Inputs
 
@@ -195,7 +196,7 @@ The controller state machine only accepts:
 
 - assignment updates
 - reconcile task transitions
-- node status transitions such as `Draining`, `Dead`, and `Recovered`
+- node status transitions such as `Alive`, `Dead`, and `Draining`
 
 This separation keeps desired state and observed state distinct and lets a new
 controller leader resume in-flight work after failover.
@@ -215,6 +216,13 @@ Rules:
 - brief timeout: `Suspect`
 - timeout past failure threshold: `Dead`
 - operator-driven evacuation: `Draining`
+
+There is no separate `Recovered` state in v1.
+
+- a previously `Dead` or `Suspect` node becomes `Alive` again when heartbeats
+  are re-established and the controller accepts it back into scheduling
+- a `Draining` node becomes `Alive` again only through the explicit
+  `ResumeNode(nodeID)` operator action
 
 `Suspect` must not trigger immediate migration. This avoids placement churn
 from transient network or process jitter.
@@ -266,15 +274,55 @@ The new flow becomes:
 
 1. start transport
 2. start `multiraft.Runtime`
-3. open bootstrap controller group
-4. start `GroupController`
-5. start local `GroupAgent`
-6. register and heartbeat with controller
-7. fetch local assignments
-8. open local managed groups dynamically
+3. if the local node is a controller-bootstrap peer, open bootstrap controller
+   group `0`
+4. if the local node is a controller-bootstrap peer, start the local
+   controller replica service
+5. on the controller leader only, run `GroupController` decision logic
+6. on every node, start local `GroupAgent`
+7. register and heartbeat with the controller leader
+8. fetch local assignments
+9. open local managed groups dynamically
 
 This requires `raftcluster` to support runtime-managed groups in addition to
 static bootstrap groups.
+
+Node-role split in v1 is explicit:
+
+- controller-bootstrap peers host the controller Raft replica and are eligible
+  to become controller leader
+- only the controller leader runs placement and reconcile decision logic
+- non-controller peers run `GroupAgent` plus a lightweight controller client,
+  but never host controller state
+
+## Managed Group Bootstrap Flow
+
+Brand-new managed groups need an explicit first-creation path distinct from
+repair and rebalance.
+
+When a business group id `1..GroupCount` has no existing runtime view and no
+persisted assignment history:
+
+1. the controller leader creates an initial `GroupAssignment` for that group
+2. the controller leader creates a `ReconcileTask{Kind: Bootstrap}`
+3. the task selects the initial `DesiredPeers` using the same placement rules
+   as v1 repair targets
+4. each assigned peer agent ensures local storage and state-machine handles
+   exist
+5. each assigned peer with empty persisted Raft state calls local
+   `BootstrapGroup(groupID, voters)` using the controller-provided peer set
+6. once runtime views show the group exists and a leader has been elected, the
+   controller marks the bootstrap task complete
+
+Responsibility is split as follows:
+
+- the controller leader decides the initial peer set and bootstrap epoch
+- the controller leader is the single authority that authorizes first-time
+  bootstrap by committing the `Bootstrap` task
+- assigned peer agents perform the local bootstrap call when local state is
+  empty
+- later lifecycle changes for the same group use `Repair` or `Rebalance`,
+  never `Bootstrap` again
 
 ## Reconfiguration Flow
 
@@ -398,6 +446,52 @@ The long-term configuration surface should become:
 Business-group static peer lists are removed. Only the controller bootstrap path
 remains static.
 
+### Bootstrap controller config
+
+v1 uses exactly one bootstrap controller group with a reserved group id:
+
+- controller bootstrap group id: `0`
+- managed business group ids: `1..GroupCount`
+
+`WK_CLUSTER_CONTROLLER_BOOTSTRAP` defines the initial peer set of that single
+controller group. The config shape is:
+
+```json
+{"group_id":0,"peers":[1,2,3]}
+```
+
+Rules:
+
+- `group_id` must be `0`
+- `peers` must be non-empty
+- every peer id must exist in `WK_CLUSTER_NODES`
+- `WK_CLUSTER_GROUP_COUNT` still defines only managed business groups
+- a node does not need to be a controller peer to join the cluster as a
+  managed-group worker
+
+### Startup validation changes
+
+Current validation around static business `cluster.groups` is replaced by:
+
+- `WK_CLUSTER_NODES` must be present and contain the local node
+- `WK_CLUSTER_GROUP_COUNT` must be greater than `0`
+- `WK_CLUSTER_GROUP_REPLICA_N` must be greater than `0`
+- `WK_CLUSTER_CONTROLLER_BOOTSTRAP` must be present and valid
+- static business-group peer lists are no longer required
+
+### First-boot and restart behavior
+
+For the bootstrap controller group:
+
+- if persistent Raft state for group `0` exists locally, open it
+- otherwise bootstrap it from `WK_CLUSTER_CONTROLLER_BOOTSTRAP`
+
+For managed business groups:
+
+- do not bootstrap them from static config
+- wait for controller assignment and then open or bootstrap as directed by the
+  controller
+
 ## Affected Areas
 
 ### New packages
@@ -429,8 +523,8 @@ remains static.
 ### Controller FSM tests
 
 - heartbeat timeout transitions
-- `Suspect -> Dead -> Recovered`
-- `Draining -> Resume`
+- `Suspect -> Dead -> Alive`
+- `Draining -> Alive` through `ResumeNode`
 - assignment version progression
 
 ### Multi-node integration tests
