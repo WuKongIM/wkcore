@@ -113,6 +113,9 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	if len(c.Cluster.Nodes) == 0 {
 		return fmt.Errorf("%w: cluster nodes must be set", ErrInvalidConfig)
 	}
+	if len(c.Cluster.Groups) == 0 {
+		return fmt.Errorf("%w: cluster groups must be set", ErrInvalidConfig)
+	}
 	if len(c.Gateway.Listeners) == 0 {
 		return fmt.Errorf("%w: gateway listeners must be set", ErrInvalidConfig)
 	}
@@ -120,7 +123,7 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 		return fmt.Errorf("%w: gateway token auth requires verifier hooks", ErrInvalidConfig)
 	}
 
-	if c.Cluster.GroupCount == 0 && len(c.Cluster.Groups) > 0 {
+	if c.Cluster.GroupCount == 0 {
 		c.Cluster.GroupCount = uint32(len(c.Cluster.Groups))
 	}
 	if c.Cluster.GroupCount == 0 {

@@ -59,6 +59,9 @@ func (c *Config) validate() error {
 	if c.NewStateMachine == nil {
 		return fmt.Errorf("%w: NewStateMachine must be set", ErrInvalidConfig)
 	}
+	if len(c.Groups) == 0 {
+		return fmt.Errorf("%w: Groups must be set", ErrInvalidConfig)
+	}
 	if c.GroupCount == 0 {
 		return fmt.Errorf("%w: GroupCount must be > 0", ErrInvalidConfig)
 	}
@@ -74,7 +77,7 @@ func (c *Config) validate() error {
 	if c.GroupReplicaN > len(c.Nodes) {
 		return fmt.Errorf("%w: GroupReplicaN=%d exceeds Nodes=%d", ErrInvalidConfig, c.GroupReplicaN, len(c.Nodes))
 	}
-	if len(c.Groups) > 0 && uint32(len(c.Groups)) != c.GroupCount {
+	if uint32(len(c.Groups)) != c.GroupCount {
 		return fmt.Errorf("%w: len(Groups)=%d != GroupCount=%d", ErrInvalidConfig, len(c.Groups), c.GroupCount)
 	}
 
@@ -93,26 +96,24 @@ func (c *Config) validate() error {
 		return fmt.Errorf("%w: NodeID %d not found in Nodes", ErrInvalidConfig, c.NodeID)
 	}
 
-	if len(c.Groups) > 0 {
-		groupSet := make(map[multiraft.GroupID]bool, len(c.Groups))
-		groupSelfFound := false
-		for _, g := range c.Groups {
-			if groupSet[g.GroupID] {
-				return fmt.Errorf("%w: duplicate GroupID %d", ErrInvalidConfig, g.GroupID)
+	groupSet := make(map[multiraft.GroupID]bool, len(c.Groups))
+	groupSelfFound := false
+	for _, g := range c.Groups {
+		if groupSet[g.GroupID] {
+			return fmt.Errorf("%w: duplicate GroupID %d", ErrInvalidConfig, g.GroupID)
+		}
+		groupSet[g.GroupID] = true
+		for _, peer := range g.Peers {
+			if !nodeSet[peer] {
+				return fmt.Errorf("%w: peer %d in group %d not found in Nodes", ErrInvalidConfig, peer, g.GroupID)
 			}
-			groupSet[g.GroupID] = true
-			for _, peer := range g.Peers {
-				if !nodeSet[peer] {
-					return fmt.Errorf("%w: peer %d in group %d not found in Nodes", ErrInvalidConfig, peer, g.GroupID)
-				}
-				if peer == c.NodeID {
-					groupSelfFound = true
-				}
+			if peer == c.NodeID {
+				groupSelfFound = true
 			}
 		}
-		if !groupSelfFound {
-			return fmt.Errorf("%w: NodeID %d not found as peer in any group", ErrInvalidConfig, c.NodeID)
-		}
+	}
+	if !groupSelfFound {
+		return fmt.Errorf("%w: NodeID %d not found as peer in any group", ErrInvalidConfig, c.NodeID)
 	}
 	return nil
 }

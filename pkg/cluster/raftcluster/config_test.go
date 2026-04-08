@@ -122,10 +122,8 @@ func TestConfigValidate_DuplicateGroupID(t *testing.T) {
 	}
 }
 
-func TestConfigValidateAllowsDynamicManagedGroups(t *testing.T) {
+func TestConfigValidateAllowsControllerConfigWithLegacyGroups(t *testing.T) {
 	cfg := validTestConfig()
-	cfg.Groups = nil
-	cfg.GroupCount = 8
 	cfg.ControllerReplicaN = 3
 	cfg.GroupReplicaN = 3
 
@@ -134,10 +132,19 @@ func TestConfigValidateAllowsDynamicManagedGroups(t *testing.T) {
 	}
 }
 
-func TestConfigValidateRejectsDynamicManagedGroupsWhenLocalNodeMissing(t *testing.T) {
+func TestConfigValidateRejectsNilGroupsInCurrentPhase(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.Groups = nil
-	cfg.GroupCount = 8
+	cfg.ControllerReplicaN = 3
+	cfg.GroupReplicaN = 3
+
+	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
+}
+
+func TestConfigValidateRejectsLocalNodeMissingWithLegacyGroups(t *testing.T) {
+	cfg := validTestConfig()
 	cfg.ControllerReplicaN = 3
 	cfg.GroupReplicaN = 3
 	cfg.NodeID = 99

@@ -59,10 +59,8 @@ func TestConfigValidateRejectsMismatchedGroupCount(t *testing.T) {
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
-func TestConfigValidateAllowsAutomaticGroupManagementWithoutStaticGroups(t *testing.T) {
+func TestConfigValidateAllowsControllerConfigWithLegacyGroups(t *testing.T) {
 	cfg := validConfig()
-	cfg.Cluster.Groups = nil
-	cfg.Cluster.GroupCount = 8
 	cfg.Cluster.ControllerReplicaN = 3
 	cfg.Cluster.GroupReplicaN = 3
 	cfg.Cluster.Nodes = []NodeConfigRef{
@@ -77,6 +75,13 @@ func TestConfigValidateAllowsAutomaticGroupManagementWithoutStaticGroups(t *test
 		{ID: 2, Addr: "127.0.0.1:7001"},
 		{ID: 3, Addr: "127.0.0.1:7002"},
 	}, cfg.Cluster.DerivedControllerNodes())
+}
+
+func TestConfigValidateRejectsNilStaticGroupsInCurrentPhase(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cluster.Groups = nil
+
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
 func TestConfigValidateRejectsInvalidControllerReplicaN(t *testing.T) {
@@ -156,8 +161,6 @@ func TestConfigValidateRejectsNodeMissingFromClusterNodes(t *testing.T) {
 func TestConfigValidateRejectsLocalNodeMissingFromClusterNodes(t *testing.T) {
 	cfg := validConfig()
 	cfg.Node.ID = 9
-	cfg.Cluster.Groups = nil
-	cfg.Cluster.GroupCount = 8
 	cfg.Cluster.ControllerReplicaN = 3
 	cfg.Cluster.GroupReplicaN = 3
 

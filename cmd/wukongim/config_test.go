@@ -170,10 +170,11 @@ func TestBuildAppConfigParsesAutomaticGroupManagementKeys(t *testing.T) {
 		"WK_STORAGE_CONTROLLER_META_PATH="+filepath.Join(dir, "controller-meta"),
 		"WK_STORAGE_CONTROLLER_RAFT_PATH="+filepath.Join(dir, "controller-raft"),
 		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
-		"WK_CLUSTER_GROUP_COUNT=8",
+		"WK_CLUSTER_GROUP_COUNT=1",
 		"WK_CLUSTER_CONTROLLER_REPLICA_N=3",
 		"WK_CLUSTER_GROUP_REPLICA_N=3",
 		`WK_CLUSTER_NODES=[{"id":3,"addr":"127.0.0.1:7002"},{"id":1,"addr":"127.0.0.1:7000"},{"id":2,"addr":"127.0.0.1:7001"}]`,
+		`WK_CLUSTER_GROUPS=[{"id":1,"peers":[1,2,3]}]`,
 	)
 
 	cfg, err := loadConfig(configPath)
@@ -182,5 +183,5 @@ func TestBuildAppConfigParsesAutomaticGroupManagementKeys(t *testing.T) {
 	require.Equal(t, 3, cfg.Cluster.GroupReplicaN)
 	require.Equal(t, filepath.Join(dir, "controller-meta"), cfg.Storage.ControllerMetaPath)
 	require.Equal(t, filepath.Join(dir, "controller-raft"), cfg.Storage.ControllerRaftPath)
-	require.Nil(t, cfg.Cluster.Groups)
+	require.Len(t, cfg.Cluster.Groups, 1)
 }
