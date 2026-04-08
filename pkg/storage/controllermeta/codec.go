@@ -27,7 +27,11 @@ func decodeNodeKey(key []byte) (uint64, error) {
 	if len(key) != 1+8 || key[0] != recordPrefixNode {
 		return 0, ErrCorruptValue
 	}
-	return binary.BigEndian.Uint64(key[1:]), nil
+	nodeID := binary.BigEndian.Uint64(key[1:])
+	if nodeID == 0 {
+		return 0, ErrCorruptValue
+	}
+	return nodeID, nil
 }
 
 func encodeGroupKey(prefix byte, groupID uint32) []byte {
@@ -40,7 +44,11 @@ func decodeGroupKey(key []byte, prefix byte) (uint32, error) {
 	if len(key) != 1+4 || key[0] != prefix {
 		return 0, ErrCorruptValue
 	}
-	return binary.BigEndian.Uint32(key[1:]), nil
+	groupID := binary.BigEndian.Uint32(key[1:])
+	if groupID == 0 {
+		return 0, ErrCorruptValue
+	}
+	return groupID, nil
 }
 
 func membershipKey() []byte {
@@ -97,6 +105,9 @@ func decodeClusterNode(key, data []byte) (ClusterNode, error) {
 	addr, rest, err := readString(rest)
 	if err != nil {
 		return ClusterNode{}, err
+	}
+	if addr == "" {
+		return ClusterNode{}, ErrCorruptValue
 	}
 	if len(rest) < 1 {
 		return ClusterNode{}, ErrCorruptValue
@@ -334,15 +345,15 @@ func normalizeUint64Set(values []uint64) []uint64 {
 }
 
 func validNodeStatus(status NodeStatus) bool {
-	return status >= NodeStatusUnknown && status <= NodeStatusDraining
+	return status >= NodeStatusAlive && status <= NodeStatusDraining
 }
 
 func validTaskKind(kind TaskKind) bool {
-	return kind >= TaskKindUnknown && kind <= TaskKindRebalance
+	return kind >= TaskKindBootstrap && kind <= TaskKindRebalance
 }
 
 func validTaskStep(step TaskStep) bool {
-	return step >= TaskStepUnknown && step <= TaskStepRemoveOld
+	return step >= TaskStepAddLearner && step <= TaskStepRemoveOld
 }
 
 func appendString(dst []byte, value string) []byte {

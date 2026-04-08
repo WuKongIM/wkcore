@@ -162,8 +162,11 @@ func decodeSnapshot(data []byte) ([]snapshotEntry, error) {
 
 	entryCount := binary.BigEndian.Uint64(body[:8])
 	body = body[8:]
+	if entryCount > uint64(len(body))/2 {
+		return nil, ErrCorruptValue
+	}
 
-	entries := make([]snapshotEntry, 0, int(entryCount))
+	var entries []snapshotEntry
 	for i := uint64(0); i < entryCount; i++ {
 		keyLen, n := binary.Uvarint(body)
 		if n <= 0 {

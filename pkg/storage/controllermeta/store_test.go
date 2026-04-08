@@ -2,6 +2,8 @@ package controllermeta
 
 import (
 	"context"
+	"encoding/binary"
+	"hash/crc32"
 	"path/filepath"
 	"testing"
 	"time"
@@ -242,6 +244,99 @@ func TestImportSnapshotRejectsCorruptValues(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
+func TestImportSnapshotRejectsOversizedEntryCount(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	body := make([]byte, 0, 32)
+	body = append(body, snapshotMagic[:]...)
+	body = binary.BigEndian.AppendUint16(body, snapshotVersion)
+	body = binary.BigEndian.AppendUint64(body, ^uint64(0))
+	sum := crc32.ChecksumIEEE(body)
+	data := binary.BigEndian.AppendUint32(body, sum)
+
+	err := store.ImportSnapshot(ctx, data)
+	require.ErrorIs(t, err, ErrCorruptValue)
+}
+
+func TestImportSnapshotRejectsInvalidSemanticValues(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	validNode := snapshotEntry{
+		Key: encodeNodeKey(1),
+		Value: encodeClusterNode(ClusterNode{
+			NodeID:          1,
+			Addr:            "127.0.0.1:7000",
+			Status:          NodeStatusAlive,
+			LastHeartbeatAt: time.Unix(60, 0),
+		}),
+	}
+	validTask := snapshotEntry{
+		Key: encodeGroupKey(recordPrefixTask, 1),
+		Value: encodeReconcileTask(ReconcileTask{
+			GroupID: 1,
+			Kind:    TaskKindRepair,
+			Step:    TaskStepAddLearner,
+		}),
+	}
+
+	tests := []struct {
+		name  string
+		entry snapshotEntry
+	}{
+		{
+			name: "empty node address",
+			entry: snapshotEntry{
+				Key: encodeNodeKey(1),
+				Value: encodeClusterNode(ClusterNode{
+					NodeID:          1,
+					Addr:            "",
+					Status:          NodeStatusAlive,
+					LastHeartbeatAt: time.Unix(61, 0),
+				}),
+			},
+		},
+		{
+			name: "unknown node status",
+			entry: snapshotEntry{
+				Key: encodeNodeKey(1),
+				Value: encodeClusterNode(ClusterNode{
+					NodeID:          1,
+					Addr:            "127.0.0.1:7000",
+					Status:          NodeStatusUnknown,
+					LastHeartbeatAt: time.Unix(62, 0),
+				}),
+			},
+		},
+		{
+			name: "unknown task kind",
+			entry: snapshotEntry{
+				Key: encodeGroupKey(recordPrefixTask, 1),
+				Value: encodeReconcileTask(ReconcileTask{
+					GroupID: 1,
+					Kind:    TaskKindUnknown,
+					Step:    TaskStepAddLearner,
+				}),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var entries []snapshotEntry
+			if tt.entry.Key[0] == recordPrefixNode {
+				entries = []snapshotEntry{tt.entry, validTask}
+			} else {
+				entries = []snapshotEntry{validNode, tt.entry}
+			}
+
+			err := store.ImportSnapshot(ctx, encodeSnapshot(entries))
+			require.ErrorIs(t, err, ErrCorruptValue)
+		})
+	}
+}
+
 func TestDecodeRejectsInvalidPersistedEnums(t *testing.T) {
 	nodeValue := encodeClusterNode(ClusterNode{
 		NodeID:          1,
@@ -272,6 +367,33 @@ func TestDecodeRejectsInvalidPersistedEnums(t *testing.T) {
 	require.ErrorIs(t, err, ErrCorruptValue)
 }
 
+func TestUpsertRejectsUnknownEnums(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpsertNode(ctx, ClusterNode{
+		NodeID:          1,
+		Addr:            "127.0.0.1:7000",
+		Status:          NodeStatusUnknown,
+		LastHeartbeatAt: time.Unix(70, 0),
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+
+	err = store.UpsertTask(ctx, ReconcileTask{
+		GroupID: 1,
+		Kind:    TaskKindUnknown,
+		Step:    TaskStepAddLearner,
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+
+	err = store.UpsertTask(ctx, ReconcileTask{
+		GroupID: 1,
+		Kind:    TaskKindRepair,
+		Step:    TaskStepUnknown,
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+}
+
 func TestStoreCanonicalizesPeerOrdering(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -298,14 +420,14 @@ func TestStoreListMethodsReturnDeterministicOrder(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, store.UpsertNode(ctx, ClusterNode{NodeID: 9, Addr: "127.0.0.1:7009", CapacityWeight: 1}))
-	require.NoError(t, store.UpsertNode(ctx, ClusterNode{NodeID: 3, Addr: "127.0.0.1:7003", CapacityWeight: 1}))
+	require.NoError(t, store.UpsertNode(ctx, ClusterNode{NodeID: 9, Addr: "127.0.0.1:7009", Status: NodeStatusAlive, CapacityWeight: 1}))
+	require.NoError(t, store.UpsertNode(ctx, ClusterNode{NodeID: 3, Addr: "127.0.0.1:7003", Status: NodeStatusDraining, CapacityWeight: 1}))
 	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{GroupID: 8}))
 	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{GroupID: 2}))
 	require.NoError(t, store.UpsertRuntimeView(ctx, GroupRuntimeView{GroupID: 7}))
 	require.NoError(t, store.UpsertRuntimeView(ctx, GroupRuntimeView{GroupID: 1}))
-	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{GroupID: 5}))
-	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{GroupID: 4}))
+	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{GroupID: 5, Kind: TaskKindRepair, Step: TaskStepAddLearner}))
+	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{GroupID: 4, Kind: TaskKindRebalance, Step: TaskStepTransferLeader}))
 
 	nodes, err := store.ListNodes(ctx)
 	require.NoError(t, err)
