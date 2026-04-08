@@ -143,8 +143,10 @@ func TestControllerTickNoOpsWhenNotLeader(t *testing.T) {
 	store := openControllerStore(t)
 	require.NoError(t, store.Close())
 
-	controller := NewController(store, PlannerConfig{GroupCount: 1, ReplicaN: 3})
-	controller.isLeader = func() bool { return false }
+	controller := NewController(store, ControllerConfig{
+		Planner:  PlannerConfig{GroupCount: 1, ReplicaN: 3},
+		IsLeader: func() bool { return false },
+	})
 
 	require.NoError(t, controller.Tick(context.Background()))
 }

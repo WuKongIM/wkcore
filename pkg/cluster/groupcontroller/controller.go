@@ -14,12 +14,26 @@ type Controller struct {
 	isLeader func() bool
 }
 
-func NewController(store *controllermeta.Store, cfg PlannerConfig) *Controller {
+type ControllerConfig struct {
+	Planner  PlannerConfig
+	Now      func() time.Time
+	IsLeader func() bool
+}
+
+func NewController(store *controllermeta.Store, cfg ControllerConfig) *Controller {
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+	isLeader := cfg.IsLeader
+	if isLeader == nil {
+		isLeader = func() bool { return true }
+	}
 	return &Controller{
 		store:    store,
-		planner:  NewPlanner(cfg),
-		now:      time.Now,
-		isLeader: func() bool { return true },
+		planner:  NewPlanner(cfg.Planner),
+		now:      now,
+		isLeader: isLeader,
 	}
 }
 
