@@ -29,7 +29,7 @@ window.ADMIN_UI_DATA = {
         {
           key: "groups",
           text: "分区管理",
-          path: "placeholder/groups.html",
+          path: "groups.html",
           icon: "blocks",
         },
         {
@@ -69,7 +69,7 @@ window.ADMIN_UI_DATA = {
     },
     groups: {
       title: "分区管理",
-      description: "该页面将在下一阶段扩展",
+      description: "查看 Group 的 Leader 分布、复制状态与当前热度，作为集群调度和排障入口。",
       tags: ["Group 分布", "Leader / Follower", "Rebalance 入口"],
     },
     network: {
@@ -200,4 +200,104 @@ window.ADMIN_UI_DATA = {
       },
     },
   ],
+  groups: {
+    metrics: [
+      { label: "Active Groups", value: "64", hint: "全部已分配 Leader" },
+      { label: "Degraded Groups", value: "3", hint: "2 个 replication lag · 1 个 leader handoff" },
+      { label: "Leader Skew", value: "22 / 21 / 21", hint: "当前分布接近均衡" },
+      { label: "Write Throughput", value: "91 MB/s", hint: "p95 append latency 7.2ms" },
+    ],
+    heatmap: [
+      "healthy", "healthy", "accent", "healthy", "warning", "healthy", "soft", "accent",
+      "accent", "healthy", "soft", "healthy", "healthy", "soft", "warning", "healthy",
+      "healthy", "accent", "healthy", "soft", "healthy", "healthy", "soft", "accent",
+      "warning", "healthy", "healthy", "soft", "accent", "healthy", "healthy", "soft",
+    ],
+    rows: [
+      {
+        id: "group-01",
+        leader: "wk-node1",
+        replicas: "1 / 2 / 3",
+        status: "online",
+        lag: "0",
+        throughput: "18 MB/s",
+        term: "term-208",
+        channels: "room-live-1, room-live-8",
+        detail: {
+          summary: "稳定承担热点写入，leader 位于 wk-node1。",
+          epoch: "epoch-334",
+          members: ["wk-node1 · Leader", "wk-node2 · Follower", "wk-node3 · Follower"],
+          indicators: [
+            { label: "Append p95", value: "5.1ms" },
+            { label: "Commit Gap", value: "0" },
+            { label: "Rebalance", value: "No" },
+          ],
+          events: ["Last leadership change 4h ago", "Write throughput stable", "No replay backlog"],
+        },
+      },
+      {
+        id: "group-17",
+        leader: "wk-node3",
+        replicas: "1 / 2 / 3",
+        status: "degraded",
+        lag: "142",
+        throughput: "9 MB/s",
+        term: "term-207",
+        channels: "chat-hot-7, room-sync-3",
+        detail: {
+          summary: "Follower 追平偏慢，当前主要风险来自 wk-node3 的 RPC latency。",
+          epoch: "epoch-331",
+          members: ["wk-node3 · Leader", "wk-node1 · Follower", "wk-node2 · Follower"],
+          indicators: [
+            { label: "Append p95", value: "12.9ms" },
+            { label: "Commit Gap", value: "142" },
+            { label: "Rebalance", value: "Watch" },
+          ],
+          events: ["Follower replication lag > threshold", "Leader handoff candidate pending", "Hot channel burst observed"],
+        },
+      },
+      {
+        id: "group-24",
+        leader: "wk-node2",
+        replicas: "1 / 2 / 3",
+        status: "online",
+        lag: "6",
+        throughput: "13 MB/s",
+        term: "term-205",
+        channels: "dm-shard-4, dm-shard-9",
+        detail: {
+          summary: "轻微波动但仍在健康范围内，适合作为基准观测样本。",
+          epoch: "epoch-327",
+          members: ["wk-node2 · Leader", "wk-node1 · Follower", "wk-node3 · Follower"],
+          indicators: [
+            { label: "Append p95", value: "6.4ms" },
+            { label: "Commit Gap", value: "6" },
+            { label: "Rebalance", value: "No" },
+          ],
+          events: ["No member churn", "Steady throughput", "Checkpoint advanced normally"],
+        },
+      },
+      {
+        id: "group-31",
+        leader: "wk-node1",
+        replicas: "1 / 2 / 3",
+        status: "warning",
+        lag: "38",
+        throughput: "11 MB/s",
+        term: "term-206",
+        channels: "stream-sync-2, room-burst-5",
+        detail: {
+          summary: "存在短暂 lag 峰值，建议继续观察是否进入 handoff。",
+          epoch: "epoch-329",
+          members: ["wk-node1 · Leader", "wk-node2 · Follower", "wk-node3 · Follower"],
+          indicators: [
+            { label: "Append p95", value: "8.7ms" },
+            { label: "Commit Gap", value: "38" },
+            { label: "Rebalance", value: "Pending" },
+          ],
+          events: ["Lag spike during burst traffic", "No lease loss", "Checkpoint remains monotonic"],
+        },
+      },
+    ],
+  },
 };

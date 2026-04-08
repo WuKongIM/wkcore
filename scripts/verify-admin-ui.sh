@@ -4,6 +4,7 @@ set -euo pipefail
 required_files=(
   "ui/index.html"
   "ui/dashboard.html"
+  "ui/groups.html"
   "ui/nodes.html"
   "ui/placeholder/groups.html"
   "ui/placeholder/network.html"
@@ -21,6 +22,7 @@ done
 html_files=(
   "ui/index.html"
   "ui/dashboard.html"
+  "ui/groups.html"
   "ui/nodes.html"
   "ui/placeholder/groups.html"
   "ui/placeholder/network.html"
@@ -61,9 +63,10 @@ grep -q 'Follower replication lag > threshold' ui/assets/data.js || { echo "miss
 grep -q 'pageHref' ui/assets/app.js || { echo "missing relative path helper" >&2; exit 1; }
 grep -q 'dashboard.html' ui/assets/data.js || { echo "missing dashboard nav target" >&2; exit 1; }
 grep -q 'nodes.html' ui/assets/data.js || { echo "missing nodes nav target" >&2; exit 1; }
-grep -q 'placeholder/groups.html' ui/assets/data.js || { echo "missing groups nav target" >&2; exit 1; }
+grep -q 'groups.html' ui/assets/data.js || { echo "missing groups nav target" >&2; exit 1; }
 grep -q 'data-base="."' ui/index.html || { echo "index missing base marker" >&2; exit 1; }
 grep -q 'data-base="."' ui/dashboard.html || { echo "dashboard missing base marker" >&2; exit 1; }
+grep -q 'data-base="."' ui/groups.html || { echo "groups missing base marker" >&2; exit 1; }
 grep -q 'data-base="."' ui/nodes.html || { echo "nodes missing base marker" >&2; exit 1; }
 for file in ui/placeholder/*.html; do
   grep -q 'data-base=".."' "$file" || { echo "placeholder missing base marker: $file" >&2; exit 1; }
@@ -71,3 +74,12 @@ done
 
 grep -q '\-\-accent-primary' ui/assets/styles.css || { echo "missing accent token" >&2; exit 1; }
 grep -q 'drawer' ui/assets/styles.css || { echo "missing drawer styles" >&2; exit 1; }
+
+grep -q 'data-page="groups"' ui/groups.html || { echo "missing groups page marker" >&2; exit 1; }
+grep -q 'renderGroups' ui/assets/app.js || { echo "missing renderGroups" >&2; exit 1; }
+grep -q '分区管理' ui/assets/app.js || { echo "missing groups heading" >&2; exit 1; }
+grep -q 'Group ID' ui/assets/app.js || { echo "missing groups table header" >&2; exit 1; }
+grep -q 'Leader 节点' ui/assets/app.js || { echo "missing leader column" >&2; exit 1; }
+grep -q '查看 Group' ui/assets/app.js || { echo "missing group drawer trigger" >&2; exit 1; }
+grep -q 'data-group-drawer' ui/assets/app.js || { echo "missing group drawer container" >&2; exit 1; }
+grep -q 'group-17' ui/assets/data.js || { echo "missing groups sample data" >&2; exit 1; }

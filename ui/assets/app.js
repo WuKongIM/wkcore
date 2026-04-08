@@ -270,6 +270,189 @@ function statusBadge(status) {
   return `<span class="inline-badge ${status}">${status}</span>`;
 }
 
+function renderGroupDrawer(group) {
+  if (!group) {
+    return `
+      <div class="drawer-head">
+        <div>
+          <h2>Group 详情</h2>
+          <p>选择 Group 后查看详情</p>
+        </div>
+      </div>
+    `;
+  }
+
+  const members = group.detail.members.map((member) => `<span class="mini-tag">${member}</span>`).join("");
+  const indicators = group.detail.indicators
+    .map(
+      (item) => `
+        <div class="drawer-metric">
+          <span>${item.label}</span>
+          <strong>${item.value}</strong>
+        </div>
+      `,
+    )
+    .join("");
+  const events = group.detail.events.map((event) => `<li>${event}</li>`).join("");
+
+  return `
+    <div class="drawer-head">
+      <div>
+        <h2>${group.id}</h2>
+        <p>${group.leader} · ${group.status} · ${group.term}</p>
+      </div>
+      <button class="icon-button" type="button" data-close-group-drawer>关闭</button>
+    </div>
+    <div class="drawer-body">
+      <section class="drawer-section">
+        <h3>Group 概览</h3>
+        <p>${group.detail.summary}</p>
+        <p>Leader 节点 ${group.leader} · Epoch ${group.detail.epoch} · Replica ${group.replicas}</p>
+      </section>
+      <section class="drawer-section">
+        <h3>成员状态</h3>
+        <div class="mini-tags">${members}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>关键指标</h3>
+        <div class="drawer-metrics">${indicators}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>热点 Channel</h3>
+        <p>${group.channels}</p>
+      </section>
+      <section class="drawer-section">
+        <h3>最近事件</h3>
+        <ul class="drawer-list">${events}</ul>
+      </section>
+    </div>
+  `;
+}
+
+function renderGroups() {
+  const groups = window.ADMIN_UI_DATA.groups;
+  const metrics = groups.metrics
+    .map(
+      (item) => `
+        <article class="metric-card">
+          <span class="metric-label">${item.label}</span>
+          <strong class="metric-value">${item.value}</strong>
+          <span class="metric-hint">${item.hint}</span>
+        </article>
+      `,
+    )
+    .join("");
+
+  const heatmap = groups.heatmap
+    .map((tone) => `<div class="snapshot-cell ${tone}"></div>`)
+    .join("");
+
+  const rows = groups.rows
+    .map(
+      (group) => `
+        <tr>
+          <td><strong>${group.id}</strong></td>
+          <td>${group.leader}</td>
+          <td>${group.replicas}</td>
+          <td>${statusBadge(group.status)}</td>
+          <td>${group.lag}</td>
+          <td>${group.throughput}</td>
+          <td>${group.term}</td>
+          <td><button class="table-link" type="button" data-open-group="${group.id}">查看 Group</button></td>
+        </tr>
+      `,
+    )
+    .join("");
+
+  const incidents = groups.rows
+    .filter((group) => group.status !== "online")
+    .map(
+      (group) => `
+        <div class="rank-row">
+          <div>
+            <strong>${group.id}</strong>
+            <span>Leader 节点 ${group.leader} · lag ${group.lag} · ${group.channels}</span>
+          </div>
+          <span class="inline-badge ${group.status}">${group.status}</span>
+        </div>
+      `,
+    )
+    .join("");
+
+  return `
+    <section data-view="groups" class="page-shell">
+      <header class="page-header">
+        <div>
+          <h1>分区管理</h1>
+          <p>查看 Group 的 Leader 分布、复制状态与当前热度，作为集群调度和排障入口。</p>
+        </div>
+      </header>
+
+      <section class="metric-grid">${metrics}</section>
+
+      <section class="dashboard-grid lower-grid">
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>Leader 热度矩阵</h2>
+              <p>快速观察 Group 分布、风险点和热点集中位置</p>
+            </div>
+          </div>
+          <div class="snapshot-grid">${heatmap}</div>
+          <div class="snapshot-legend">
+            <span><i class="legend-dot accent"></i>热点</span>
+            <span><i class="legend-dot warning"></i>异常</span>
+            <span><i class="legend-dot healthy"></i>健康</span>
+          </div>
+        </article>
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>风险 Group</h2>
+              <p>优先看状态不是 online 的分区</p>
+            </div>
+          </div>
+          <div class="rank-list">${incidents}</div>
+        </article>
+      </section>
+
+      <section class="panel toolbar-panel">
+        <div class="toolbar-row">
+          <div class="surface-pill search-pill">
+            <img class="nav-icon" src="${icon("search")}" alt="" />
+            <span>搜索 Group ID / Leader / Replica</span>
+          </div>
+          <div class="toolbar-actions">
+            <button class="filter-pill" type="button">状态：全部</button>
+            <button class="filter-pill" type="button">Leader：全部</button>
+            <button class="filter-pill" type="button">排序：Lag</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel table-panel">
+        <table class="node-table">
+          <thead>
+            <tr>
+              <th>Group ID</th>
+              <th>Leader 节点</th>
+              <th>Replica</th>
+              <th>状态</th>
+              <th>Commit Lag</th>
+              <th>Write Throughput</th>
+              <th>当前 Term</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </section>
+
+      <aside class="drawer" data-group-drawer hidden></aside>
+    </section>
+  `;
+}
+
 function renderNodeDrawer(node) {
   if (!node) {
     return `
@@ -432,12 +615,42 @@ function bindNodeDrawer() {
   });
 }
 
+function bindGroupDrawer() {
+  const drawer = document.querySelector("[data-group-drawer]");
+  if (!drawer) return;
+
+  const open = (id) => {
+    const group = window.ADMIN_UI_DATA.groups.rows.find((item) => item.id === id);
+    drawer.innerHTML = renderGroupDrawer(group);
+    drawer.hidden = false;
+    document.body.classList.add("drawer-open");
+    const closeButton = drawer.querySelector("[data-close-group-drawer]");
+    if (closeButton) {
+      closeButton.addEventListener("click", close);
+    }
+  };
+
+  const close = () => {
+    drawer.hidden = true;
+    drawer.innerHTML = "";
+    document.body.classList.remove("drawer-open");
+  };
+
+  document.querySelectorAll("[data-open-group]").forEach((button) => {
+    button.addEventListener("click", () => open(button.dataset.openGroup));
+  });
+}
+
 function renderCurrentPage() {
   const page = document.body.dataset.page;
   const meta = currentPageMeta();
 
   if (page === "dashboard") {
     return renderDashboard();
+  }
+
+  if (page === "groups") {
+    return renderGroups();
   }
 
   if (page === "nodes") {
@@ -457,5 +670,6 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelector("[data-sidebar]").innerHTML = renderSidebar(page);
   document.querySelector("[data-topbar]").innerHTML = renderTopbar(window.ADMIN_UI_DATA.cluster);
   document.querySelector("[data-page-root]").innerHTML = renderCurrentPage();
+  bindGroupDrawer();
   bindNodeDrawer();
 });

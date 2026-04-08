@@ -667,6 +667,11 @@ img {
   color: #9a6700;
 }
 
+.inline-badge.warning {
+  background: #fff7e6;
+  color: #9a6700;
+}
+
 .toolbar-panel {
   padding: 16px 18px;
 }
