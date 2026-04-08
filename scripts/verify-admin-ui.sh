@@ -57,3 +57,17 @@ grep -q 'RPC Latency' ui/assets/app.js || { echo "missing latency header" >&2; e
 grep -q '查看详情' ui/assets/app.js || { echo "missing drawer trigger" >&2; exit 1; }
 grep -q 'data-node-drawer' ui/assets/app.js || { echo "missing drawer container" >&2; exit 1; }
 grep -q 'Follower replication lag > threshold' ui/assets/data.js || { echo "missing degraded hint" >&2; exit 1; }
+
+grep -q 'pageHref' ui/assets/app.js || { echo "missing relative path helper" >&2; exit 1; }
+grep -q 'dashboard.html' ui/assets/data.js || { echo "missing dashboard nav target" >&2; exit 1; }
+grep -q 'nodes.html' ui/assets/data.js || { echo "missing nodes nav target" >&2; exit 1; }
+grep -q 'placeholder/groups.html' ui/assets/data.js || { echo "missing groups nav target" >&2; exit 1; }
+grep -q 'data-base="."' ui/index.html || { echo "index missing base marker" >&2; exit 1; }
+grep -q 'data-base="."' ui/dashboard.html || { echo "dashboard missing base marker" >&2; exit 1; }
+grep -q 'data-base="."' ui/nodes.html || { echo "nodes missing base marker" >&2; exit 1; }
+for file in ui/placeholder/*.html; do
+  grep -q 'data-base=".."' "$file" || { echo "placeholder missing base marker: $file" >&2; exit 1; }
+done
+
+grep -q '\-\-accent-primary' ui/assets/styles.css || { echo "missing accent token" >&2; exit 1; }
+grep -q 'drawer' ui/assets/styles.css || { echo "missing drawer styles" >&2; exit 1; }
