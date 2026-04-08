@@ -3,8 +3,6 @@ package app
 import (
 	"math"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -61,7 +59,7 @@ func (o sendStressOutcome) ErrorRate() float64 {
 func loadSendStressConfig(t *testing.T) sendStressConfig {
 	t.Helper()
 
-	enabled, ok, err := strictEnvBool(sendStressEnv)
+	enabled, ok, err := parseSendStressEnabled(os.Getenv(sendStressEnv))
 	if err != nil {
 		t.Fatalf("parse %s: %v", sendStressEnv, err)
 	}
@@ -112,9 +110,8 @@ func loadSendStressConfig(t *testing.T) sendStressConfig {
 	return cfg
 }
 
-func strictEnvBool(name string) (bool, bool, error) {
-	value, ok := os.LookupEnv(name)
-	if !ok || strings.TrimSpace(value) == "" {
+func parseSendStressEnabled(value string) (bool, bool, error) {
+	if strings.TrimSpace(value) == "" {
 		return false, false, nil
 	}
 	switch strings.ToLower(strings.TrimSpace(value)) {
@@ -197,7 +194,15 @@ func TestSendStressConfigDefaultsAndOverrides(t *testing.T) {
 	require.Equal(t, 1800*time.Millisecond, cfg.AckTimeout)
 	require.EqualValues(t, 42, cfg.Seed)
 
-	assertSendStressConfigRejectsInvalidEnabledValue(t)
+	enabled, ok, err := parseSendStressEnabled("")
+	require.NoError(t, err)
+	require.False(t, enabled)
+	require.False(t, ok)
+
+	enabled, ok, err = parseSendStressEnabled("maybe")
+	require.Error(t, err)
+	require.True(t, ok)
+	require.False(t, enabled)
 }
 
 func TestSendStressLatencySummaryPercentiles(t *testing.T) {
@@ -224,10 +229,6 @@ func TestSendStressOutcomeErrorRate(t *testing.T) {
 func clearSendStressConfigEnv(t *testing.T) {
 	t.Helper()
 
-	if os.Getenv("WK_SEND_STRESS_SKIP_CLEAR") == "1" {
-		return
-	}
-
 	for _, name := range []string{
 		sendStressEnv,
 		sendStressDurationEnv,
@@ -250,19 +251,4 @@ func clearSendStressConfigEnv(t *testing.T) {
 			})
 		}
 	}
-}
-
-func assertSendStressConfigRejectsInvalidEnabledValue(t *testing.T) {
-	t.Helper()
-
-	cmd := exec.Command("go", "test", "./internal/app", "-run", "TestSendStressConfigDefaultsAndOverrides", "-count=1")
-	cmd.Dir = filepath.Clean(filepath.Join("..", ".."))
-	cmd.Env = append(os.Environ(), "WK_SEND_STRESS=maybe", "WK_SEND_STRESS_SKIP_CLEAR=1")
-	var output strings.Builder
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-
-	err := cmd.Run()
-	require.Error(t, err)
-	require.Contains(t, output.String(), "parse WK_SEND_STRESS")
 }
