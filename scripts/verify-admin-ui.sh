@@ -2,6 +2,7 @@
 set -euo pipefail
 
 required_files=(
+  "ui/channels.html"
   "ui/index.html"
   "ui/connections.html"
   "ui/dashboard.html"
@@ -23,6 +24,7 @@ for file in "${required_files[@]}"; do
 done
 
 html_files=(
+  "ui/channels.html"
   "ui/index.html"
   "ui/connections.html"
   "ui/dashboard.html"
@@ -68,12 +70,14 @@ grep -q 'Follower replication lag > threshold' ui/assets/data.js || { echo "miss
 
 grep -q 'pageHref' ui/assets/app.js || { echo "missing relative path helper" >&2; exit 1; }
 grep -q 'dashboard.html' ui/assets/data.js || { echo "missing dashboard nav target" >&2; exit 1; }
+grep -q 'channels.html' ui/assets/data.js || { echo "missing channels nav target" >&2; exit 1; }
 grep -q 'connections.html' ui/assets/data.js || { echo "missing connections nav target" >&2; exit 1; }
 grep -q 'nodes.html' ui/assets/data.js || { echo "missing nodes nav target" >&2; exit 1; }
 grep -q 'groups.html' ui/assets/data.js || { echo "missing groups nav target" >&2; exit 1; }
 grep -q 'network.html' ui/assets/data.js || { echo "missing network nav target" >&2; exit 1; }
 grep -q 'topology.html' ui/assets/data.js || { echo "missing topology nav target" >&2; exit 1; }
 grep -q 'data-base="."' ui/index.html || { echo "index missing base marker" >&2; exit 1; }
+grep -q 'data-base="."' ui/channels.html || { echo "channels missing base marker" >&2; exit 1; }
 grep -q 'data-base="."' ui/connections.html || { echo "connections missing base marker" >&2; exit 1; }
 grep -q 'data-base="."' ui/dashboard.html || { echo "dashboard missing base marker" >&2; exit 1; }
 grep -q 'data-base="."' ui/groups.html || { echo "groups missing base marker" >&2; exit 1; }
@@ -113,6 +117,14 @@ grep -q '连接会话列表' ui/assets/app.js || { echo "missing session list se
 grep -q '查看连接' ui/assets/app.js || { echo "missing connection drawer trigger" >&2; exit 1; }
 grep -q 'data-connection-drawer' ui/assets/app.js || { echo "missing connection drawer container" >&2; exit 1; }
 grep -q 'conn-10f3' ui/assets/data.js || { echo "missing connections sample data" >&2; exit 1; }
+
+grep -q 'data-page="channels"' ui/channels.html || { echo "missing channels page marker" >&2; exit 1; }
+grep -q 'renderChannels' ui/assets/app.js || { echo "missing renderChannels" >&2; exit 1; }
+grep -q '频道管理' ui/assets/app.js || { echo "missing channels heading" >&2; exit 1; }
+grep -q '频道列表' ui/assets/app.js || { echo "missing channel list section" >&2; exit 1; }
+grep -q '查看频道' ui/assets/app.js || { echo "missing channel drawer trigger" >&2; exit 1; }
+grep -q 'data-channel-drawer' ui/assets/app.js || { echo "missing channel drawer container" >&2; exit 1; }
+grep -q 'channel-room-01' ui/assets/data.js || { echo "missing channels sample data" >&2; exit 1; }
 
 grep -q 'data-page="topology"' ui/topology.html || { echo "missing topology page marker" >&2; exit 1; }
 grep -q 'renderTopology' ui/assets/app.js || { echo "missing renderTopology" >&2; exit 1; }

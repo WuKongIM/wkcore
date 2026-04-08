@@ -434,6 +434,65 @@ function renderConnectionDrawer(connection) {
   `;
 }
 
+function renderChannelDrawer(channel) {
+  if (!channel) {
+    return `
+      <div class="drawer-head">
+        <div>
+          <h2>频道详情</h2>
+          <p>选择频道后查看详情</p>
+        </div>
+      </div>
+    `;
+  }
+
+  const metrics = channel.detail.metrics
+    .map(
+      (item) => `
+        <div class="drawer-metric">
+          <span>${item.label}</span>
+          <strong>${item.value}</strong>
+        </div>
+      `,
+    )
+    .join("");
+  const tags = channel.detail.tags.map((tag) => `<span class="mini-tag">${tag}</span>`).join("");
+  const events = channel.detail.events.map((event) => `<li>${event}</li>`).join("");
+
+  return `
+    <div class="drawer-head">
+      <div>
+        <h2>${channel.id}</h2>
+        <p>${channel.type} · ${channel.status} · ${channel.group}</p>
+      </div>
+      <button class="icon-button" type="button" data-close-channel-drawer>关闭</button>
+    </div>
+    <div class="drawer-body">
+      <section class="drawer-section">
+        <h3>频道摘要</h3>
+        <p>${channel.detail.summary}</p>
+        <p>Leader ${channel.leader} · Group ${channel.group} · Subscriber ${channel.subscribers}</p>
+      </section>
+      <section class="drawer-section">
+        <h3>关键指标</h3>
+        <div class="drawer-metrics">${metrics}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>频道标签</h3>
+        <div class="mini-tags">${tags}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>运行摘要</h3>
+        <p>Ingress ${channel.ingress} · Backlog ${channel.backlog} · 最近活跃 ${channel.activeAt}</p>
+      </section>
+      <section class="drawer-section">
+        <h3>最近事件</h3>
+        <ul class="drawer-list">${events}</ul>
+      </section>
+    </div>
+  `;
+}
+
 function renderTopologyDrawer(node) {
   if (!node) {
     return `
@@ -486,6 +545,153 @@ function renderTopologyDrawer(node) {
         <ul class="drawer-list">${events}</ul>
       </section>
     </div>
+  `;
+}
+
+function renderChannels() {
+  const channels = window.ADMIN_UI_DATA.channels;
+  const metrics = channels.metrics
+    .map(
+      (item) => `
+        <article class="metric-card">
+          <span class="metric-label">${item.label}</span>
+          <strong class="metric-value">${item.value}</strong>
+          <span class="metric-hint">${item.hint}</span>
+        </article>
+      `,
+    )
+    .join("");
+
+  const typeMix = channels.typeMix
+    .map(
+      (item) => `
+        <div class="drawer-metric">
+          <span>${item.label}</span>
+          <strong>${item.value}</strong>
+        </div>
+      `,
+    )
+    .join("");
+
+  const watchlist = channels.watchlist
+    .map(
+      (item) => `
+        <div class="rank-row">
+          <div>
+            <strong>${item.id}</strong>
+            <span>${item.summary}</span>
+          </div>
+          <span class="inline-badge ${item.status}">${item.status}</span>
+        </div>
+      `,
+    )
+    .join("");
+
+  const rows = channels.rows
+    .map(
+      (channel) => `
+        <tr>
+          <td>
+            <strong>${channel.id}</strong>
+            <div class="cell-subtle">${channel.note}</div>
+          </td>
+          <td>${channel.type}</td>
+          <td>${channel.leader}</td>
+          <td>${channel.group}</td>
+          <td>${channel.subscribers}</td>
+          <td>${channel.ingress}</td>
+          <td>${channel.backlog}</td>
+          <td>${statusBadge(channel.status)}</td>
+          <td>${channel.activeAt}</td>
+          <td><button class="table-link" type="button" data-open-channel="${channel.id}">查看频道</button></td>
+        </tr>
+      `,
+    )
+    .join("");
+
+  return `
+    <section data-view="channels" class="page-shell">
+      <header class="page-header">
+        <div>
+          <h1>频道管理</h1>
+          <p>从 Channel 维度查看 Leader、Group、订阅规模和消息积压，优先定位热点与异常频道。</p>
+        </div>
+      </header>
+
+      <section class="panel content-panel">
+        <div class="section-head">
+          <div>
+            <h2>频道运行概况</h2>
+            <p>先看活跃规模、热点数量和当前积压</p>
+          </div>
+        </div>
+        <div class="metric-grid section-metrics">${metrics}</div>
+      </section>
+
+      <section class="dashboard-grid lower-grid">
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>频道类型分布</h2>
+              <p>区分 room / dm / stream / system 的当前规模</p>
+            </div>
+          </div>
+          <div class="drawer-metrics section-metrics">${typeMix}</div>
+        </article>
+
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>重点频道</h2>
+              <p>优先跟进 backlog 增长或持续高写入的频道</p>
+            </div>
+          </div>
+          <div class="rank-list">${watchlist}</div>
+        </article>
+      </section>
+
+      <section class="panel toolbar-panel">
+        <div class="toolbar-row">
+          <div class="surface-pill search-pill">
+            <img class="nav-icon" src="${icon("search")}" alt="" />
+            <span>搜索频道ID / 类型 / Group / Leader</span>
+          </div>
+          <div class="toolbar-actions">
+            <button class="filter-pill" type="button">类型：全部</button>
+            <button class="filter-pill" type="button">状态：全部</button>
+            <button class="filter-pill" type="button">排序：Backlog</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="section-head table-head">
+          <div>
+            <h2>频道列表</h2>
+            <p>按 Leader、Group、订阅量和消息速率快速筛查热点频道</p>
+          </div>
+        </div>
+        <table class="node-table">
+          <thead>
+            <tr>
+              <th>频道ID</th>
+              <th>类型</th>
+              <th>Leader 节点</th>
+              <th>所属 Group</th>
+              <th>订阅数</th>
+              <th>消息速率</th>
+              <th>Backlog</th>
+              <th>状态</th>
+              <th>最近活跃</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </section>
+
+      <aside class="drawer" data-channel-drawer hidden></aside>
+    </section>
   `;
 }
 
@@ -1323,6 +1529,32 @@ function bindConnectionDrawer() {
   });
 }
 
+function bindChannelDrawer() {
+  const drawer = document.querySelector("[data-channel-drawer]");
+  if (!drawer) return;
+
+  const open = (id) => {
+    const channel = window.ADMIN_UI_DATA.channels.rows.find((item) => item.id === id);
+    drawer.innerHTML = renderChannelDrawer(channel);
+    drawer.hidden = false;
+    document.body.classList.add("drawer-open");
+    const closeButton = drawer.querySelector("[data-close-channel-drawer]");
+    if (closeButton) {
+      closeButton.addEventListener("click", close);
+    }
+  };
+
+  const close = () => {
+    drawer.hidden = true;
+    drawer.innerHTML = "";
+    document.body.classList.remove("drawer-open");
+  };
+
+  document.querySelectorAll("[data-open-channel]").forEach((button) => {
+    button.addEventListener("click", () => open(button.dataset.openChannel));
+  });
+}
+
 function bindTopologyDrawer() {
   const drawer = document.querySelector("[data-topology-drawer]");
   if (!drawer) return;
@@ -1361,6 +1593,10 @@ function renderCurrentPage() {
     return renderConnections();
   }
 
+  if (page === "channels") {
+    return renderChannels();
+  }
+
   if (page === "dashboard") {
     return renderDashboard();
   }
@@ -1391,6 +1627,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelector("[data-topbar]").innerHTML = renderTopbar(window.ADMIN_UI_DATA.cluster);
   document.querySelector("[data-page-root]").innerHTML = renderCurrentPage();
   bindTopologyDrawer();
+  bindChannelDrawer();
   bindConnectionDrawer();
   bindLinkDrawer();
   bindGroupDrawer();
