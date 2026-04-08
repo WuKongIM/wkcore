@@ -169,16 +169,15 @@ func decodeGroupAssignment(key, data []byte) (GroupAssignment, error) {
 		return GroupAssignment{}, ErrCorruptValue
 	}
 
-	assignment := normalizeGroupAssignment(GroupAssignment{
+	if err := validateCanonicalPeerSet(desiredPeers, ErrCorruptValue); err != nil {
+		return GroupAssignment{}, err
+	}
+	return GroupAssignment{
 		GroupID:        groupID,
 		DesiredPeers:   desiredPeers,
 		ConfigEpoch:    configEpoch,
 		BalanceVersion: balanceVersion,
-	})
-	if err := validateRequiredPeerSet(assignment.DesiredPeers, ErrCorruptValue); err != nil {
-		return GroupAssignment{}, err
-	}
-	return assignment, nil
+	}, nil
 }
 
 func encodeGroupRuntimeView(view GroupRuntimeView) []byte {
@@ -229,7 +228,10 @@ func decodeGroupRuntimeView(key, data []byte) (GroupRuntimeView, error) {
 		return GroupRuntimeView{}, ErrCorruptValue
 	}
 
-	view := normalizeGroupRuntimeView(GroupRuntimeView{
+	if err := validateCanonicalPeerSet(currentPeers, ErrCorruptValue); err != nil {
+		return GroupRuntimeView{}, err
+	}
+	return GroupRuntimeView{
 		GroupID:             groupID,
 		CurrentPeers:        currentPeers,
 		LeaderID:            leaderID,
@@ -237,11 +239,7 @@ func decodeGroupRuntimeView(key, data []byte) (GroupRuntimeView, error) {
 		HasQuorum:           hasQuorum,
 		ObservedConfigEpoch: observedConfigEpoch,
 		LastReportAt:        time.Unix(0, lastReportAt),
-	})
-	if err := validateRequiredPeerSet(view.CurrentPeers, ErrCorruptValue); err != nil {
-		return GroupRuntimeView{}, err
-	}
-	return view, nil
+	}, nil
 }
 
 func encodeReconcileTask(task ReconcileTask) []byte {
@@ -311,11 +309,10 @@ func decodeControllerMembership(data []byte) (ControllerMembership, error) {
 	if err != nil || len(rest) != 0 {
 		return ControllerMembership{}, ErrCorruptValue
 	}
-	membership := ControllerMembership{Peers: normalizeUint64Set(peers)}
-	if err := validateRequiredPeerSet(membership.Peers, ErrCorruptValue); err != nil {
+	if err := validateCanonicalPeerSet(peers, ErrCorruptValue); err != nil {
 		return ControllerMembership{}, err
 	}
-	return membership, nil
+	return ControllerMembership{Peers: peers}, nil
 }
 
 func normalizeClusterNode(node ClusterNode) ClusterNode {
@@ -374,6 +371,18 @@ func validateRequiredPeerSet(values []uint64, invalid error) error {
 	}
 	for _, value := range values {
 		if value == 0 {
+			return invalid
+		}
+	}
+	return nil
+}
+
+func validateCanonicalPeerSet(values []uint64, invalid error) error {
+	if err := validateRequiredPeerSet(values, invalid); err != nil {
+		return err
+	}
+	for i := 1; i < len(values); i++ {
+		if values[i-1] >= values[i] {
 			return invalid
 		}
 	}

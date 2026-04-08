@@ -569,6 +569,27 @@ func TestExportSnapshotRejectsMalformedMembershipKey(t *testing.T) {
 	require.ErrorIs(t, err, ErrCorruptValue)
 }
 
+func TestExportSnapshotRejectsNonCanonicalPeerSets(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	value := []byte{recordVersion}
+	value = binary.BigEndian.AppendUint64(value, 1)
+	value = binary.BigEndian.AppendUint64(value, 0)
+	value = appendRawUint64Slice(value, []uint64{3, 1, 1})
+
+	store.mu.Lock()
+	err := store.db.Set(encodeGroupKey(recordPrefixAssignment, 1), value, pebble.Sync)
+	store.mu.Unlock()
+	require.NoError(t, err)
+
+	_, err = store.GetAssignment(ctx, 1)
+	require.ErrorIs(t, err, ErrCorruptValue)
+
+	_, err = store.ExportSnapshot(ctx)
+	require.ErrorIs(t, err, ErrCorruptValue)
+}
+
 func TestStoreRejectsOperationsAfterClose(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -580,6 +601,14 @@ func TestStoreRejectsOperationsAfterClose(t *testing.T) {
 
 	_, err = store.ExportSnapshot(ctx)
 	require.ErrorIs(t, err, ErrClosed)
+}
+
+func appendRawUint64Slice(dst []byte, values []uint64) []byte {
+	dst = binary.AppendUvarint(dst, uint64(len(values)))
+	for _, value := range values {
+		dst = binary.BigEndian.AppendUint64(dst, value)
+	}
+	return dst
 }
 
 func openTestStore(tb testing.TB) *Store {
