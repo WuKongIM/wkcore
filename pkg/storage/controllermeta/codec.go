@@ -231,7 +231,7 @@ func decodeGroupRuntimeView(key, data []byte) (GroupRuntimeView, error) {
 	if err := validateCanonicalPeerSet(currentPeers, ErrCorruptValue); err != nil {
 		return GroupRuntimeView{}, err
 	}
-	return GroupRuntimeView{
+	view := GroupRuntimeView{
 		GroupID:             groupID,
 		CurrentPeers:        currentPeers,
 		LeaderID:            leaderID,
@@ -239,7 +239,11 @@ func decodeGroupRuntimeView(key, data []byte) (GroupRuntimeView, error) {
 		HasQuorum:           hasQuorum,
 		ObservedConfigEpoch: observedConfigEpoch,
 		LastReportAt:        time.Unix(0, lastReportAt),
-	}, nil
+	}
+	if err := validateRuntimeViewState(view, ErrCorruptValue); err != nil {
+		return GroupRuntimeView{}, err
+	}
+	return view, nil
 }
 
 func encodeReconcileTask(task ReconcileTask) []byte {
@@ -385,6 +389,24 @@ func validateCanonicalPeerSet(values []uint64, invalid error) error {
 		if values[i-1] >= values[i] {
 			return invalid
 		}
+	}
+	return nil
+}
+
+func validateRuntimeViewState(view GroupRuntimeView, invalid error) error {
+	if err := validateRequiredPeerSet(view.CurrentPeers, invalid); err != nil {
+		return err
+	}
+	if view.LeaderID != 0 {
+		idx := sort.Search(len(view.CurrentPeers), func(i int) bool {
+			return view.CurrentPeers[i] >= view.LeaderID
+		})
+		if idx == len(view.CurrentPeers) || view.CurrentPeers[idx] != view.LeaderID {
+			return invalid
+		}
+	}
+	if view.HealthyVoters > uint32(len(view.CurrentPeers)) {
+		return invalid
 	}
 	return nil
 }

@@ -298,7 +298,7 @@ func (s *Store) UpsertRuntimeView(ctx context.Context, view GroupRuntimeView) er
 		return ErrInvalidArgument
 	}
 	view = normalizeGroupRuntimeView(view)
-	if err := validateRequiredPeerSet(view.CurrentPeers, ErrInvalidArgument); err != nil {
+	if err := validateRuntimeViewState(view, ErrInvalidArgument); err != nil {
 		return err
 	}
 

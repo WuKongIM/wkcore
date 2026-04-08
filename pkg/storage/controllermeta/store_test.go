@@ -416,6 +416,25 @@ func TestUpsertRejectsInvalidPeerSets(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidArgument)
 }
 
+func TestUpsertRejectsInvalidRuntimeViewState(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpsertRuntimeView(ctx, GroupRuntimeView{
+		GroupID:      1,
+		CurrentPeers: []uint64{1, 2, 3},
+		LeaderID:     9,
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+
+	err = store.UpsertRuntimeView(ctx, GroupRuntimeView{
+		GroupID:       1,
+		CurrentPeers:  []uint64{1, 2, 3},
+		HealthyVoters: 4,
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+}
+
 func TestStoreCanonicalizesPeerOrdering(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -510,6 +529,46 @@ func TestImportSnapshotRejectsInvalidPeerSets(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := store.ImportSnapshot(ctx, encodeSnapshot(tt.entries))
+			require.ErrorIs(t, err, ErrCorruptValue)
+		})
+	}
+}
+
+func TestImportSnapshotRejectsInvalidRuntimeViewState(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name  string
+		entry snapshotEntry
+	}{
+		{
+			name: "leader not in peers",
+			entry: snapshotEntry{
+				Key: encodeGroupKey(recordPrefixRuntimeView, 1),
+				Value: encodeGroupRuntimeView(GroupRuntimeView{
+					GroupID:      1,
+					CurrentPeers: []uint64{1, 2, 3},
+					LeaderID:     9,
+				}),
+			},
+		},
+		{
+			name: "healthy voters exceed peers",
+			entry: snapshotEntry{
+				Key: encodeGroupKey(recordPrefixRuntimeView, 1),
+				Value: encodeGroupRuntimeView(GroupRuntimeView{
+					GroupID:       1,
+					CurrentPeers:  []uint64{1, 2, 3},
+					HealthyVoters: 4,
+				}),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := store.ImportSnapshot(ctx, encodeSnapshot([]snapshotEntry{tt.entry}))
 			require.ErrorIs(t, err, ErrCorruptValue)
 		})
 	}
