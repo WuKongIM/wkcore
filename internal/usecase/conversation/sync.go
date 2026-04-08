@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"container/heap"
 	"context"
 	"sort"
 	"time"
@@ -27,6 +28,23 @@ type syncConversationView struct {
 	conversation     SyncConversation
 }
 
+type incrementalViewRetainer struct {
+	limit int
+	items map[ConversationKey]*retainedIncrementalView
+	heap  retainedIncrementalViewHeap
+}
+
+type retainedIncrementalView struct {
+	view  syncConversationView
+	index int
+}
+
+type retainedIncrementalViewHeap []*retainedIncrementalView
+
+type recentMessageBatchLoader interface {
+	LoadRecentMessagesBatch(ctx context.Context, keys []ConversationKey, limit int) (map[ConversationKey][]channellog.Message, error)
+}
+
 func (a *App) Sync(ctx context.Context, query SyncQuery) (SyncResult, error) {
 	if a == nil {
 		return SyncResult{}, nil
@@ -48,8 +66,10 @@ func (a *App) Sync(ctx context.Context, query SyncQuery) (SyncResult, error) {
 	if err := a.addOverlayCandidates(ctx, query, candidates); err != nil {
 		return SyncResult{}, err
 	}
+	var incrementalViews []syncConversationView
 	if query.Version > 0 {
-		if err := a.addIncrementalCandidates(ctx, query, candidates); err != nil {
+		incrementalViews, err = a.collectIncrementalViews(ctx, query, candidates)
+		if err != nil {
 			return SyncResult{}, err
 		}
 	}
@@ -60,70 +80,22 @@ func (a *App) Sync(ctx context.Context, query SyncQuery) (SyncResult, error) {
 		return SyncResult{}, err
 	}
 
-	views := make([]syncConversationView, 0, len(keys))
+	views := make([]syncConversationView, 0, len(keys)+len(incrementalViews))
 	for _, key := range keys {
 		latest, ok := latestByKey[key]
-		if !ok || latest.MessageSeq == 0 {
+		if !ok {
 			continue
 		}
-
-		candidate := candidates[key]
-		if candidate.overlay && candidate.clientLastSeq >= latest.MessageSeq {
+		view, ok := buildSyncConversationView(query, candidates[key], latest)
+		if !ok {
 			continue
 		}
-
-		baseReadedTo := maxUint64(candidate.state.ReadSeq, candidate.state.DeletedToSeq)
-		if latest.MessageSeq <= candidate.state.DeletedToSeq {
-			continue
-		}
-
-		unread := 0
-		if latest.MessageSeq > baseReadedTo {
-			unread = int(latest.MessageSeq - baseReadedTo)
-		}
-		readedTo := baseReadedTo
-		if latest.FromUID == query.UID {
-			unread = 0
-			readedTo = latest.MessageSeq
-		}
-		if query.OnlyUnread && unread == 0 {
-			continue
-		}
-
-		displayUpdatedAt := time.Unix(int64(latest.Timestamp), 0).UnixNano()
-		if candidate.update != nil && candidate.update.UpdatedAt > 0 {
-			displayUpdatedAt = candidate.update.UpdatedAt
-		}
-		syncUpdatedAt := displayUpdatedAt
-		if candidate.state.UpdatedAt > syncUpdatedAt {
-			syncUpdatedAt = candidate.state.UpdatedAt
-		}
-
-		views = append(views, syncConversationView{
-			key:              key,
-			state:            candidate.state,
-			displayUpdatedAt: displayUpdatedAt,
-			conversation: SyncConversation{
-				ChannelID:       displayChannelID(query.UID, key),
-				ChannelType:     key.ChannelType,
-				Unread:          unread,
-				Timestamp:       int64(latest.Timestamp),
-				LastMsgSeq:      uint32(latest.MessageSeq),
-				LastClientMsgNo: latest.ClientMsgNo,
-				ReadedToMsgSeq:  uint32(readedTo),
-				Version:         syncUpdatedAt,
-			},
-		})
+		views = append(views, view)
 	}
+	views = append(views, incrementalViews...)
 
 	sort.Slice(views, func(i, j int) bool {
-		if views[i].displayUpdatedAt != views[j].displayUpdatedAt {
-			return views[i].displayUpdatedAt > views[j].displayUpdatedAt
-		}
-		if views[i].key.ChannelType != views[j].key.ChannelType {
-			return views[i].key.ChannelType < views[j].key.ChannelType
-		}
-		return views[i].key.ChannelID < views[j].key.ChannelID
+		return syncConversationViewHigherPriority(views[i], views[j])
 	})
 
 	if len(views) > query.Limit {
@@ -131,16 +103,26 @@ func (a *App) Sync(ctx context.Context, query SyncQuery) (SyncResult, error) {
 	}
 
 	if query.MsgCount > 0 {
-		for i := range views {
-			recents, err := a.facts.LoadRecentMessages(ctx, views[i].key, query.MsgCount)
+		if batchFacts, ok := a.facts.(recentMessageBatchLoader); ok {
+			keys := make([]ConversationKey, 0, len(views))
+			for _, view := range views {
+				keys = append(keys, view.key)
+			}
+			recentsByKey, err := batchFacts.LoadRecentMessagesBatch(ctx, keys, query.MsgCount)
 			if err != nil {
 				return SyncResult{}, err
 			}
-			recents = filterVisibleRecents(recents, views[i].state.DeletedToSeq)
-			sort.Slice(recents, func(left, right int) bool {
-				return recents[left].MessageSeq > recents[right].MessageSeq
-			})
-			views[i].conversation.Recents = recents
+			for i := range views {
+				assignConversationRecents(&views[i], recentsByKey[views[i].key])
+			}
+		} else {
+			for i := range views {
+				recents, err := a.facts.LoadRecentMessages(ctx, views[i].key, query.MsgCount)
+				if err != nil {
+					return SyncResult{}, err
+				}
+				assignConversationRecents(&views[i], recents)
+			}
 		}
 	}
 
@@ -184,10 +166,23 @@ func (a *App) addActiveCandidates(ctx context.Context, uid string, states []meta
 	}
 
 	if len(coldKeys) > 0 {
-		keysCopy := append([]metadb.ConversationKey(nil), coldKeys...)
-		a.async(func() {
-			_ = a.states.ClearUserConversationActiveAt(context.Background(), uid, keysCopy)
-		})
+		if a.enqueuePendingDemotions(uid, coldKeys) {
+			a.async(func() {
+				for {
+					keys := a.dequeuePendingDemotions(uid)
+					if len(keys) == 0 {
+						if a.stopPendingDemotions(uid) {
+							return
+						}
+						continue
+					}
+					if err := a.states.ClearUserConversationActiveAt(context.Background(), uid, keys); err != nil {
+						a.failPendingDemotions(uid, keys)
+						return
+					}
+				}
+			})
+		}
 	}
 	return nil
 }
@@ -221,12 +216,17 @@ func (a *App) addOverlayCandidates(ctx context.Context, query SyncQuery, candida
 	return nil
 }
 
-func (a *App) addIncrementalCandidates(ctx context.Context, query SyncQuery, candidates map[ConversationKey]*syncCandidate) error {
+func (a *App) collectIncrementalViews(ctx context.Context, query SyncQuery, candidates map[ConversationKey]*syncCandidate) ([]syncConversationView, error) {
+	retainer := newIncrementalViewRetainer(a.incrementalCandidateLimit(query))
+	excluded := make(map[uint8]struct{}, len(query.ExcludeChannelTypes))
+	for _, channelType := range query.ExcludeChannelTypes {
+		excluded[channelType] = struct{}{}
+	}
 	var after metadb.ConversationCursor
 	for {
 		page, next, done, err := a.states.ScanUserConversationStatePage(ctx, query.UID, after, a.channelProbeBatchSize)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if len(page) > 0 {
 			keys := make([]metadb.ConversationKey, 0, len(page))
@@ -235,31 +235,150 @@ func (a *App) addIncrementalCandidates(ctx context.Context, query SyncQuery, can
 			}
 			updates, err := a.channelUpdate.BatchGetChannelUpdateLogs(ctx, keys)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
+			pageCandidates := make([]*syncCandidate, 0, len(page))
+			pageFactsKeys := make([]ConversationKey, 0, len(page))
 			for _, state := range page {
 				key := conversationKey(state.ChannelID, uint8(state.ChannelType))
-				update, ok := updates[metadbConversationKey(state.ChannelID, uint8(state.ChannelType))]
-				if state.UpdatedAt > query.Version {
-					candidate := ensureCandidate(candidates, key)
-					candidate.state = state
-					candidate.hasState = true
+				if _, blocked := excluded[key.ChannelType]; blocked {
+					continue
 				}
-				if ok && update.UpdatedAt > query.Version && !a.isCold(update.LastMsgAt) {
-					candidate := ensureCandidate(candidates, key)
-					candidate.state = state
-					candidate.hasState = true
-					updateCopy := update
-					candidate.update = &updateCopy
+				update, ok := updates[metadbConversationKey(state.ChannelID, uint8(state.ChannelType))]
+				incremental, matched := a.buildIncrementalCandidate(query.Version, key, state, update, ok)
+				if !matched {
+					continue
+				}
+				if candidate, exists := candidates[key]; exists {
+					mergeIncrementalCandidate(candidate, incremental)
+					continue
+				}
+				pageCandidates = append(pageCandidates, incremental)
+				pageFactsKeys = append(pageFactsKeys, key)
+			}
+
+			if len(pageFactsKeys) > 0 {
+				latestByKey, err := a.facts.LoadLatestMessages(ctx, pageFactsKeys)
+				if err != nil {
+					return nil, err
+				}
+				for _, candidate := range pageCandidates {
+					latest, ok := latestByKey[candidate.key]
+					if !ok {
+						continue
+					}
+					view, ok := buildSyncConversationView(query, candidate, latest)
+					if !ok {
+						continue
+					}
+					retainer.Upsert(view)
 				}
 			}
 		}
 
 		if done {
-			return nil
+			return retainer.Views(), nil
 		}
 		after = next
+	}
+}
+
+func (a *App) buildIncrementalCandidate(version int64, key ConversationKey, state metadb.UserConversationState, update metadb.ChannelUpdateLog, hasUpdate bool) (*syncCandidate, bool) {
+	incremental := &syncCandidate{
+		key:   key,
+		state: state,
+	}
+	matched := false
+	if state.UpdatedAt > version {
+		incremental.hasState = true
+		matched = true
+	}
+	if hasUpdate {
+		updateCopy := update
+		incremental.update = &updateCopy
+		if update.UpdatedAt > version && !a.isCold(update.LastMsgAt) {
+			incremental.hasState = true
+			matched = true
+		}
+	}
+	return incremental, matched
+}
+
+func (a *App) incrementalCandidateLimit(query SyncQuery) int {
+	limit := query.Limit
+	if limit < a.channelProbeBatchSize {
+		limit = a.channelProbeBatchSize
+	}
+	if limit <= 0 {
+		limit = 1
+	}
+	return limit
+}
+
+func buildSyncConversationView(query SyncQuery, candidate *syncCandidate, latest channellog.Message) (syncConversationView, bool) {
+	if candidate == nil || latest.MessageSeq == 0 {
+		return syncConversationView{}, false
+	}
+	if candidate.overlay && candidate.clientLastSeq >= latest.MessageSeq {
+		return syncConversationView{}, false
+	}
+
+	baseReadedTo := maxUint64(candidate.state.ReadSeq, candidate.state.DeletedToSeq)
+	if latest.MessageSeq <= candidate.state.DeletedToSeq {
+		return syncConversationView{}, false
+	}
+
+	unread := 0
+	if latest.MessageSeq > baseReadedTo {
+		unread = int(latest.MessageSeq - baseReadedTo)
+	}
+	readedTo := baseReadedTo
+	if latest.FromUID == query.UID {
+		unread = 0
+		readedTo = latest.MessageSeq
+	}
+	if query.OnlyUnread && unread == 0 {
+		return syncConversationView{}, false
+	}
+
+	displayUpdatedAt := time.Unix(int64(latest.Timestamp), 0).UnixNano()
+	if candidate.update != nil && candidate.update.UpdatedAt > 0 {
+		displayUpdatedAt = candidate.update.UpdatedAt
+	}
+	syncUpdatedAt := displayUpdatedAt
+	if candidate.state.UpdatedAt > syncUpdatedAt {
+		syncUpdatedAt = candidate.state.UpdatedAt
+	}
+
+	return syncConversationView{
+		key:              candidate.key,
+		state:            candidate.state,
+		displayUpdatedAt: displayUpdatedAt,
+		conversation: SyncConversation{
+			ChannelID:       displayChannelID(query.UID, candidate.key),
+			ChannelType:     candidate.key.ChannelType,
+			Unread:          unread,
+			Timestamp:       int64(latest.Timestamp),
+			LastMsgSeq:      uint32(latest.MessageSeq),
+			LastClientMsgNo: latest.ClientMsgNo,
+			ReadToMsgSeq:    uint32(readedTo),
+			Version:         syncUpdatedAt,
+		},
+	}, true
+}
+
+func mergeIncrementalCandidate(dst, src *syncCandidate) {
+	if dst == nil || src == nil {
+		return
+	}
+	if src.hasState {
+		dst.state = src.state
+		dst.hasState = true
+	}
+	if src.update != nil {
+		updateCopy := *src.update
+		dst.update = &updateCopy
 	}
 }
 
@@ -312,6 +431,17 @@ func filterVisibleRecents(recents []channellog.Message, deletedToSeq uint64) []c
 	return out
 }
 
+func assignConversationRecents(view *syncConversationView, recents []channellog.Message) {
+	if view == nil {
+		return
+	}
+	recents = filterVisibleRecents(recents, view.state.DeletedToSeq)
+	sort.Slice(recents, func(left, right int) bool {
+		return recents[left].MessageSeq > recents[right].MessageSeq
+	})
+	view.conversation.Recents = recents
+}
+
 func conversationKey(channelID string, channelType uint8) ConversationKey {
 	return ConversationKey{
 		ChannelID:   channelID,
@@ -324,6 +454,96 @@ func metadbConversationKey(channelID string, channelType uint8) metadb.Conversat
 		ChannelID:   channelID,
 		ChannelType: int64(channelType),
 	}
+}
+
+func newIncrementalViewRetainer(limit int) *incrementalViewRetainer {
+	if limit <= 0 {
+		limit = 1
+	}
+	return &incrementalViewRetainer{
+		limit: limit,
+		items: make(map[ConversationKey]*retainedIncrementalView, limit),
+		heap:  make(retainedIncrementalViewHeap, 0, limit),
+	}
+}
+
+func (r *incrementalViewRetainer) Upsert(view syncConversationView) {
+	if r == nil {
+		return
+	}
+	if retained, ok := r.items[view.key]; ok {
+		retained.view = view
+		heap.Fix(&r.heap, retained.index)
+		return
+	}
+
+	retained := &retainedIncrementalView{view: view}
+	if len(r.heap) < r.limit {
+		heap.Push(&r.heap, retained)
+		r.items[view.key] = retained
+		return
+	}
+	if len(r.heap) == 0 || !syncConversationViewHigherPriority(view, r.heap[0].view) {
+		return
+	}
+	evicted := heap.Pop(&r.heap).(*retainedIncrementalView)
+	delete(r.items, evicted.view.key)
+	heap.Push(&r.heap, retained)
+	r.items[view.key] = retained
+}
+
+func (r *incrementalViewRetainer) Views() []syncConversationView {
+	if r == nil {
+		return nil
+	}
+	views := make([]syncConversationView, 0, len(r.items))
+	for _, retained := range r.items {
+		views = append(views, retained.view)
+	}
+	return views
+}
+
+func syncConversationViewHigherPriority(left, right syncConversationView) bool {
+	return syncConversationViewLowerPriority(right, left)
+}
+
+func syncConversationViewLowerPriority(left, right syncConversationView) bool {
+	if left.displayUpdatedAt != right.displayUpdatedAt {
+		return left.displayUpdatedAt < right.displayUpdatedAt
+	}
+	if left.key.ChannelType != right.key.ChannelType {
+		return left.key.ChannelType > right.key.ChannelType
+	}
+	return left.key.ChannelID > right.key.ChannelID
+}
+
+func (h retainedIncrementalViewHeap) Len() int {
+	return len(h)
+}
+
+func (h retainedIncrementalViewHeap) Less(i, j int) bool {
+	return syncConversationViewLowerPriority(h[i].view, h[j].view)
+}
+
+func (h retainedIncrementalViewHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].index = i
+	h[j].index = j
+}
+
+func (h *retainedIncrementalViewHeap) Push(x any) {
+	item := x.(*retainedIncrementalView)
+	item.index = len(*h)
+	*h = append(*h, item)
+}
+
+func (h *retainedIncrementalViewHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	item := old[last]
+	item.index = -1
+	*h = old[:last]
+	return item
 }
 
 func displayChannelID(uid string, key ConversationKey) string {

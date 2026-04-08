@@ -1,6 +1,11 @@
 package conversation
 
-import "time"
+import (
+	"sync"
+	"time"
+
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+)
 
 const (
 	defaultActiveScanLimit       = 2000
@@ -31,6 +36,13 @@ type App struct {
 	activeScanLimit       int
 	channelProbeBatchSize int
 	async                 func(func())
+	demotionMu            sync.Mutex
+	pendingDemotions      map[string]*pendingUIDDemotion
+}
+
+type pendingUIDDemotion struct {
+	running bool
+	keys    map[metadb.ConversationKey]struct{}
 }
 
 func New(opts Options) *App {
@@ -59,5 +71,92 @@ func New(opts Options) *App {
 		activeScanLimit:       opts.ActiveScanLimit,
 		channelProbeBatchSize: opts.ChannelProbeBatchSize,
 		async:                 opts.Async,
+		pendingDemotions:      make(map[string]*pendingUIDDemotion),
 	}
+}
+
+func (a *App) enqueuePendingDemotions(uid string, keys []metadb.ConversationKey) bool {
+	if a == nil || len(keys) == 0 {
+		return false
+	}
+
+	a.demotionMu.Lock()
+	defer a.demotionMu.Unlock()
+
+	state, ok := a.pendingDemotions[uid]
+	if !ok {
+		state = &pendingUIDDemotion{
+			keys: make(map[metadb.ConversationKey]struct{}, len(keys)),
+		}
+		a.pendingDemotions[uid] = state
+	}
+	for _, key := range keys {
+		state.keys[key] = struct{}{}
+	}
+	if state.running {
+		return false
+	}
+	state.running = true
+	return true
+}
+
+func (a *App) dequeuePendingDemotions(uid string) []metadb.ConversationKey {
+	if a == nil {
+		return nil
+	}
+
+	a.demotionMu.Lock()
+	defer a.demotionMu.Unlock()
+
+	state := a.pendingDemotions[uid]
+	if state == nil || len(state.keys) == 0 {
+		return nil
+	}
+
+	keys := make([]metadb.ConversationKey, 0, len(state.keys))
+	for key := range state.keys {
+		keys = append(keys, key)
+	}
+	state.keys = make(map[metadb.ConversationKey]struct{})
+	return keys
+}
+
+func (a *App) stopPendingDemotions(uid string) bool {
+	if a == nil {
+		return true
+	}
+
+	a.demotionMu.Lock()
+	defer a.demotionMu.Unlock()
+
+	state := a.pendingDemotions[uid]
+	if state == nil {
+		return true
+	}
+	if len(state.keys) > 0 {
+		return false
+	}
+	delete(a.pendingDemotions, uid)
+	return true
+}
+
+func (a *App) failPendingDemotions(uid string, keys []metadb.ConversationKey) {
+	if a == nil || len(keys) == 0 {
+		return
+	}
+
+	a.demotionMu.Lock()
+	defer a.demotionMu.Unlock()
+
+	state, ok := a.pendingDemotions[uid]
+	if !ok {
+		state = &pendingUIDDemotion{
+			keys: make(map[metadb.ConversationKey]struct{}, len(keys)),
+		}
+		a.pendingDemotions[uid] = state
+	}
+	for _, key := range keys {
+		state.keys[key] = struct{}{}
+	}
+	state.running = false
 }

@@ -109,7 +109,7 @@ func newLegacyConversationResponse(uid string, item conversationusecase.SyncConv
 		LastMsgSeq:      item.LastMsgSeq,
 		LastClientMsgNo: item.LastClientMsgNo,
 		OffsetMsgSeq:    0,
-		ReadedToMsgSeq:  item.ReadedToMsgSeq,
+		ReadedToMsgSeq:  item.ReadToMsgSeq,
 		Version:         item.Version,
 	}
 	if len(item.Recents) > 0 {

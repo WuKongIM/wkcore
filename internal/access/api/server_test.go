@@ -369,7 +369,7 @@ func TestConversationSyncReturnsLegacyArrayResponse(t *testing.T) {
 					Timestamp:       123,
 					LastMsgSeq:      7,
 					LastClientMsgNo: "c1",
-					ReadedToMsgSeq:  5,
+					ReadToMsgSeq:    5,
 					Version:         999,
 					Recents: []channellog.Message{
 						{

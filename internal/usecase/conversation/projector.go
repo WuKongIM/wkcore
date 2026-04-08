@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -38,10 +39,13 @@ type projector struct {
 	subscriberPageSize int
 	now                func() time.Time
 	async              func(func())
+	wakeupFlushMu      sync.Mutex
 
 	mu      sync.RWMutex
 	hot     map[metadb.ConversationKey]metadb.ChannelUpdateLog
 	dirty   map[metadb.ConversationKey]struct{}
+	wakeups map[metadb.ConversationKey]channellog.Message
+	wakeupRunning bool
 	running bool
 	stopCh  chan struct{}
 	doneCh  chan struct{}
@@ -77,6 +81,7 @@ func NewProjector(opts ProjectorOptions) Projector {
 		async:              opts.Async,
 		hot:                make(map[metadb.ConversationKey]metadb.ChannelUpdateLog),
 		dirty:              make(map[metadb.ConversationKey]struct{}),
+		wakeups:            make(map[metadb.ConversationKey]channellog.Message),
 	}
 }
 
@@ -134,7 +139,9 @@ func (p *projector) SubmitCommitted(ctx context.Context, msg channellog.Message)
 		p.mu.RLock()
 		_, hot := p.hot[key]
 		p.mu.RUnlock()
-		if !hot {
+		if !hot && msg.MessageSeq == 1 {
+			needWakeup = true
+		} else if !hot {
 			existing, err := p.store.BatchGetChannelUpdateLogs(ctx, []metadb.ConversationKey{key})
 			if err == nil {
 				current, ok := existing[key]
@@ -149,14 +156,17 @@ func (p *projector) SubmitCommitted(ctx context.Context, msg channellog.Message)
 		p.hot[key] = entry
 	}
 	p.dirty[key] = struct{}{}
+	if needWakeup {
+		currentWakeup, ok := p.wakeups[key]
+		if !ok || shouldReplaceWakeupMessage(currentWakeup, msg) {
+			p.wakeups[key] = msg
+		}
+	}
 	dirtyCount := len(p.dirty)
 	p.mu.Unlock()
 
 	if needWakeup {
-		msgCopy := msg
-		p.async(func() {
-			_ = p.touchConversationActive(context.Background(), msgCopy)
-		})
+		p.scheduleWakeupProcessing()
 	}
 	if p.store != nil && dirtyCount >= p.dirtyLimit {
 		p.async(func() {
@@ -184,14 +194,21 @@ func (p *projector) BatchGetHotChannelUpdates(_ context.Context, keys []metadb.C
 }
 
 func (p *projector) Flush(ctx context.Context) error {
-	if p == nil || p.store == nil {
+	if p == nil {
 		return nil
+	}
+	var result error
+	if err := p.flushWakeups(ctx); err != nil {
+		result = errors.Join(result, err)
+	}
+	if p.store == nil {
+		return result
 	}
 
 	p.mu.RLock()
 	if len(p.dirty) == 0 {
 		p.mu.RUnlock()
-		return nil
+		return result
 	}
 	entries := make([]metadb.ChannelUpdateLog, 0, len(p.dirty))
 	for key := range p.dirty {
@@ -209,10 +226,10 @@ func (p *projector) Flush(ctx context.Context) error {
 	})
 
 	if len(entries) == 0 {
-		return nil
+		return result
 	}
 	if err := p.store.UpsertChannelUpdateLogs(ctx, entries); err != nil {
-		return err
+		return errors.Join(result, err)
 	}
 
 	p.mu.Lock()
@@ -228,7 +245,48 @@ func (p *projector) Flush(ctx context.Context) error {
 			delete(p.dirty, key)
 		}
 	}
-	return nil
+	return result
+}
+
+func (p *projector) processWakeups(ctx context.Context) error {
+	return p.flushWakeups(ctx)
+}
+
+func (p *projector) scheduleWakeupProcessing() {
+	if p == nil {
+		return
+	}
+
+	p.mu.Lock()
+	if p.wakeupRunning {
+		p.mu.Unlock()
+		return
+	}
+	p.wakeupRunning = true
+	p.mu.Unlock()
+
+	p.async(func() {
+		p.runWakeupProcessing(context.Background())
+	})
+}
+
+func (p *projector) runWakeupProcessing(ctx context.Context) {
+	for {
+		if err := p.processWakeups(ctx); err != nil {
+			p.mu.Lock()
+			p.wakeupRunning = false
+			p.mu.Unlock()
+			return
+		}
+
+		p.mu.Lock()
+		if len(p.wakeups) == 0 {
+			p.wakeupRunning = false
+			p.mu.Unlock()
+			return
+		}
+		p.mu.Unlock()
+	}
 }
 
 func (p *projector) run(stopCh <-chan struct{}, doneCh chan<- struct{}) {
@@ -252,18 +310,15 @@ func (p *projector) touchConversationActive(ctx context.Context, msg channellog.
 		return nil
 	}
 
-	activeAt := time.Unix(int64(msg.Timestamp), 0).UnixNano()
 	if msg.ChannelType == wkframe.ChannelTypePerson {
-		left, right, err := runtimechannelid.DecodePersonChannel(msg.ChannelID)
-		if err != nil {
+		patches, ok := personConversationActivePatches(msg)
+		if !ok {
 			return nil
 		}
-		return p.store.TouchUserConversationActiveAt(ctx, []metadb.UserConversationActivePatch{
-			{UID: left, ChannelID: msg.ChannelID, ChannelType: int64(msg.ChannelType), ActiveAt: activeAt},
-			{UID: right, ChannelID: msg.ChannelID, ChannelType: int64(msg.ChannelType), ActiveAt: activeAt},
-		})
+		return p.store.TouchUserConversationActiveAt(ctx, patches)
 	}
 
+	activeAt := time.Unix(int64(msg.Timestamp), 0).UnixNano()
 	cursor := ""
 	for {
 		uids, nextCursor, done, err := p.store.ListChannelSubscribers(ctx, msg.ChannelID, int64(msg.ChannelType), cursor, p.subscriberPageSize)
@@ -289,6 +344,58 @@ func (p *projector) touchConversationActive(ctx context.Context, msg channellog.
 		}
 		cursor = nextCursor
 	}
+}
+
+func (p *projector) flushWakeups(ctx context.Context) error {
+	if p == nil || p.store == nil {
+		return nil
+	}
+
+	p.wakeupFlushMu.Lock()
+	defer p.wakeupFlushMu.Unlock()
+
+	p.mu.RLock()
+	if len(p.wakeups) == 0 {
+		p.mu.RUnlock()
+		return nil
+	}
+	pending := make(map[metadb.ConversationKey]channellog.Message, len(p.wakeups))
+	for key, msg := range p.wakeups {
+		pending[key] = msg
+	}
+	p.mu.RUnlock()
+
+	var result error
+	personPatches := make([]metadb.UserConversationActivePatch, 0, len(pending)*2)
+	personKeys := make([]metadb.ConversationKey, 0, len(pending))
+	for key, msg := range pending {
+		if msg.ChannelType == wkframe.ChannelTypePerson {
+			patches, ok := personConversationActivePatches(msg)
+			if !ok {
+				p.clearWakeupIfNotNewer(key, msg)
+				continue
+			}
+			personKeys = append(personKeys, key)
+			personPatches = append(personPatches, patches...)
+			continue
+		}
+
+		if err := p.touchConversationActive(ctx, msg); err != nil {
+			result = errors.Join(result, err)
+			continue
+		}
+		p.clearWakeupIfNotNewer(key, msg)
+	}
+	if len(personPatches) > 0 {
+		if err := p.store.TouchUserConversationActiveAt(ctx, personPatches); err != nil {
+			result = errors.Join(result, err)
+		} else {
+			for _, key := range personKeys {
+				p.clearWakeupIfNotNewer(key, pending[key])
+			}
+		}
+	}
+	return result
 }
 
 func (p *projector) isCold(lastMsgAt int64) bool {
@@ -322,4 +429,34 @@ func hotEntryNewerThan(left, right metadb.ChannelUpdateLog) bool {
 		return left.UpdatedAt > right.UpdatedAt
 	}
 	return left.LastClientMsgNo > right.LastClientMsgNo
+}
+
+func shouldReplaceWakeupMessage(current, next channellog.Message) bool {
+	return wakeupMessageNewerThan(next, current)
+}
+
+func wakeupMessageNewerThan(left, right channellog.Message) bool {
+	return hotEntryNewerThan(channelUpdateFromMessage(left), channelUpdateFromMessage(right))
+}
+
+func personConversationActivePatches(msg channellog.Message) ([]metadb.UserConversationActivePatch, bool) {
+	left, right, err := runtimechannelid.DecodePersonChannel(msg.ChannelID)
+	if err != nil {
+		return nil, false
+	}
+	activeAt := time.Unix(int64(msg.Timestamp), 0).UnixNano()
+	return []metadb.UserConversationActivePatch{
+		{UID: left, ChannelID: msg.ChannelID, ChannelType: int64(msg.ChannelType), ActiveAt: activeAt},
+		{UID: right, ChannelID: msg.ChannelID, ChannelType: int64(msg.ChannelType), ActiveAt: activeAt},
+	}, true
+}
+
+func (p *projector) clearWakeupIfNotNewer(key metadb.ConversationKey, msg channellog.Message) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	current, ok := p.wakeups[key]
+	if ok && !wakeupMessageNewerThan(current, msg) {
+		delete(p.wakeups, key)
+	}
 }

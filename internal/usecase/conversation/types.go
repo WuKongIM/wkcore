@@ -24,7 +24,7 @@ type SyncConversation struct {
 	Timestamp       int64
 	LastMsgSeq      uint32
 	LastClientMsgNo string
-	ReadedToMsgSeq  uint32
+	ReadToMsgSeq    uint32
 	Version         int64
 	Recents         []channellog.Message
 }

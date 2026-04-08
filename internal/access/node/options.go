@@ -46,6 +46,7 @@ type Options struct {
 	Online           online.Registry
 	GatewayBootID    uint64
 	LocalNodeID      uint64
+	ChannelLog       channellog.Cluster
 	DeliverySubmit   DeliverySubmit
 	DeliveryAck      DeliveryAck
 	DeliveryOffline  DeliveryOffline
@@ -59,6 +60,7 @@ type Adapter struct {
 	online           online.Registry
 	gatewayBootID    uint64
 	localNodeID      uint64
+	channelLog       channellog.Cluster
 	deliverySubmit   DeliverySubmit
 	deliveryAck      DeliveryAck
 	deliveryOffline  DeliveryOffline
@@ -76,6 +78,7 @@ func New(opts Options) *Adapter {
 		online:           opts.Online,
 		gatewayBootID:    opts.GatewayBootID,
 		localNodeID:      opts.LocalNodeID,
+		channelLog:       opts.ChannelLog,
 		deliverySubmit:   opts.DeliverySubmit,
 		deliveryAck:      opts.DeliveryAck,
 		deliveryOffline:  opts.DeliveryOffline,
@@ -88,6 +91,7 @@ func New(opts Options) *Adapter {
 		opts.Cluster.RPCMux().Handle(deliveryPushRPCServiceID, adapter.handleDeliveryPushRPC)
 		opts.Cluster.RPCMux().Handle(deliveryAckRPCServiceID, adapter.handleDeliveryAckRPC)
 		opts.Cluster.RPCMux().Handle(deliveryOfflineRPCServiceID, adapter.handleDeliveryOfflineRPC)
+		opts.Cluster.RPCMux().Handle(conversationFactsRPCServiceID, adapter.handleConversationFactsRPC)
 	}
 	return adapter
 }

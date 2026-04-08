@@ -157,6 +157,70 @@ func (c *Client) NotifyOffline(ctx context.Context, nodeID uint64, cmd message.S
 	return nil
 }
 
+func (c *Client) LoadLatestConversationMessage(ctx context.Context, nodeID uint64, key channellog.ChannelKey, maxBytes int) (channellog.Message, bool, error) {
+	resp, err := callConversationFactsDirect(ctx, c, nodeID, conversationFactsRequest{
+		Op:       conversationFactsOpLatest,
+		Key:      key,
+		MaxBytes: maxBytes,
+	})
+	if err != nil {
+		return channellog.Message{}, false, err
+	}
+	if len(resp.Messages) == 0 {
+		return channellog.Message{}, false, nil
+	}
+	return resp.Messages[0], true, nil
+}
+
+func (c *Client) LoadLatestConversationMessages(ctx context.Context, nodeID uint64, keys []channellog.ChannelKey, maxBytes int) (map[channellog.ChannelKey]channellog.Message, error) {
+	resp, err := callConversationFactsDirect(ctx, c, nodeID, conversationFactsRequest{
+		Op:       conversationFactsOpLatest,
+		Keys:     append([]channellog.ChannelKey(nil), keys...),
+		MaxBytes: maxBytes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[channellog.ChannelKey]channellog.Message, len(resp.Entries))
+	for _, entry := range resp.Entries {
+		if len(entry.Messages) == 0 {
+			continue
+		}
+		out[entry.Key] = entry.Messages[0]
+	}
+	return out, nil
+}
+
+func (c *Client) LoadRecentConversationMessages(ctx context.Context, nodeID uint64, key channellog.ChannelKey, limit, maxBytes int) ([]channellog.Message, error) {
+	resp, err := callConversationFactsDirect(ctx, c, nodeID, conversationFactsRequest{
+		Op:       conversationFactsOpRecent,
+		Key:      key,
+		Limit:    limit,
+		MaxBytes: maxBytes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return append([]channellog.Message(nil), resp.Messages...), nil
+}
+
+func (c *Client) LoadRecentConversationMessagesBatch(ctx context.Context, nodeID uint64, keys []channellog.ChannelKey, limit, maxBytes int) (map[channellog.ChannelKey][]channellog.Message, error) {
+	resp, err := callConversationFactsDirect(ctx, c, nodeID, conversationFactsRequest{
+		Op:       conversationFactsOpRecent,
+		Keys:     append([]channellog.ChannelKey(nil), keys...),
+		Limit:    limit,
+		MaxBytes: maxBytes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[channellog.ChannelKey][]channellog.Message, len(resp.Entries))
+	for _, entry := range resp.Entries {
+		out[entry.Key] = append([]channellog.Message(nil), entry.Messages...)
+	}
+	return out, nil
+}
+
 func (c *Client) callPresenceAuthoritative(ctx context.Context, groupID multiraft.GroupID, req presenceRPCRequest) (presenceRPCResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -178,6 +242,34 @@ func (c *Client) callPresenceDirect(ctx context.Context, nodeID multiraft.NodeID
 }
 
 func callDeliveryDirect[T any](
+	ctx context.Context,
+	c *Client,
+	nodeID uint64,
+	serviceID uint8,
+	req any,
+	decode func([]byte) (T, error),
+) (T, error) {
+	var zero T
+
+	if c.cluster == nil {
+		return zero, fmt.Errorf("access/node: cluster not configured")
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return zero, err
+	}
+	respBody, err := c.cluster.RPCService(ctx, multiraft.NodeID(nodeID), 0, serviceID, body)
+	if err != nil {
+		return zero, err
+	}
+	return decode(respBody)
+}
+
+func callConversationFactsDirect(ctx context.Context, c *Client, nodeID uint64, req conversationFactsRequest) (conversationFactsResponse, error) {
+	return callDirectRPC(ctx, c, nodeID, conversationFactsRPCServiceID, req, decodeConversationFactsResponse)
+}
+
+func callDirectRPC[T any](
 	ctx context.Context,
 	c *Client,
 	nodeID uint64,

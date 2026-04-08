@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"time"
 
 	accessnode "github.com/WuKongIM/WuKongIM/internal/access/node"
 	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
@@ -20,12 +21,17 @@ var (
 	errRemoteOfflineNotifierRequired = errors.New("app: remote offline notifier required")
 )
 
+const (
+	committedRouteRetryAttempts = 3
+	committedRouteRetryBackoff  = 20 * time.Millisecond
+)
+
 type asyncCommittedDispatcher struct {
 	localNodeID  uint64
 	channelLog   channellog.Cluster
 	delivery     committedSubmitter
 	conversation committedSubmitter
-	nodeClient   *accessnode.Client
+	nodeClient   committedNodeSubmitter
 }
 
 func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, msg channellog.Message) error {
@@ -38,38 +44,58 @@ func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, msg chann
 		ctx = context.WithoutCancel(ctx)
 	}
 	go func() {
-		if d.channelLog == nil {
-			d.submitLocal(ctx, msg)
-			return
-		}
+		d.routeCommitted(ctx, msg)
+	}()
+	return nil
+}
 
+func (d asyncCommittedDispatcher) routeCommitted(ctx context.Context, msg channellog.Message) {
+	if d.channelLog == nil {
+		d.submitLocal(ctx, msg)
+		return
+	}
+
+	for attempt := 0; attempt < committedRouteRetryAttempts; attempt++ {
 		status, err := d.channelLog.Status(channellog.ChannelKey{
 			ChannelID:   msg.ChannelID,
 			ChannelType: msg.ChannelType,
 		})
-		if err != nil || status.Leader == 0 {
-			return
+		if err == nil && status.Leader != 0 {
+			ownerNodeID := uint64(status.Leader)
+			if ownerNodeID == d.localNodeID {
+				d.submitLocal(ctx, msg)
+				return
+			}
+			if d.nodeClient != nil {
+				if err := d.nodeClient.SubmitCommitted(ctx, ownerNodeID, msg); err == nil {
+					return
+				}
+			}
 		}
-
-		ownerNodeID := uint64(status.Leader)
-		if ownerNodeID == d.localNodeID {
-			d.submitLocal(ctx, msg)
-			return
+		if attempt < committedRouteRetryAttempts-1 {
+			time.Sleep(time.Duration(attempt+1) * committedRouteRetryBackoff)
 		}
-		if d.nodeClient == nil {
-			return
-		}
-		_ = d.nodeClient.SubmitCommitted(ctx, ownerNodeID, msg)
-	}()
-	return nil
+	}
+	d.submitConversationFallback(ctx, msg)
 }
 
 func (d asyncCommittedDispatcher) submitLocal(ctx context.Context, msg channellog.Message) {
 	if d.delivery != nil {
 		_ = d.delivery.SubmitCommitted(ctx, msg)
 	}
+	d.submitConversation(ctx, msg)
+}
+
+func (d asyncCommittedDispatcher) submitConversation(ctx context.Context, msg channellog.Message) {
 	if d.conversation != nil {
 		_ = d.conversation.SubmitCommitted(ctx, msg)
+	}
+}
+
+func (d asyncCommittedDispatcher) submitConversationFallback(ctx context.Context, msg channellog.Message) {
+	d.submitConversation(ctx, msg)
+	if flusher, ok := d.conversation.(committedSubmitterFlusher); ok {
+		_ = flusher.Flush(ctx)
 	}
 }
 
@@ -362,8 +388,17 @@ type deliveryOwnerNotifier interface {
 	NotifyOffline(ctx context.Context, nodeID uint64, cmd message.SessionClosedCommand) error
 }
 
+type committedNodeSubmitter interface {
+	SubmitCommitted(ctx context.Context, nodeID uint64, msg channellog.Message) error
+}
+
 type committedSubmitter interface {
 	SubmitCommitted(ctx context.Context, msg channellog.Message) error
+}
+
+type committedSubmitterFlusher interface {
+	committedSubmitter
+	Flush(ctx context.Context) error
 }
 
 func recipientUIDForRoutes(routes []deliveryruntime.RouteKey) string {

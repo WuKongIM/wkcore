@@ -114,6 +114,7 @@ func build(cfg Config) (_ *App, err error) {
 	}
 
 	app.store = metastore.New(app.cluster, app.db)
+	app.nodeClient = accessnode.NewClient(app.cluster)
 	app.conversationProjector = conversationusecase.NewProjector(conversationusecase.ProjectorOptions{
 		Store:              app.store,
 		FlushInterval:      cfg.Conversation.FlushInterval,
@@ -123,9 +124,13 @@ func build(cfg Config) (_ *App, err error) {
 	})
 	app.store.RegisterChannelUpdateOverlay(app.conversationProjector)
 	app.conversationApp = conversationusecase.New(conversationusecase.Options{
-		States:                app.store,
-		ChannelUpdate:         app.store,
-		Facts:                 channelLogConversationFacts{cluster: app.channelLog},
+		States:        app.store,
+		ChannelUpdate: app.store,
+		Facts: channelLogConversationFacts{
+			cluster: app.channelLog,
+			metas:   app.store,
+			remote:  app.nodeClient,
+		},
 		Now:                   time.Now,
 		ColdThreshold:         cfg.Conversation.ColdThreshold,
 		ActiveScanLimit:       cfg.Conversation.ActiveScanLimit,
@@ -140,7 +145,6 @@ func build(cfg Config) (_ *App, err error) {
 		refreshInterval: time.Second,
 	}
 	onlineRegistry := online.NewRegistry()
-	app.nodeClient = accessnode.NewClient(app.cluster)
 	authorityClient := &presenceAuthorityClient{
 		cluster:     app.cluster,
 		remote:      app.nodeClient,
@@ -191,6 +195,7 @@ func build(cfg Config) (_ *App, err error) {
 		Online:           onlineRegistry,
 		GatewayBootID:    app.gatewayBootID,
 		LocalNodeID:      cfg.Node.ID,
+		ChannelLog:       app.channelLog,
 		DeliverySubmit:   committedDispatcher,
 		DeliveryAck:      app.deliveryApp,
 		DeliveryOffline:  app.deliveryApp,
@@ -300,12 +305,56 @@ const conversationFetchMaxBytes = 1 << 20
 
 type channelLogConversationFacts struct {
 	cluster channellog.Cluster
+	metas   interface {
+		GetChannelRuntimeMeta(ctx context.Context, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error)
+	}
+	remote interface {
+		LoadLatestConversationMessage(ctx context.Context, nodeID uint64, key channellog.ChannelKey, maxBytes int) (channellog.Message, bool, error)
+		LoadRecentConversationMessages(ctx context.Context, nodeID uint64, key channellog.ChannelKey, limit, maxBytes int) ([]channellog.Message, error)
+	}
+}
+
+type batchConversationFactsRemote interface {
+	LoadLatestConversationMessages(ctx context.Context, nodeID uint64, keys []channellog.ChannelKey, maxBytes int) (map[channellog.ChannelKey]channellog.Message, error)
+	LoadRecentConversationMessagesBatch(ctx context.Context, nodeID uint64, keys []channellog.ChannelKey, limit, maxBytes int) (map[channellog.ChannelKey][]channellog.Message, error)
+}
+
+type batchConversationFactsMetas interface {
+	BatchGetChannelRuntimeMetas(ctx context.Context, keys []metadb.ConversationKey) (map[metadb.ConversationKey]metadb.ChannelRuntimeMeta, error)
 }
 
 func (f channelLogConversationFacts) LoadLatestMessages(ctx context.Context, keys []conversationusecase.ConversationKey) (map[conversationusecase.ConversationKey]channellog.Message, error) {
 	out := make(map[conversationusecase.ConversationKey]channellog.Message, len(keys))
+	remoteKeys := make([]conversationusecase.ConversationKey, 0, len(keys))
 	for _, key := range keys {
-		msg, ok, err := f.loadLatestMessage(ctx, key)
+		channelKey := channellog.ChannelKey{ChannelID: key.ChannelID, ChannelType: key.ChannelType}
+		msg, ok, err := loadLatestConversationMessage(ctx, f.cluster, channelKey, conversationFetchMaxBytes)
+		switch {
+		case err == nil || errors.Is(err, channellog.ErrChannelNotFound):
+			if ok {
+				out[key] = msg
+			}
+		case errors.Is(err, channellog.ErrStaleMeta):
+			remoteKeys = append(remoteKeys, key)
+		default:
+			return nil, err
+		}
+	}
+	if len(remoteKeys) == 0 {
+		return out, nil
+	}
+	if remote, ok := f.remote.(batchConversationFactsRemote); ok {
+		remoteMessages, err := f.loadRemoteLatestMessagesBatch(ctx, remote, remoteKeys)
+		if err != nil {
+			return nil, err
+		}
+		for key, msg := range remoteMessages {
+			out[key] = msg
+		}
+		return out, nil
+	}
+	for _, key := range remoteKeys {
+		msg, ok, err := f.loadRemoteLatestMessage(ctx, channellog.ChannelKey{ChannelID: key.ChannelID, ChannelType: key.ChannelType})
 		if err != nil {
 			return nil, err
 		}
@@ -317,15 +366,225 @@ func (f channelLogConversationFacts) LoadLatestMessages(ctx context.Context, key
 }
 
 func (f channelLogConversationFacts) LoadRecentMessages(ctx context.Context, key conversationusecase.ConversationKey, limit int) ([]channellog.Message, error) {
-	if f.cluster == nil || limit <= 0 {
+	if limit <= 0 {
 		return nil, nil
 	}
-
-	status, err := f.cluster.Status(channellog.ChannelKey{ChannelID: key.ChannelID, ChannelType: key.ChannelType})
+	messagesByKey, err := f.LoadRecentMessagesBatch(ctx, []conversationusecase.ConversationKey{key}, limit)
 	if err != nil {
-		if errors.Is(err, channellog.ErrChannelNotFound) {
-			return nil, nil
+		return nil, err
+	}
+	return messagesByKey[key], nil
+}
+
+func (f channelLogConversationFacts) LoadRecentMessagesBatch(ctx context.Context, keys []conversationusecase.ConversationKey, limit int) (map[conversationusecase.ConversationKey][]channellog.Message, error) {
+	if limit <= 0 {
+		return map[conversationusecase.ConversationKey][]channellog.Message{}, nil
+	}
+	out := make(map[conversationusecase.ConversationKey][]channellog.Message, len(keys))
+	remoteKeys := make([]conversationusecase.ConversationKey, 0, len(keys))
+	for _, key := range keys {
+		channelKey := channellog.ChannelKey{ChannelID: key.ChannelID, ChannelType: key.ChannelType}
+		messages, err := loadRecentConversationMessages(ctx, f.cluster, channelKey, limit, conversationFetchMaxBytes)
+		switch {
+		case err == nil || errors.Is(err, channellog.ErrChannelNotFound):
+			out[key] = messages
+		case errors.Is(err, channellog.ErrStaleMeta):
+			remoteKeys = append(remoteKeys, key)
+		default:
+			return nil, err
 		}
+	}
+	if len(remoteKeys) == 0 {
+		return out, nil
+	}
+	if remote, ok := f.remote.(batchConversationFactsRemote); ok {
+		remoteMessages, err := f.loadRemoteRecentMessagesBatch(ctx, remote, remoteKeys, limit)
+		if err != nil {
+			return nil, err
+		}
+		for key, messages := range remoteMessages {
+			out[key] = messages
+		}
+		return out, nil
+	}
+	for _, key := range remoteKeys {
+		messages, err := f.loadRemoteRecentMessages(ctx, channellog.ChannelKey{ChannelID: key.ChannelID, ChannelType: key.ChannelType}, limit)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = messages
+	}
+	return out, nil
+}
+
+func (f channelLogConversationFacts) loadLatestMessage(ctx context.Context, key conversationusecase.ConversationKey) (channellog.Message, bool, error) {
+	channelKey := channellog.ChannelKey{ChannelID: key.ChannelID, ChannelType: key.ChannelType}
+	msg, ok, err := loadLatestConversationMessage(ctx, f.cluster, channelKey, conversationFetchMaxBytes)
+	if err == nil || errors.Is(err, channellog.ErrChannelNotFound) {
+		return msg, ok, nil
+	}
+	if !errors.Is(err, channellog.ErrStaleMeta) {
+		return channellog.Message{}, false, err
+	}
+	return f.loadRemoteLatestMessage(ctx, channelKey)
+}
+
+func (f channelLogConversationFacts) loadRemoteLatestMessage(ctx context.Context, key channellog.ChannelKey) (channellog.Message, bool, error) {
+	ownerNodeID, err := f.ownerNodeID(ctx, key)
+	if err != nil {
+		return channellog.Message{}, false, err
+	}
+	if ownerNodeID == 0 || f.remote == nil {
+		return channellog.Message{}, false, channellog.ErrStaleMeta
+	}
+	return f.remote.LoadLatestConversationMessage(ctx, ownerNodeID, key, conversationFetchMaxBytes)
+}
+
+func (f channelLogConversationFacts) loadRemoteRecentMessages(ctx context.Context, key channellog.ChannelKey, limit int) ([]channellog.Message, error) {
+	ownerNodeID, err := f.ownerNodeID(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if ownerNodeID == 0 || f.remote == nil {
+		return nil, channellog.ErrStaleMeta
+	}
+	return f.remote.LoadRecentConversationMessages(ctx, ownerNodeID, key, limit, conversationFetchMaxBytes)
+}
+
+func (f channelLogConversationFacts) loadRemoteLatestMessagesBatch(ctx context.Context, remote batchConversationFactsRemote, keys []conversationusecase.ConversationKey) (map[conversationusecase.ConversationKey]channellog.Message, error) {
+	grouped, err := f.groupConversationKeysByOwner(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[conversationusecase.ConversationKey]channellog.Message, len(keys))
+	for ownerNodeID, groupKeys := range grouped {
+		channelKeys := make([]channellog.ChannelKey, 0, len(groupKeys))
+		keyByChannel := make(map[channellog.ChannelKey]conversationusecase.ConversationKey, len(groupKeys))
+		for _, key := range groupKeys {
+			channelKey := channellog.ChannelKey{ChannelID: key.ChannelID, ChannelType: key.ChannelType}
+			channelKeys = append(channelKeys, channelKey)
+			keyByChannel[channelKey] = key
+		}
+		messages, err := remote.LoadLatestConversationMessages(ctx, ownerNodeID, channelKeys, conversationFetchMaxBytes)
+		if err != nil {
+			return nil, err
+		}
+		for channelKey, msg := range messages {
+			if key, ok := keyByChannel[channelKey]; ok {
+				out[key] = msg
+			}
+		}
+	}
+	return out, nil
+}
+
+func (f channelLogConversationFacts) loadRemoteRecentMessagesBatch(ctx context.Context, remote batchConversationFactsRemote, keys []conversationusecase.ConversationKey, limit int) (map[conversationusecase.ConversationKey][]channellog.Message, error) {
+	grouped, err := f.groupConversationKeysByOwner(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[conversationusecase.ConversationKey][]channellog.Message, len(keys))
+	for ownerNodeID, groupKeys := range grouped {
+		channelKeys := make([]channellog.ChannelKey, 0, len(groupKeys))
+		keyByChannel := make(map[channellog.ChannelKey]conversationusecase.ConversationKey, len(groupKeys))
+		for _, key := range groupKeys {
+			channelKey := channellog.ChannelKey{ChannelID: key.ChannelID, ChannelType: key.ChannelType}
+			channelKeys = append(channelKeys, channelKey)
+			keyByChannel[channelKey] = key
+		}
+		messagesByChannel, err := remote.LoadRecentConversationMessagesBatch(ctx, ownerNodeID, channelKeys, limit, conversationFetchMaxBytes)
+		if err != nil {
+			return nil, err
+		}
+		for channelKey, messages := range messagesByChannel {
+			if key, ok := keyByChannel[channelKey]; ok {
+				out[key] = append([]channellog.Message(nil), messages...)
+			}
+		}
+	}
+	return out, nil
+}
+
+func (f channelLogConversationFacts) groupConversationKeysByOwner(ctx context.Context, keys []conversationusecase.ConversationKey) (map[uint64][]conversationusecase.ConversationKey, error) {
+	grouped := make(map[uint64][]conversationusecase.ConversationKey, len(keys))
+	if metas, ok := f.metas.(batchConversationFactsMetas); ok {
+		metaKeys := make([]metadb.ConversationKey, 0, len(keys))
+		convKeysByMeta := make(map[metadb.ConversationKey]conversationusecase.ConversationKey, len(keys))
+		for _, key := range keys {
+			metaKey := metadb.ConversationKey{ChannelID: key.ChannelID, ChannelType: int64(key.ChannelType)}
+			metaKeys = append(metaKeys, metaKey)
+			convKeysByMeta[metaKey] = key
+		}
+		metasByKey, err := metas.BatchGetChannelRuntimeMetas(ctx, metaKeys)
+		if err != nil {
+			return nil, err
+		}
+		for _, metaKey := range metaKeys {
+			meta, ok := metasByKey[metaKey]
+			if !ok || meta.Leader == 0 {
+				return nil, channellog.ErrStaleMeta
+			}
+			grouped[meta.Leader] = append(grouped[meta.Leader], convKeysByMeta[metaKey])
+		}
+		return grouped, nil
+	}
+	for _, key := range keys {
+		ownerNodeID, err := f.ownerNodeID(ctx, channellog.ChannelKey{ChannelID: key.ChannelID, ChannelType: key.ChannelType})
+		if err != nil {
+			return nil, err
+		}
+		if ownerNodeID == 0 {
+			return nil, channellog.ErrStaleMeta
+		}
+		grouped[ownerNodeID] = append(grouped[ownerNodeID], key)
+	}
+	return grouped, nil
+}
+
+func (f channelLogConversationFacts) ownerNodeID(ctx context.Context, key channellog.ChannelKey) (uint64, error) {
+	if f.metas == nil {
+		return 0, channellog.ErrStaleMeta
+	}
+	meta, err := f.metas.GetChannelRuntimeMeta(ctx, key.ChannelID, int64(key.ChannelType))
+	if err != nil {
+		return 0, err
+	}
+	return meta.Leader, nil
+}
+
+func loadLatestConversationMessage(ctx context.Context, cluster channellog.Cluster, key channellog.ChannelKey, maxBytes int) (channellog.Message, bool, error) {
+	if cluster == nil {
+		return channellog.Message{}, false, channellog.ErrStaleMeta
+	}
+	status, err := cluster.Status(key)
+	if err != nil {
+		return channellog.Message{}, false, err
+	}
+	if status.CommittedSeq == 0 {
+		return channellog.Message{}, false, nil
+	}
+
+	fetch, err := cluster.Fetch(ctx, channellog.FetchRequest{
+		Key:      key,
+		FromSeq:  status.CommittedSeq,
+		Limit:    1,
+		MaxBytes: maxBytes,
+	})
+	if err != nil {
+		return channellog.Message{}, false, err
+	}
+	if len(fetch.Messages) == 0 {
+		return channellog.Message{}, false, nil
+	}
+	return fetch.Messages[0], true, nil
+}
+
+func loadRecentConversationMessages(ctx context.Context, cluster channellog.Cluster, key channellog.ChannelKey, limit, maxBytes int) ([]channellog.Message, error) {
+	if cluster == nil || limit <= 0 {
+		return nil, nil
+	}
+	status, err := cluster.Status(key)
+	if err != nil {
 		return nil, err
 	}
 	if status.CommittedSeq == 0 {
@@ -336,59 +595,16 @@ func (f channelLogConversationFacts) LoadRecentMessages(ctx context.Context, key
 	if status.CommittedSeq >= uint64(limit) {
 		fromSeq = status.CommittedSeq - uint64(limit) + 1
 	}
-	fetch, err := f.cluster.Fetch(ctx, channellog.FetchRequest{
-		Key: channellog.ChannelKey{
-			ChannelID:   key.ChannelID,
-			ChannelType: key.ChannelType,
-		},
+	fetch, err := cluster.Fetch(ctx, channellog.FetchRequest{
+		Key:      key,
 		FromSeq:  fromSeq,
 		Limit:    limit,
-		MaxBytes: conversationFetchMaxBytes,
+		MaxBytes: maxBytes,
 	})
 	if err != nil {
-		if errors.Is(err, channellog.ErrChannelNotFound) {
-			return nil, nil
-		}
 		return nil, err
 	}
 	return append([]channellog.Message(nil), fetch.Messages...), nil
-}
-
-func (f channelLogConversationFacts) loadLatestMessage(ctx context.Context, key conversationusecase.ConversationKey) (channellog.Message, bool, error) {
-	if f.cluster == nil {
-		return channellog.Message{}, false, nil
-	}
-
-	status, err := f.cluster.Status(channellog.ChannelKey{ChannelID: key.ChannelID, ChannelType: key.ChannelType})
-	if err != nil {
-		if errors.Is(err, channellog.ErrChannelNotFound) {
-			return channellog.Message{}, false, nil
-		}
-		return channellog.Message{}, false, err
-	}
-	if status.CommittedSeq == 0 {
-		return channellog.Message{}, false, nil
-	}
-
-	fetch, err := f.cluster.Fetch(ctx, channellog.FetchRequest{
-		Key: channellog.ChannelKey{
-			ChannelID:   key.ChannelID,
-			ChannelType: key.ChannelType,
-		},
-		FromSeq:  status.CommittedSeq,
-		Limit:    1,
-		MaxBytes: conversationFetchMaxBytes,
-	})
-	if err != nil {
-		if errors.Is(err, channellog.ErrChannelNotFound) {
-			return channellog.Message{}, false, nil
-		}
-		return channellog.Message{}, false, err
-	}
-	if len(fetch.Messages) == 0 {
-		return channellog.Message{}, false, nil
-	}
-	return fetch.Messages[0], true, nil
 }
 
 func newStorageFactory(raftDB *raftstorage.DB) func(groupID multiraft.GroupID) (multiraft.Storage, error) {

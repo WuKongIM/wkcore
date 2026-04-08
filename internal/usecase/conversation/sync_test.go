@@ -2,7 +2,9 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 
@@ -54,7 +56,7 @@ func TestSyncVersionZeroUsesWorkingSetAndClientOverlay(t *testing.T) {
 			Timestamp:       200,
 			LastMsgSeq:      8,
 			LastClientMsgNo: "c2",
-			ReadedToMsgSeq:  0,
+			ReadToMsgSeq:    0,
 			Version:         time.Unix(200, 0).UnixNano(),
 		},
 		{
@@ -64,7 +66,7 @@ func TestSyncVersionZeroUsesWorkingSetAndClientOverlay(t *testing.T) {
 			Timestamp:       150,
 			LastMsgSeq:      12,
 			LastClientMsgNo: "c1",
-			ReadedToMsgSeq:  5,
+			ReadToMsgSeq:    5,
 			Version:         time.Unix(150, 0).UnixNano(),
 		},
 	}, got.Conversations)
@@ -126,7 +128,7 @@ func TestSyncVersionPositiveScansUserDirectoryForStateAndChannelDeltas(t *testin
 			Timestamp:       200,
 			LastMsgSeq:      20,
 			LastClientMsgNo: "c2",
-			ReadedToMsgSeq:  1,
+			ReadToMsgSeq:    1,
 			Version:         time.Unix(300, 0).UnixNano(),
 		},
 		{
@@ -136,7 +138,7 @@ func TestSyncVersionPositiveScansUserDirectoryForStateAndChannelDeltas(t *testin
 			Timestamp:       100,
 			LastMsgSeq:      10,
 			LastClientMsgNo: "c1",
-			ReadedToMsgSeq:  3,
+			ReadToMsgSeq:    3,
 			Version:         time.Unix(250, 0).UnixNano(),
 		},
 	}, got.Conversations)
@@ -173,6 +175,89 @@ func TestSyncColdRowsAreExcludedAndDemotedAsync(t *testing.T) {
 	got, err := app.Sync(context.Background(), SyncQuery{UID: "u1", Limit: 100})
 	require.NoError(t, err)
 	require.Empty(t, got.Conversations)
+	require.Equal(t, []metadb.ConversationKey{{ChannelID: "g1", ChannelType: 2}}, repo.clearedActive)
+}
+
+func TestSyncColdRowsDoNotQueueDuplicateDemotionForSameUIDWhileClearPending(t *testing.T) {
+	now := time.Unix(40*24*60*60, 0)
+	repo := newConversationSyncRepoStub()
+	repo.active = []metadb.UserConversationState{
+		{UID: "u1", ChannelID: "g1", ChannelType: 2, ActiveAt: 200, UpdatedAt: 10},
+		{UID: "u1", ChannelID: "g2", ChannelType: 2, ActiveAt: 199, UpdatedAt: 10},
+	}
+	for _, state := range repo.active {
+		repo.states[metadbKey(state.ChannelID, uint8(state.ChannelType))] = state
+	}
+	repo.channelUpdates[metadbKey("g1", 2)] = metadb.ChannelUpdateLog{
+		ChannelID:   "g1",
+		ChannelType: 2,
+		UpdatedAt:   20,
+		LastMsgAt:   now.Add(-31 * 24 * time.Hour).UnixNano(),
+	}
+	repo.channelUpdates[metadbKey("g2", 2)] = metadb.ChannelUpdateLog{
+		ChannelID:   "g2",
+		ChannelType: 2,
+		UpdatedAt:   21,
+		LastMsgAt:   now.Add(-31 * 24 * time.Hour).UnixNano(),
+	}
+
+	var queued []func()
+	app := New(Options{
+		States:        repo,
+		ChannelUpdate: repo,
+		Facts:         repo,
+		Now:           func() time.Time { return now },
+		ColdThreshold: 30 * 24 * time.Hour,
+		Async: func(fn func()) {
+			queued = append(queued, fn)
+		},
+	})
+
+	_, err := app.Sync(context.Background(), SyncQuery{UID: "u1", Limit: 100})
+	require.NoError(t, err)
+	_, err = app.Sync(context.Background(), SyncQuery{UID: "u1", Limit: 100})
+	require.NoError(t, err)
+
+	require.Len(t, queued, 1)
+	require.Empty(t, repo.clearedActive)
+	queued[0]()
+	require.Equal(t, 1, repo.clearCalls)
+	require.ElementsMatch(t, []metadb.ConversationKey{
+		{ChannelID: "g1", ChannelType: 2},
+		{ChannelID: "g2", ChannelType: 2},
+	}, repo.clearedActive)
+}
+
+func TestSyncColdRowsRetryDemotionAfterClearFailure(t *testing.T) {
+	now := time.Unix(40*24*60*60, 0)
+	repo := newConversationSyncRepoStub()
+	repo.active = []metadb.UserConversationState{
+		{UID: "u1", ChannelID: "g1", ChannelType: 2, ActiveAt: 200, UpdatedAt: 10},
+	}
+	repo.states[metadbKey("g1", 2)] = repo.active[0]
+	repo.channelUpdates[metadbKey("g1", 2)] = metadb.ChannelUpdateLog{
+		ChannelID:   "g1",
+		ChannelType: 2,
+		UpdatedAt:   20,
+		LastMsgAt:   now.Add(-31 * 24 * time.Hour).UnixNano(),
+	}
+	repo.clearErrs = []error{errors.New("transient")}
+
+	app := New(Options{
+		States:        repo,
+		ChannelUpdate: repo,
+		Facts:         repo,
+		Now:           func() time.Time { return now },
+		ColdThreshold: 30 * 24 * time.Hour,
+		Async:         func(fn func()) { fn() },
+	})
+
+	_, err := app.Sync(context.Background(), SyncQuery{UID: "u1", Limit: 100})
+	require.NoError(t, err)
+	_, err = app.Sync(context.Background(), SyncQuery{UID: "u1", Limit: 100})
+	require.NoError(t, err)
+
+	require.Equal(t, 2, repo.clearCalls)
 	require.Equal(t, []metadb.ConversationKey{{ChannelID: "g1", ChannelType: 2}}, repo.clearedActive)
 }
 
@@ -224,7 +309,7 @@ func TestSyncAppliesOnlyUnreadDeleteLineAndStableLimitOrdering(t *testing.T) {
 			Timestamp:       300,
 			LastMsgSeq:      7,
 			LastClientMsgNo: "c1",
-			ReadedToMsgSeq:  5,
+			ReadToMsgSeq:    5,
 			Version:         400,
 		},
 	}, got.Conversations)
@@ -259,6 +344,7 @@ func TestSyncLoadsRecentsOnlyForFinalLimitedWindow(t *testing.T) {
 		testMessage("g3", 2, 10, "u2", 100, "c3"),
 		testMessage("g3", 2, 9, "u2", 99, "c3-1"),
 	}
+	repo.recentLoadErr = errors.New("unexpected single recent load")
 
 	app := New(Options{
 		States:        repo,
@@ -276,7 +362,8 @@ func TestSyncLoadsRecentsOnlyForFinalLimitedWindow(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, got.Conversations, 2)
-	require.Equal(t, []ConversationKey{key("g1", 2), key("g2", 2)}, repo.recentLoads)
+	require.Equal(t, [][]ConversationKey{{key("g1", 2), key("g2", 2)}}, repo.recentBatchLoads)
+	require.Empty(t, repo.recentLoads)
 	require.Equal(t, []channellog.Message{
 		testMessage("g1", 2, 30, "u2", 300, "c1"),
 		testMessage("g1", 2, 29, "u2", 299, "c1-1"),
@@ -287,6 +374,191 @@ func TestSyncLoadsRecentsOnlyForFinalLimitedWindow(t *testing.T) {
 	}, got.Conversations[1].Recents)
 }
 
+func TestSyncVersionPositiveKeepsBoundedIncrementalCandidatesAfterFactLoad(t *testing.T) {
+	repo := newConversationSyncRepoStub()
+	for i := 1; i <= 5; i++ {
+		channelID := "g" + strconv.Itoa(i)
+		state := metadb.UserConversationState{
+			UID:         "u1",
+			ChannelID:   channelID,
+			ChannelType: 2,
+			UpdatedAt:   int64(i),
+		}
+		repo.directory = append(repo.directory, state)
+		repo.states[metadbKey(channelID, 2)] = state
+		repo.channelUpdates[metadbKey(channelID, 2)] = metadb.ChannelUpdateLog{
+			ChannelID:       channelID,
+			ChannelType:     2,
+			UpdatedAt:       int64(100 * i),
+			LastMsgSeq:      uint64(i),
+			LastClientMsgNo: "c" + strconv.Itoa(i),
+			LastMsgAt:       time.Unix(int64(i), 0).UnixNano(),
+		}
+		repo.latest[key(channelID, 2)] = testMessage(channelID, 2, uint64(i), "u2", int32(i), "c"+strconv.Itoa(i))
+	}
+
+	app := New(Options{
+		States:                repo,
+		ChannelUpdate:         repo,
+		Facts:                 repo,
+		Now:                   time.Now,
+		ColdThreshold:         30 * 24 * time.Hour,
+		ChannelProbeBatchSize: 2,
+		Async:                 func(fn func()) { fn() },
+	})
+
+	got, err := app.Sync(context.Background(), SyncQuery{
+		UID:      "u1",
+		Version:  1,
+		Limit:    2,
+		MsgCount: 0,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []SyncConversation{
+		{
+			ChannelID:       "g5",
+			ChannelType:     2,
+			Unread:          5,
+			Timestamp:       5,
+			LastMsgSeq:      5,
+			LastClientMsgNo: "c5",
+			ReadToMsgSeq:    0,
+			Version:         500,
+		},
+		{
+			ChannelID:       "g4",
+			ChannelType:     2,
+			Unread:          4,
+			Timestamp:       4,
+			LastMsgSeq:      4,
+			LastClientMsgNo: "c4",
+			ReadToMsgSeq:    0,
+			Version:         400,
+		},
+	}, got.Conversations)
+}
+
+func TestSyncVersionPositiveRetainsIncrementalWindowByDisplayOrder(t *testing.T) {
+	now := time.Unix(400, 0)
+	repo := newConversationSyncRepoStub()
+	repo.directory = []metadb.UserConversationState{
+		{UID: "u1", ChannelID: "g1", ChannelType: 2, UpdatedAt: 500},
+		{UID: "u1", ChannelID: "g2", ChannelType: 2, UpdatedAt: 10},
+	}
+	for _, state := range repo.directory {
+		repo.states[metadbKey(state.ChannelID, uint8(state.ChannelType))] = state
+	}
+	repo.channelUpdates[metadbKey("g1", 2)] = metadb.ChannelUpdateLog{
+		ChannelID:       "g1",
+		ChannelType:     2,
+		UpdatedAt:       100,
+		LastMsgSeq:      1,
+		LastClientMsgNo: "c1",
+		LastMsgAt:       time.Unix(100, 0).UnixNano(),
+	}
+	repo.channelUpdates[metadbKey("g2", 2)] = metadb.ChannelUpdateLog{
+		ChannelID:       "g2",
+		ChannelType:     2,
+		UpdatedAt:       300,
+		LastMsgSeq:      2,
+		LastClientMsgNo: "c2",
+		LastMsgAt:       time.Unix(300, 0).UnixNano(),
+	}
+	repo.latest[key("g1", 2)] = testMessage("g1", 2, 1, "u2", 100, "c1")
+	repo.latest[key("g2", 2)] = testMessage("g2", 2, 2, "u2", 300, "c2")
+
+	app := New(Options{
+		States:                repo,
+		ChannelUpdate:         repo,
+		Facts:                 repo,
+		Now:                   func() time.Time { return now },
+		ColdThreshold:         24 * time.Hour,
+		ChannelProbeBatchSize: 1,
+		Async:                 func(fn func()) { fn() },
+	})
+
+	got, err := app.Sync(context.Background(), SyncQuery{
+		UID:      "u1",
+		Version:  200,
+		Limit:    1,
+		MsgCount: 0,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []SyncConversation{
+		{
+			ChannelID:       "g2",
+			ChannelType:     2,
+			Unread:          2,
+			Timestamp:       300,
+			LastMsgSeq:      2,
+			LastClientMsgNo: "c2",
+			ReadToMsgSeq:    0,
+			Version:         300,
+		},
+	}, got.Conversations)
+}
+
+func TestSyncVersionPositiveAppliesOnlyUnreadBeforeIncrementalLimit(t *testing.T) {
+	now := time.Unix(500, 0)
+	repo := newConversationSyncRepoStub()
+	repo.directory = []metadb.UserConversationState{
+		{UID: "u1", ChannelID: "g1", ChannelType: 2, UpdatedAt: 10},
+		{UID: "u1", ChannelID: "g2", ChannelType: 2, UpdatedAt: 10},
+	}
+	for _, state := range repo.directory {
+		repo.states[metadbKey(state.ChannelID, uint8(state.ChannelType))] = state
+	}
+	repo.channelUpdates[metadbKey("g1", 2)] = metadb.ChannelUpdateLog{
+		ChannelID:       "g1",
+		ChannelType:     2,
+		UpdatedAt:       400,
+		LastMsgSeq:      4,
+		LastClientMsgNo: "c1",
+		LastMsgAt:       time.Unix(400, 0).UnixNano(),
+	}
+	repo.channelUpdates[metadbKey("g2", 2)] = metadb.ChannelUpdateLog{
+		ChannelID:       "g2",
+		ChannelType:     2,
+		UpdatedAt:       300,
+		LastMsgSeq:      3,
+		LastClientMsgNo: "c2",
+		LastMsgAt:       time.Unix(300, 0).UnixNano(),
+	}
+	repo.latest[key("g1", 2)] = testMessage("g1", 2, 4, "u1", 400, "c1")
+	repo.latest[key("g2", 2)] = testMessage("g2", 2, 3, "u2", 300, "c2")
+
+	app := New(Options{
+		States:                repo,
+		ChannelUpdate:         repo,
+		Facts:                 repo,
+		Now:                   func() time.Time { return now },
+		ColdThreshold:         24 * time.Hour,
+		ChannelProbeBatchSize: 1,
+		Async:                 func(fn func()) { fn() },
+	})
+
+	got, err := app.Sync(context.Background(), SyncQuery{
+		UID:        "u1",
+		Version:    100,
+		OnlyUnread: true,
+		Limit:      1,
+		MsgCount:   0,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []SyncConversation{
+		{
+			ChannelID:       "g2",
+			ChannelType:     2,
+			Unread:          3,
+			Timestamp:       300,
+			LastMsgSeq:      3,
+			LastClientMsgNo: "c2",
+			ReadToMsgSeq:    0,
+			Version:         300,
+		},
+	}, got.Conversations)
+}
+
 type conversationSyncRepoStub struct {
 	active             []metadb.UserConversationState
 	directory          []metadb.UserConversationState
@@ -295,8 +567,14 @@ type conversationSyncRepoStub struct {
 	latest             map[ConversationKey]channellog.Message
 	recents            map[ConversationKey][]channellog.Message
 	clearedActive      []metadb.ConversationKey
+	clearCalls         int
+	clearErrs          []error
 	channelUpdateLoads [][]metadb.ConversationKey
+	latestLoads        []ConversationKey
 	recentLoads        []ConversationKey
+	recentBatchLoads   [][]ConversationKey
+	recentLoadErr      error
+	recentBatchLoadErr error
 }
 
 func newConversationSyncRepoStub() *conversationSyncRepoStub {
@@ -360,6 +638,14 @@ func (r *conversationSyncRepoStub) ScanUserConversationStatePage(_ context.Conte
 }
 
 func (r *conversationSyncRepoStub) ClearUserConversationActiveAt(_ context.Context, _ string, keys []metadb.ConversationKey) error {
+	r.clearCalls++
+	if len(r.clearErrs) > 0 {
+		err := r.clearErrs[0]
+		r.clearErrs = r.clearErrs[1:]
+		if err != nil {
+			return err
+		}
+	}
 	r.clearedActive = append(r.clearedActive, keys...)
 	return nil
 }
@@ -377,6 +663,7 @@ func (r *conversationSyncRepoStub) BatchGetChannelUpdateLogs(_ context.Context, 
 }
 
 func (r *conversationSyncRepoStub) LoadLatestMessages(_ context.Context, keys []ConversationKey) (map[ConversationKey]channellog.Message, error) {
+	r.latestLoads = append(r.latestLoads, append([]ConversationKey(nil), keys...)...)
 	out := make(map[ConversationKey]channellog.Message, len(keys))
 	for _, key := range keys {
 		msg, ok := r.latest[key]
@@ -388,12 +675,31 @@ func (r *conversationSyncRepoStub) LoadLatestMessages(_ context.Context, keys []
 }
 
 func (r *conversationSyncRepoStub) LoadRecentMessages(_ context.Context, key ConversationKey, limit int) ([]channellog.Message, error) {
+	if r.recentLoadErr != nil {
+		return nil, r.recentLoadErr
+	}
 	r.recentLoads = append(r.recentLoads, key)
 	msgs := append([]channellog.Message(nil), r.recents[key]...)
 	if limit > 0 && len(msgs) > limit {
 		msgs = msgs[:limit]
 	}
 	return msgs, nil
+}
+
+func (r *conversationSyncRepoStub) LoadRecentMessagesBatch(_ context.Context, keys []ConversationKey, limit int) (map[ConversationKey][]channellog.Message, error) {
+	if r.recentBatchLoadErr != nil {
+		return nil, r.recentBatchLoadErr
+	}
+	r.recentBatchLoads = append(r.recentBatchLoads, append([]ConversationKey(nil), keys...))
+	out := make(map[ConversationKey][]channellog.Message, len(keys))
+	for _, key := range keys {
+		msgs := append([]channellog.Message(nil), r.recents[key]...)
+		if limit > 0 && len(msgs) > limit {
+			msgs = msgs[:limit]
+		}
+		out[key] = msgs
+	}
+	return out, nil
 }
 
 func key(channelID string, channelType uint8) ConversationKey {

@@ -192,14 +192,16 @@ func TestOfflineRoutingKeepsRemoteBindingsWhenNotifierMissing(t *testing.T) {
 	require.Len(t, local.closed, 1)
 }
 
-func TestAsyncCommittedDispatcherDropsRealtimeWhenOwnerIsUnknown(t *testing.T) {
+func TestAsyncCommittedDispatcherFallsBackToLocalConversationWhenOwnerIsUnknown(t *testing.T) {
 	delivery := &recordingCommittedSubmitter{}
+	conversation := &recordingFlushingCommittedSubmitter{}
 	dispatcher := asyncCommittedDispatcher{
 		localNodeID: 1,
 		channelLog: &stubChannelLogCluster{
 			statusErr: errors.New("leader unknown"),
 		},
-		delivery: delivery,
+		delivery:     delivery,
+		conversation: conversation,
 	}
 
 	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), channellog.Message{
@@ -210,7 +212,7 @@ func TestAsyncCommittedDispatcherDropsRealtimeWhenOwnerIsUnknown(t *testing.T) {
 	}))
 
 	require.Eventually(t, func() bool {
-		return delivery.submitCalls == 0
+		return delivery.submitCalls == 0 && conversation.submitCalls == 1 && conversation.flushCalls == 1
 	}, time.Second, 10*time.Millisecond)
 }
 
@@ -414,6 +416,16 @@ func (r *recordingCommittedSubmitter) SubmitCommitted(_ context.Context, msg cha
 	copied := msg
 	copied.Payload = append([]byte(nil), msg.Payload...)
 	r.calls = append(r.calls, copied)
+	return nil
+}
+
+type recordingFlushingCommittedSubmitter struct {
+	recordingCommittedSubmitter
+	flushCalls int
+}
+
+func (r *recordingFlushingCommittedSubmitter) Flush(context.Context) error {
+	r.flushCalls++
 	return nil
 }
 
