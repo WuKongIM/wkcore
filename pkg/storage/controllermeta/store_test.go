@@ -544,6 +544,37 @@ func TestImportSnapshotRejectsDuplicateKeys(t *testing.T) {
 	require.ErrorIs(t, err, ErrCorruptValue)
 }
 
+func TestImportSnapshotHonorsCancellation(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{
+		GroupID:      1,
+		DesiredPeers: []uint64{1, 2, 3},
+	}))
+
+	snap := encodeSnapshot([]snapshotEntry{
+		{
+			Key: encodeGroupKey(recordPrefixAssignment, 2),
+			Value: encodeGroupAssignment(GroupAssignment{
+				GroupID:      2,
+				DesiredPeers: []uint64{2, 3, 4},
+			}),
+		},
+	})
+
+	cancelCtx := &stepCancelContext{cancelAfter: 2}
+	err := store.ImportSnapshot(cancelCtx, snap)
+	require.ErrorIs(t, err, context.Canceled)
+
+	assignment, err := store.GetAssignment(context.Background(), 1)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{1, 2, 3}, assignment.DesiredPeers)
+
+	_, err = store.GetAssignment(context.Background(), 2)
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
 func TestExportSnapshotRejectsCorruptStoredValues(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -674,6 +705,31 @@ func appendRawUint64Slice(dst []byte, values []uint64) []byte {
 		dst = binary.BigEndian.AppendUint64(dst, value)
 	}
 	return dst
+}
+
+type stepCancelContext struct {
+	cancelAfter int
+	calls       int
+}
+
+func (c *stepCancelContext) Deadline() (time.Time, bool) {
+	return time.Time{}, false
+}
+
+func (c *stepCancelContext) Done() <-chan struct{} {
+	return nil
+}
+
+func (c *stepCancelContext) Err() error {
+	c.calls++
+	if c.calls >= c.cancelAfter {
+		return context.Canceled
+	}
+	return nil
+}
+
+func (c *stepCancelContext) Value(key interface{}) interface{} {
+	return nil
 }
 
 func openTestStore(tb testing.TB) *Store {

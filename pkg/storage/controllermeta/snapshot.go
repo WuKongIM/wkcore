@@ -52,9 +52,15 @@ func (s *Store) ImportSnapshot(ctx context.Context, data []byte) error {
 		return err
 	}
 	for _, entry := range entries {
+		if err := s.checkContext(ctx); err != nil {
+			return err
+		}
 		if err := validateSnapshotValue(entry.Key, entry.Value); err != nil {
 			return err
 		}
+	}
+	if err := s.checkContext(ctx); err != nil {
+		return err
 	}
 
 	s.mu.Lock()
@@ -73,15 +79,24 @@ func (s *Store) ImportSnapshot(ctx context.Context, data []byte) error {
 		recordPrefixRuntimeView,
 		recordPrefixTask,
 	} {
+		if err := s.checkContext(ctx); err != nil {
+			return err
+		}
 		lowerBound, upperBound := prefixBounds(prefix)
 		if err := batch.DeleteRange(lowerBound, upperBound, nil); err != nil {
 			return err
 		}
 	}
 	for _, entry := range entries {
+		if err := s.checkContext(ctx); err != nil {
+			return err
+		}
 		if err := batch.Set(entry.Key, entry.Value, nil); err != nil {
 			return err
 		}
+	}
+	if err := s.checkContext(ctx); err != nil {
+		return err
 	}
 	return batch.Commit(pebble.Sync)
 }

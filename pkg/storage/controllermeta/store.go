@@ -22,8 +22,11 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) Close() error {
+	if s == nil {
+		return nil
+	}
 	s.mu.Lock()
-	if s == nil || s.db == nil {
+	if s.db == nil {
 		s.mu.Unlock()
 		return nil
 	}
@@ -502,6 +505,9 @@ func (s *Store) ensureOpenLocked() error {
 }
 
 func (s *Store) ensureOpen() error {
+	if s == nil {
+		return ErrClosed
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.ensureOpenLocked()
