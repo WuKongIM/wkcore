@@ -273,24 +273,26 @@ Today the cluster startup path:
 The new flow becomes:
 
 1. start transport
-2. if the local node is a controller-bootstrap peer, open the dedicated
-   controller raft replica
-3. if the local node is a controller-bootstrap peer, start the local
+2. derive the controller peer set by sorting `WK_CLUSTER_NODES` by `NodeID`
+   ascending and taking the first `WK_CLUSTER_CONTROLLER_REPLICA_N` nodes
+3. if the local node belongs to that derived controller peer set, open the
+   dedicated controller raft replica
+4. if the local node belongs to that derived controller peer set, start the local
    controller raft service
-4. on the controller leader only, run `GroupController` decision logic
-5. on every node, start `multiraft.Runtime` for managed business groups
-6. on every node, start local `GroupAgent`
-7. register and heartbeat with the controller leader
-8. fetch local assignments
-9. open local managed groups dynamically
+5. on the controller leader only, run `GroupController` decision logic
+6. on every node, start `multiraft.Runtime` for managed business groups
+7. on every node, start local `GroupAgent`
+8. register and heartbeat with the controller leader
+9. fetch local assignments
+10. open local managed groups dynamically
 
 This requires `raftcluster` to support runtime-managed groups in addition to
 the independent controller raft bootstrap path.
 
 Node-role split in v1 is explicit:
 
-- controller-bootstrap peers host the controller Raft replica and are eligible
-  to become controller leader
+- nodes in the derived controller peer set host the controller Raft replica and
+  are eligible to become controller leader
 - only the controller leader runs placement and reconcile decision logic
 - non-controller peers run `GroupAgent` plus a lightweight controller client,
   but never host controller state
@@ -440,7 +442,7 @@ The long-term configuration surface should become:
 
 - `WK_CLUSTER_GROUP_COUNT`
 - `WK_CLUSTER_NODES`
-- `WK_CLUSTER_CONTROLLER_BOOTSTRAP`
+- `WK_CLUSTER_CONTROLLER_REPLICA_N`
 - `WK_CLUSTER_GROUP_REPLICA_N`
 
 Business-group static peer lists are removed. Only the controller bootstrap path
@@ -455,20 +457,21 @@ Managed business group ids remain exactly:
 
 - managed business group ids: `1..GroupCount`
 
-`WK_CLUSTER_CONTROLLER_BOOTSTRAP` defines the initial peer set of that
-dedicated controller raft. The config shape is:
-
-```json
-{"peers":[1,2,3]}
-```
+`WK_CLUSTER_CONTROLLER_REPLICA_N` defines the size of that dedicated
+controller raft quorum.
 
 Rules:
 
-- `peers` must be non-empty
-- every peer id must exist in `WK_CLUSTER_NODES`
+- `WK_CLUSTER_NODES` must contain unique `NodeID` values
+- `WK_CLUSTER_CONTROLLER_REPLICA_N` must be greater than `0`
+- `WK_CLUSTER_CONTROLLER_REPLICA_N` must be less than or equal to
+  `len(WK_CLUSTER_NODES)`
+- the controller peer set is derived deterministically by sorting
+  `WK_CLUSTER_NODES` by `NodeID` ascending and taking the first
+  `WK_CLUSTER_CONTROLLER_REPLICA_N` nodes
 - `WK_CLUSTER_GROUP_COUNT` still defines only managed business groups
-- a node does not need to be a controller peer to join the cluster as a
-  managed-group worker
+- a node does not need to belong to the derived controller peer set to join the
+  cluster as a managed-group worker
 - controller raft state must be persisted separately from managed-group
   `multiraft` storage; v1 should use a dedicated controller-raft storage path
   or a dedicated subdirectory under the node data directory
@@ -478,17 +481,29 @@ Rules:
 Current validation around static business `cluster.groups` is replaced by:
 
 - `WK_CLUSTER_NODES` must be present and contain the local node
+- `WK_CLUSTER_NODES` must contain unique `NodeID` values
 - `WK_CLUSTER_GROUP_COUNT` must be greater than `0`
+- `WK_CLUSTER_CONTROLLER_REPLICA_N` must be greater than `0`
+- `WK_CLUSTER_CONTROLLER_REPLICA_N` must be less than or equal to
+  `len(WK_CLUSTER_NODES)`
 - `WK_CLUSTER_GROUP_REPLICA_N` must be greater than `0`
-- `WK_CLUSTER_CONTROLLER_BOOTSTRAP` must be present and valid
 - static business-group peer lists are no longer required
 
 ### First-boot and restart behavior
 
 For the dedicated controller raft:
 
-- if persistent local controller-raft state exists, open it
-- otherwise bootstrap it from `WK_CLUSTER_CONTROLLER_BOOTSTRAP`
+- if persistent local controller-raft state exists, open it and trust persisted
+  controller membership rather than re-deriving a new peer set from config
+- otherwise derive the initial controller peer set from `WK_CLUSTER_NODES` and
+  `WK_CLUSTER_CONTROLLER_REPLICA_N`
+- on first cluster boot, only the smallest `NodeID` in that derived controller
+  peer set is allowed to execute the controller-raft bootstrap operation
+- the remaining derived controller peers start in join-wait mode and do not
+  issue a concurrent bootstrap
+- once controller-raft state is persisted, future restarts must not silently
+  reshape controller membership from config drift; controller-peer changes must
+  happen through explicit controller-raft reconfiguration
 
 For managed business groups:
 
@@ -553,7 +568,7 @@ The migration must be incremental.
 ### Phase 1: introduce the controller without control
 
 - keep existing static `cluster.groups`
-- bootstrap the controller group
+- bootstrap the dedicated controller raft
 - collect node heartbeats and observed runtime views only
 
 ### Phase 2: recommendation-only mode

@@ -326,18 +326,19 @@ controller 的调度优先级必须固定：
 改造后建议变成：
 
 1. 启动 transport/server
-2. 若本地节点属于 controller bootstrap peers，则打开独立 controller raft replica
-3. 若本地节点属于 controller bootstrap peers，则启动本地 controller raft service
-4. 只有 controller leader 运行真正的 `GroupController` 决策逻辑
-5. 每个节点都启动业务 `multiraft.Runtime`
-6. 每个节点都启动本地 `GroupAgent`
-7. `GroupAgent` 向 controller leader 注册并上报心跳
-8. `GroupAgent` 拉取 assignment
-9. 本地动态打开需要承载的 managed groups
+2. 先对 `WK_CLUSTER_NODES` 按 `NodeID` 升序排序，取前 `WK_CLUSTER_CONTROLLER_REPLICA_N` 个节点作为 controller peers
+3. 若本地节点属于这组派生出的 controller peers，则打开独立 controller raft replica
+4. 若本地节点属于这组派生出的 controller peers，则启动本地 controller raft service
+5. 只有 controller leader 运行真正的 `GroupController` 决策逻辑
+6. 每个节点都启动业务 `multiraft.Runtime`
+7. 每个节点都启动本地 `GroupAgent`
+8. `GroupAgent` 向 controller leader 注册并上报心跳
+9. `GroupAgent` 拉取 assignment
+10. 本地动态打开需要承载的 managed groups
 
 v1 的节点角色边界需要写死：
 
-- controller bootstrap peers 才承载 controller Raft 副本，并有资格成为 controller leader
+- 派生出来的 controller peers 才承载 controller Raft 副本，并有资格成为 controller leader
 - 只有 controller leader 运行 placement / reconcile 决策逻辑
 - 非 controller 节点只运行 `GroupAgent` 和轻量 controller client，不承载 controller 状态
 
@@ -484,13 +485,13 @@ v1 明确不做自动救援式重建。
 
 - `WK_CLUSTER_GROUP_COUNT`
 - `WK_CLUSTER_NODES`
-- `WK_CLUSTER_CONTROLLER_BOOTSTRAP`
+- `WK_CLUSTER_CONTROLLER_REPLICA_N`
 - `WK_CLUSTER_GROUP_REPLICA_N`
 
 其中：
 
 - `WK_CLUSTER_NODES` 仍然静态声明集群成员
-- `WK_CLUSTER_CONTROLLER_BOOTSTRAP` 只用于启动独立 controller raft
+- `WK_CLUSTER_CONTROLLER_REPLICA_N` 用于决定独立 controller raft 的副本数
 - 普通业务 groups 不再手写 peers
 
 ### bootstrap controller 配置
@@ -499,18 +500,17 @@ v1 只有一个独立 controller raft，它不占用业务 `multiraft` 的 group
 
 业务 managed groups 仍然是 `1..GroupCount`。
 
-`WK_CLUSTER_CONTROLLER_BOOTSTRAP` 的配置形态建议为：
-
-```json
-{"peers":[1,2,3]}
-```
+`WK_CLUSTER_CONTROLLER_REPLICA_N` 用于定义独立 controller raft 的副本数。
 
 规则：
 
-- `peers` 不能为空
-- `peers` 中的节点必须全部存在于 `WK_CLUSTER_NODES`
+- `WK_CLUSTER_NODES` 中的 `NodeID` 必须唯一
+- `WK_CLUSTER_CONTROLLER_REPLICA_N > 0`
+- `WK_CLUSTER_CONTROLLER_REPLICA_N <= len(WK_CLUSTER_NODES)`
+- controller peers 通过稳定规则派生：
+  对 `WK_CLUSTER_NODES` 按 `NodeID` 升序排序，取前 `WK_CLUSTER_CONTROLLER_REPLICA_N` 个节点
 - `WK_CLUSTER_GROUP_COUNT` 只描述业务 managed groups
-- 本地节点不要求一定属于 bootstrap controller peers；非 controller 节点也可以作为 managed-group worker 加入集群
+- 本地节点不要求一定属于派生出来的 controller peers；非 controller 节点也可以作为 managed-group worker 加入集群
 - controller raft 状态必须与业务 `multiraft` 状态分开持久化；v1 应使用独立路径，或 `Node.DataDir` 下的独立子目录
 
 ### 启动校验替换规则
@@ -518,17 +518,22 @@ v1 只有一个独立 controller raft，它不占用业务 `multiraft` 的 group
 现有围绕静态 `cluster.groups` 的校验应替换为：
 
 - `WK_CLUSTER_NODES` 必须存在且包含本地节点
+- `WK_CLUSTER_NODES` 中的 `NodeID` 必须唯一
 - `WK_CLUSTER_GROUP_COUNT > 0`
+- `WK_CLUSTER_CONTROLLER_REPLICA_N > 0`
+- `WK_CLUSTER_CONTROLLER_REPLICA_N <= len(WK_CLUSTER_NODES)`
 - `WK_CLUSTER_GROUP_REPLICA_N > 0`
-- `WK_CLUSTER_CONTROLLER_BOOTSTRAP` 必须存在且合法
 - 不再要求静态业务 groups peer 列表
 
 ### 首次启动与重启语义
 
 controller raft 的语义：
 
-- 若本地已存在 controller raft 的持久化状态，则直接打开
-- 否则按 `WK_CLUSTER_CONTROLLER_BOOTSTRAP` 做 bootstrap
+- 若本地已存在 controller raft 的持久化状态，则直接打开，并以后者为准，不再按配置静默重派生 controller membership
+- 若本地不存在持久化状态，则先按 `WK_CLUSTER_NODES + WK_CLUSTER_CONTROLLER_REPLICA_N` 派生 controller peers
+- 首次集群启动时，只有这组 controller peers 中 `NodeID` 最小的节点允许执行 controller raft bootstrap
+- 其余 controller peers 进入 join-wait 模式，不得并发执行 bootstrap
+- controller raft 一旦形成，后续重启不得通过修改 `WK_CLUSTER_NODES` 静默重塑 controller membership；controller peers 的变化必须通过显式的 controller raft reconfiguration 完成
 
 业务 managed groups 的语义：
 
@@ -562,7 +567,7 @@ controller raft 的语义：
 ### 阶段 1：引入 controller，但不接管
 
 - 保留现有静态 `WK_CLUSTER_GROUPS`
-- 启动 bootstrap controller group
+- 启动独立 controller raft
 - controller 只收集心跳和运行视图
 
 ### 阶段 2：只读建议模式
