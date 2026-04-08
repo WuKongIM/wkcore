@@ -341,6 +341,9 @@ func (s *Store) listTasksLocked(ctx context.Context) ([]ReconcileTask, error) {
 }
 
 func listRecords[T any](ctx context.Context, db *pebble.DB, prefix byte, decode func(key, value []byte) (T, error)) ([]T, error) {
+	if db == nil {
+		return nil, ErrClosed
+	}
 	lowerBound, upperBound := prefixBounds(prefix)
 	iter, err := db.NewIter(&pebble.IterOptions{
 		LowerBound: lowerBound,
@@ -380,6 +383,9 @@ func listRecords[T any](ctx context.Context, db *pebble.DB, prefix byte, decode 
 }
 
 func (s *Store) getValueLocked(key []byte) ([]byte, error) {
+	if err := s.ensureOpenLocked(); err != nil {
+		return nil, err
+	}
 	value, closer, err := s.db.Get(key)
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {
@@ -393,6 +399,9 @@ func (s *Store) getValueLocked(key []byte) ([]byte, error) {
 }
 
 func (s *Store) deleteValueLocked(key []byte) error {
+	if err := s.ensureOpenLocked(); err != nil {
+		return err
+	}
 	_, closer, err := s.db.Get(key)
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {
@@ -412,6 +421,9 @@ func (s *Store) deleteValueLocked(key []byte) error {
 }
 
 func (s *Store) writeValueLocked(key, value []byte) error {
+	if err := s.ensureOpenLocked(); err != nil {
+		return err
+	}
 	batch := s.db.NewBatch()
 	defer batch.Close()
 
@@ -423,6 +435,13 @@ func (s *Store) writeValueLocked(key, value []byte) error {
 
 func (s *Store) checkContext(ctx context.Context) error {
 	return checkContext(ctx)
+}
+
+func (s *Store) ensureOpenLocked() error {
+	if s == nil || s.db == nil {
+		return ErrClosed
+	}
+	return nil
 }
 
 func checkContext(ctx context.Context) error {

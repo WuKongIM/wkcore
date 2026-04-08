@@ -25,6 +25,9 @@ func (s *Store) ExportSnapshot(ctx context.Context) ([]byte, error) {
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return nil, err
+	}
 
 	entries, err := s.collectSnapshotEntriesLocked(ctx)
 	if err != nil {
@@ -50,6 +53,9 @@ func (s *Store) ImportSnapshot(ctx context.Context, data []byte) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return err
+	}
 
 	batch := s.db.NewBatch()
 	defer batch.Close()
@@ -101,6 +107,10 @@ func (s *Store) collectSnapshotEntriesLocked(ctx context.Context) ([]snapshotEnt
 
 			value, err := iter.ValueAndErr()
 			if err != nil {
+				iter.Close()
+				return nil, err
+			}
+			if err := validateSnapshotKey(iter.Key()); err != nil {
 				iter.Close()
 				return nil, err
 			}

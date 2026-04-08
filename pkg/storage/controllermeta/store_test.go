@@ -556,6 +556,32 @@ func TestExportSnapshotRejectsCorruptStoredValues(t *testing.T) {
 	require.ErrorIs(t, err, ErrCorruptValue)
 }
 
+func TestExportSnapshotRejectsMalformedMembershipKey(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	store.mu.Lock()
+	err := store.db.Set([]byte{'m', 'x'}, encodeControllerMembership(ControllerMembership{Peers: []uint64{1, 2, 3}}), pebble.Sync)
+	store.mu.Unlock()
+	require.NoError(t, err)
+
+	_, err = store.ExportSnapshot(ctx)
+	require.ErrorIs(t, err, ErrCorruptValue)
+}
+
+func TestStoreRejectsOperationsAfterClose(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.Close())
+
+	_, err := store.GetNode(ctx, 1)
+	require.ErrorIs(t, err, ErrClosed)
+
+	_, err = store.ExportSnapshot(ctx)
+	require.ErrorIs(t, err, ErrClosed)
+}
+
 func openTestStore(tb testing.TB) *Store {
 	tb.Helper()
 

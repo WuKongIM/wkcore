@@ -6,6 +6,7 @@ import (
 )
 
 var (
+	ErrClosed           = errors.New("controllermeta: closed")
 	ErrNotFound         = errors.New("controllermeta: not found")
 	ErrChecksumMismatch = errors.New("controllermeta: checksum mismatch")
 	ErrCorruptValue     = errors.New("controllermeta: corrupt value")
