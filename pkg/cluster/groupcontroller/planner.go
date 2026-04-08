@@ -24,8 +24,16 @@ func (p *Planner) ReconcileGroup(_ context.Context, state PlannerState, groupID 
 
 	assignment, hasAssignment := state.Assignments[groupID]
 	view, hasView := state.Runtime[groupID]
-	if task, ok := state.Tasks[groupID]; ok && task.Status != controllermeta.TaskStatusFailed {
+	if hasView && !view.HasQuorum {
+		decision.Degraded = true
 		decision.Assignment = assignment
+		return decision, nil
+	}
+	if task, ok := state.Tasks[groupID]; ok {
+		decision.Assignment = assignment
+		if task.Status == controllermeta.TaskStatusFailed {
+			return decision, nil
+		}
 		if taskRunnable(state.Now, task) {
 			decision.Task = &task
 		}
@@ -39,6 +47,7 @@ func (p *Planner) ReconcileGroup(_ context.Context, state PlannerState, groupID 
 		decision.Assignment = controllermeta.GroupAssignment{
 			GroupID:      groupID,
 			DesiredPeers: peers,
+			ConfigEpoch:  1,
 		}
 		decision.Task = &controllermeta.ReconcileTask{
 			GroupID:    groupID,
@@ -49,11 +58,6 @@ func (p *Planner) ReconcileGroup(_ context.Context, state PlannerState, groupID 
 		return decision, nil
 	}
 	if !hasAssignment {
-		return decision, nil
-	}
-	if hasView && !view.HasQuorum {
-		decision.Degraded = true
-		decision.Assignment = assignment
 		return decision, nil
 	}
 
@@ -73,7 +77,7 @@ func (p *Planner) ReconcileGroup(_ context.Context, state PlannerState, groupID 
 	decision.Assignment = controllermeta.GroupAssignment{
 		GroupID:        assignment.GroupID,
 		DesiredPeers:   desiredPeers,
-		ConfigEpoch:    assignment.ConfigEpoch,
+		ConfigEpoch:    assignment.ConfigEpoch + 1,
 		BalanceVersion: assignment.BalanceVersion,
 	}
 	decision.Task = &controllermeta.ReconcileTask{
@@ -123,8 +127,11 @@ func (p *Planner) nextRebalanceDecision(state PlannerState) Decision {
 		return candidates[i].BalanceVersion < candidates[j].BalanceVersion
 	})
 	for _, assignment := range candidates {
-		if task, ok := state.Tasks[assignment.GroupID]; ok && task.Status != controllermeta.TaskStatusFailed {
-			if !taskRunnable(state.Now, task) {
+		if view, ok := state.Runtime[assignment.GroupID]; ok && !view.HasQuorum {
+			continue
+		}
+		if task, ok := state.Tasks[assignment.GroupID]; ok {
+			if task.Status == controllermeta.TaskStatusFailed || !taskRunnable(state.Now, task) {
 				continue
 			}
 			decision := Decision{
@@ -134,9 +141,6 @@ func (p *Planner) nextRebalanceDecision(state PlannerState) Decision {
 			}
 			return decision
 		}
-		if view, ok := state.Runtime[assignment.GroupID]; ok && !view.HasQuorum {
-			continue
-		}
 		if p.firstPeerNeedingRepair(state, assignment.DesiredPeers) != 0 {
 			continue
 		}
@@ -145,7 +149,7 @@ func (p *Planner) nextRebalanceDecision(state PlannerState) Decision {
 			Assignment: controllermeta.GroupAssignment{
 				GroupID:        assignment.GroupID,
 				DesiredPeers:   replacePeer(assignment.DesiredPeers, maxNode, minNode),
-				ConfigEpoch:    assignment.ConfigEpoch,
+				ConfigEpoch:    assignment.ConfigEpoch + 1,
 				BalanceVersion: assignment.BalanceVersion + 1,
 			},
 		}
@@ -162,18 +166,34 @@ func (p *Planner) nextRebalanceDecision(state PlannerState) Decision {
 }
 
 func (p *Planner) selectBootstrapPeers(state PlannerState) []uint64 {
-	candidates := make([]uint64, 0, len(state.Nodes))
+	loads := groupLoads(state.Assignments)
+	type candidate struct {
+		nodeID uint64
+		load   int
+	}
+	candidates := make([]candidate, 0, len(state.Nodes))
 	for nodeID, node := range state.Nodes {
 		if node.Status != controllermeta.NodeStatusAlive {
 			continue
 		}
-		candidates = append(candidates, nodeID)
+		candidates = append(candidates, candidate{nodeID: nodeID, load: loads[nodeID]})
 	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i] < candidates[j] })
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].load == candidates[j].load {
+			return candidates[i].nodeID < candidates[j].nodeID
+		}
+		return candidates[i].load < candidates[j].load
+	})
+
 	if len(candidates) > p.cfg.ReplicaN {
 		candidates = candidates[:p.cfg.ReplicaN]
 	}
-	return candidates
+	peers := make([]uint64, 0, len(candidates))
+	for _, candidate := range candidates {
+		peers = append(peers, candidate.nodeID)
+	}
+	sort.Slice(peers, func(i, j int) bool { return peers[i] < peers[j] })
+	return peers
 }
 
 func (p *Planner) firstPeerNeedingRepair(state PlannerState, peers []uint64) uint64 {

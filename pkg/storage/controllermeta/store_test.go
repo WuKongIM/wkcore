@@ -396,6 +396,49 @@ func TestUpsertRejectsUnknownEnums(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidArgument)
 }
 
+func TestUpsertTaskRejectsInconsistentTaskState(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpsertTask(ctx, ReconcileTask{
+		GroupID: 1,
+		Kind:    TaskKindRepair,
+		Step:    TaskStepAddLearner,
+		Status:  TaskStatusRetrying,
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+
+	err = store.UpsertTask(ctx, ReconcileTask{
+		GroupID: 1,
+		Kind:    TaskKindRepair,
+		Step:    TaskStepAddLearner,
+		Status:  TaskStatusFailed,
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+}
+
+func TestStoreUpsertAssignmentTaskIsAtomic(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpsertAssignmentTask(ctx, GroupAssignment{
+		GroupID:      3,
+		DesiredPeers: []uint64{1, 2, 3},
+		ConfigEpoch:  2,
+	}, ReconcileTask{
+		GroupID: 3,
+		Kind:    TaskKindRepair,
+		Step:    TaskStepUnknown,
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+
+	_, err = store.GetAssignment(ctx, 3)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	_, err = store.GetTask(ctx, 3)
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
 func TestUpsertRejectsInvalidPeerSets(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

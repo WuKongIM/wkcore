@@ -54,12 +54,10 @@ func (c *Controller) Tick(ctx context.Context) error {
 	if decision.GroupID == 0 {
 		return nil
 	}
-	if decision.Assignment.GroupID != 0 {
-		if err := c.store.UpsertAssignment(ctx, decision.Assignment); err != nil {
-			return err
-		}
-	}
 	if decision.Task == nil {
+		if decision.Assignment.GroupID != 0 {
+			return c.store.UpsertAssignment(ctx, decision.Assignment)
+		}
 		return nil
 	}
 	task := *decision.Task
@@ -68,6 +66,9 @@ func (c *Controller) Tick(ctx context.Context) error {
 	}
 	if task.NextRunAt.IsZero() {
 		task.NextRunAt = state.Now
+	}
+	if decision.Assignment.GroupID != 0 {
+		return c.store.UpsertAssignmentTask(ctx, decision.Assignment, task)
 	}
 	return c.store.UpsertTask(ctx, task)
 }

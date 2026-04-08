@@ -306,7 +306,7 @@ func decodeReconcileTask(key, data []byte) (ReconcileTask, error) {
 		return ReconcileTask{}, ErrCorruptValue
 	}
 
-	return ReconcileTask{
+	task := ReconcileTask{
 		GroupID:    groupID,
 		Kind:       kind,
 		Step:       step,
@@ -316,7 +316,11 @@ func decodeReconcileTask(key, data []byte) (ReconcileTask, error) {
 		NextRunAt:  nextRunAt,
 		Status:     status,
 		LastError:  lastError,
-	}, nil
+	}
+	if err := validateReconcileTaskState(task, ErrCorruptValue); err != nil {
+		return ReconcileTask{}, err
+	}
+	return task, nil
 }
 
 func encodeControllerMembership(membership ControllerMembership) []byte {
@@ -401,6 +405,25 @@ func validTaskStep(step TaskStep) bool {
 
 func validTaskStatus(status TaskStatus) bool {
 	return status >= TaskStatusPending && status <= TaskStatusFailed
+}
+
+func validateReconcileTaskState(task ReconcileTask, invalid error) error {
+	switch task.Status {
+	case TaskStatusPending:
+		return nil
+	case TaskStatusRetrying:
+		if task.NextRunAt.IsZero() {
+			return invalid
+		}
+		return nil
+	case TaskStatusFailed:
+		if task.LastError == "" {
+			return invalid
+		}
+		return nil
+	default:
+		return invalid
+	}
 }
 
 func validateRequiredPeerSet(values []uint64, invalid error) error {

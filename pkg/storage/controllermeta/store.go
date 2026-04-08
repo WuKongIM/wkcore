@@ -178,10 +178,12 @@ func (s *Store) UpsertAssignment(ctx context.Context, assignment GroupAssignment
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.writeValueLocked(
-		encodeGroupKey(recordPrefixAssignment, assignment.GroupID),
-		encodeGroupAssignment(assignment),
-	)
+	return s.writeBatchLocked([]batchWrite{
+		{
+			key:   encodeGroupKey(recordPrefixAssignment, assignment.GroupID),
+			value: encodeGroupAssignment(assignment),
+		},
+	})
 }
 
 func (s *Store) GetRuntimeView(ctx context.Context, groupID uint32) (GroupRuntimeView, error) {
@@ -372,17 +374,56 @@ func (s *Store) UpsertTask(ctx context.Context, task ReconcileTask) error {
 		return err
 	}
 	task = normalizeReconcileTask(task)
-	if task.GroupID == 0 || !validTaskKind(task.Kind) || !validTaskStep(task.Step) || !validTaskStatus(task.Status) {
+	if task.GroupID == 0 || !validTaskKind(task.Kind) || !validTaskStep(task.Step) || !validTaskStatus(task.Status) || validateReconcileTaskState(task, ErrInvalidArgument) != nil {
 		return ErrInvalidArgument
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.writeValueLocked(
-		encodeGroupKey(recordPrefixTask, task.GroupID),
-		encodeReconcileTask(task),
-	)
+	return s.writeBatchLocked([]batchWrite{
+		{
+			key:   encodeGroupKey(recordPrefixTask, task.GroupID),
+			value: encodeReconcileTask(task),
+		},
+	})
+}
+
+func (s *Store) UpsertAssignmentTask(ctx context.Context, assignment GroupAssignment, task ReconcileTask) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
+	if err := s.checkContext(ctx); err != nil {
+		return err
+	}
+	if assignment.GroupID == 0 || task.GroupID == 0 || assignment.GroupID != task.GroupID {
+		return ErrInvalidArgument
+	}
+	assignment = normalizeGroupAssignment(assignment)
+	if err := validateRequiredPeerSet(assignment.DesiredPeers, ErrInvalidArgument); err != nil {
+		return err
+	}
+	task = normalizeReconcileTask(task)
+	if !validTaskKind(task.Kind) || !validTaskStep(task.Step) || !validTaskStatus(task.Status) {
+		return ErrInvalidArgument
+	}
+	if err := validateReconcileTaskState(task, ErrInvalidArgument); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.writeBatchLocked([]batchWrite{
+		{
+			key:   encodeGroupKey(recordPrefixAssignment, assignment.GroupID),
+			value: encodeGroupAssignment(assignment),
+		},
+		{
+			key:   encodeGroupKey(recordPrefixTask, task.GroupID),
+			value: encodeReconcileTask(task),
+		},
+	})
 }
 
 func (s *Store) listNodesLocked(ctx context.Context) ([]ClusterNode, error) {
@@ -482,14 +523,25 @@ func (s *Store) deleteValueLocked(key []byte) error {
 }
 
 func (s *Store) writeValueLocked(key, value []byte) error {
+	return s.writeBatchLocked([]batchWrite{{key: key, value: value}})
+}
+
+type batchWrite struct {
+	key   []byte
+	value []byte
+}
+
+func (s *Store) writeBatchLocked(writes []batchWrite) error {
 	if err := s.ensureOpenLocked(); err != nil {
 		return err
 	}
 	batch := s.db.NewBatch()
 	defer batch.Close()
 
-	if err := batch.Set(key, value, nil); err != nil {
-		return err
+	for _, write := range writes {
+		if err := batch.Set(write.key, write.value, nil); err != nil {
+			return err
+		}
 	}
 	return batch.Commit(pebble.Sync)
 }
