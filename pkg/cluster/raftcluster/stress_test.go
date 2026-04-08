@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
 )
 
 const (
@@ -126,6 +128,10 @@ func fmtPct(n, total uint64) string {
 		return "0%"
 	}
 	return fmt.Sprintf("%.1f%%", float64(n)*100/float64(total))
+}
+
+func stressRestartInterval(duration time.Duration) time.Duration {
+	return max(750*time.Millisecond, duration/4)
 }
 
 // ── stress tests ────────────────────────────────────────────────────
@@ -414,6 +420,176 @@ func TestStressThreeNodeMixedWorkload(t *testing.T) {
 	rpt.print(t)
 }
 
+func TestStressThreeNodeMixedWorkloadWithRestarts(t *testing.T) {
+	cfg := loadStressConfig(t)
+	requireStressEnabled(t, cfg)
+
+	const groupCount = 3
+	testNodes := startThreeNodes(t, groupCount)
+	defer func() {
+		for _, n := range testNodes {
+			n.stop()
+		}
+	}()
+
+	waitForAllStableLeaders(t, testNodes, groupCount)
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration)
+	defer cancel()
+
+	var (
+		wg        sync.WaitGroup
+		creates   atomic.Uint64
+		reads     atomic.Uint64
+		updates   atomic.Uint64
+		writeErrs atomic.Uint64
+		restarts  atomic.Uint64
+		mu        sync.Mutex
+		written   = make(map[string]int64)
+	)
+
+	for worker := 0; worker < cfg.Workers; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+
+			rng := rand.New(rand.NewSource(cfg.Seed + int64(worker)*911))
+			var localWritten []struct {
+				id  string
+				typ int64
+			}
+
+			for idx := 0; ; idx++ {
+				if ctx.Err() != nil {
+					break
+				}
+
+				node := testNodes[rng.Intn(len(testNodes))]
+				channelID := fmt.Sprintf("mnr-ch-%d-%d", worker, rng.Intn(32))
+				channelType := int64(rng.Intn(3) + 1)
+
+				op := rng.Intn(100)
+				switch {
+				case op < 60:
+					if err := node.store.CreateChannel(ctx, channelID, channelType); err != nil {
+						if ctx.Err() != nil {
+							break
+						}
+						writeErrs.Add(1)
+						continue
+					}
+					creates.Add(1)
+					localWritten = append(localWritten, struct {
+						id  string
+						typ int64
+					}{channelID, channelType})
+				case op < 80:
+					_, _ = node.store.GetChannel(ctx, channelID, channelType)
+					reads.Add(1)
+				default:
+					ban := int64(rng.Intn(2))
+					if err := node.store.UpdateChannel(ctx, channelID, channelType, ban); err != nil {
+						if ctx.Err() != nil {
+							break
+						}
+						writeErrs.Add(1)
+						continue
+					}
+					updates.Add(1)
+				}
+			}
+
+			mu.Lock()
+			for _, w := range localWritten {
+				written[w.id] = w.typ
+			}
+			mu.Unlock()
+		}(worker)
+	}
+
+	restartEvery := stressRestartInterval(cfg.Duration)
+	restartTimer := time.NewTimer(restartEvery)
+	defer restartTimer.Stop()
+
+restartLoop:
+	for {
+		select {
+		case <-ctx.Done():
+			break restartLoop
+		case <-restartTimer.C:
+			groupID := uint64(restarts.Load()%groupCount + 1)
+			leaderID, err := stableLeaderWithin(testNodes, groupID, 10*time.Second)
+			if err != nil {
+				t.Fatalf("stable leader for group %d before restart: %v", groupID, err)
+			}
+			restartNode(t, testNodes, int(leaderID-1))
+			waitForStableLeader(t, testNodes, groupID)
+			restarts.Add(1)
+			restartTimer.Reset(restartEvery)
+		}
+	}
+
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	time.Sleep(500 * time.Millisecond)
+
+	verifyCtx, verifyCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer verifyCancel()
+
+	verified := 0
+	for channelID, channelType := range written {
+		found := false
+		for _, n := range testNodes {
+			ch, err := n.store.GetChannel(verifyCtx, channelID, channelType)
+			if err == nil && ch.ChannelID == channelID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("channel %q type=%d not found on any node after restart workload", channelID, channelType)
+		}
+		verified++
+	}
+
+	cN := creates.Load()
+	rN := reads.Load()
+	uN := updates.Load()
+	eN := writeErrs.Load()
+	restartN := restarts.Load()
+	total := cN + rN + uN
+
+	rpt := stressReport{
+		title: "3-Node Mixed Workload With Restarts",
+		config: []reportLine{
+			{"Nodes", "3"},
+			{"Raft Groups", fmt.Sprintf("%d", groupCount)},
+			{"Workers", fmt.Sprintf("%d", cfg.Workers)},
+			{"Duration", elapsed.Round(time.Millisecond).String()},
+			{"Seed", fmt.Sprintf("%d", cfg.Seed)},
+			{"Restart Every", restartEvery.String()},
+		},
+		results: []reportLine{
+			{"Total Ops", fmtOps(total)},
+			{"Throughput", fmtRate(total, elapsed)},
+			{"Creates", fmt.Sprintf("%s (%s)", fmtOps(cN), fmtPct(cN, total))},
+			{"Reads", fmt.Sprintf("%s (%s)", fmtOps(rN), fmtPct(rN, total))},
+			{"Updates", fmt.Sprintf("%s (%s)", fmtOps(uN), fmtPct(uN, total))},
+			{"Restarts", fmtOps(restartN)},
+			{"Write Errors", fmt.Sprintf("%s (transient)", fmtOps(eN))},
+		},
+		verify: []reportLine{
+			{"Channels Written", fmt.Sprintf("%d", len(written))},
+			{"Channels Verified", fmt.Sprintf("%d/%d", verified, len(written))},
+			{"Data Integrity", "OK"},
+		},
+		verdict: "PASS",
+	}
+	rpt.print(t)
+}
+
 // TestStressForwardingContention sends all writes to follower nodes only,
 // forcing every write to go through the forwarding path. Measures forwarding
 // throughput under contention.
@@ -518,6 +694,154 @@ func TestStressForwardingContention(t *testing.T) {
 			{"Throughput", fmtRate(fN, elapsed)},
 			{"Transient Errors", fmtOps(eN)},
 			{"Success Rate", successRate},
+		},
+		verdict: "PASS",
+	}
+	rpt.print(t)
+}
+
+func TestStressForwardingContentionWithLeaderRestarts(t *testing.T) {
+	cfg := loadStressConfig(t)
+	requireStressEnabled(t, cfg)
+
+	const groupCount = 1
+	testNodes := startThreeNodes(t, groupCount)
+	defer func() {
+		for _, n := range testNodes {
+			n.stop()
+		}
+	}()
+
+	leaderID := waitForStableLeader(t, testNodes, 1)
+	var currentLeader atomic.Uint64
+	currentLeader.Store(uint64(leaderID))
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration)
+	defer cancel()
+
+	var (
+		wg       sync.WaitGroup
+		fwdOps   atomic.Uint64
+		fwdErrs  atomic.Uint64
+		restarts atomic.Uint64
+	)
+
+	for worker := 0; worker < cfg.Workers; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+
+			rng := rand.New(rand.NewSource(cfg.Seed + int64(worker)*515))
+			for idx := 0; ; idx++ {
+				if ctx.Err() != nil {
+					return
+				}
+
+				leader := multiraft.NodeID(currentLeader.Load())
+				followers := make([]*testNode, 0, len(testNodes)-1)
+				for _, node := range testNodes {
+					if node == nil || node.nodeID == leader {
+						continue
+					}
+					followers = append(followers, node)
+				}
+				if len(followers) == 0 {
+					fwdErrs.Add(1)
+					time.Sleep(10 * time.Millisecond)
+					continue
+				}
+
+				follower := followers[rng.Intn(len(followers))]
+				channelID := fmt.Sprintf("fwdr-ch-%d-%d", worker, rng.Intn(32))
+				channelType := int64(rng.Intn(3) + 1)
+				if err := follower.store.CreateChannel(ctx, channelID, channelType); err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					fwdErrs.Add(1)
+					continue
+				}
+				fwdOps.Add(1)
+			}
+		}(worker)
+	}
+
+	restartEvery := stressRestartInterval(cfg.Duration)
+	restartTimer := time.NewTimer(restartEvery)
+	defer restartTimer.Stop()
+
+restartLoopForward:
+	for {
+		select {
+		case <-ctx.Done():
+			break restartLoopForward
+		case <-restartTimer.C:
+			leaderID, err := stableLeaderWithin(testNodes, 1, 10*time.Second)
+			if err != nil {
+				t.Fatalf("stable leader before forwarding restart: %v", err)
+			}
+			restartNode(t, testNodes, int(leaderID-1))
+			stable := waitForStableLeader(t, testNodes, 1)
+			currentLeader.Store(uint64(stable))
+			restarts.Add(1)
+			restartTimer.Reset(restartEvery)
+		}
+	}
+
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	finalLeader := multiraft.NodeID(currentLeader.Load())
+	var probeFollower *testNode
+	for _, node := range testNodes {
+		if node == nil || node.nodeID == finalLeader {
+			continue
+		}
+		probeFollower = node
+		break
+	}
+	if probeFollower == nil {
+		t.Fatal("no follower available for final forwarding probe")
+	}
+
+	probeID := fmt.Sprintf("fwdr-probe-%d", time.Now().UnixNano())
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer probeCancel()
+	if err := probeFollower.store.CreateChannel(probeCtx, probeID, 1); err != nil {
+		t.Fatalf("final forwarding probe: %v", err)
+	}
+	waitForChannelVisibleOnNodes(t, testNodes, probeID, 1)
+
+	fN := fwdOps.Load()
+	eN := fwdErrs.Load()
+	restartN := restarts.Load()
+	total := fN + eN
+	successRate := "100%"
+	if total > 0 {
+		successRate = fmtPct(fN, total)
+	}
+
+	rpt := stressReport{
+		title: "Forwarding Contention With Restarts",
+		config: []reportLine{
+			{"Nodes", "3"},
+			{"Raft Groups", fmt.Sprintf("%d", groupCount)},
+			{"Workers", fmt.Sprintf("%d", cfg.Workers)},
+			{"Duration", elapsed.Round(time.Millisecond).String()},
+			{"Seed", fmt.Sprintf("%d", cfg.Seed)},
+			{"Restart Every", restartEvery.String()},
+		},
+		results: []reportLine{
+			{"Forwarded Ops", fmtOps(fN)},
+			{"Throughput", fmtRate(fN, elapsed)},
+			{"Transient Errors", fmtOps(eN)},
+			{"Restarts", fmtOps(restartN)},
+			{"Success Rate", successRate},
+		},
+		verify: []reportLine{
+			{"Final Probe", "OK"},
+			{"Cluster Visibility", "ALL NODES"},
 		},
 		verdict: "PASS",
 	}

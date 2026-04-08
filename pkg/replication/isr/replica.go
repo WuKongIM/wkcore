@@ -104,9 +104,11 @@ func (r *replica) BecomeLeader(meta GroupMeta) error {
 		leo = recoveryCutoff
 	}
 
-	point := EpochPoint{Epoch: normalized.Epoch, StartOffset: leo}
-	if err := r.appendEpochPointLocked(point); err != nil {
-		return err
+	if len(r.epochHistory) == 0 || r.epochHistory[len(r.epochHistory)-1].Epoch != normalized.Epoch {
+		point := EpochPoint{Epoch: normalized.Epoch, StartOffset: leo}
+		if err := r.appendEpochPointLocked(point); err != nil {
+			return err
+		}
 	}
 
 	r.commitMetaLocked(normalized)

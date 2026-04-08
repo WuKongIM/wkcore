@@ -321,6 +321,54 @@ func TestRemoteCommitDoesNotResolveLocalFuture(t *testing.T) {
 	}
 }
 
+func TestRemoteCommitDoesNotApplyStaleCommandAfterHeal(t *testing.T) {
+	cluster := newAsyncTestCluster(t, []NodeID{1, 2, 3}, asyncNetworkConfig{
+		MaxDelay: 5 * time.Millisecond,
+		Seed:     18,
+	})
+	groupID := GroupID(161)
+
+	cluster.bootstrapGroup(t, groupID, []NodeID{1, 2, 3})
+	cluster.waitForBootstrapApplied(t, groupID, 3)
+
+	oldLeader := cluster.waitForLeader(t, groupID)
+	cluster.partitionNode(oldLeader)
+
+	stale, err := cluster.runtime(oldLeader).Propose(context.Background(), groupID, []byte("stale"))
+	if err != nil {
+		t.Fatalf("Propose(stale) error = %v", err)
+	}
+
+	newLeader := cluster.waitForLeaderAmong(t, groupID, cluster.otherNodes(oldLeader))
+	fresh, err := cluster.runtime(newLeader).Propose(context.Background(), groupID, []byte("fresh"))
+	if err != nil {
+		t.Fatalf("Propose(fresh) error = %v", err)
+	}
+	freshRes := waitForFutureResult(t, fresh)
+
+	cluster.healNode(oldLeader)
+	cluster.waitForNodeCommitIndex(t, oldLeader, groupID, freshRes.Index)
+	cluster.waitForAllApplied(t, groupID, []byte("fresh"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if _, err := stale.Wait(ctx); err == nil {
+		t.Fatal("stale future resolved unexpectedly")
+	}
+
+	for nodeID := range cluster.fsms {
+		fsm := cluster.fsms[nodeID][groupID]
+		fsm.mu.Lock()
+		for _, applied := range fsm.applied {
+			if string(applied) == "stale" {
+				fsm.mu.Unlock()
+				t.Fatalf("node %d applied stale command", nodeID)
+			}
+		}
+		fsm.mu.Unlock()
+	}
+}
+
 func TestReadyPersistenceFailureDoesNotAdvance(t *testing.T) {
 	rt := newStartedRuntime(t)
 	groupID := openSingleNodeLeader(t, rt, 17)

@@ -95,6 +95,39 @@ func TestReplicationRequestUsesReplicaOffsetEpochInsteadOfGroupMetaEpoch(t *test
 	}
 }
 
+func TestQueuedReplicationRecomputesReplicaProgressBetweenSends(t *testing.T) {
+	env := newSessionTestEnv(t)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(272, 4, 1, []isr.NodeID{1, 2}))
+
+	replica := env.factory.replicas[0]
+	replica.mu.Lock()
+	replica.state.LEO = 6
+	replica.state.Epoch = 4
+	replica.state.OffsetEpoch = 4
+	replica.mu.Unlock()
+
+	session := env.sessions.session(2)
+	session.afterSend = func() {
+		replica.mu.Lock()
+		defer replica.mu.Unlock()
+		replica.state.LEO = 7
+	}
+
+	env.runtime.enqueueReplication(testGroupKey(272), 2)
+	env.runtime.enqueueReplication(testGroupKey(272), 2)
+	env.runtime.runScheduler()
+
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("expected two fetch request sends, got %d", got)
+	}
+	if got := session.sent[0].FetchRequest.FetchOffset; got != 6 {
+		t.Fatalf("first FetchOffset = %d, want 6", got)
+	}
+	if got := session.sent[1].FetchRequest.FetchOffset; got != 7 {
+		t.Fatalf("second FetchOffset = %d, want 7", got)
+	}
+}
+
 func TestReplicationSendErrorRetriesOnceWithoutNewWork(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.AutoRunScheduler = true
@@ -542,22 +575,34 @@ type trackingPeerSession struct {
 	mu           sync.Mutex
 	sends        int
 	last         Envelope
+	sent         []Envelope
 	sendErr      error
 	sendErrs     []error
 	backpressure BackpressureState
+	afterSend    func()
 }
 
 func (s *trackingPeerSession) Send(env Envelope) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.sends++
 	s.last = env
+	s.sent = append(s.sent, env)
+	afterSend := s.afterSend
 	if len(s.sendErrs) > 0 {
 		err := s.sendErrs[0]
 		s.sendErrs = append([]error(nil), s.sendErrs[1:]...)
+		s.mu.Unlock()
+		if afterSend != nil {
+			afterSend()
+		}
 		return err
 	}
-	return s.sendErr
+	err := s.sendErr
+	s.mu.Unlock()
+	if afterSend != nil {
+		afterSend()
+	}
+	return err
 }
 
 func (s *trackingPeerSession) TryBatch(env Envelope) bool {

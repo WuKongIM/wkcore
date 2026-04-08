@@ -89,3 +89,35 @@ func TestBecomeLeaderReplaysIdenticalEpochPointIdempotently(t *testing.T) {
 		t.Fatalf("leader progress = %d", got)
 	}
 }
+
+func TestBecomeLeaderReusesRecoveredEpochPointWhenLeaderRestartsSameEpoch(t *testing.T) {
+	env := newTestEnv(t)
+	env.log.leo = 1
+	env.checkpoints.loadErr = nil
+	env.checkpoints.checkpoint = Checkpoint{
+		Epoch:          7,
+		LogStartOffset: 0,
+		HW:             1,
+	}
+	env.history.loadErr = nil
+	env.history.points = []EpochPoint{{Epoch: 7, StartOffset: 0}}
+	env.replica = newReplicaFromEnv(t, env)
+	env.replica.mustApplyMeta(t, activeMeta(7, 1))
+
+	if err := env.replica.BecomeLeader(activeMeta(7, 1)); err != nil {
+		t.Fatalf("BecomeLeader() error = %v", err)
+	}
+
+	if got := env.history.appended; len(got) != 0 {
+		t.Fatalf("unexpected appended history = %+v", got)
+	}
+	if got := env.replica.state.Role; got != RoleLeader {
+		t.Fatalf("role = %v", got)
+	}
+	if got := env.replica.state.LEO; got != 1 {
+		t.Fatalf("LEO = %d", got)
+	}
+	if got := env.replica.progress[1]; got != 1 {
+		t.Fatalf("leader progress = %d", got)
+	}
+}
