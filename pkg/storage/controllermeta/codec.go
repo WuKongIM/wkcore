@@ -1,0 +1,393 @@
+package controllermeta
+
+import (
+	"encoding/binary"
+	"math"
+	"sort"
+	"time"
+)
+
+const (
+	recordVersion byte = 1
+
+	recordPrefixNode        byte = 'n'
+	recordPrefixMembership  byte = 'm'
+	recordPrefixAssignment  byte = 'a'
+	recordPrefixRuntimeView byte = 'v'
+	recordPrefixTask        byte = 't'
+)
+
+type controllerMembership struct {
+	Peers []uint64
+}
+
+func encodeNodeKey(nodeID uint64) []byte {
+	key := make([]byte, 1, 1+8)
+	key[0] = recordPrefixNode
+	return binary.BigEndian.AppendUint64(key, nodeID)
+}
+
+func decodeNodeKey(key []byte) (uint64, error) {
+	if len(key) != 1+8 || key[0] != recordPrefixNode {
+		return 0, ErrCorruptValue
+	}
+	return binary.BigEndian.Uint64(key[1:]), nil
+}
+
+func encodeGroupKey(prefix byte, groupID uint32) []byte {
+	key := make([]byte, 1, 1+4)
+	key[0] = prefix
+	return binary.BigEndian.AppendUint32(key, groupID)
+}
+
+func decodeGroupKey(key []byte, prefix byte) (uint32, error) {
+	if len(key) != 1+4 || key[0] != prefix {
+		return 0, ErrCorruptValue
+	}
+	return binary.BigEndian.Uint32(key[1:]), nil
+}
+
+func membershipKey() []byte {
+	return []byte{recordPrefixMembership}
+}
+
+func prefixBounds(prefix byte) ([]byte, []byte) {
+	return []byte{prefix}, []byte{prefix + 1}
+}
+
+func validateSnapshotKey(key []byte) error {
+	if len(key) == 0 {
+		return ErrCorruptValue
+	}
+	switch key[0] {
+	case recordPrefixNode:
+		_, err := decodeNodeKey(key)
+		return err
+	case recordPrefixMembership:
+		if len(key) != 1 {
+			return ErrCorruptValue
+		}
+		return nil
+	case recordPrefixAssignment, recordPrefixRuntimeView, recordPrefixTask:
+		_, err := decodeGroupKey(key, key[0])
+		return err
+	default:
+		return ErrCorruptValue
+	}
+}
+
+func encodeClusterNode(node ClusterNode) []byte {
+	node = normalizeClusterNode(node)
+
+	data := make([]byte, 0, 32+len(node.Addr))
+	data = append(data, recordVersion)
+	data = appendString(data, node.Addr)
+	data = append(data, byte(node.Status))
+	data = appendInt64(data, node.LastHeartbeatAt.UnixNano())
+	data = appendInt64(data, int64(node.CapacityWeight))
+	return data
+}
+
+func decodeClusterNode(key, data []byte) (ClusterNode, error) {
+	nodeID, err := decodeNodeKey(key)
+	if err != nil {
+		return ClusterNode{}, err
+	}
+	if len(data) == 0 || data[0] != recordVersion {
+		return ClusterNode{}, ErrCorruptValue
+	}
+	rest := data[1:]
+
+	addr, rest, err := readString(rest)
+	if err != nil {
+		return ClusterNode{}, err
+	}
+	if len(rest) < 1 {
+		return ClusterNode{}, ErrCorruptValue
+	}
+	status := NodeStatus(rest[0])
+	rest = rest[1:]
+
+	lastHeartbeatAt, rest, err := readInt64(rest)
+	if err != nil {
+		return ClusterNode{}, err
+	}
+	capacityWeight, rest, err := readInt64(rest)
+	if err != nil {
+		return ClusterNode{}, err
+	}
+	if len(rest) != 0 || capacityWeight < 0 || capacityWeight > math.MaxInt {
+		return ClusterNode{}, ErrCorruptValue
+	}
+
+	return normalizeClusterNode(ClusterNode{
+		NodeID:          nodeID,
+		Addr:            addr,
+		Status:          status,
+		LastHeartbeatAt: time.Unix(0, lastHeartbeatAt),
+		CapacityWeight:  int(capacityWeight),
+	}), nil
+}
+
+func encodeGroupAssignment(assignment GroupAssignment) []byte {
+	assignment = normalizeGroupAssignment(assignment)
+
+	data := make([]byte, 0, 32)
+	data = append(data, recordVersion)
+	data = binary.BigEndian.AppendUint64(data, assignment.ConfigEpoch)
+	data = binary.BigEndian.AppendUint64(data, assignment.BalanceVersion)
+	data = appendUint64Slice(data, assignment.DesiredPeers)
+	return data
+}
+
+func decodeGroupAssignment(key, data []byte) (GroupAssignment, error) {
+	groupID, err := decodeGroupKey(key, recordPrefixAssignment)
+	if err != nil {
+		return GroupAssignment{}, err
+	}
+	if len(data) < 1+8+8 || data[0] != recordVersion {
+		return GroupAssignment{}, ErrCorruptValue
+	}
+	rest := data[1:]
+
+	configEpoch := binary.BigEndian.Uint64(rest[:8])
+	rest = rest[8:]
+	balanceVersion := binary.BigEndian.Uint64(rest[:8])
+	rest = rest[8:]
+	desiredPeers, rest, err := readUint64Slice(rest)
+	if err != nil || len(rest) != 0 {
+		return GroupAssignment{}, ErrCorruptValue
+	}
+
+	return normalizeGroupAssignment(GroupAssignment{
+		GroupID:        groupID,
+		DesiredPeers:   desiredPeers,
+		ConfigEpoch:    configEpoch,
+		BalanceVersion: balanceVersion,
+	}), nil
+}
+
+func encodeGroupRuntimeView(view GroupRuntimeView) []byte {
+	view = normalizeGroupRuntimeView(view)
+
+	data := make([]byte, 0, 48)
+	data = append(data, recordVersion)
+	data = binary.BigEndian.AppendUint64(data, view.LeaderID)
+	data = binary.BigEndian.AppendUint32(data, view.HealthyVoters)
+	if view.HasQuorum {
+		data = append(data, 1)
+	} else {
+		data = append(data, 0)
+	}
+	data = binary.BigEndian.AppendUint64(data, view.ObservedConfigEpoch)
+	data = appendInt64(data, view.LastReportAt.UnixNano())
+	data = appendUint64Slice(data, view.CurrentPeers)
+	return data
+}
+
+func decodeGroupRuntimeView(key, data []byte) (GroupRuntimeView, error) {
+	groupID, err := decodeGroupKey(key, recordPrefixRuntimeView)
+	if err != nil {
+		return GroupRuntimeView{}, err
+	}
+	if len(data) < 1+8+4+1+8+8 || data[0] != recordVersion {
+		return GroupRuntimeView{}, ErrCorruptValue
+	}
+	rest := data[1:]
+
+	leaderID := binary.BigEndian.Uint64(rest[:8])
+	rest = rest[8:]
+	healthyVoters := binary.BigEndian.Uint32(rest[:4])
+	rest = rest[4:]
+	hasQuorum := rest[0] == 1
+	rest = rest[1:]
+	observedConfigEpoch := binary.BigEndian.Uint64(rest[:8])
+	rest = rest[8:]
+	lastReportAt, rest, err := readInt64(rest)
+	if err != nil {
+		return GroupRuntimeView{}, err
+	}
+	currentPeers, rest, err := readUint64Slice(rest)
+	if err != nil || len(rest) != 0 {
+		return GroupRuntimeView{}, ErrCorruptValue
+	}
+
+	return normalizeGroupRuntimeView(GroupRuntimeView{
+		GroupID:             groupID,
+		CurrentPeers:        currentPeers,
+		LeaderID:            leaderID,
+		HealthyVoters:       healthyVoters,
+		HasQuorum:           hasQuorum,
+		ObservedConfigEpoch: observedConfigEpoch,
+		LastReportAt:        time.Unix(0, lastReportAt),
+	}), nil
+}
+
+func encodeReconcileTask(task ReconcileTask) []byte {
+	data := make([]byte, 0, 40+len(task.LastError))
+	data = append(data, recordVersion)
+	data = append(data, byte(task.Kind))
+	data = append(data, byte(task.Step))
+	data = binary.BigEndian.AppendUint64(data, task.SourceNode)
+	data = binary.BigEndian.AppendUint64(data, task.TargetNode)
+	data = binary.BigEndian.AppendUint32(data, task.Attempt)
+	data = appendString(data, task.LastError)
+	return data
+}
+
+func decodeReconcileTask(key, data []byte) (ReconcileTask, error) {
+	groupID, err := decodeGroupKey(key, recordPrefixTask)
+	if err != nil {
+		return ReconcileTask{}, err
+	}
+	if len(data) < 1+1+1+8+8+4 || data[0] != recordVersion {
+		return ReconcileTask{}, ErrCorruptValue
+	}
+	rest := data[1:]
+
+	kind := TaskKind(rest[0])
+	step := TaskStep(rest[1])
+	rest = rest[2:]
+	sourceNode := binary.BigEndian.Uint64(rest[:8])
+	rest = rest[8:]
+	targetNode := binary.BigEndian.Uint64(rest[:8])
+	rest = rest[8:]
+	attempt := binary.BigEndian.Uint32(rest[:4])
+	rest = rest[4:]
+	lastError, rest, err := readString(rest)
+	if err != nil || len(rest) != 0 {
+		return ReconcileTask{}, ErrCorruptValue
+	}
+
+	return ReconcileTask{
+		GroupID:    groupID,
+		Kind:       kind,
+		Step:       step,
+		SourceNode: sourceNode,
+		TargetNode: targetNode,
+		Attempt:    attempt,
+		LastError:  lastError,
+	}, nil
+}
+
+func encodeControllerMembership(membership controllerMembership) []byte {
+	membership.Peers = normalizeUint64Set(membership.Peers)
+
+	data := make([]byte, 0, 16)
+	data = append(data, recordVersion)
+	data = appendUint64Slice(data, membership.Peers)
+	return data
+}
+
+func decodeControllerMembership(data []byte) (controllerMembership, error) {
+	if len(data) == 0 || data[0] != recordVersion {
+		return controllerMembership{}, ErrCorruptValue
+	}
+	peers, rest, err := readUint64Slice(data[1:])
+	if err != nil || len(rest) != 0 {
+		return controllerMembership{}, ErrCorruptValue
+	}
+	return controllerMembership{Peers: normalizeUint64Set(peers)}, nil
+}
+
+func normalizeClusterNode(node ClusterNode) ClusterNode {
+	if node.CapacityWeight == 0 {
+		node.CapacityWeight = 1
+	}
+	return node
+}
+
+func normalizeGroupAssignment(assignment GroupAssignment) GroupAssignment {
+	assignment.DesiredPeers = normalizeUint64Set(assignment.DesiredPeers)
+	return assignment
+}
+
+func normalizeGroupRuntimeView(view GroupRuntimeView) GroupRuntimeView {
+	view.CurrentPeers = normalizeUint64Set(view.CurrentPeers)
+	return view
+}
+
+func normalizeUint64Set(values []uint64) []uint64 {
+	if len(values) == 0 {
+		return nil
+	}
+
+	sorted := append([]uint64(nil), values...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i] < sorted[j]
+	})
+
+	n := 1
+	for i := 1; i < len(sorted); i++ {
+		if sorted[i] == sorted[n-1] {
+			continue
+		}
+		sorted[n] = sorted[i]
+		n++
+	}
+	return sorted[:n]
+}
+
+func appendString(dst []byte, value string) []byte {
+	dst = binary.AppendUvarint(dst, uint64(len(value)))
+	return append(dst, value...)
+}
+
+func readString(src []byte) (string, []byte, error) {
+	value, rest, err := readBytes(src)
+	if err != nil {
+		return "", nil, err
+	}
+	return string(value), rest, nil
+}
+
+func appendUint64Slice(dst []byte, values []uint64) []byte {
+	dst = binary.AppendUvarint(dst, uint64(len(values)))
+	for _, value := range values {
+		dst = binary.BigEndian.AppendUint64(dst, value)
+	}
+	return dst
+}
+
+func readUint64Slice(src []byte) ([]uint64, []byte, error) {
+	count, n := binary.Uvarint(src)
+	if n <= 0 {
+		return nil, nil, ErrCorruptValue
+	}
+	rest := src[n:]
+	if count > uint64(len(rest))/8 {
+		return nil, nil, ErrCorruptValue
+	}
+
+	values := make([]uint64, 0, int(count))
+	for i := uint64(0); i < count; i++ {
+		values = append(values, binary.BigEndian.Uint64(rest[:8]))
+		rest = rest[8:]
+	}
+	return values, rest, nil
+}
+
+func appendInt64(dst []byte, value int64) []byte {
+	return binary.BigEndian.AppendUint64(dst, uint64(value))
+}
+
+func readInt64(src []byte) (int64, []byte, error) {
+	if len(src) < 8 {
+		return 0, nil, ErrCorruptValue
+	}
+	return int64(binary.BigEndian.Uint64(src[:8])), src[8:], nil
+}
+
+func readBytes(src []byte) ([]byte, []byte, error) {
+	length, n := binary.Uvarint(src)
+	if n <= 0 {
+		return nil, nil, ErrCorruptValue
+	}
+	rest := src[n:]
+	if length > uint64(len(rest)) {
+		return nil, nil, ErrCorruptValue
+	}
+	size := int(length)
+	value := append([]byte(nil), rest[:size]...)
+	return value, rest[size:], nil
+}
