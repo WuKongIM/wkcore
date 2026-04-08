@@ -104,6 +104,10 @@ func (s *Store) collectSnapshotEntriesLocked(ctx context.Context) ([]snapshotEnt
 				iter.Close()
 				return nil, err
 			}
+			if err := validateSnapshotValue(iter.Key(), value); err != nil {
+				iter.Close()
+				return nil, err
+			}
 			entries = append(entries, snapshotEntry{
 				Key:   append([]byte(nil), iter.Key()...),
 				Value: append([]byte(nil), value...),

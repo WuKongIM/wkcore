@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/pebble/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -539,6 +540,19 @@ func TestImportSnapshotRejectsDuplicateKeys(t *testing.T) {
 	}
 
 	err := store.ImportSnapshot(ctx, encodeSnapshot(entries))
+	require.ErrorIs(t, err, ErrCorruptValue)
+}
+
+func TestExportSnapshotRejectsCorruptStoredValues(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	store.mu.Lock()
+	err := store.db.Set(encodeNodeKey(1), []byte{recordVersion}, pebble.Sync)
+	store.mu.Unlock()
+	require.NoError(t, err)
+
+	_, err = store.ExportSnapshot(ctx)
 	require.ErrorIs(t, err, ErrCorruptValue)
 }
 

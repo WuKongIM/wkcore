@@ -349,25 +349,31 @@ func listRecords[T any](ctx context.Context, db *pebble.DB, prefix byte, decode 
 	if err != nil {
 		return nil, err
 	}
-	defer iter.Close()
 
 	out := make([]T, 0, 16)
 	for ok := iter.First(); ok; ok = iter.Next() {
 		if err := checkContext(ctx); err != nil {
+			iter.Close()
 			return nil, err
 		}
 
 		value, err := iter.ValueAndErr()
 		if err != nil {
+			iter.Close()
 			return nil, err
 		}
 		record, err := decode(iter.Key(), value)
 		if err != nil {
+			iter.Close()
 			return nil, err
 		}
 		out = append(out, record)
 	}
 	if err := iter.Error(); err != nil {
+		iter.Close()
+		return nil, err
+	}
+	if err := iter.Close(); err != nil {
 		return nil, err
 	}
 	return out, nil
