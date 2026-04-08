@@ -67,6 +67,10 @@ type GroupRuntimeView struct {
 	LastReportAt        time.Time
 }
 
+type ControllerMembership struct {
+	Peers []uint64
+}
+
 type ReconcileTask struct {
 	GroupID    uint32
 	Kind       TaskKind

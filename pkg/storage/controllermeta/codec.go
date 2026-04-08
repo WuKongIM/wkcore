@@ -17,10 +17,6 @@ const (
 	recordPrefixTask        byte = 't'
 )
 
-type controllerMembership struct {
-	Peers []uint64
-}
-
 func encodeNodeKey(nodeID uint64) []byte {
 	key := make([]byte, 1, 1+8)
 	key[0] = recordPrefixNode
@@ -270,7 +266,7 @@ func decodeReconcileTask(key, data []byte) (ReconcileTask, error) {
 	}, nil
 }
 
-func encodeControllerMembership(membership controllerMembership) []byte {
+func encodeControllerMembership(membership ControllerMembership) []byte {
 	membership.Peers = normalizeUint64Set(membership.Peers)
 
 	data := make([]byte, 0, 16)
@@ -279,15 +275,15 @@ func encodeControllerMembership(membership controllerMembership) []byte {
 	return data
 }
 
-func decodeControllerMembership(data []byte) (controllerMembership, error) {
+func decodeControllerMembership(data []byte) (ControllerMembership, error) {
 	if len(data) == 0 || data[0] != recordVersion {
-		return controllerMembership{}, ErrCorruptValue
+		return ControllerMembership{}, ErrCorruptValue
 	}
 	peers, rest, err := readUint64Slice(data[1:])
 	if err != nil || len(rest) != 0 {
-		return controllerMembership{}, ErrCorruptValue
+		return ControllerMembership{}, ErrCorruptValue
 	}
-	return controllerMembership{Peers: normalizeUint64Set(peers)}, nil
+	return ControllerMembership{Peers: normalizeUint64Set(peers)}, nil
 }
 
 func normalizeClusterNode(node ClusterNode) ClusterNode {

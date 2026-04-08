@@ -41,6 +41,9 @@ func TestStoreSnapshotRoundTrip(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
+	require.NoError(t, store.UpsertControllerMembership(ctx, ControllerMembership{
+		Peers: []uint64{3, 1, 2},
+	}))
 	require.NoError(t, store.UpsertNode(ctx, ClusterNode{
 		NodeID:          1,
 		Addr:            "127.0.0.1:7000",
@@ -62,13 +65,17 @@ func TestStoreSnapshotRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	entries, err := decodeSnapshot(snap)
 	require.NoError(t, err)
-	require.Len(t, entries, 3)
+	require.Len(t, entries, 4)
 
 	restored := openTestStore(t)
 	require.NoError(t, restored.ImportSnapshot(ctx, snap))
 	assignment, err := restored.GetAssignment(ctx, 1)
 	require.NoError(t, err)
 	require.Equal(t, []uint64{1, 2, 3}, assignment.DesiredPeers)
+
+	membership, err := restored.GetControllerMembership(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{1, 2, 3}, membership.Peers)
 
 	node, err := restored.GetNode(ctx, 1)
 	require.NoError(t, err)
@@ -148,6 +155,19 @@ func TestStoreListsControllerStateForPlannerQueries(t *testing.T) {
 	require.Len(t, tasks, 2)
 	require.Equal(t, uint32(1), tasks[0].GroupID)
 	require.Equal(t, uint32(2), tasks[1].GroupID)
+}
+
+func TestStoreControllerMembershipRoundTrip(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpsertControllerMembership(ctx, ControllerMembership{
+		Peers: []uint64{3, 1, 2, 2},
+	}))
+
+	membership, err := store.GetControllerMembership(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{1, 2, 3}, membership.Peers)
 }
 
 func TestStoreCanonicalizesPeerOrdering(t *testing.T) {

@@ -145,6 +145,21 @@ func (s *Store) GetRuntimeView(ctx context.Context, groupID uint32) (GroupRuntim
 	return decodeGroupRuntimeView(key, value)
 }
 
+func (s *Store) GetControllerMembership(ctx context.Context) (ControllerMembership, error) {
+	if err := s.checkContext(ctx); err != nil {
+		return ControllerMembership{}, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	value, err := s.getValueLocked(membershipKey())
+	if err != nil {
+		return ControllerMembership{}, err
+	}
+	return decodeControllerMembership(value)
+}
+
 func (s *Store) ListRuntimeViews(ctx context.Context) ([]GroupRuntimeView, error) {
 	if err := s.checkContext(ctx); err != nil {
 		return nil, err
@@ -154,6 +169,17 @@ func (s *Store) ListRuntimeViews(ctx context.Context) ([]GroupRuntimeView, error
 	defer s.mu.RUnlock()
 
 	return s.listRuntimeViewsLocked(ctx)
+}
+
+func (s *Store) UpsertControllerMembership(ctx context.Context, membership ControllerMembership) error {
+	if err := s.checkContext(ctx); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.writeValueLocked(membershipKey(), encodeControllerMembership(membership))
 }
 
 func (s *Store) UpsertRuntimeView(ctx context.Context, view GroupRuntimeView) error {
