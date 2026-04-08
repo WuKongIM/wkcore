@@ -12,7 +12,7 @@ This design keeps `GroupCount` and `SlotForKey -> GroupID` routing stable while
 replacing static per-group peer configuration with a controller-driven
 placement system. Cluster node membership remains statically configured. Group
 replica membership becomes automatically managed by a dedicated controller
-running on top of a small bootstrap Raft group.
+running on top of an independent bootstrap Raft quorum.
 
 ## Goals
 
@@ -67,9 +67,9 @@ replica placement of all managed control-plane groups.
 
 The architecture splits into:
 
-- bootstrap controller group:
-  - a small static Raft group used only to persist controller state and elect
-    the controller leader
+- bootstrap controller raft:
+  - a small dedicated Raft quorum used only to persist controller state and
+    elect the controller leader
 - `GroupController`:
   - the only component allowed to decide desired peers for a managed group
 - `GroupAgent` on every node:
@@ -109,7 +109,7 @@ The cluster layer must evolve from:
 
 to:
 
-- bootstrap a small controller group from config
+- bootstrap an independent controller raft from config
 - start a node-local `GroupAgent`
 - fetch or watch assignments from the controller
 - dynamically open missing managed groups
@@ -273,19 +273,19 @@ Today the cluster startup path:
 The new flow becomes:
 
 1. start transport
-2. start `multiraft.Runtime`
-3. if the local node is a controller-bootstrap peer, open bootstrap controller
-   group `0`
-4. if the local node is a controller-bootstrap peer, start the local
-   controller replica service
-5. on the controller leader only, run `GroupController` decision logic
+2. if the local node is a controller-bootstrap peer, open the dedicated
+   controller raft replica
+3. if the local node is a controller-bootstrap peer, start the local
+   controller raft service
+4. on the controller leader only, run `GroupController` decision logic
+5. on every node, start `multiraft.Runtime` for managed business groups
 6. on every node, start local `GroupAgent`
 7. register and heartbeat with the controller leader
 8. fetch local assignments
 9. open local managed groups dynamically
 
 This requires `raftcluster` to support runtime-managed groups in addition to
-static bootstrap groups.
+the independent controller raft bootstrap path.
 
 Node-role split in v1 is explicit:
 
@@ -448,26 +448,30 @@ remains static.
 
 ### Bootstrap controller config
 
-v1 uses exactly one bootstrap controller group with a reserved group id:
+v1 uses exactly one dedicated controller raft quorum outside the business
+`multiraft` group namespace.
 
-- controller bootstrap group id: `0`
+Managed business group ids remain exactly:
+
 - managed business group ids: `1..GroupCount`
 
-`WK_CLUSTER_CONTROLLER_BOOTSTRAP` defines the initial peer set of that single
-controller group. The config shape is:
+`WK_CLUSTER_CONTROLLER_BOOTSTRAP` defines the initial peer set of that
+dedicated controller raft. The config shape is:
 
 ```json
-{"group_id":0,"peers":[1,2,3]}
+{"peers":[1,2,3]}
 ```
 
 Rules:
 
-- `group_id` must be `0`
 - `peers` must be non-empty
 - every peer id must exist in `WK_CLUSTER_NODES`
 - `WK_CLUSTER_GROUP_COUNT` still defines only managed business groups
 - a node does not need to be a controller peer to join the cluster as a
   managed-group worker
+- controller raft state must be persisted separately from managed-group
+  `multiraft` storage; v1 should use a dedicated controller-raft storage path
+  or a dedicated subdirectory under the node data directory
 
 ### Startup validation changes
 
@@ -481,9 +485,9 @@ Current validation around static business `cluster.groups` is replaced by:
 
 ### First-boot and restart behavior
 
-For the bootstrap controller group:
+For the dedicated controller raft:
 
-- if persistent Raft state for group `0` exists locally, open it
+- if persistent local controller-raft state exists, open it
 - otherwise bootstrap it from `WK_CLUSTER_CONTROLLER_BOOTSTRAP`
 
 For managed business groups:
@@ -497,6 +501,7 @@ For managed business groups:
 ### New packages
 
 - `pkg/cluster/groupcontroller`
+- `pkg/cluster/controllerraft`
 - `pkg/storage/controllermeta`
 
 ### Modified packages

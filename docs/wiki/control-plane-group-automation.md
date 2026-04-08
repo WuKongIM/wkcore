@@ -49,8 +49,8 @@
 
 系统拆成四个角色：
 
-- `Bootstrap Controller Group`
-  - 少量静态 bootstrap group
+- `Bootstrap Controller Raft`
+  - 独立的小型 bootstrap raft quorum
   - 只负责承载 controller 的元数据和决策状态机
 - `GroupController`
   - 运行在 controller leader 上
@@ -75,7 +75,7 @@
 - 节点抖动时容易产生修复和回迁振荡
 - 无法稳定表达“期望状态”和“当前执行到哪一步”
 
-因此必须有一个唯一可信的决策者。这个角色最自然的实现就是一个用 Raft 承载的控制器 group。
+因此必须有一个唯一可信的决策者。这个角色最自然的实现就是一个独立的 controller raft，而不是塞进业务 `multiraft` 命名空间里的特殊 group。
 
 ## 总体架构
 
@@ -108,13 +108,13 @@ controller 是唯一有权决定下列内容的组件：
 
 改造后变成两阶段：
 
-1. 启动 bootstrap controller group
+1. 启动独立 controller raft
 2. 启动 `GroupAgent`
 3. 从 controller 拉取本节点应承载的 groups
 4. 本地动态打开缺失 group
 5. 本地关闭不再归属当前节点的 group
 
-因此，上层 `raftcluster` 需要从“静态全量 group 配置”演进到“静态 bootstrap + 动态 managed groups”。
+因此，上层 `raftcluster` 需要从“静态全量 group 配置”演进到“独立 controller raft + 动态 managed groups”。
 
 ## 新增组件
 
@@ -326,10 +326,10 @@ controller 的调度优先级必须固定：
 改造后建议变成：
 
 1. 启动 transport/server
-2. 启动 `multiraft.Runtime`
-3. 若本地节点属于 controller bootstrap peers，则打开 controller group `0`
-4. 若本地节点属于 controller bootstrap peers，则启动本地 controller replica service
-5. 只有 controller leader 运行真正的 `GroupController` 决策逻辑
+2. 若本地节点属于 controller bootstrap peers，则打开独立 controller raft replica
+3. 若本地节点属于 controller bootstrap peers，则启动本地 controller raft service
+4. 只有 controller leader 运行真正的 `GroupController` 决策逻辑
+5. 每个节点都启动业务 `multiraft.Runtime`
 6. 每个节点都启动本地 `GroupAgent`
 7. `GroupAgent` 向 controller leader 注册并上报心跳
 8. `GroupAgent` 拉取 assignment
@@ -490,29 +490,28 @@ v1 明确不做自动救援式重建。
 其中：
 
 - `WK_CLUSTER_NODES` 仍然静态声明集群成员
-- `WK_CLUSTER_CONTROLLER_BOOTSTRAP` 只用于启动 controller group
+- `WK_CLUSTER_CONTROLLER_BOOTSTRAP` 只用于启动独立 controller raft
 - 普通业务 groups 不再手写 peers
 
 ### bootstrap controller 配置
 
-v1 只有一个 bootstrap controller group，并保留一个保留 group id：
+v1 只有一个独立 controller raft，它不占用业务 `multiraft` 的 group id 空间。
 
-- controller bootstrap group id 固定为 `0`
-- 业务 managed groups 仍然是 `1..GroupCount`
+业务 managed groups 仍然是 `1..GroupCount`。
 
 `WK_CLUSTER_CONTROLLER_BOOTSTRAP` 的配置形态建议为：
 
 ```json
-{"group_id":0,"peers":[1,2,3]}
+{"peers":[1,2,3]}
 ```
 
 规则：
 
-- `group_id` 必须固定为 `0`
 - `peers` 不能为空
 - `peers` 中的节点必须全部存在于 `WK_CLUSTER_NODES`
 - `WK_CLUSTER_GROUP_COUNT` 只描述业务 managed groups
 - 本地节点不要求一定属于 bootstrap controller peers；非 controller 节点也可以作为 managed-group worker 加入集群
+- controller raft 状态必须与业务 `multiraft` 状态分开持久化；v1 应使用独立路径，或 `Node.DataDir` 下的独立子目录
 
 ### 启动校验替换规则
 
@@ -526,9 +525,9 @@ v1 只有一个 bootstrap controller group，并保留一个保留 group id：
 
 ### 首次启动与重启语义
 
-controller bootstrap group 的语义：
+controller raft 的语义：
 
-- 若本地已存在 group `0` 的持久化 Raft 状态，则直接打开
+- 若本地已存在 controller raft 的持久化状态，则直接打开
 - 否则按 `WK_CLUSTER_CONTROLLER_BOOTSTRAP` 做 bootstrap
 
 业务 managed groups 的语义：
@@ -541,6 +540,7 @@ controller bootstrap group 的语义：
 建议新增：
 
 - `pkg/cluster/groupcontroller`
+- `pkg/cluster/controllerraft`
 - `pkg/storage/controllermeta`
 
 建议改造：
