@@ -1,8 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"math"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -59,8 +62,16 @@ func (o sendStressOutcome) ErrorRate() float64 {
 func loadSendStressConfig(t *testing.T) sendStressConfig {
 	t.Helper()
 
+	enabled, ok, err := strictEnvBool(sendStressEnv)
+	if err != nil {
+		t.Fatalf("parse %s: %v", sendStressEnv, err)
+	}
+	if !ok {
+		enabled = false
+	}
+
 	cfg := sendStressConfig{
-		Enabled:           envBool(sendStressEnv, false),
+		Enabled:           enabled,
 		Duration:          envDuration(t, sendStressDurationEnv, 5*time.Second),
 		Workers:           envInt(t, sendStressWorkersEnv, max(4, runtime.GOMAXPROCS(0))),
 		MessagesPerWorker: envInt(t, sendStressMessagesPerWorkerEnv, 50),
@@ -100,6 +111,21 @@ func loadSendStressConfig(t *testing.T) sendStressConfig {
 		t.Fatalf("%s must be >= %s, got %d < %d", sendStressSendersEnv, sendStressWorkersEnv, cfg.Senders, cfg.Workers)
 	}
 	return cfg
+}
+
+func strictEnvBool(name string) (bool, bool, error) {
+	value, ok := os.LookupEnv(name)
+	if !ok || strings.TrimSpace(value) == "" {
+		return false, false, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true, true, nil
+	case "0", "false", "no", "off":
+		return false, true, nil
+	default:
+		return false, true, strconv.ErrSyntax
+	}
 }
 
 func requireSendStressEnabled(t *testing.T, cfg sendStressConfig) {
@@ -191,4 +217,21 @@ func TestSendStressLatencySummaryPercentiles(t *testing.T) {
 func TestSendStressOutcomeErrorRate(t *testing.T) {
 	outcome := sendStressOutcome{Total: 10, Success: 8, Failed: 2}
 	require.InDelta(t, 20.0, outcome.ErrorRate(), 0.001)
+}
+
+func TestSendStressConfigRejectsInvalidEnabledValue(t *testing.T) {
+	cmd := exec.Command("go", "test", "./internal/app", "-run", "TestSendStressConfigRejectsInvalidEnabledValueHelper", "-count=1")
+	cmd.Dir = filepath.Clean(filepath.Join("..", ".."))
+	cmd.Env = append(os.Environ(), "WK_SEND_STRESS=maybe")
+	var stderr bytes.Buffer
+	cmd.Stdout = &stderr
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	require.Error(t, err)
+	require.Contains(t, stderr.String(), "parse WK_SEND_STRESS")
+}
+
+func TestSendStressConfigRejectsInvalidEnabledValueHelper(t *testing.T) {
+	_ = loadSendStressConfig(t)
 }
