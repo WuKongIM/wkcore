@@ -126,17 +126,17 @@ func decodeClusterNode(key, data []byte) (ClusterNode, error) {
 	if err != nil {
 		return ClusterNode{}, err
 	}
-	if len(rest) != 0 || capacityWeight < 0 || capacityWeight > math.MaxInt {
+	if len(rest) != 0 || capacityWeight <= 0 || capacityWeight > math.MaxInt {
 		return ClusterNode{}, ErrCorruptValue
 	}
 
-	return normalizeClusterNode(ClusterNode{
+	return ClusterNode{
 		NodeID:          nodeID,
 		Addr:            addr,
 		Status:          status,
 		LastHeartbeatAt: time.Unix(0, lastHeartbeatAt),
 		CapacityWeight:  int(capacityWeight),
-	}), nil
+	}, nil
 }
 
 func encodeGroupAssignment(assignment GroupAssignment) []byte {

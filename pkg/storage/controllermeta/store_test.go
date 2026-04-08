@@ -591,6 +591,28 @@ func TestExportSnapshotRejectsNonCanonicalPeerSets(t *testing.T) {
 	require.ErrorIs(t, err, ErrCorruptValue)
 }
 
+func TestExportSnapshotRejectsZeroWeightNodeRecords(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	value := []byte{recordVersion}
+	value = appendString(value, "127.0.0.1:7000")
+	value = append(value, byte(NodeStatusAlive))
+	value = appendInt64(value, time.Unix(90, 0).UnixNano())
+	value = appendInt64(value, 0)
+
+	store.mu.Lock()
+	err := store.db.Set(encodeNodeKey(1), value, pebble.Sync)
+	store.mu.Unlock()
+	require.NoError(t, err)
+
+	_, err = store.GetNode(ctx, 1)
+	require.ErrorIs(t, err, ErrCorruptValue)
+
+	_, err = store.ExportSnapshot(ctx)
+	require.ErrorIs(t, err, ErrCorruptValue)
+}
+
 func TestStoreRejectsOperationsAfterClose(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
