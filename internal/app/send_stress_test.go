@@ -1,9 +1,12 @@
 package app
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -187,6 +190,11 @@ func percentileSendStressDuration(sorted []time.Duration, pct float64) time.Dura
 }
 
 func TestSendStressConfigDefaultsAndOverrides(t *testing.T) {
+	if os.Getenv("SEND_STRESS_FORCE_INVALID_LOAD") == "1" {
+		_ = loadSendStressConfig(t)
+		return
+	}
+
 	clearSendStressConfigEnv(t)
 	defaultCfg := loadSendStressConfig(t)
 	defaultWorkers := max(4, runtime.GOMAXPROCS(0))
@@ -259,6 +267,8 @@ func TestSendStressConfigDefaultsAndOverrides(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), sendStressMessagesPerWorkerEnv)
+
+	assertLoadSendStressConfigFailsOnInvalidEnv(t)
 }
 
 func TestSendStressLatencySummaryPercentiles(t *testing.T) {
@@ -307,4 +317,44 @@ func clearSendStressConfigEnv(t *testing.T) {
 			})
 		}
 	}
+}
+
+func assertLoadSendStressConfigFailsOnInvalidEnv(t *testing.T) {
+	t.Helper()
+
+	cmd := exec.Command("go", "test", "./internal/app", "-run", "^TestSendStressConfigDefaultsAndOverrides$", "-count=1")
+	cmd.Dir = filepath.Clean(filepath.Join("..", ".."))
+	cmd.Env = filterSendStressEnv(os.Environ())
+	cmd.Env = append(cmd.Env,
+		"SEND_STRESS_FORCE_INVALID_LOAD=1",
+		"WK_SEND_STRESS=1",
+		"WK_SEND_STRESS_WORKERS=0",
+		"WK_SEND_STRESS_SENDERS=1",
+	)
+
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+
+	err := cmd.Run()
+	require.Error(t, err)
+	require.Contains(t, output.String(), sendStressWorkersEnv)
+}
+
+func filterSendStressEnv(env []string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		if strings.HasPrefix(entry, sendStressEnv+"=") ||
+			strings.HasPrefix(entry, sendStressDurationEnv+"=") ||
+			strings.HasPrefix(entry, sendStressWorkersEnv+"=") ||
+			strings.HasPrefix(entry, sendStressSendersEnv+"=") ||
+			strings.HasPrefix(entry, sendStressMessagesPerWorkerEnv+"=") ||
+			strings.HasPrefix(entry, sendStressDialTimeoutEnv+"=") ||
+			strings.HasPrefix(entry, sendStressAckTimeoutEnv+"=") ||
+			strings.HasPrefix(entry, sendStressSeedEnv+"=") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
