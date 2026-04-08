@@ -50,3 +50,10 @@ grep -q 'renderDashboard' ui/assets/app.js || { echo "missing renderDashboard" >
 grep -q '在线节点数' ui/assets/data.js || { echo "missing dashboard metric copy" >&2; exit 1; }
 grep -q '风险摘要' ui/assets/app.js || { echo "missing risk section" >&2; exit 1; }
 grep -q '集群快照' ui/assets/app.js || { echo "missing cluster snapshot" >&2; exit 1; }
+
+grep -q 'data-page="nodes"' ui/nodes.html || { echo "missing nodes marker" >&2; exit 1; }
+grep -q '节点ID' ui/assets/app.js || { echo "missing node id header" >&2; exit 1; }
+grep -q 'RPC Latency' ui/assets/app.js || { echo "missing latency header" >&2; exit 1; }
+grep -q '查看详情' ui/assets/app.js || { echo "missing drawer trigger" >&2; exit 1; }
+grep -q 'data-node-drawer' ui/assets/app.js || { echo "missing drawer container" >&2; exit 1; }
+grep -q 'Follower replication lag > threshold' ui/assets/data.js || { echo "missing degraded hint" >&2; exit 1; }

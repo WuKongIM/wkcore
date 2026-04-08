@@ -15,6 +15,11 @@ function currentPageMeta() {
   };
 }
 
+function queryStatusFilter() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("status");
+}
+
 function renderSidebar(currentKey) {
   const groups = window.ADMIN_UI_DATA.nav
     .map((group) => {
@@ -255,12 +260,188 @@ function renderDashboard() {
   `;
 }
 
+function roleBadge(role) {
+  return role === "Leader"
+    ? `<span class="role-badge leader">${role}</span>`
+    : `<span class="role-badge follower">${role}</span>`;
+}
+
+function statusBadge(status) {
+  return `<span class="inline-badge ${status}">${status}</span>`;
+}
+
+function renderNodeDrawer(node) {
+  if (!node) {
+    return `
+      <div class="drawer-head">
+        <div>
+          <h2>节点详情</h2>
+          <p>选择节点后查看详情</p>
+        </div>
+      </div>
+    `;
+  }
+
+  const metrics = node.detail.metrics
+    .map(
+      (metric) => `
+        <div class="drawer-metric">
+          <span>${metric.label}</span>
+          <strong>${metric.value}</strong>
+        </div>
+      `,
+    )
+    .join("");
+  const groups = node.detail.groups.map((group) => `<span class="mini-tag">${group}</span>`).join("");
+  const events = node.detail.events.map((event) => `<li>${event}</li>`).join("");
+
+  return `
+    <div class="drawer-head">
+      <div>
+        <h2>${node.name}</h2>
+        <p>${node.address} · ${node.role} · ${node.status}</p>
+      </div>
+      <button class="icon-button" type="button" data-close-node-drawer>关闭</button>
+    </div>
+    <div class="drawer-body">
+      <section class="drawer-section">
+        <h3>基础信息</h3>
+        <p>${node.detail.summary}</p>
+      </section>
+      <section class="drawer-section">
+        <h3>近 15 分钟负载</h3>
+        <div class="drawer-metrics">${metrics}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>重点 Group</h3>
+        <div class="mini-tags">${groups}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>最近异常事件</h3>
+        <ul class="drawer-list">${events}</ul>
+      </section>
+      <section class="drawer-section">
+        <h3>网络指标摘要</h3>
+        <p>RPC Latency ${node.latency} · 连接数 ${node.connections} · Group 数 ${node.groups}</p>
+      </section>
+    </div>
+  `;
+}
+
+function renderNodes() {
+  const status = queryStatusFilter();
+  const nodes = status
+    ? window.ADMIN_UI_DATA.nodes.filter((node) => node.status === status)
+    : window.ADMIN_UI_DATA.nodes;
+
+  const activeFilter = status
+    ? `<span class="active-filter">当前筛选：status=${status}</span>`
+    : `<span class="active-filter subtle">默认显示全部节点</span>`;
+
+  const rows = nodes
+    .map((node) => {
+      return `
+        <tr>
+          <td>${node.id}</td>
+          <td>
+            <strong>${node.name}</strong>
+            <div class="cell-subtle">${node.address}</div>
+            ${node.note ? `<div class="cell-alert">${node.note}</div>` : ""}
+          </td>
+          <td>${roleBadge(node.role)}</td>
+          <td>${statusBadge(node.status)}</td>
+          <td>${node.groups}</td>
+          <td>${node.connections}</td>
+          <td>${node.latency}</td>
+          <td><button class="table-link" type="button" data-open-node="${node.id}">查看详情</button></td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  return `
+    <section data-view="nodes" class="page-shell">
+      <header class="page-header">
+        <div>
+          <h1>节点管理</h1>
+          <p>主表就是入口，先看状态，再看承载，再进入节点详情抽屉。</p>
+        </div>
+        ${activeFilter}
+      </header>
+
+      <section class="panel toolbar-panel">
+        <div class="toolbar-row">
+          <div class="surface-pill search-pill">
+            <img class="nav-icon" src="${icon("search")}" alt="" />
+            <span>搜索节点ID / 地址 / 角色</span>
+          </div>
+          <div class="toolbar-actions">
+            <button class="filter-pill" type="button">角色：全部</button>
+            <button class="filter-pill" type="button">状态：全部</button>
+            <button class="filter-pill" type="button">排序：Latency</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel table-panel">
+        <table class="node-table">
+          <thead>
+            <tr>
+              <th>节点ID</th>
+              <th>地址</th>
+              <th>角色</th>
+              <th>状态</th>
+              <th>Group 数</th>
+              <th>连接数</th>
+              <th>RPC Latency</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </section>
+
+      <aside class="drawer" data-node-drawer hidden></aside>
+    </section>
+  `;
+}
+
+function bindNodeDrawer() {
+  const drawer = document.querySelector("[data-node-drawer]");
+  if (!drawer) return;
+
+  const open = (id) => {
+    const node = window.ADMIN_UI_DATA.nodes.find((item) => String(item.id) === String(id));
+    drawer.innerHTML = renderNodeDrawer(node);
+    drawer.hidden = false;
+    document.body.classList.add("drawer-open");
+    const closeButton = drawer.querySelector("[data-close-node-drawer]");
+    if (closeButton) {
+      closeButton.addEventListener("click", close);
+    }
+  };
+
+  const close = () => {
+    drawer.hidden = true;
+    drawer.innerHTML = "";
+    document.body.classList.remove("drawer-open");
+  };
+
+  document.querySelectorAll("[data-open-node]").forEach((button) => {
+    button.addEventListener("click", () => open(button.dataset.openNode));
+  });
+}
+
 function renderCurrentPage() {
   const page = document.body.dataset.page;
   const meta = currentPageMeta();
 
   if (page === "dashboard") {
     return renderDashboard();
+  }
+
+  if (page === "nodes") {
+    return renderNodes();
   }
 
   if (["groups", "network", "topology", "connections"].includes(page)) {
@@ -276,4 +457,5 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelector("[data-sidebar]").innerHTML = renderSidebar(page);
   document.querySelector("[data-topbar]").innerHTML = renderTopbar(window.ADMIN_UI_DATA.cluster);
   document.querySelector("[data-page-root]").innerHTML = renderCurrentPage();
+  bindNodeDrawer();
 });
