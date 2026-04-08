@@ -329,6 +329,197 @@ function renderGroupDrawer(group) {
   `;
 }
 
+function renderLinkDrawer(link) {
+  if (!link) {
+    return `
+      <div class="drawer-head">
+        <div>
+          <h2>链路详情</h2>
+          <p>选择链路后查看详情</p>
+        </div>
+      </div>
+    `;
+  }
+
+  const metrics = link.detail.metrics
+    .map(
+      (item) => `
+        <div class="drawer-metric">
+          <span>${item.label}</span>
+          <strong>${item.value}</strong>
+        </div>
+      `,
+    )
+    .join("");
+  const events = link.detail.events.map((event) => `<li>${event}</li>`).join("");
+
+  return `
+    <div class="drawer-head">
+      <div>
+        <h2>${link.id}</h2>
+        <p>${link.source} → ${link.target} · ${link.status}</p>
+      </div>
+      <button class="icon-button" type="button" data-close-link-drawer>关闭</button>
+    </div>
+    <div class="drawer-body">
+      <section class="drawer-section">
+        <h3>链路摘要</h3>
+        <p>${link.detail.summary}</p>
+        <p>RTT ${link.rtt} · Retry ${link.retry} · Packet ${link.packet}</p>
+      </section>
+      <section class="drawer-section">
+        <h3>关键指标</h3>
+        <div class="drawer-metrics">${metrics}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>最近事件</h3>
+        <ul class="drawer-list">${events}</ul>
+      </section>
+    </div>
+  `;
+}
+
+function renderNetwork() {
+  const network = window.ADMIN_UI_DATA.network;
+  const metrics = network.metrics
+    .map(
+      (item) => `
+        <article class="metric-card">
+          <span class="metric-label">${item.label}</span>
+          <strong class="metric-value">${item.value}</strong>
+          <span class="metric-hint">${item.hint}</span>
+        </article>
+      `,
+    )
+    .join("");
+
+  const linkRows = network.links
+    .map(
+      (link) => `
+        <div class="risk-item compact">
+          <span class="risk-level ${link.status === "degraded" ? "critical" : link.status === "warning" ? "warning" : "info"}">${link.status}</span>
+          <div class="risk-copy">
+            <strong>${link.id}</strong>
+            <span>${link.note} · RTT ${link.rtt} · Retry ${link.retry}</span>
+          </div>
+          <button class="table-link" type="button" data-open-link="${link.id}">查看链路</button>
+        </div>
+      `,
+    )
+    .join("");
+
+  const matrixCells = network.matrix
+    .map((tone) => `<div class="matrix-cell ${tone || "empty"}"></div>`)
+    .join("");
+
+  const trendBars = network.trend
+    .map(
+      (point) => `
+        <div class="trend-bar">
+          <span class="trend-fill" style="height: ${point.value}%;"></span>
+          <label>${point.label}</label>
+        </div>
+      `,
+    )
+    .join("");
+
+  const tableRows = network.links
+    .map(
+      (link) => `
+        <tr>
+          <td><strong>${link.id}</strong></td>
+          <td>${statusBadge(link.status)}</td>
+          <td>${link.rtt}</td>
+          <td>${link.retry}</td>
+          <td>${link.packet}</td>
+          <td>${link.note}</td>
+          <td><button class="table-link" type="button" data-open-link="${link.id}">查看链路</button></td>
+        </tr>
+      `,
+    )
+    .join("");
+
+  return `
+    <section data-view="network" class="page-shell">
+      <header class="page-header">
+        <div>
+          <h1>网络监控</h1>
+          <p>从节点到节点观察 RPC 链路健康、延迟抖动和重试热点，优先定位慢链路。</p>
+        </div>
+      </header>
+
+      <section class="metric-grid">${metrics}</section>
+
+      <section class="dashboard-grid">
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>RPC 链路健康</h2>
+              <p>先看最值得下钻的慢链路和抖动来源</p>
+            </div>
+          </div>
+          <div class="risk-list">${linkRows}</div>
+        </article>
+
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>链路矩阵</h2>
+              <p>横向对比 node 间的链路状态</p>
+            </div>
+          </div>
+          <div class="network-matrix-head">
+            <span></span><span>node1</span><span>node2</span><span>node3</span>
+          </div>
+          <div class="network-matrix-body">
+            <span>node1</span><span>node2</span><span>node3</span>
+            ${matrixCells}
+          </div>
+        </article>
+      </section>
+
+      <section class="dashboard-grid lower-grid">
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>最近抖动趋势</h2>
+              <p>链路 jitter 峰值在 10:15 前后出现明显抬升</p>
+            </div>
+          </div>
+          <div class="trend-chart">${trendBars}</div>
+        </article>
+
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>链路清单</h2>
+              <p>以 RTT、Retry 和 packet 行为快速排序</p>
+            </div>
+          </div>
+          <section class="panel table-panel inset-table">
+            <table class="node-table">
+              <thead>
+                <tr>
+                  <th>链路</th>
+                  <th>状态</th>
+                  <th>RTT</th>
+                  <th>Retry</th>
+                  <th>Packet</th>
+                  <th>备注</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>${tableRows}</tbody>
+            </table>
+          </section>
+        </article>
+      </section>
+
+      <aside class="drawer" data-link-drawer hidden></aside>
+    </section>
+  `;
+}
+
 function renderGroups() {
   const groups = window.ADMIN_UI_DATA.groups;
   const metrics = groups.metrics
@@ -641,12 +832,42 @@ function bindGroupDrawer() {
   });
 }
 
+function bindLinkDrawer() {
+  const drawer = document.querySelector("[data-link-drawer]");
+  if (!drawer) return;
+
+  const open = (id) => {
+    const link = window.ADMIN_UI_DATA.network.links.find((item) => item.id === id);
+    drawer.innerHTML = renderLinkDrawer(link);
+    drawer.hidden = false;
+    document.body.classList.add("drawer-open");
+    const closeButton = drawer.querySelector("[data-close-link-drawer]");
+    if (closeButton) {
+      closeButton.addEventListener("click", close);
+    }
+  };
+
+  const close = () => {
+    drawer.hidden = true;
+    drawer.innerHTML = "";
+    document.body.classList.remove("drawer-open");
+  };
+
+  document.querySelectorAll("[data-open-link]").forEach((button) => {
+    button.addEventListener("click", () => open(button.dataset.openLink));
+  });
+}
+
 function renderCurrentPage() {
   const page = document.body.dataset.page;
   const meta = currentPageMeta();
 
   if (page === "dashboard") {
     return renderDashboard();
+  }
+
+  if (page === "network") {
+    return renderNetwork();
   }
 
   if (page === "groups") {
@@ -670,6 +891,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelector("[data-sidebar]").innerHTML = renderSidebar(page);
   document.querySelector("[data-topbar]").innerHTML = renderTopbar(window.ADMIN_UI_DATA.cluster);
   document.querySelector("[data-page-root]").innerHTML = renderCurrentPage();
+  bindLinkDrawer();
   bindGroupDrawer();
   bindNodeDrawer();
 });

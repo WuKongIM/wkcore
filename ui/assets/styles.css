@@ -475,6 +475,10 @@ img {
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
 }
 
+.risk-item.compact {
+  align-items: center;
+}
+
 .risk-level {
   display: inline-flex;
   align-items: center;
@@ -916,6 +920,55 @@ body.drawer-open::before {
   border: 1px solid #e2e9f2;
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+.network-matrix-head,
+.network-matrix-body {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.network-matrix-head {
+  margin-top: 18px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.network-matrix-body {
+  margin-top: 10px;
+  align-items: center;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.matrix-cell {
+  aspect-ratio: 1;
+  border-radius: 14px;
+  background: #edf3fb;
+}
+
+.matrix-cell.online {
+  background: #dcefe2;
+}
+
+.matrix-cell.warning {
+  background: #f9deb0;
+}
+
+.matrix-cell.degraded {
+  background: #f7c7cf;
+}
+
+.matrix-cell.empty {
+  background: #f2f4f8;
+}
+
+.inset-table {
+  margin-top: 18px;
+  box-shadow: none;
 }
 
 @media (max-width: 1100px) {

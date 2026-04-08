@@ -5,6 +5,7 @@ required_files=(
   "ui/index.html"
   "ui/dashboard.html"
   "ui/groups.html"
+  "ui/network.html"
   "ui/nodes.html"
   "ui/placeholder/groups.html"
   "ui/placeholder/network.html"
@@ -23,6 +24,7 @@ html_files=(
   "ui/index.html"
   "ui/dashboard.html"
   "ui/groups.html"
+  "ui/network.html"
   "ui/nodes.html"
   "ui/placeholder/groups.html"
   "ui/placeholder/network.html"
@@ -64,9 +66,11 @@ grep -q 'pageHref' ui/assets/app.js || { echo "missing relative path helper" >&2
 grep -q 'dashboard.html' ui/assets/data.js || { echo "missing dashboard nav target" >&2; exit 1; }
 grep -q 'nodes.html' ui/assets/data.js || { echo "missing nodes nav target" >&2; exit 1; }
 grep -q 'groups.html' ui/assets/data.js || { echo "missing groups nav target" >&2; exit 1; }
+grep -q 'network.html' ui/assets/data.js || { echo "missing network nav target" >&2; exit 1; }
 grep -q 'data-base="."' ui/index.html || { echo "index missing base marker" >&2; exit 1; }
 grep -q 'data-base="."' ui/dashboard.html || { echo "dashboard missing base marker" >&2; exit 1; }
 grep -q 'data-base="."' ui/groups.html || { echo "groups missing base marker" >&2; exit 1; }
+grep -q 'data-base="."' ui/network.html || { echo "network missing base marker" >&2; exit 1; }
 grep -q 'data-base="."' ui/nodes.html || { echo "nodes missing base marker" >&2; exit 1; }
 for file in ui/placeholder/*.html; do
   grep -q 'data-base=".."' "$file" || { echo "placeholder missing base marker: $file" >&2; exit 1; }
@@ -83,3 +87,12 @@ grep -q 'Leader 节点' ui/assets/app.js || { echo "missing leader column" >&2; 
 grep -q '查看 Group' ui/assets/app.js || { echo "missing group drawer trigger" >&2; exit 1; }
 grep -q 'data-group-drawer' ui/assets/app.js || { echo "missing group drawer container" >&2; exit 1; }
 grep -q 'group-17' ui/assets/data.js || { echo "missing groups sample data" >&2; exit 1; }
+
+grep -q 'data-page="network"' ui/network.html || { echo "missing network page marker" >&2; exit 1; }
+grep -q 'renderNetwork' ui/assets/app.js || { echo "missing renderNetwork" >&2; exit 1; }
+grep -q '网络监控' ui/assets/app.js || { echo "missing network heading" >&2; exit 1; }
+grep -q 'RPC 链路健康' ui/assets/app.js || { echo "missing network section" >&2; exit 1; }
+grep -q '链路矩阵' ui/assets/app.js || { echo "missing link matrix section" >&2; exit 1; }
+grep -q '查看链路' ui/assets/app.js || { echo "missing network drawer trigger" >&2; exit 1; }
+grep -q 'data-link-drawer' ui/assets/app.js || { echo "missing network drawer container" >&2; exit 1; }
+grep -q 'node1→node3' ui/assets/data.js || { echo "missing network sample data" >&2; exit 1; }
