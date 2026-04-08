@@ -394,6 +394,26 @@ func TestUpsertRejectsUnknownEnums(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidArgument)
 }
 
+func TestUpsertRejectsInvalidPeerSets(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpsertAssignment(ctx, GroupAssignment{
+		GroupID:      1,
+		DesiredPeers: []uint64{0, 1, 2},
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+
+	err = store.UpsertRuntimeView(ctx, GroupRuntimeView{
+		GroupID:      1,
+		CurrentPeers: []uint64{0, 2, 3},
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+
+	err = store.UpsertControllerMembership(ctx, ControllerMembership{})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+}
+
 func TestStoreCanonicalizesPeerOrdering(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -422,10 +442,10 @@ func TestStoreListMethodsReturnDeterministicOrder(t *testing.T) {
 
 	require.NoError(t, store.UpsertNode(ctx, ClusterNode{NodeID: 9, Addr: "127.0.0.1:7009", Status: NodeStatusAlive, CapacityWeight: 1}))
 	require.NoError(t, store.UpsertNode(ctx, ClusterNode{NodeID: 3, Addr: "127.0.0.1:7003", Status: NodeStatusDraining, CapacityWeight: 1}))
-	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{GroupID: 8}))
-	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{GroupID: 2}))
-	require.NoError(t, store.UpsertRuntimeView(ctx, GroupRuntimeView{GroupID: 7}))
-	require.NoError(t, store.UpsertRuntimeView(ctx, GroupRuntimeView{GroupID: 1}))
+	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{GroupID: 8, DesiredPeers: []uint64{8, 9, 10}}))
+	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{GroupID: 2, DesiredPeers: []uint64{2, 3, 4}}))
+	require.NoError(t, store.UpsertRuntimeView(ctx, GroupRuntimeView{GroupID: 7, CurrentPeers: []uint64{7, 8, 9}}))
+	require.NoError(t, store.UpsertRuntimeView(ctx, GroupRuntimeView{GroupID: 1, CurrentPeers: []uint64{1, 2, 3}}))
 	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{GroupID: 5, Kind: TaskKindRepair, Step: TaskStepAddLearner}))
 	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{GroupID: 4, Kind: TaskKindRebalance, Step: TaskStepTransferLeader}))
 
@@ -452,6 +472,74 @@ func TestStoreListMethodsReturnDeterministicOrder(t *testing.T) {
 	require.Len(t, tasks, 2)
 	require.Equal(t, uint32(4), tasks[0].GroupID)
 	require.Equal(t, uint32(5), tasks[1].GroupID)
+}
+
+func TestImportSnapshotRejectsInvalidPeerSets(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		entries []snapshotEntry
+	}{
+		{
+			name: "assignment with zero peer",
+			entries: []snapshotEntry{
+				{
+					Key: encodeGroupKey(recordPrefixAssignment, 1),
+					Value: encodeGroupAssignment(GroupAssignment{
+						GroupID:      1,
+						DesiredPeers: []uint64{0, 1, 2},
+					}),
+				},
+			},
+		},
+		{
+			name: "empty controller membership",
+			entries: []snapshotEntry{
+				{
+					Key:   membershipKey(),
+					Value: encodeControllerMembership(ControllerMembership{}),
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := store.ImportSnapshot(ctx, encodeSnapshot(tt.entries))
+			require.ErrorIs(t, err, ErrCorruptValue)
+		})
+	}
+}
+
+func TestImportSnapshotRejectsDuplicateKeys(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	entries := []snapshotEntry{
+		{
+			Key: encodeNodeKey(1),
+			Value: encodeClusterNode(ClusterNode{
+				NodeID:          1,
+				Addr:            "127.0.0.1:7000",
+				Status:          NodeStatusAlive,
+				LastHeartbeatAt: time.Unix(80, 0),
+			}),
+		},
+		{
+			Key: encodeNodeKey(1),
+			Value: encodeClusterNode(ClusterNode{
+				NodeID:          1,
+				Addr:            "127.0.0.1:7001",
+				Status:          NodeStatusAlive,
+				LastHeartbeatAt: time.Unix(81, 0),
+			}),
+		},
+	}
+
+	err := store.ImportSnapshot(ctx, encodeSnapshot(entries))
+	require.ErrorIs(t, err, ErrCorruptValue)
 }
 
 func openTestStore(tb testing.TB) *Store {

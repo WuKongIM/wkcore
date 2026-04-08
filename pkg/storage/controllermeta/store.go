@@ -144,6 +144,9 @@ func (s *Store) UpsertAssignment(ctx context.Context, assignment GroupAssignment
 		return ErrInvalidArgument
 	}
 	assignment = normalizeGroupAssignment(assignment)
+	if err := validateRequiredPeerSet(assignment.DesiredPeers, ErrInvalidArgument); err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -228,6 +231,10 @@ func (s *Store) UpsertControllerMembership(ctx context.Context, membership Contr
 	if err := s.checkContext(ctx); err != nil {
 		return err
 	}
+	membership.Peers = normalizeUint64Set(membership.Peers)
+	if err := validateRequiredPeerSet(membership.Peers, ErrInvalidArgument); err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -243,6 +250,9 @@ func (s *Store) UpsertRuntimeView(ctx context.Context, view GroupRuntimeView) er
 		return ErrInvalidArgument
 	}
 	view = normalizeGroupRuntimeView(view)
+	if err := validateRequiredPeerSet(view.CurrentPeers, ErrInvalidArgument); err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

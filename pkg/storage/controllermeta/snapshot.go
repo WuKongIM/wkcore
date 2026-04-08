@@ -166,7 +166,10 @@ func decodeSnapshot(data []byte) ([]snapshotEntry, error) {
 		return nil, ErrCorruptValue
 	}
 
-	var entries []snapshotEntry
+	var (
+		entries []snapshotEntry
+		seen    = make(map[string]struct{})
+	)
 	for i := uint64(0); i < entryCount; i++ {
 		keyLen, n := binary.Uvarint(body)
 		if n <= 0 {
@@ -195,6 +198,11 @@ func decodeSnapshot(data []byte) ([]snapshotEntry, error) {
 		if err := validateSnapshotKey(key); err != nil {
 			return nil, fmt.Errorf("validate snapshot key %d: %w", i, err)
 		}
+		keyID := string(key)
+		if _, ok := seen[keyID]; ok {
+			return nil, ErrCorruptValue
+		}
+		seen[keyID] = struct{}{}
 		entries = append(entries, snapshotEntry{
 			Key:   key,
 			Value: value,

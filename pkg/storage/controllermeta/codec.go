@@ -169,12 +169,16 @@ func decodeGroupAssignment(key, data []byte) (GroupAssignment, error) {
 		return GroupAssignment{}, ErrCorruptValue
 	}
 
-	return normalizeGroupAssignment(GroupAssignment{
+	assignment := normalizeGroupAssignment(GroupAssignment{
 		GroupID:        groupID,
 		DesiredPeers:   desiredPeers,
 		ConfigEpoch:    configEpoch,
 		BalanceVersion: balanceVersion,
-	}), nil
+	})
+	if err := validateRequiredPeerSet(assignment.DesiredPeers, ErrCorruptValue); err != nil {
+		return GroupAssignment{}, err
+	}
+	return assignment, nil
 }
 
 func encodeGroupRuntimeView(view GroupRuntimeView) []byte {
@@ -225,7 +229,7 @@ func decodeGroupRuntimeView(key, data []byte) (GroupRuntimeView, error) {
 		return GroupRuntimeView{}, ErrCorruptValue
 	}
 
-	return normalizeGroupRuntimeView(GroupRuntimeView{
+	view := normalizeGroupRuntimeView(GroupRuntimeView{
 		GroupID:             groupID,
 		CurrentPeers:        currentPeers,
 		LeaderID:            leaderID,
@@ -233,7 +237,11 @@ func decodeGroupRuntimeView(key, data []byte) (GroupRuntimeView, error) {
 		HasQuorum:           hasQuorum,
 		ObservedConfigEpoch: observedConfigEpoch,
 		LastReportAt:        time.Unix(0, lastReportAt),
-	}), nil
+	})
+	if err := validateRequiredPeerSet(view.CurrentPeers, ErrCorruptValue); err != nil {
+		return GroupRuntimeView{}, err
+	}
+	return view, nil
 }
 
 func encodeReconcileTask(task ReconcileTask) []byte {
@@ -303,7 +311,11 @@ func decodeControllerMembership(data []byte) (ControllerMembership, error) {
 	if err != nil || len(rest) != 0 {
 		return ControllerMembership{}, ErrCorruptValue
 	}
-	return ControllerMembership{Peers: normalizeUint64Set(peers)}, nil
+	membership := ControllerMembership{Peers: normalizeUint64Set(peers)}
+	if err := validateRequiredPeerSet(membership.Peers, ErrCorruptValue); err != nil {
+		return ControllerMembership{}, err
+	}
+	return membership, nil
 }
 
 func normalizeClusterNode(node ClusterNode) ClusterNode {
@@ -354,6 +366,18 @@ func validTaskKind(kind TaskKind) bool {
 
 func validTaskStep(step TaskStep) bool {
 	return step >= TaskStepAddLearner && step <= TaskStepRemoveOld
+}
+
+func validateRequiredPeerSet(values []uint64, invalid error) error {
+	if len(values) == 0 {
+		return invalid
+	}
+	for _, value := range values {
+		if value == 0 {
+			return invalid
+		}
+	}
+	return nil
 }
 
 func appendString(dst []byte, value string) []byte {
