@@ -2,29 +2,44 @@ package raftcluster
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/controllerraft"
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/groupcontroller"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/controllermeta"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
 	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
 	raft "go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 )
 
 type Cluster struct {
-	cfg        Config
-	server     *nodetransport.Server
-	rpcMux     *nodetransport.RPCMux
-	raftPool   *nodetransport.Pool
-	raftClient *nodetransport.Client
-	fwdClient  *nodetransport.Client
-	runtime    *multiraft.Runtime
-	router     *Router
-	discovery  *StaticDiscovery
-	stopped    atomic.Bool
+	cfg              Config
+	server           *nodetransport.Server
+	rpcMux           *nodetransport.RPCMux
+	raftPool         *nodetransport.Pool
+	raftClient       *nodetransport.Client
+	fwdClient        *nodetransport.Client
+	runtime          *multiraft.Runtime
+	router           *Router
+	discovery        *StaticDiscovery
+	controllerMeta   *controllermeta.Store
+	controllerRaftDB *raftstorage.DB
+	controllerSM     *groupcontroller.StateMachine
+	controller       *controllerraft.Service
+	controllerClient controllerAPI
+	assignments      *assignmentCache
+	runtimePeersMu   sync.RWMutex
+	runtimePeers     map[multiraft.GroupID][]multiraft.NodeID
+	observationStop  chan struct{}
+	stopped          atomic.Bool
 }
 
 func NewCluster(cfg Config) (*Cluster, error) {
@@ -33,30 +48,108 @@ func NewCluster(cfg Config) (*Cluster, error) {
 		return nil, err
 	}
 	return &Cluster{
-		cfg:    cfg,
-		rpcMux: nodetransport.NewRPCMux(),
+		cfg:          cfg,
+		rpcMux:       nodetransport.NewRPCMux(),
+		assignments:  newAssignmentCache(),
+		runtimePeers: make(map[multiraft.GroupID][]multiraft.NodeID),
 	}, nil
 }
 
 func (c *Cluster) Start() error {
-	// 1. Discovery
 	c.discovery = NewStaticDiscovery(c.cfg.Nodes)
+	c.observationStop = make(chan struct{})
 
-	// 2. Server
+	if err := c.startServer(); err != nil {
+		return err
+	}
+	c.startPools()
+	if err := c.startControllerRaftIfLocalPeer(); err != nil {
+		c.Stop()
+		return err
+	}
+	if err := c.startMultiraftRuntime(); err != nil {
+		c.Stop()
+		return err
+	}
+	c.startControllerClient()
+	c.startObservationLoop()
+	if err := c.seedLegacyGroupsIfConfigured(); err != nil {
+		c.Stop()
+		return err
+	}
+	return nil
+}
+
+func (c *Cluster) startServer() error {
 	c.server = nodetransport.NewServer()
 	c.server.Handle(msgTypeRaft, c.handleRaftMessage)
 	c.rpcMux.Handle(rpcServiceForward, c.handleForwardRPC)
+	c.rpcMux.Handle(rpcServiceController, c.handleControllerRPC)
 	c.server.HandleRPCMux(c.rpcMux)
 	if err := c.server.Start(c.cfg.ListenAddr); err != nil {
 		return fmt.Errorf("start server: %w", err)
 	}
+	return nil
+}
 
-	// 3. Pools + Clients
+func (c *Cluster) startPools() {
 	c.raftPool = nodetransport.NewPool(c.discovery, c.cfg.PoolSize, c.cfg.DialTimeout)
 	c.raftClient = nodetransport.NewClient(c.raftPool)
 	c.fwdClient = nodetransport.NewClient(c.raftPool)
+}
 
-	// 4. Runtime
+func (c *Cluster) startControllerRaftIfLocalPeer() error {
+	if !c.cfg.ControllerEnabled() {
+		return nil
+	}
+	if !c.cfg.HasLocalControllerPeer() {
+		return nil
+	}
+
+	meta, err := controllermeta.Open(c.cfg.ControllerMetaPath)
+	if err != nil {
+		return fmt.Errorf("open controller meta: %w", err)
+	}
+	logDB, err := raftstorage.Open(c.cfg.ControllerRaftPath)
+	if err != nil {
+		_ = meta.Close()
+		return fmt.Errorf("open controller raft: %w", err)
+	}
+
+	peers := c.cfg.DerivedControllerNodes()
+	controllerPeers := make([]controllerraft.Peer, 0, len(peers))
+	for _, peer := range peers {
+		controllerPeers = append(controllerPeers, controllerraft.Peer{
+			NodeID: uint64(peer.NodeID),
+			Addr:   peer.Addr,
+		})
+	}
+
+	sm := groupcontroller.NewStateMachine(meta, groupcontroller.StateMachineConfig{})
+	service := controllerraft.NewService(controllerraft.Config{
+		NodeID:         uint64(c.cfg.NodeID),
+		Peers:          controllerPeers,
+		AllowBootstrap: true,
+		LogDB:          logDB,
+		StateMachine:   sm,
+		Server:         c.server,
+		RPCMux:         c.rpcMux,
+		Pool:           c.raftPool,
+	})
+	if err := service.Start(context.Background()); err != nil {
+		_ = logDB.Close()
+		_ = meta.Close()
+		return fmt.Errorf("start controller raft: %w", err)
+	}
+
+	c.controllerMeta = meta
+	c.controllerRaftDB = logDB
+	c.controllerSM = sm
+	c.controller = service
+	return nil
+}
+
+func (c *Cluster) startMultiraftRuntime() error {
 	var err error
 	c.runtime, err = multiraft.New(multiraft.Options{
 		NodeID:       c.cfg.NodeID,
@@ -69,25 +162,47 @@ func (c *Cluster) Start() error {
 		},
 	})
 	if err != nil {
-		c.fwdClient.Stop()
-		c.raftClient.Stop()
-		c.raftPool.Close()
-		c.server.Stop()
 		return fmt.Errorf("create runtime: %w", err)
 	}
 
-	// 5. Router
 	c.router = NewRouter(c.cfg.GroupCount, c.cfg.NodeID, c.runtime)
+	return nil
+}
 
-	// 6. Open groups
+func (c *Cluster) startControllerClient() {
+	if !c.cfg.ControllerEnabled() {
+		return
+	}
+	c.controllerClient = newControllerClient(c, c.cfg.DerivedControllerNodes(), c.assignments)
+}
+
+func (c *Cluster) startObservationLoop() {
+	if c.controllerClient == nil {
+		return
+	}
+
+	go func() {
+		ticker := time.NewTicker(controllerObservationInterval)
+		defer ticker.Stop()
+
+		for {
+			c.observeOnce(context.Background())
+			select {
+			case <-c.observationStop:
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
+func (c *Cluster) seedLegacyGroupsIfConfigured() error {
 	ctx := context.Background()
 	for _, g := range c.cfg.Groups {
 		if err := c.openOrBootstrapGroup(ctx, g); err != nil {
-			c.Stop()
 			return fmt.Errorf("open group %d: %w", g.GroupID, err)
 		}
 	}
-
 	return nil
 }
 
@@ -111,16 +226,30 @@ func (c *Cluster) openOrBootstrapGroup(ctx context.Context, g GroupConfig) error
 		return err
 	}
 	if !raft.IsEmptyHardState(initialState.HardState) {
-		return c.runtime.OpenGroup(ctx, opts)
+		c.setRuntimePeers(g.GroupID, nodeIDsFromUint64s(initialState.ConfState.Voters))
+		if err := c.runtime.OpenGroup(ctx, opts); err != nil {
+			c.deleteRuntimePeers(g.GroupID)
+			return err
+		}
+		return nil
 	}
-	return c.runtime.BootstrapGroup(ctx, multiraft.BootstrapGroupRequest{
+	c.setRuntimePeers(g.GroupID, g.Peers)
+	if err := c.runtime.BootstrapGroup(ctx, multiraft.BootstrapGroupRequest{
 		Group:  opts,
 		Voters: g.Peers,
-	})
+	}); err != nil {
+		c.deleteRuntimePeers(g.GroupID)
+		return err
+	}
+	return nil
 }
 
 func (c *Cluster) Stop() {
 	c.stopped.Store(true)
+	if c.observationStop != nil {
+		close(c.observationStop)
+		c.observationStop = nil
+	}
 
 	if c.fwdClient != nil {
 		c.fwdClient.Stop()
@@ -137,6 +266,47 @@ func (c *Cluster) Stop() {
 	if c.raftPool != nil {
 		c.raftPool.Close()
 	}
+	if c.controller != nil {
+		_ = c.controller.Stop()
+	}
+	if c.controllerRaftDB != nil {
+		_ = c.controllerRaftDB.Close()
+	}
+	if c.controllerMeta != nil {
+		_ = c.controllerMeta.Close()
+	}
+}
+
+func (c *Cluster) observeOnce(ctx context.Context) {
+	if c.controllerClient == nil || c.runtime == nil || c.stopped.Load() {
+		return
+	}
+
+	now := time.Now()
+	for _, groupID := range c.runtime.Groups() {
+		status, err := c.runtime.Status(groupID)
+		if err != nil {
+			continue
+		}
+
+		view := buildRuntimeView(now, groupID, status, c.observationPeersForGroup(groupID))
+		reportCtx, cancel := withControllerTimeout(ctx)
+		err = c.controllerClient.Report(reportCtx, groupcontroller.AgentReport{
+			NodeID:         uint64(c.cfg.NodeID),
+			Addr:           c.controllerReportAddr(),
+			ObservedAt:     now,
+			CapacityWeight: 1,
+			Runtime:        &view,
+		})
+		cancel()
+		if isControllerRedirect(err) || err == nil {
+			continue
+		}
+	}
+
+	assignCtx, cancel := withControllerTimeout(ctx)
+	_, _ = c.controllerClient.RefreshAssignments(assignCtx)
+	cancel()
 }
 
 // handleRaftMessage is the server handler for msgTypeRaft.
@@ -241,20 +411,163 @@ func (c *Cluster) RPCService(ctx context.Context, nodeID multiraft.NodeID, group
 
 // GroupIDs returns the configured control-plane group ids.
 func (c *Cluster) GroupIDs() []multiraft.GroupID {
-	groupIDs := make([]multiraft.GroupID, 0, len(c.cfg.Groups))
-	for _, group := range c.cfg.Groups {
-		groupIDs = append(groupIDs, group.GroupID)
+	groupIDs := make([]multiraft.GroupID, 0, c.cfg.GroupCount)
+	for groupID := uint32(1); groupID <= c.cfg.GroupCount; groupID++ {
+		groupIDs = append(groupIDs, multiraft.GroupID(groupID))
 	}
 	return groupIDs
 }
 
 // PeersForGroup returns the configured peers for a control-plane group.
 func (c *Cluster) PeersForGroup(groupID multiraft.GroupID) []multiraft.NodeID {
+	if peers, ok := c.assignments.PeersForGroup(groupID); ok {
+		return peers
+	}
+	peers, _ := c.legacyPeersForGroup(groupID)
+	return peers
+}
+
+func (c *Cluster) ListObservedRuntimeViews(ctx context.Context) ([]controllermeta.GroupRuntimeView, error) {
+	if c.controllerClient != nil {
+		queryCtx, cancel := withControllerTimeout(ctx)
+		defer cancel()
+		return c.controllerClient.ListRuntimeViews(queryCtx)
+	}
+	if c.controllerMeta != nil {
+		return c.controllerMeta.ListRuntimeViews(ctx)
+	}
+	return nil, ErrNotStarted
+}
+
+func (c *Cluster) ListCachedAssignments() []controllermeta.GroupAssignment {
+	if c.assignments == nil {
+		return nil
+	}
+	return c.assignments.Snapshot()
+}
+
+func (c *Cluster) observationPeersForGroup(groupID multiraft.GroupID) []multiraft.NodeID {
+	if peers, ok := c.getRuntimePeers(groupID); ok {
+		return peers
+	}
+	peers, _ := c.legacyPeersForGroup(groupID)
+	return peers
+}
+
+func (c *Cluster) legacyPeersForGroup(groupID multiraft.GroupID) ([]multiraft.NodeID, bool) {
 	for _, group := range c.cfg.Groups {
 		if group.GroupID != groupID {
 			continue
 		}
-		return append([]multiraft.NodeID(nil), group.Peers...)
+		return append([]multiraft.NodeID(nil), group.Peers...), true
 	}
-	return nil
+	return nil, false
+}
+
+func (c *Cluster) controllerReportAddr() string {
+	if c.server != nil && c.server.Listener() != nil {
+		return c.server.Listener().Addr().String()
+	}
+	return c.cfg.ListenAddr
+}
+
+func (c *Cluster) setRuntimePeers(groupID multiraft.GroupID, peers []multiraft.NodeID) {
+	if c == nil {
+		return
+	}
+
+	c.runtimePeersMu.Lock()
+	c.runtimePeers[groupID] = append([]multiraft.NodeID(nil), peers...)
+	c.runtimePeersMu.Unlock()
+}
+
+func (c *Cluster) getRuntimePeers(groupID multiraft.GroupID) ([]multiraft.NodeID, bool) {
+	if c == nil {
+		return nil, false
+	}
+
+	c.runtimePeersMu.RLock()
+	peers, ok := c.runtimePeers[groupID]
+	c.runtimePeersMu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	return append([]multiraft.NodeID(nil), peers...), true
+}
+
+func (c *Cluster) deleteRuntimePeers(groupID multiraft.GroupID) {
+	if c == nil {
+		return
+	}
+
+	c.runtimePeersMu.Lock()
+	delete(c.runtimePeers, groupID)
+	c.runtimePeersMu.Unlock()
+}
+
+func nodeIDsFromUint64s(ids []uint64) []multiraft.NodeID {
+	peers := make([]multiraft.NodeID, 0, len(ids))
+	for _, id := range ids {
+		peers = append(peers, multiraft.NodeID(id))
+	}
+	return peers
+}
+
+func (c *Cluster) handleControllerRPC(ctx context.Context, body []byte) ([]byte, error) {
+	var req controllerRPCRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, err
+	}
+	if c.controller == nil || c.controllerMeta == nil {
+		return nil, ErrNotStarted
+	}
+
+	marshalRedirect := func() ([]byte, error) {
+		return json.Marshal(controllerRPCResponse{
+			NotLeader: true,
+			LeaderID:  c.controller.LeaderID(),
+		})
+	}
+
+	switch req.Kind {
+	case controllerRPCHeartbeat:
+		if req.Report == nil {
+			return nil, ErrInvalidConfig
+		}
+		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
+			return marshalRedirect()
+		}
+		proposeCtx, cancel := withControllerTimeout(ctx)
+		defer cancel()
+		if err := c.controller.Propose(proposeCtx, groupcontroller.Command{
+			Kind:   groupcontroller.CommandKindNodeHeartbeat,
+			Report: req.Report,
+		}); err != nil {
+			if errors.Is(err, controllerraft.ErrNotLeader) {
+				return marshalRedirect()
+			}
+			return nil, err
+		}
+		return json.Marshal(controllerRPCResponse{})
+	case controllerRPCListAssignments:
+		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
+			return marshalRedirect()
+		}
+		assignments, err := c.controllerMeta.ListAssignments(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(controllerRPCResponse{Assignments: assignments})
+	case controllerRPCListRuntimeViews:
+		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
+			return marshalRedirect()
+		}
+		views, err := c.controllerMeta.ListRuntimeViews(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(controllerRPCResponse{RuntimeViews: views})
+	default:
+		return nil, ErrInvalidConfig
+	}
 }

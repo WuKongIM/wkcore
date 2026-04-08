@@ -2,6 +2,7 @@ package raftcluster
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
@@ -21,6 +22,8 @@ type Config struct {
 	NodeID             multiraft.NodeID
 	ListenAddr         string
 	GroupCount         uint32
+	ControllerMetaPath string
+	ControllerRaftPath string
 	ControllerReplicaN int
 	GroupReplicaN      int
 	NewStorage         func(groupID multiraft.GroupID) (multiraft.Storage, error)
@@ -59,9 +62,6 @@ func (c *Config) validate() error {
 	if c.NewStateMachine == nil {
 		return fmt.Errorf("%w: NewStateMachine must be set", ErrInvalidConfig)
 	}
-	if len(c.Groups) == 0 {
-		return fmt.Errorf("%w: Groups must be set", ErrInvalidConfig)
-	}
 	if c.GroupCount == 0 {
 		return fmt.Errorf("%w: GroupCount must be > 0", ErrInvalidConfig)
 	}
@@ -77,8 +77,8 @@ func (c *Config) validate() error {
 	if c.GroupReplicaN > len(c.Nodes) {
 		return fmt.Errorf("%w: GroupReplicaN=%d exceeds Nodes=%d", ErrInvalidConfig, c.GroupReplicaN, len(c.Nodes))
 	}
-	if uint32(len(c.Groups)) != c.GroupCount {
-		return fmt.Errorf("%w: len(Groups)=%d != GroupCount=%d", ErrInvalidConfig, len(c.Groups), c.GroupCount)
+	if (c.ControllerMetaPath == "") != (c.ControllerRaftPath == "") {
+		return fmt.Errorf("%w: ControllerMetaPath and ControllerRaftPath must be set together", ErrInvalidConfig)
 	}
 
 	nodeSet := make(map[multiraft.NodeID]bool, len(c.Nodes))
@@ -102,6 +102,9 @@ func (c *Config) validate() error {
 		if groupSet[g.GroupID] {
 			return fmt.Errorf("%w: duplicate GroupID %d", ErrInvalidConfig, g.GroupID)
 		}
+		if g.GroupID == 0 || uint32(g.GroupID) > c.GroupCount {
+			return fmt.Errorf("%w: GroupID %d exceeds GroupCount=%d", ErrInvalidConfig, g.GroupID, c.GroupCount)
+		}
 		groupSet[g.GroupID] = true
 		for _, peer := range g.Peers {
 			if !nodeSet[peer] {
@@ -112,7 +115,7 @@ func (c *Config) validate() error {
 			}
 		}
 	}
-	if !groupSelfFound {
+	if len(c.Groups) > 0 && !groupSelfFound {
 		return fmt.Errorf("%w: NodeID %d not found as peer in any group", ErrInvalidConfig, c.NodeID)
 	}
 	return nil
@@ -149,4 +152,28 @@ func (c *Config) applyDefaults() {
 	if c.DialTimeout == 0 {
 		c.DialTimeout = defaultDialTimeout
 	}
+}
+
+func (c Config) DerivedControllerNodes() []NodeConfig {
+	nodes := append([]NodeConfig(nil), c.Nodes...)
+	sort.Slice(nodes, func(i, j int) bool {
+		return nodes[i].NodeID < nodes[j].NodeID
+	})
+	if c.ControllerReplicaN > 0 && c.ControllerReplicaN < len(nodes) {
+		nodes = nodes[:c.ControllerReplicaN]
+	}
+	return nodes
+}
+
+func (c Config) HasLocalControllerPeer() bool {
+	for _, node := range c.DerivedControllerNodes() {
+		if node.NodeID == c.NodeID {
+			return true
+		}
+	}
+	return false
+}
+
+func (c Config) ControllerEnabled() bool {
+	return c.ControllerMetaPath != "" && c.ControllerRaftPath != ""
 }

@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/groupcontroller"
-	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/controllermeta"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
@@ -212,14 +211,11 @@ func (e *testEnv) startNodeErr(t *testing.T, nodeID uint64, peers []Peer) error 
 	node.server.HandleRPCMux(node.rpcMux)
 	require.NoError(t, node.server.Start(node.addr))
 
-	discoveryPeers := make([]raftcluster.NodeConfig, 0, len(node.allPeers))
+	discoveryPeers := make(testDiscovery, len(node.allPeers))
 	for _, peer := range node.allPeers {
-		discoveryPeers = append(discoveryPeers, raftcluster.NodeConfig{
-			NodeID: multiraft.NodeID(peer.NodeID),
-			Addr:   peer.Addr,
-		})
+		discoveryPeers[peer.NodeID] = peer.Addr
 	}
-	node.pool = nodetransport.NewPool(raftcluster.NewStaticDiscovery(discoveryPeers), 2, 5*time.Second)
+	node.pool = nodetransport.NewPool(discoveryPeers, 2, 5*time.Second)
 
 	var err error
 	node.logDB, err = raftstorage.Open(filepath.Join(node.dir, "controller-raft"))
@@ -249,6 +245,16 @@ func (e *testEnv) restartNode(t *testing.T, nodeID uint64, peers []Peer) {
 	t.Helper()
 	e.stopNode(nodeID)
 	e.startNode(t, nodeID, peers)
+}
+
+type testDiscovery map[uint64]string
+
+func (d testDiscovery) Resolve(nodeID uint64) (string, error) {
+	addr, ok := d[nodeID]
+	if !ok {
+		return "", fmt.Errorf("node %d not found", nodeID)
+	}
+	return addr, nil
 }
 
 func (e *testEnv) stopAll() {

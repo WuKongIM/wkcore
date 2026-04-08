@@ -85,6 +85,10 @@ type taskAdvanceEnvelope struct {
 	Err     string    `json:"err,omitempty"`
 }
 
+func NewService(cfg Config) *Service {
+	return &Service{cfg: cfg}
+}
+
 func (s *Service) Start(ctx context.Context) error {
 	if err := s.cfg.validateCore(); err != nil {
 		return err

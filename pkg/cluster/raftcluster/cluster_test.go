@@ -14,6 +14,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metafsm"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metastore"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
+	"github.com/stretchr/testify/require"
 )
 
 // testNode bundles a cluster, store, and storage resources for testing.
@@ -57,6 +58,7 @@ func newStartedTestNode(
 	nodes []raftcluster.NodeConfig,
 	groups []raftcluster.GroupConfig,
 	groupCount int,
+	withController bool,
 ) *testNode {
 	t.Helper()
 
@@ -70,6 +72,13 @@ func newStartedTestNode(
 		t.Fatalf("open raftstorage node %d: %v", nodeID, err)
 	}
 
+	controllerMetaPath := ""
+	controllerRaftPath := ""
+	if withController {
+		controllerMetaPath = filepath.Join(dir, "controller-meta")
+		controllerRaftPath = filepath.Join(dir, "controller-raft")
+	}
+
 	cfg := raftcluster.Config{
 		NodeID:     nodeID,
 		ListenAddr: listenAddr,
@@ -77,9 +86,11 @@ func newStartedTestNode(
 		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
 			return raftDB.ForGroup(uint64(groupID)), nil
 		},
-		NewStateMachine: metafsm.NewStateMachineFactory(db),
-		Nodes:           append([]raftcluster.NodeConfig(nil), nodes...),
-		Groups:          append([]raftcluster.GroupConfig(nil), groups...),
+		NewStateMachine:    metafsm.NewStateMachineFactory(db),
+		Nodes:              append([]raftcluster.NodeConfig(nil), nodes...),
+		Groups:             append([]raftcluster.GroupConfig(nil), groups...),
+		ControllerMetaPath: controllerMetaPath,
+		ControllerRaftPath: controllerRaftPath,
 	}
 
 	c, err := raftcluster.NewCluster(cfg)
@@ -121,7 +132,7 @@ func startSingleNode(t testing.TB, groupCount int) *testNode {
 	}
 
 	nodes := []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}}
-	return newStartedTestNode(t, dir, 1, "127.0.0.1:0", nodes, groups, groupCount)
+	return newStartedTestNode(t, dir, 1, "127.0.0.1:0", nodes, groups, groupCount, false)
 }
 
 func startThreeNodes(t testing.TB, groupCount int) []*testNode {
@@ -165,10 +176,87 @@ func startThreeNodes(t testing.TB, groupCount int) []*testNode {
 			nodes,
 			groups,
 			groupCount,
+			false,
 		)
 	}
 
 	return testNodes
+}
+
+func startSingleNodeWithController(t testing.TB, groupCount int, legacyGroupCount int) *testNode {
+	t.Helper()
+	dir := t.TempDir()
+
+	groups := make([]raftcluster.GroupConfig, legacyGroupCount)
+	for i := range legacyGroupCount {
+		groups[i] = raftcluster.GroupConfig{
+			GroupID: multiraft.GroupID(i + 1),
+			Peers:   []multiraft.NodeID{1},
+		}
+	}
+
+	nodes := []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}}
+	return newStartedTestNode(t, dir, 1, "127.0.0.1:0", nodes, groups, groupCount, true)
+}
+
+func startThreeNodesWithController(t testing.TB, groupCount int, legacyReplicaN int) []*testNode {
+	t.Helper()
+
+	listeners := make([]net.Listener, 3)
+	for i := range 3 {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen %d: %v", i, err)
+		}
+		listeners[i] = ln
+	}
+
+	nodes := make([]raftcluster.NodeConfig, 3)
+	for i := range 3 {
+		nodes[i] = raftcluster.NodeConfig{
+			NodeID: multiraft.NodeID(i + 1),
+			Addr:   listeners[i].Addr().String(),
+		}
+		listeners[i].Close()
+	}
+
+	peers := []multiraft.NodeID{1, 2, 3}
+	if legacyReplicaN < len(peers) {
+		peers = peers[:legacyReplicaN]
+	}
+
+	groups := make([]raftcluster.GroupConfig, groupCount)
+	for i := range groupCount {
+		groups[i] = raftcluster.GroupConfig{
+			GroupID: multiraft.GroupID(i + 1),
+			Peers:   append([]multiraft.NodeID(nil), peers...),
+		}
+	}
+
+	testNodes := make([]*testNode, 3)
+	root := t.TempDir()
+	for i := range 3 {
+		dir := filepath.Join(root, fmt.Sprintf("n%d", i+1))
+		testNodes[i] = newStartedTestNode(
+			t,
+			dir,
+			multiraft.NodeID(i+1),
+			nodes[i].Addr,
+			nodes,
+			groups,
+			groupCount,
+			true,
+		)
+	}
+	return testNodes
+}
+
+func stopNodes(nodes []*testNode) {
+	for _, node := range nodes {
+		if node != nil {
+			node.stop()
+		}
+	}
 }
 
 func waitForLeader(t testing.TB, c *raftcluster.Cluster, groupID uint64) {
@@ -275,7 +363,7 @@ func restartNode(t testing.TB, nodes []*testNode, idx int) *testNode {
 
 	old.stop()
 
-	restarted := newStartedTestNode(t, dir, nodeID, listenAddr, clusterNodes, groups, groupCount)
+	restarted := newStartedTestNode(t, dir, nodeID, listenAddr, clusterNodes, groups, groupCount, false)
 	nodes[idx] = restarted
 	return restarted
 }
@@ -381,4 +469,21 @@ func TestThreeNodeClusterReelectsAfterLeaderRestart(t *testing.T) {
 		t.Fatalf("CreateChannel via restarted node: %v", err)
 	}
 	waitForChannelVisibleOnNodes(t, testNodes, afterRestartID, 1)
+}
+
+func TestClusterReportsRuntimeViewsToController(t *testing.T) {
+	nodes := startThreeNodesWithController(t, 4, 3)
+	defer stopNodes(nodes)
+
+	require.Eventually(t, func() bool {
+		views, err := nodes[0].cluster.ListObservedRuntimeViews(context.Background())
+		return err == nil && len(views) == 4
+	}, 10*time.Second, 100*time.Millisecond)
+}
+
+func TestClusterGroupIDsNoLongerDependOnStaticGroupConfig(t *testing.T) {
+	node := startSingleNodeWithController(t, 8, 1)
+	defer node.stop()
+
+	require.Equal(t, []multiraft.GroupID{1, 2, 3, 4, 5, 6, 7, 8}, node.cluster.GroupIDs())
 }
