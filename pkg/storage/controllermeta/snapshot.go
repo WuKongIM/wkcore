@@ -19,6 +19,9 @@ type snapshotEntry struct {
 }
 
 func (s *Store) ExportSnapshot(ctx context.Context) ([]byte, error) {
+	if err := s.ensureOpen(); err != nil {
+		return nil, err
+	}
 	if err := s.checkContext(ctx); err != nil {
 		return nil, err
 	}
@@ -37,6 +40,9 @@ func (s *Store) ExportSnapshot(ctx context.Context) ([]byte, error) {
 }
 
 func (s *Store) ImportSnapshot(ctx context.Context, data []byte) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
 	if err := s.checkContext(ctx); err != nil {
 		return err
 	}

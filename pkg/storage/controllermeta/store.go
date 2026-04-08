@@ -22,19 +22,22 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) Close() error {
+	s.mu.Lock()
 	if s == nil || s.db == nil {
+		s.mu.Unlock()
 		return nil
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	err := s.db.Close()
+	db := s.db
 	s.db = nil
-	return err
+	s.mu.Unlock()
+
+	return db.Close()
 }
 
 func (s *Store) GetNode(ctx context.Context, nodeID uint64) (ClusterNode, error) {
+	if err := s.ensureOpen(); err != nil {
+		return ClusterNode{}, err
+	}
 	if nodeID == 0 {
 		return ClusterNode{}, ErrInvalidArgument
 	}
@@ -53,6 +56,9 @@ func (s *Store) GetNode(ctx context.Context, nodeID uint64) (ClusterNode, error)
 }
 
 func (s *Store) DeleteNode(ctx context.Context, nodeID uint64) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
 	if nodeID == 0 {
 		return ErrInvalidArgument
 	}
@@ -67,6 +73,9 @@ func (s *Store) DeleteNode(ctx context.Context, nodeID uint64) error {
 }
 
 func (s *Store) ListNodes(ctx context.Context) ([]ClusterNode, error) {
+	if err := s.ensureOpen(); err != nil {
+		return nil, err
+	}
 	if err := s.checkContext(ctx); err != nil {
 		return nil, err
 	}
@@ -78,6 +87,9 @@ func (s *Store) ListNodes(ctx context.Context) ([]ClusterNode, error) {
 }
 
 func (s *Store) UpsertNode(ctx context.Context, node ClusterNode) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
 	if err := s.checkContext(ctx); err != nil {
 		return err
 	}
@@ -93,6 +105,9 @@ func (s *Store) UpsertNode(ctx context.Context, node ClusterNode) error {
 }
 
 func (s *Store) GetAssignment(ctx context.Context, groupID uint32) (GroupAssignment, error) {
+	if err := s.ensureOpen(); err != nil {
+		return GroupAssignment{}, err
+	}
 	if groupID == 0 {
 		return GroupAssignment{}, ErrInvalidArgument
 	}
@@ -112,6 +127,9 @@ func (s *Store) GetAssignment(ctx context.Context, groupID uint32) (GroupAssignm
 }
 
 func (s *Store) DeleteAssignment(ctx context.Context, groupID uint32) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
 	if groupID == 0 {
 		return ErrInvalidArgument
 	}
@@ -126,6 +144,9 @@ func (s *Store) DeleteAssignment(ctx context.Context, groupID uint32) error {
 }
 
 func (s *Store) ListAssignments(ctx context.Context) ([]GroupAssignment, error) {
+	if err := s.ensureOpen(); err != nil {
+		return nil, err
+	}
 	if err := s.checkContext(ctx); err != nil {
 		return nil, err
 	}
@@ -137,6 +158,9 @@ func (s *Store) ListAssignments(ctx context.Context) ([]GroupAssignment, error) 
 }
 
 func (s *Store) UpsertAssignment(ctx context.Context, assignment GroupAssignment) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
 	if err := s.checkContext(ctx); err != nil {
 		return err
 	}
@@ -158,6 +182,9 @@ func (s *Store) UpsertAssignment(ctx context.Context, assignment GroupAssignment
 }
 
 func (s *Store) GetRuntimeView(ctx context.Context, groupID uint32) (GroupRuntimeView, error) {
+	if err := s.ensureOpen(); err != nil {
+		return GroupRuntimeView{}, err
+	}
 	if groupID == 0 {
 		return GroupRuntimeView{}, ErrInvalidArgument
 	}
@@ -177,6 +204,9 @@ func (s *Store) GetRuntimeView(ctx context.Context, groupID uint32) (GroupRuntim
 }
 
 func (s *Store) GetControllerMembership(ctx context.Context) (ControllerMembership, error) {
+	if err := s.ensureOpen(); err != nil {
+		return ControllerMembership{}, err
+	}
 	if err := s.checkContext(ctx); err != nil {
 		return ControllerMembership{}, err
 	}
@@ -192,6 +222,9 @@ func (s *Store) GetControllerMembership(ctx context.Context) (ControllerMembersh
 }
 
 func (s *Store) DeleteControllerMembership(ctx context.Context) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
 	if err := s.checkContext(ctx); err != nil {
 		return err
 	}
@@ -203,6 +236,9 @@ func (s *Store) DeleteControllerMembership(ctx context.Context) error {
 }
 
 func (s *Store) ListRuntimeViews(ctx context.Context) ([]GroupRuntimeView, error) {
+	if err := s.ensureOpen(); err != nil {
+		return nil, err
+	}
 	if err := s.checkContext(ctx); err != nil {
 		return nil, err
 	}
@@ -214,6 +250,9 @@ func (s *Store) ListRuntimeViews(ctx context.Context) ([]GroupRuntimeView, error
 }
 
 func (s *Store) DeleteRuntimeView(ctx context.Context, groupID uint32) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
 	if groupID == 0 {
 		return ErrInvalidArgument
 	}
@@ -228,6 +267,9 @@ func (s *Store) DeleteRuntimeView(ctx context.Context, groupID uint32) error {
 }
 
 func (s *Store) UpsertControllerMembership(ctx context.Context, membership ControllerMembership) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
 	if err := s.checkContext(ctx); err != nil {
 		return err
 	}
@@ -243,6 +285,9 @@ func (s *Store) UpsertControllerMembership(ctx context.Context, membership Contr
 }
 
 func (s *Store) UpsertRuntimeView(ctx context.Context, view GroupRuntimeView) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
 	if err := s.checkContext(ctx); err != nil {
 		return err
 	}
@@ -264,6 +309,9 @@ func (s *Store) UpsertRuntimeView(ctx context.Context, view GroupRuntimeView) er
 }
 
 func (s *Store) GetTask(ctx context.Context, groupID uint32) (ReconcileTask, error) {
+	if err := s.ensureOpen(); err != nil {
+		return ReconcileTask{}, err
+	}
 	if groupID == 0 {
 		return ReconcileTask{}, ErrInvalidArgument
 	}
@@ -283,6 +331,9 @@ func (s *Store) GetTask(ctx context.Context, groupID uint32) (ReconcileTask, err
 }
 
 func (s *Store) DeleteTask(ctx context.Context, groupID uint32) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
 	if groupID == 0 {
 		return ErrInvalidArgument
 	}
@@ -297,6 +348,9 @@ func (s *Store) DeleteTask(ctx context.Context, groupID uint32) error {
 }
 
 func (s *Store) ListTasks(ctx context.Context) ([]ReconcileTask, error) {
+	if err := s.ensureOpen(); err != nil {
+		return nil, err
+	}
 	if err := s.checkContext(ctx); err != nil {
 		return nil, err
 	}
@@ -308,6 +362,9 @@ func (s *Store) ListTasks(ctx context.Context) ([]ReconcileTask, error) {
 }
 
 func (s *Store) UpsertTask(ctx context.Context, task ReconcileTask) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
 	if err := s.checkContext(ctx); err != nil {
 		return err
 	}
@@ -442,6 +499,12 @@ func (s *Store) ensureOpenLocked() error {
 		return ErrClosed
 	}
 	return nil
+}
+
+func (s *Store) ensureOpen() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ensureOpenLocked()
 }
 
 func checkContext(ctx context.Context) error {

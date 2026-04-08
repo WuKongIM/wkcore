@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"hash/crc32"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -596,11 +597,53 @@ func TestStoreRejectsOperationsAfterClose(t *testing.T) {
 
 	require.NoError(t, store.Close())
 
-	_, err := store.GetNode(ctx, 1)
-	require.ErrorIs(t, err, ErrClosed)
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{"GetNode", func() error { _, err := store.GetNode(ctx, 0); return err }},
+		{"DeleteNode", func() error { return store.DeleteNode(ctx, 0) }},
+		{"ListNodes", func() error { _, err := store.ListNodes(ctx); return err }},
+		{"UpsertNode", func() error { return store.UpsertNode(ctx, ClusterNode{}) }},
+		{"GetAssignment", func() error { _, err := store.GetAssignment(ctx, 0); return err }},
+		{"DeleteAssignment", func() error { return store.DeleteAssignment(ctx, 0) }},
+		{"ListAssignments", func() error { _, err := store.ListAssignments(ctx); return err }},
+		{"UpsertAssignment", func() error { return store.UpsertAssignment(ctx, GroupAssignment{}) }},
+		{"GetRuntimeView", func() error { _, err := store.GetRuntimeView(ctx, 0); return err }},
+		{"DeleteRuntimeView", func() error { return store.DeleteRuntimeView(ctx, 0) }},
+		{"ListRuntimeViews", func() error { _, err := store.ListRuntimeViews(ctx); return err }},
+		{"UpsertRuntimeView", func() error { return store.UpsertRuntimeView(ctx, GroupRuntimeView{}) }},
+		{"GetControllerMembership", func() error { _, err := store.GetControllerMembership(ctx); return err }},
+		{"DeleteControllerMembership", func() error { return store.DeleteControllerMembership(ctx) }},
+		{"UpsertControllerMembership", func() error { return store.UpsertControllerMembership(ctx, ControllerMembership{}) }},
+		{"GetTask", func() error { _, err := store.GetTask(ctx, 0); return err }},
+		{"DeleteTask", func() error { return store.DeleteTask(ctx, 0) }},
+		{"ListTasks", func() error { _, err := store.ListTasks(ctx); return err }},
+		{"UpsertTask", func() error { return store.UpsertTask(ctx, ReconcileTask{}) }},
+		{"ExportSnapshot", func() error { _, err := store.ExportSnapshot(ctx); return err }},
+		{"ImportSnapshot", func() error { return store.ImportSnapshot(ctx, []byte{0x01}) }},
+	}
 
-	_, err = store.ExportSnapshot(ctx)
-	require.ErrorIs(t, err, ErrClosed)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.ErrorIs(t, tt.run(), ErrClosed)
+		})
+	}
+}
+
+func TestStoreCloseIsConcurrentSafe(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "db"))
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			require.NoError(t, store.Close())
+		}()
+	}
+	wg.Wait()
 }
 
 func appendRawUint64Slice(dst []byte, values []uint64) []byte {
