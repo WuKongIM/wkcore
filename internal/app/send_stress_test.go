@@ -142,6 +142,16 @@ func percentileSendStressDuration(sorted []time.Duration, pct float64) time.Dura
 }
 
 func TestSendStressConfigDefaultsAndOverrides(t *testing.T) {
+	defaultCfg := loadSendStressConfig(t)
+	defaultWorkers := max(4, runtime.GOMAXPROCS(0))
+	require.False(t, defaultCfg.Enabled)
+	require.Equal(t, 5*time.Second, defaultCfg.Duration)
+	require.Equal(t, defaultWorkers, defaultCfg.Workers)
+	require.Equal(t, max(8, defaultWorkers), defaultCfg.Senders)
+	require.Equal(t, 50, defaultCfg.MessagesPerWorker)
+	require.Equal(t, 3*time.Second, defaultCfg.DialTimeout)
+	require.Equal(t, 5*time.Second, defaultCfg.AckTimeout)
+
 	t.Setenv("WK_SEND_STRESS", "1")
 	t.Setenv("WK_SEND_STRESS_DURATION", "1500ms")
 	t.Setenv("WK_SEND_STRESS_WORKERS", "7")
