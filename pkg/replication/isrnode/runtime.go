@@ -232,7 +232,6 @@ func (r *runtime) processReplication(groupKey isr.GroupKey) {
 		return
 	}
 
-	meta := g.Status()
 	var failedPeers []isr.NodeID
 	scheduleRetry := false
 	for {
@@ -240,6 +239,7 @@ func (r *runtime) processReplication(groupKey isr.GroupKey) {
 		if !ok {
 			break
 		}
+		meta := g.Status()
 		err := r.sendEnvelope(Envelope{
 			Peer:       peer,
 			GroupKey:   groupKey,

@@ -16,6 +16,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
 	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
+	messageusecase "github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
@@ -299,7 +300,7 @@ func TestThreeNodeAppHotGroupDoesNotBlockNormalGroupDelivery(t *testing.T) {
 			ChannelType: hotKey.ChannelType,
 			MessageID:   uint64(i + 1),
 			MessageSeq:  uint64(i + 1),
-			FromUID:   "hot-sender",
+			FromUID:     "hot-sender",
 			Payload:     []byte("hot"),
 		}))
 	}
@@ -372,8 +373,180 @@ func TestThreeNodeAppUserTokenEndpointPersistsThroughClusterForwarding(t *testin
 	}
 }
 
+func TestThreeNodeAppSendAckSurvivesLeaderCrash(t *testing.T) {
+	harness := newThreeNodeAppHarness(t)
+	leaderID := harness.waitForStableLeader(t, 1)
+	leader := harness.apps[leaderID]
+	recipientUID := "crash-recipient"
+	channelID := deliveryusecase.EncodePersonChannel("crash-sender", recipientUID)
+
+	key := channellog.ChannelKey{
+		ChannelID:   channelID,
+		ChannelType: wkframe.ChannelTypePerson,
+	}
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    key.ChannelID,
+		ChannelType:  int64(key.ChannelType),
+		ChannelEpoch: 41,
+		LeaderEpoch:  12,
+		Replicas:     []uint64{1, 2, 3},
+		ISR:          []uint64{1, 2, 3},
+		Leader:       leader.cfg.Node.ID,
+		MinISR:       3,
+		Status:       uint8(channellog.ChannelStatusActive),
+		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
+	}
+	require.NoError(t, leader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
+	for _, app := range harness.appsWithLeaderFirst(leaderID) {
+		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), key)
+		require.NoError(t, err)
+	}
+
+	conn := connectMultinodeWKProtoClient(t, leader, "crash-sender", "crash-sender-device")
+	sendAppWKProtoFrame(t, conn, &wkframe.SendPacket{
+		ChannelID:   recipientUID,
+		ChannelType: key.ChannelType,
+		ClientSeq:   1,
+		ClientMsgNo: "sendack-crash-1",
+		Payload:     []byte("survive leader crash"),
+	})
+
+	sendack, ok := readAppWKProtoFrameWithin(t, conn, multinodeAppReadTimeout).(*wkframe.SendackPacket)
+	require.True(t, ok)
+	require.Equal(t, wkframe.ReasonSuccess, sendack.ReasonCode)
+	require.NoError(t, conn.Close())
+
+	harness.stopNode(t, leaderID)
+	newLeaderID := harness.waitForLeaderChange(t, 1, leaderID)
+	require.NotZero(t, newLeaderID)
+
+	for _, app := range harness.runningApps() {
+		msg := waitForAppCommittedMessage(t, app.ChannelLogDB().ForChannel(key), sendack.MessageSeq, 5*time.Second)
+		require.Equal(t, []byte("survive leader crash"), msg.Payload)
+		require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
+	}
+
+	harness.restartNode(t, leaderID)
+	harness.waitForStableLeader(t, 1)
+
+	msg := waitForAppCommittedMessage(t, harness.apps[leaderID].ChannelLogDB().ForChannel(key), sendack.MessageSeq, 5*time.Second)
+	require.Equal(t, []byte("survive leader crash"), msg.Payload)
+	require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
+}
+
+func TestThreeNodeAppRollingRestartPreservesWriteAvailability(t *testing.T) {
+	harness := newThreeNodeAppHarness(t)
+	ownerID := harness.waitForStableLeader(t, 1)
+	owner := harness.apps[ownerID]
+	recipientUID := "rolling-recipient"
+	channelID := deliveryusecase.EncodePersonChannel("rolling-sender", recipientUID)
+
+	key := channellog.ChannelKey{
+		ChannelID:   channelID,
+		ChannelType: wkframe.ChannelTypePerson,
+	}
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    key.ChannelID,
+		ChannelType:  int64(key.ChannelType),
+		ChannelEpoch: 51,
+		LeaderEpoch:  13,
+		Replicas:     []uint64{1, 2, 3},
+		ISR:          []uint64{1, 2, 3},
+		Leader:       owner.cfg.Node.ID,
+		MinISR:       3,
+		Status:       uint8(channellog.ChannelStatusActive),
+		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
+	}
+	require.NoError(t, owner.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
+	for _, app := range harness.appsWithLeaderFirst(ownerID) {
+		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), key)
+		require.NoError(t, err)
+	}
+
+	type sentMessage struct {
+		seq     uint64
+		payload []byte
+	}
+	sent := make([]sentMessage, 0, 4)
+
+	sendViaOwner := func(clientSeq uint64, clientMsgNo string, payload []byte) {
+		t.Helper()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		result, err := harness.apps[ownerID].Message().Send(ctx, messageusecase.SendCommand{
+			FromUID:     "rolling-sender",
+			ChannelID:   recipientUID,
+			ChannelType: key.ChannelType,
+			ClientSeq:   clientSeq,
+			ClientMsgNo: clientMsgNo,
+			Payload:     payload,
+		})
+		require.NoError(t, err)
+		require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+		sent = append(sent, sentMessage{seq: result.MessageSeq, payload: payload})
+	}
+
+	restartOrder := make([]uint64, 0, 3)
+	for _, nodeID := range []uint64{1, 2, 3} {
+		if nodeID == ownerID {
+			continue
+		}
+		restartOrder = append(restartOrder, nodeID)
+	}
+	restartOrder = append(restartOrder, ownerID)
+
+	sendViaOwner(1, "rolling-1", []byte(fmt.Sprintf("before restart node-%d", restartOrder[0])))
+	harness.stopNode(t, restartOrder[0])
+	harness.restartNode(t, restartOrder[0])
+	harness.waitForStableLeader(t, 1)
+
+	sendViaOwner(2, "rolling-2", []byte(fmt.Sprintf("before restart node-%d", restartOrder[1])))
+	harness.stopNode(t, restartOrder[1])
+	harness.restartNode(t, restartOrder[1])
+	harness.waitForStableLeader(t, 1)
+
+	sendViaOwner(3, "rolling-3", []byte("before restart owner"))
+	harness.stopNode(t, ownerID)
+	harness.restartNode(t, ownerID)
+	harness.waitForStableLeader(t, 1)
+
+	sendViaOwner(4, "rolling-4", []byte("after rolling restart"))
+
+	for _, item := range sent {
+		for _, app := range harness.orderedApps() {
+			msg := waitForAppCommittedMessage(t, app.ChannelLogDB().ForChannel(key), item.seq, 5*time.Second)
+			require.Equal(t, item.payload, msg.Payload)
+			require.Equal(t, item.seq, msg.MessageSeq)
+		}
+	}
+}
+
+func TestThreeNodeAppHarnessRestartNodePreservesDataDir(t *testing.T) {
+	harness := newThreeNodeAppHarness(t)
+
+	oldDataDir := harness.apps[2].cfg.Node.DataDir
+	oldGatewayAddr := harness.apps[2].Gateway().ListenerAddr("tcp-wkproto")
+
+	harness.stopNode(t, 2)
+	restarted := harness.restartNode(t, 2)
+
+	require.Equal(t, oldDataDir, restarted.cfg.Node.DataDir)
+	require.Equal(t, oldGatewayAddr, restarted.Gateway().ListenerAddr("tcp-wkproto"))
+
+	harness.waitForStableLeader(t, 1)
+}
+
 type threeNodeAppHarness struct {
-	apps map[uint64]*App
+	apps  map[uint64]*App
+	specs map[uint64]appNodeSpec
+}
+
+type appNodeSpec struct {
+	cfg Config
 }
 
 func newThreeNodeAppHarness(t *testing.T) *threeNodeAppHarness {
@@ -392,6 +565,7 @@ func newThreeNodeAppHarness(t *testing.T) *threeNodeAppHarness {
 
 	root := t.TempDir()
 	apps := make(map[uint64]*App, 3)
+	specs := make(map[uint64]appNodeSpec, 3)
 	for i := 0; i < 3; i++ {
 		nodeID := uint64(i + 1)
 		cfg := validConfig()
@@ -417,6 +591,8 @@ func newThreeNodeAppHarness(t *testing.T) *threeNodeAppHarness {
 			binding.TCPWKProto("tcp-wkproto", gatewayAddrs[nodeID]),
 		}
 
+		specs[nodeID] = appNodeSpec{cfg: cfg}
+
 		app, err := New(cfg)
 		require.NoError(t, err)
 		apps[nodeID] = app
@@ -437,7 +613,7 @@ func newThreeNodeAppHarness(t *testing.T) *threeNodeAppHarness {
 		require.NoError(t, err)
 	}
 
-	harness := &threeNodeAppHarness{apps: apps}
+	harness := &threeNodeAppHarness{apps: apps, specs: specs}
 	t.Cleanup(func() {
 		for i := 3; i >= 1; i-- {
 			if app := apps[uint64(i)]; app != nil {
@@ -448,8 +624,18 @@ func newThreeNodeAppHarness(t *testing.T) *threeNodeAppHarness {
 	return harness
 }
 
+func (h *threeNodeAppHarness) runningApps() []*App {
+	apps := make([]*App, 0, len(h.apps))
+	for _, nodeID := range []uint64{1, 2, 3} {
+		if app := h.apps[nodeID]; app != nil {
+			apps = append(apps, app)
+		}
+	}
+	return apps
+}
+
 func (h *threeNodeAppHarness) orderedApps() []*App {
-	return []*App{h.apps[1], h.apps[2], h.apps[3]}
+	return h.runningApps()
 }
 
 func (h *threeNodeAppHarness) appsWithLeaderFirst(leaderID uint64) []*App {
@@ -457,13 +643,47 @@ func (h *threeNodeAppHarness) appsWithLeaderFirst(leaderID uint64) []*App {
 	if leader := h.apps[leaderID]; leader != nil {
 		apps = append(apps, leader)
 	}
-	for _, app := range h.orderedApps() {
-		if app == nil || app.cfg.Node.ID == leaderID {
+	for _, app := range h.runningApps() {
+		if app.cfg.Node.ID == leaderID {
 			continue
 		}
 		apps = append(apps, app)
 	}
 	return apps
+}
+
+func (h *threeNodeAppHarness) stopNode(t *testing.T, nodeID uint64) {
+	t.Helper()
+
+	app := h.apps[nodeID]
+	require.NotNil(t, app, "node %d is not running", nodeID)
+	require.NoError(t, app.Stop())
+	h.apps[nodeID] = nil
+}
+
+func (h *threeNodeAppHarness) restartNode(t *testing.T, nodeID uint64) *App {
+	t.Helper()
+
+	require.Nil(t, h.apps[nodeID], "node %d is already running", nodeID)
+
+	spec, ok := h.specs[nodeID]
+	require.True(t, ok, "missing spec for node %d", nodeID)
+
+	app, err := New(spec.cfg)
+	require.NoError(t, err)
+	require.NoError(t, app.Start())
+	h.apps[nodeID] = app
+	return app
+}
+
+func (h *threeNodeAppHarness) waitForLeaderChange(t *testing.T, groupID uint64, oldLeader uint64) uint64 {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		leader, ok := h.consensusLeader(multiraft.GroupID(groupID))
+		return ok && leader != 0 && uint64(leader) != oldLeader
+	}, 10*time.Second, 50*time.Millisecond)
+	return h.waitForStableLeader(t, groupID)
 }
 
 func (h *threeNodeAppHarness) waitForStableLeader(t *testing.T, groupID uint64) uint64 {
@@ -496,7 +716,7 @@ func (h *threeNodeAppHarness) waitForStableLeader(t *testing.T, groupID uint64) 
 
 func (h *threeNodeAppHarness) consensusLeader(groupID multiraft.GroupID) (multiraft.NodeID, bool) {
 	var leader multiraft.NodeID
-	for _, app := range h.orderedApps() {
+	for _, app := range h.runningApps() {
 		current, err := app.Cluster().LeaderOf(groupID)
 		if err != nil {
 			return 0, false

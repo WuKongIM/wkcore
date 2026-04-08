@@ -65,10 +65,122 @@ func TestThreeNodeClusterAppendCommitsBeforeAckAndSurvivesFollowerRestart(t *tes
 	require.Equal(t, []byte("hello durable cluster"), restartedMsg.Payload)
 }
 
+func TestThreeNodeClusterHarnessRestartNodeReopensData(t *testing.T) {
+	harness := newThreeNodeChannelHarness(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := harness.leader.cluster.Append(ctx, AppendRequest{
+		ChannelID:   harness.key.ChannelID,
+		ChannelType: harness.key.ChannelType,
+		Message: Message{
+			ChannelID:   harness.key.ChannelID,
+			ChannelType: harness.key.ChannelType,
+			FromUID:     "sender",
+			ClientMsgNo: "restart-harness-1",
+			Payload:     []byte("persisted before restart"),
+		},
+	})
+	require.NoError(t, err)
+
+	harness.stopNode(t, 2)
+	restarted := harness.restartNode(t, 2)
+
+	require.Equal(t, harness.specs[2].dir, restarted.dir)
+	require.Equal(t, harness.addrs[2], restarted.addr)
+
+	msg := waitForCommittedMessage(t, restarted.db.ForChannel(harness.key), result.MessageSeq, 5*time.Second)
+	require.Equal(t, []byte("persisted before restart"), msg.Payload)
+}
+
+func TestThreeNodeClusterBlocksCommitUntilMinISRRecovers(t *testing.T) {
+	harness := newThreeNodeChannelHarness(t)
+
+	harness.stopNode(t, 2)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := harness.leader.cluster.Append(ctx, AppendRequest{
+		ChannelID:   harness.key.ChannelID,
+		ChannelType: harness.key.ChannelType,
+		Message: Message{
+			ChannelID:   harness.key.ChannelID,
+			ChannelType: harness.key.ChannelType,
+			FromUID:     "sender",
+			ClientMsgNo: "minisr-timeout-1",
+			Payload:     []byte("commit after isr recovers"),
+		},
+	})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.GreaterOrEqual(t, time.Since(start), 250*time.Millisecond)
+
+	status, err := harness.leader.cluster.Status(harness.key)
+	require.NoError(t, err)
+	require.Equal(t, uint64(0), status.HW)
+	require.Equal(t, uint64(0), status.CommittedSeq)
+
+	assertCommittedMessageAbsent(t, harness.nodes[1].db.ForChannel(harness.key), 1)
+	assertCommittedMessageAbsent(t, harness.nodes[3].db.ForChannel(harness.key), 1)
+
+	harness.restartNode(t, 2)
+
+	for _, node := range harness.nodes {
+		msg := waitForCommittedMessage(t, node.db.ForChannel(harness.key), 1, 5*time.Second)
+		require.Equal(t, []byte("commit after isr recovers"), msg.Payload)
+	}
+}
+
+func TestFollowerRestartCatchesUpAfterLeaderProgress(t *testing.T) {
+	harness := newThreeNodeChannelHarnessWithMinISR(t, 2)
+
+	harness.stopNode(t, 2)
+
+	const writes = 5
+	for i := 1; i <= writes; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		payload := []byte(fmt.Sprintf("payload-%d", i))
+		res, err := harness.leader.cluster.Append(ctx, AppendRequest{
+			ChannelID:   harness.key.ChannelID,
+			ChannelType: harness.key.ChannelType,
+			Message: Message{
+				ChannelID:   harness.key.ChannelID,
+				ChannelType: harness.key.ChannelType,
+				FromUID:     "sender",
+				ClientMsgNo: fmt.Sprintf("catchup-%d", i),
+				Payload:     payload,
+			},
+		})
+		cancel()
+		require.NoError(t, err)
+		require.Equal(t, uint64(i), res.MessageSeq)
+	}
+
+	restarted := harness.restartNode(t, 2)
+
+	for seq := uint64(1); seq <= writes; seq++ {
+		msg := waitForCommittedMessage(t, restarted.db.ForChannel(harness.key), seq, 5*time.Second)
+		require.Equal(t, []byte(fmt.Sprintf("payload-%d", seq)), msg.Payload)
+	}
+
+	reloadedReplica, err := NewReplica(restarted.db.ForChannel(harness.key), isr.NodeID(restarted.id), func() time.Time {
+		return time.Now()
+	})
+	require.NoError(t, err)
+
+	restartedStatus := reloadedReplica.Status()
+	require.Equal(t, uint64(writes), restartedStatus.HW)
+	require.Equal(t, uint64(writes), restartedStatus.LEO)
+}
+
 type threeNodeChannelHarness struct {
 	key         ChannelKey
 	channelMeta ChannelMeta
 	groupMeta   isr.GroupMeta
+	addrs       map[uint64]string
+	specs       map[NodeID]channelNodeSpec
 	nodes       map[NodeID]*threeNodeChannelNode
 	leader      *threeNodeChannelNode
 }
@@ -85,7 +197,16 @@ type threeNodeChannelNode struct {
 	client  *nodetransport.Client
 }
 
+type channelNodeSpec struct {
+	dir string
+}
+
 func newThreeNodeChannelHarness(t *testing.T) *threeNodeChannelHarness {
+	t.Helper()
+	return newThreeNodeChannelHarnessWithMinISR(t, 3)
+}
+
+func newThreeNodeChannelHarnessWithMinISR(t *testing.T, minISR int) *threeNodeChannelHarness {
 	t.Helper()
 
 	addrs := reserveNodeAddrs(t, 3)
@@ -98,7 +219,7 @@ func newThreeNodeChannelHarness(t *testing.T) *threeNodeChannelHarness {
 		Replicas:     []NodeID{1, 2, 3},
 		ISR:          []NodeID{1, 2, 3},
 		Leader:       1,
-		MinISR:       3,
+		MinISR:       minISR,
 		Status:       ChannelStatusActive,
 		Features: ChannelFeatures{
 			MessageSeqFormat: MessageSeqFormatLegacyU32,
@@ -118,11 +239,17 @@ func newThreeNodeChannelHarness(t *testing.T) *threeNodeChannelHarness {
 		key:         key,
 		channelMeta: channelMeta,
 		groupMeta:   groupMeta,
+		addrs:       addrs,
+		specs:       make(map[NodeID]channelNodeSpec, 3),
 		nodes:       make(map[NodeID]*threeNodeChannelNode, 3),
 	}
 	root := t.TempDir()
 	for nodeID := 1; nodeID <= 3; nodeID++ {
-		node := newThreeNodeChannelNode(t, NodeID(nodeID), addrs, filepath.Join(root, fmt.Sprintf("node-%d", nodeID)), key)
+		id := NodeID(nodeID)
+		dir := filepath.Join(root, fmt.Sprintf("node-%d", nodeID))
+		harness.specs[id] = channelNodeSpec{dir: dir}
+
+		node := newThreeNodeChannelNode(t, id, addrs, dir, key)
 		require.NoError(t, node.runtime.EnsureGroup(groupMeta))
 		require.NoError(t, node.cluster.ApplyMeta(channelMeta))
 		harness.nodes[node.id] = node
@@ -132,6 +259,16 @@ func newThreeNodeChannelHarness(t *testing.T) *threeNodeChannelHarness {
 	}
 	require.NotNil(t, harness.leader)
 	return harness
+}
+
+func (h *threeNodeChannelHarness) runningNodes() []*threeNodeChannelNode {
+	nodes := make([]*threeNodeChannelNode, 0, len(h.nodes))
+	for _, nodeID := range []NodeID{1, 2, 3} {
+		if node := h.nodes[nodeID]; node != nil {
+			nodes = append(nodes, node)
+		}
+	}
+	return nodes
 }
 
 func newThreeNodeChannelNode(t *testing.T, nodeID NodeID, addrs map[uint64]string, dir string, key ChannelKey) *threeNodeChannelNode {
@@ -207,19 +344,42 @@ func newThreeNodeChannelNode(t *testing.T, nodeID NodeID, addrs map[uint64]strin
 func (h *threeNodeChannelHarness) restartFollower(t *testing.T, nodeID NodeID) *threeNodeChannelNode {
 	t.Helper()
 
+	h.stopNode(t, nodeID)
+	return h.restartNode(t, nodeID)
+}
+
+func (h *threeNodeChannelHarness) stopNode(t *testing.T, nodeID NodeID) {
+	t.Helper()
+
 	node := h.nodes[nodeID]
-	require.NotNil(t, node)
-	node.close(t)
-
-	db, err := Open(node.dir)
-	require.NoError(t, err)
-
-	return &threeNodeChannelNode{
-		id:   node.id,
-		dir:  node.dir,
-		addr: node.addr,
-		db:   db,
+	require.NotNil(t, node, "node %d is not running", nodeID)
+	if node.runtime != nil {
+		require.NoError(t, node.runtime.RemoveGroup(h.groupMeta.GroupKey))
 	}
+	node.close(t)
+	h.nodes[nodeID] = nil
+	if h.leader != nil && h.leader.id == nodeID {
+		h.leader = nil
+	}
+}
+
+func (h *threeNodeChannelHarness) restartNode(t *testing.T, nodeID NodeID) *threeNodeChannelNode {
+	t.Helper()
+
+	require.Nil(t, h.nodes[nodeID], "node %d is already running", nodeID)
+
+	spec, ok := h.specs[nodeID]
+	require.True(t, ok, "missing spec for node %d", nodeID)
+
+	node := newThreeNodeChannelNode(t, nodeID, h.addrs, spec.dir, h.key)
+	require.NoError(t, node.runtime.EnsureGroup(h.groupMeta))
+	require.NoError(t, node.cluster.ApplyMeta(h.channelMeta))
+
+	h.nodes[nodeID] = node
+	if node.id == h.channelMeta.Leader {
+		h.leader = node
+	}
+	return node
 }
 
 func (n *threeNodeChannelNode) close(t *testing.T) {
@@ -241,6 +401,8 @@ func (n *threeNodeChannelNode) close(t *testing.T) {
 		require.NoError(t, n.db.Close())
 		n.db = nil
 	}
+	n.runtime = nil
+	n.cluster = nil
 }
 
 type singleChannelReplicaFactory struct {
@@ -411,4 +573,11 @@ func waitForCommittedMessage(t *testing.T, store *Store, seq uint64, timeout tim
 		return true
 	}, timeout, 10*time.Millisecond)
 	return msg
+}
+
+func assertCommittedMessageAbsent(t *testing.T, store *Store, seq uint64) {
+	t.Helper()
+
+	_, err := store.LoadMsg(seq)
+	require.ErrorIs(t, err, ErrMessageNotFound)
 }

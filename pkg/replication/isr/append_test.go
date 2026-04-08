@@ -99,6 +99,23 @@ func TestLeaderLeaseExpiryFencesAppend(t *testing.T) {
 	}
 }
 
+func TestAppendFailsFastWhenMetaISRBelowMinISR(t *testing.T) {
+	env := newTestEnv(t)
+	meta := activeMetaWithMinISR(7, 1, 3)
+	meta.ISR = []NodeID{1, 3}
+
+	env.replica = newReplicaFromEnv(t, env)
+	env.replica.mustApplyMeta(t, meta)
+	if err := env.replica.BecomeLeader(meta); err != nil {
+		t.Fatalf("BecomeLeader() error = %v", err)
+	}
+
+	_, err := env.replica.Append(context.Background(), []Record{{Payload: []byte("x"), SizeBytes: 1}})
+	if !errors.Is(err, ErrInsufficientISR) {
+		t.Fatalf("expected ErrInsufficientISR, got %v", err)
+	}
+}
+
 func TestAppendCommitsUsingReturnedBaseOffsetWhenLEOReadLags(t *testing.T) {
 	env := newTestEnv(t)
 
