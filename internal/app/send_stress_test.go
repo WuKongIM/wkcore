@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"runtime"
@@ -101,13 +102,35 @@ func loadSendStressConfig(t *testing.T) sendStressConfig {
 		}
 		cfg.Senders = parsed
 	}
-	if cfg.Senders <= 0 {
-		t.Fatalf("%s must be > 0, got %d", sendStressSendersEnv, cfg.Senders)
-	}
-	if cfg.Senders < cfg.Workers {
-		t.Fatalf("%s must be >= %s, got %d < %d", sendStressSendersEnv, sendStressWorkersEnv, cfg.Senders, cfg.Workers)
+	if err := validateSendStressConfig(cfg); err != nil {
+		t.Fatal(err)
 	}
 	return cfg
+}
+
+func validateSendStressConfig(cfg sendStressConfig) error {
+	if cfg.Workers <= 0 {
+		return fmt.Errorf("%s must be > 0, got %d", sendStressWorkersEnv, cfg.Workers)
+	}
+	if cfg.Senders <= 0 {
+		return fmt.Errorf("%s must be > 0, got %d", sendStressSendersEnv, cfg.Senders)
+	}
+	if cfg.Senders < cfg.Workers {
+		return fmt.Errorf("%s must be >= %s, got %d < %d", sendStressSendersEnv, sendStressWorkersEnv, cfg.Senders, cfg.Workers)
+	}
+	if cfg.MessagesPerWorker <= 0 {
+		return fmt.Errorf("%s must be > 0, got %d", sendStressMessagesPerWorkerEnv, cfg.MessagesPerWorker)
+	}
+	if cfg.Duration <= 0 {
+		return fmt.Errorf("%s must be > 0, got %s", sendStressDurationEnv, cfg.Duration)
+	}
+	if cfg.DialTimeout <= 0 {
+		return fmt.Errorf("%s must be > 0, got %s", sendStressDialTimeoutEnv, cfg.DialTimeout)
+	}
+	if cfg.AckTimeout <= 0 {
+		return fmt.Errorf("%s must be > 0, got %s", sendStressAckTimeoutEnv, cfg.AckTimeout)
+	}
+	return nil
 }
 
 func parseSendStressEnabled(value string) (bool, bool, error) {
@@ -203,6 +226,39 @@ func TestSendStressConfigDefaultsAndOverrides(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, ok)
 	require.False(t, enabled)
+
+	err = validateSendStressConfig(sendStressConfig{
+		Workers:           0,
+		Senders:           1,
+		MessagesPerWorker: 1,
+		Duration:          time.Second,
+		DialTimeout:       time.Second,
+		AckTimeout:        time.Second,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), sendStressWorkersEnv)
+
+	err = validateSendStressConfig(sendStressConfig{
+		Workers:           2,
+		Senders:           1,
+		MessagesPerWorker: 1,
+		Duration:          time.Second,
+		DialTimeout:       time.Second,
+		AckTimeout:        time.Second,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), sendStressSendersEnv)
+
+	err = validateSendStressConfig(sendStressConfig{
+		Workers:           2,
+		Senders:           2,
+		MessagesPerWorker: 0,
+		Duration:          time.Second,
+		DialTimeout:       time.Second,
+		AckTimeout:        time.Second,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), sendStressMessagesPerWorkerEnv)
 }
 
 func TestSendStressLatencySummaryPercentiles(t *testing.T) {
