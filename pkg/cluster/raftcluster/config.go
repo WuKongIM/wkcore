@@ -18,20 +18,22 @@ const (
 )
 
 type Config struct {
-	NodeID          multiraft.NodeID
-	ListenAddr      string
-	GroupCount      uint32
-	NewStorage      func(groupID multiraft.GroupID) (multiraft.Storage, error)
-	NewStateMachine func(groupID multiraft.GroupID) (multiraft.StateMachine, error)
-	Nodes           []NodeConfig
-	Groups          []GroupConfig
-	ForwardTimeout  time.Duration
-	PoolSize        int
-	TickInterval    time.Duration
-	RaftWorkers     int
-	ElectionTick    int
-	HeartbeatTick   int
-	DialTimeout     time.Duration
+	NodeID             multiraft.NodeID
+	ListenAddr         string
+	GroupCount         uint32
+	ControllerReplicaN int
+	GroupReplicaN      int
+	NewStorage         func(groupID multiraft.GroupID) (multiraft.Storage, error)
+	NewStateMachine    func(groupID multiraft.GroupID) (multiraft.StateMachine, error)
+	Nodes              []NodeConfig
+	Groups             []GroupConfig
+	ForwardTimeout     time.Duration
+	PoolSize           int
+	TickInterval       time.Duration
+	RaftWorkers        int
+	ElectionTick       int
+	HeartbeatTick      int
+	DialTimeout        time.Duration
 }
 
 type NodeConfig struct {
@@ -60,41 +62,71 @@ func (c *Config) validate() error {
 	if c.GroupCount == 0 {
 		return fmt.Errorf("%w: GroupCount must be > 0", ErrInvalidConfig)
 	}
-	if uint32(len(c.Groups)) != c.GroupCount {
+	if c.ControllerReplicaN <= 0 {
+		return fmt.Errorf("%w: ControllerReplicaN must be > 0", ErrInvalidConfig)
+	}
+	if c.GroupReplicaN <= 0 {
+		return fmt.Errorf("%w: GroupReplicaN must be > 0", ErrInvalidConfig)
+	}
+	if c.ControllerReplicaN > len(c.Nodes) {
+		return fmt.Errorf("%w: ControllerReplicaN=%d exceeds Nodes=%d", ErrInvalidConfig, c.ControllerReplicaN, len(c.Nodes))
+	}
+	if c.GroupReplicaN > len(c.Nodes) {
+		return fmt.Errorf("%w: GroupReplicaN=%d exceeds Nodes=%d", ErrInvalidConfig, c.GroupReplicaN, len(c.Nodes))
+	}
+	if len(c.Groups) > 0 && uint32(len(c.Groups)) != c.GroupCount {
 		return fmt.Errorf("%w: len(Groups)=%d != GroupCount=%d", ErrInvalidConfig, len(c.Groups), c.GroupCount)
 	}
 
 	nodeSet := make(map[multiraft.NodeID]bool, len(c.Nodes))
+	selfFound := false
 	for _, n := range c.Nodes {
 		if nodeSet[n.NodeID] {
 			return fmt.Errorf("%w: duplicate NodeID %d in Nodes", ErrInvalidConfig, n.NodeID)
 		}
 		nodeSet[n.NodeID] = true
-	}
-
-	groupSet := make(map[multiraft.GroupID]bool, len(c.Groups))
-	selfFound := false
-	for _, g := range c.Groups {
-		if groupSet[g.GroupID] {
-			return fmt.Errorf("%w: duplicate GroupID %d", ErrInvalidConfig, g.GroupID)
-		}
-		groupSet[g.GroupID] = true
-		for _, peer := range g.Peers {
-			if !nodeSet[peer] {
-				return fmt.Errorf("%w: peer %d in group %d not found in Nodes", ErrInvalidConfig, peer, g.GroupID)
-			}
-			if peer == c.NodeID {
-				selfFound = true
-			}
+		if n.NodeID == c.NodeID {
+			selfFound = true
 		}
 	}
 	if !selfFound {
-		return fmt.Errorf("%w: NodeID %d not found as peer in any group", ErrInvalidConfig, c.NodeID)
+		return fmt.Errorf("%w: NodeID %d not found in Nodes", ErrInvalidConfig, c.NodeID)
+	}
+
+	if len(c.Groups) > 0 {
+		groupSet := make(map[multiraft.GroupID]bool, len(c.Groups))
+		groupSelfFound := false
+		for _, g := range c.Groups {
+			if groupSet[g.GroupID] {
+				return fmt.Errorf("%w: duplicate GroupID %d", ErrInvalidConfig, g.GroupID)
+			}
+			groupSet[g.GroupID] = true
+			for _, peer := range g.Peers {
+				if !nodeSet[peer] {
+					return fmt.Errorf("%w: peer %d in group %d not found in Nodes", ErrInvalidConfig, peer, g.GroupID)
+				}
+				if peer == c.NodeID {
+					groupSelfFound = true
+				}
+			}
+		}
+		if !groupSelfFound {
+			return fmt.Errorf("%w: NodeID %d not found as peer in any group", ErrInvalidConfig, c.NodeID)
+		}
 	}
 	return nil
 }
 
 func (c *Config) applyDefaults() {
+	if c.GroupCount == 0 && len(c.Groups) > 0 {
+		c.GroupCount = uint32(len(c.Groups))
+	}
+	if c.ControllerReplicaN == 0 {
+		c.ControllerReplicaN = len(c.Nodes)
+	}
+	if c.GroupReplicaN == 0 {
+		c.GroupReplicaN = len(c.Nodes)
+	}
 	if c.ForwardTimeout == 0 {
 		c.ForwardTimeout = defaultForwardTimeout
 	}

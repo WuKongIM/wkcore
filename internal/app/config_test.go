@@ -41,6 +41,8 @@ func TestConfigApplyDefaultsDerivesStoragePathsFromDataDir(t *testing.T) {
 	require.Equal(t, "/tmp/wukong-node-1/data", cfg.Storage.DBPath)
 	require.Equal(t, "/tmp/wukong-node-1/raft", cfg.Storage.RaftPath)
 	require.Equal(t, "/tmp/wukong-node-1/channellog", cfg.Storage.ChannelLogPath)
+	require.Equal(t, "/tmp/wukong-node-1/controller-meta", cfg.Storage.ControllerMetaPath)
+	require.Equal(t, "/tmp/wukong-node-1/controller-raft", cfg.Storage.ControllerRaftPath)
 }
 
 func TestConfigRejectsNodeIDSnowflakeOverflow(t *testing.T) {
@@ -53,6 +55,39 @@ func TestConfigRejectsNodeIDSnowflakeOverflow(t *testing.T) {
 func TestConfigValidateRejectsMismatchedGroupCount(t *testing.T) {
 	cfg := validConfig()
 	cfg.Cluster.GroupCount = 2
+
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
+}
+
+func TestConfigValidateAllowsAutomaticGroupManagementWithoutStaticGroups(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cluster.Groups = nil
+	cfg.Cluster.GroupCount = 8
+	cfg.Cluster.ControllerReplicaN = 3
+	cfg.Cluster.GroupReplicaN = 3
+	cfg.Cluster.Nodes = []NodeConfigRef{
+		{ID: 3, Addr: "127.0.0.1:7002"},
+		{ID: 1, Addr: "127.0.0.1:7000"},
+		{ID: 2, Addr: "127.0.0.1:7001"},
+	}
+
+	require.NoError(t, cfg.ApplyDefaultsAndValidate())
+	require.Equal(t, []NodeConfigRef{
+		{ID: 1, Addr: "127.0.0.1:7000"},
+		{ID: 2, Addr: "127.0.0.1:7001"},
+		{ID: 3, Addr: "127.0.0.1:7002"},
+	}, cfg.Cluster.DerivedControllerNodes())
+}
+
+func TestConfigValidateRejectsInvalidControllerReplicaN(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cluster.ControllerReplicaN = 4
+	cfg.Cluster.GroupReplicaN = 3
+	cfg.Cluster.Nodes = []NodeConfigRef{
+		{ID: 3, Addr: "127.0.0.1:7002"},
+		{ID: 1, Addr: "127.0.0.1:7000"},
+		{ID: 2, Addr: "127.0.0.1:7001"},
+	}
 
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
@@ -114,6 +149,17 @@ func TestConfigValidateRejectsNonContiguousGroupIDs(t *testing.T) {
 func TestConfigValidateRejectsNodeMissingFromClusterNodes(t *testing.T) {
 	cfg := validConfig()
 	cfg.Node.ID = 2
+
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
+}
+
+func TestConfigValidateRejectsLocalNodeMissingFromClusterNodes(t *testing.T) {
+	cfg := validConfig()
+	cfg.Node.ID = 9
+	cfg.Cluster.Groups = nil
+	cfg.Cluster.GroupCount = 8
+	cfg.Cluster.ControllerReplicaN = 3
+	cfg.Cluster.GroupReplicaN = 3
 
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
@@ -180,16 +226,18 @@ func validConfig() Config {
 			DataDir: "/tmp/wukong-node-1",
 		},
 		Cluster: ClusterConfig{
-			ListenAddr:     "127.0.0.1:7000",
-			Nodes:          []NodeConfigRef{{ID: 1, Addr: "127.0.0.1:7000"}},
-			Groups:         []GroupConfig{{ID: 1, Peers: []uint64{1}}},
-			ForwardTimeout: 5 * time.Second,
-			PoolSize:       4,
-			TickInterval:   100 * time.Millisecond,
-			RaftWorkers:    2,
-			ElectionTick:   10,
-			HeartbeatTick:  1,
-			DialTimeout:    5 * time.Second,
+			ListenAddr:         "127.0.0.1:7000",
+			Nodes:              []NodeConfigRef{{ID: 1, Addr: "127.0.0.1:7000"}},
+			Groups:             []GroupConfig{{ID: 1, Peers: []uint64{1}}},
+			ControllerReplicaN: 1,
+			GroupReplicaN:      1,
+			ForwardTimeout:     5 * time.Second,
+			PoolSize:           4,
+			TickInterval:       100 * time.Millisecond,
+			RaftWorkers:        2,
+			ElectionTick:       10,
+			HeartbeatTick:      1,
+			DialTimeout:        5 * time.Second,
 		},
 		API: APIConfig{},
 		Gateway: GatewayConfig{

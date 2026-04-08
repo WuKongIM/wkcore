@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
@@ -25,9 +26,11 @@ type NodeConfig struct {
 }
 
 type StorageConfig struct {
-	DBPath         string
-	RaftPath       string
-	ChannelLogPath string
+	DBPath             string
+	RaftPath           string
+	ChannelLogPath     string
+	ControllerMetaPath string
+	ControllerRaftPath string
 }
 
 type ClusterConfig struct {
@@ -35,6 +38,8 @@ type ClusterConfig struct {
 	GroupCount          uint32
 	Nodes               []NodeConfigRef
 	Groups              []GroupConfig
+	ControllerReplicaN  int
+	GroupReplicaN       int
 	ForwardTimeout      time.Duration
 	PoolSize            int
 	TickInterval        time.Duration
@@ -53,6 +58,17 @@ type NodeConfigRef struct {
 type GroupConfig struct {
 	ID    uint32
 	Peers []uint64
+}
+
+func (c ClusterConfig) DerivedControllerNodes() []NodeConfigRef {
+	nodes := append([]NodeConfigRef(nil), c.Nodes...)
+	sort.Slice(nodes, func(i, j int) bool {
+		return nodes[i].ID < nodes[j].ID
+	})
+	if c.ControllerReplicaN > 0 && c.ControllerReplicaN < len(nodes) {
+		nodes = nodes[:c.ControllerReplicaN]
+	}
+	return nodes
 }
 
 type GatewayConfig struct {
@@ -97,14 +113,36 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	if len(c.Cluster.Nodes) == 0 {
 		return fmt.Errorf("%w: cluster nodes must be set", ErrInvalidConfig)
 	}
-	if len(c.Cluster.Groups) == 0 {
-		return fmt.Errorf("%w: cluster groups must be set", ErrInvalidConfig)
-	}
 	if len(c.Gateway.Listeners) == 0 {
 		return fmt.Errorf("%w: gateway listeners must be set", ErrInvalidConfig)
 	}
 	if c.Gateway.TokenAuthOn {
 		return fmt.Errorf("%w: gateway token auth requires verifier hooks", ErrInvalidConfig)
+	}
+
+	if c.Cluster.GroupCount == 0 && len(c.Cluster.Groups) > 0 {
+		c.Cluster.GroupCount = uint32(len(c.Cluster.Groups))
+	}
+	if c.Cluster.GroupCount == 0 {
+		return fmt.Errorf("%w: cluster group count must be set", ErrInvalidConfig)
+	}
+	if c.Cluster.ControllerReplicaN == 0 {
+		c.Cluster.ControllerReplicaN = len(c.Cluster.Nodes)
+	}
+	if c.Cluster.ControllerReplicaN <= 0 {
+		return fmt.Errorf("%w: controller replica count must be positive", ErrInvalidConfig)
+	}
+	if c.Cluster.ControllerReplicaN > len(c.Cluster.Nodes) {
+		return fmt.Errorf("%w: controller replica count %d exceeds cluster nodes %d", ErrInvalidConfig, c.Cluster.ControllerReplicaN, len(c.Cluster.Nodes))
+	}
+	if c.Cluster.GroupReplicaN == 0 {
+		c.Cluster.GroupReplicaN = len(c.Cluster.Nodes)
+	}
+	if c.Cluster.GroupReplicaN <= 0 {
+		return fmt.Errorf("%w: group replica count must be positive", ErrInvalidConfig)
+	}
+	if c.Cluster.GroupReplicaN > len(c.Cluster.Nodes) {
+		return fmt.Errorf("%w: group replica count %d exceeds cluster nodes %d", ErrInvalidConfig, c.Cluster.GroupReplicaN, len(c.Cluster.Nodes))
 	}
 
 	if c.Storage.DBPath == "" {
@@ -115,6 +153,12 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	}
 	if c.Storage.ChannelLogPath == "" {
 		c.Storage.ChannelLogPath = filepath.Join(c.Node.DataDir, "channellog")
+	}
+	if c.Storage.ControllerMetaPath == "" {
+		c.Storage.ControllerMetaPath = filepath.Join(c.Node.DataDir, "controller-meta")
+	}
+	if c.Storage.ControllerRaftPath == "" {
+		c.Storage.ControllerRaftPath = filepath.Join(c.Node.DataDir, "controller-raft")
 	}
 
 	dbPath, err := normalizeStoragePath(c.Storage.DBPath)
@@ -129,21 +173,28 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	if err != nil {
 		return fmt.Errorf("%w: normalize channel log path: %v", ErrInvalidConfig, err)
 	}
+	controllerMetaPath, err := normalizeStoragePath(c.Storage.ControllerMetaPath)
+	if err != nil {
+		return fmt.Errorf("%w: normalize controller meta path: %v", ErrInvalidConfig, err)
+	}
+	controllerRaftPath, err := normalizeStoragePath(c.Storage.ControllerRaftPath)
+	if err != nil {
+		return fmt.Errorf("%w: normalize controller raft path: %v", ErrInvalidConfig, err)
+	}
 	if dbPath == raftPath {
 		return fmt.Errorf("%w: storage db path and raft path must differ", ErrInvalidConfig)
 	}
 	if dbPath == channelLogPath || raftPath == channelLogPath {
 		return fmt.Errorf("%w: channel log path must differ from db and raft paths", ErrInvalidConfig)
 	}
-
-	if c.Cluster.GroupCount == 0 {
-		c.Cluster.GroupCount = uint32(len(c.Cluster.Groups))
+	if controllerMetaPath == dbPath || controllerMetaPath == raftPath || controllerMetaPath == channelLogPath {
+		return fmt.Errorf("%w: controller meta path must differ from db, raft and channel log paths", ErrInvalidConfig)
 	}
-	if c.Cluster.GroupCount == 0 {
-		return fmt.Errorf("%w: cluster group count must be set", ErrInvalidConfig)
+	if controllerRaftPath == dbPath || controllerRaftPath == raftPath || controllerRaftPath == channelLogPath {
+		return fmt.Errorf("%w: controller raft path must differ from db, raft and channel log paths", ErrInvalidConfig)
 	}
-	if uint32(len(c.Cluster.Groups)) != c.Cluster.GroupCount {
-		return fmt.Errorf("%w: cluster groups do not match group count", ErrInvalidConfig)
+	if controllerMetaPath == controllerRaftPath {
+		return fmt.Errorf("%w: controller meta path and controller raft path must differ", ErrInvalidConfig)
 	}
 
 	c.Gateway.DefaultSession = gateway.NormalizeSessionOptions(c.Gateway.DefaultSession)
@@ -193,41 +244,43 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 		}
 	}
 
-	groupSet := make(map[uint32]struct{}, len(c.Cluster.Groups))
-	selfPeerFound := false
-	for _, group := range c.Cluster.Groups {
-		if group.ID == 0 {
-			return fmt.Errorf("%w: cluster group id must be set", ErrInvalidConfig)
-		}
-		if group.ID > c.Cluster.GroupCount {
-			return fmt.Errorf("%w: cluster group id %d exceeds group count %d", ErrInvalidConfig, group.ID, c.Cluster.GroupCount)
-		}
-		if _, ok := groupSet[group.ID]; ok {
-			return fmt.Errorf("%w: duplicate cluster group id %d", ErrInvalidConfig, group.ID)
-		}
-		groupSet[group.ID] = struct{}{}
-		if len(group.Peers) == 0 {
-			return fmt.Errorf("%w: cluster group peers must be set", ErrInvalidConfig)
-		}
-		for _, peerID := range group.Peers {
-			if _, ok := nodeSet[peerID]; !ok {
-				return fmt.Errorf("%w: peer %d not found in cluster nodes", ErrInvalidConfig, peerID)
-			}
-			if peerID == c.Node.ID {
-				selfPeerFound = true
-			}
-		}
-	}
-	for expectedID := uint32(1); expectedID <= c.Cluster.GroupCount; expectedID++ {
-		if _, ok := groupSet[expectedID]; !ok {
-			return fmt.Errorf("%w: cluster group id %d missing from configured groups", ErrInvalidConfig, expectedID)
-		}
-	}
 	if !selfNodeFound {
 		return fmt.Errorf("%w: node id %d not found in cluster nodes", ErrInvalidConfig, c.Node.ID)
 	}
-	if !selfPeerFound {
-		return fmt.Errorf("%w: node id %d not present as a peer in any group", ErrInvalidConfig, c.Node.ID)
+	if len(c.Cluster.Groups) > 0 {
+		groupSet := make(map[uint32]struct{}, len(c.Cluster.Groups))
+		selfPeerFound := false
+		for _, group := range c.Cluster.Groups {
+			if group.ID == 0 {
+				return fmt.Errorf("%w: cluster group id must be set", ErrInvalidConfig)
+			}
+			if group.ID > c.Cluster.GroupCount {
+				return fmt.Errorf("%w: cluster group id %d exceeds group count %d", ErrInvalidConfig, group.ID, c.Cluster.GroupCount)
+			}
+			if _, ok := groupSet[group.ID]; ok {
+				return fmt.Errorf("%w: duplicate cluster group id %d", ErrInvalidConfig, group.ID)
+			}
+			groupSet[group.ID] = struct{}{}
+			if len(group.Peers) == 0 {
+				return fmt.Errorf("%w: cluster group peers must be set", ErrInvalidConfig)
+			}
+			for _, peerID := range group.Peers {
+				if _, ok := nodeSet[peerID]; !ok {
+					return fmt.Errorf("%w: peer %d not found in cluster nodes", ErrInvalidConfig, peerID)
+				}
+				if peerID == c.Node.ID {
+					selfPeerFound = true
+				}
+			}
+		}
+		for expectedID := uint32(1); expectedID <= c.Cluster.GroupCount; expectedID++ {
+			if _, ok := groupSet[expectedID]; !ok {
+				return fmt.Errorf("%w: cluster group id %d missing from configured groups", ErrInvalidConfig, expectedID)
+			}
+		}
+		if !selfPeerFound {
+			return fmt.Errorf("%w: node id %d not present as a peer in any group", ErrInvalidConfig, c.Node.ID)
+		}
 	}
 
 	return nil

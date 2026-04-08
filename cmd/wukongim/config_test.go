@@ -161,3 +161,26 @@ func TestLoadConfigParsesDataPlaneRPCTimeoutFromConf(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 250*time.Millisecond, cfg.Cluster.DataPlaneRPCTimeout)
 }
+
+func TestBuildAppConfigParsesAutomaticGroupManagementKeys(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_STORAGE_CONTROLLER_META_PATH="+filepath.Join(dir, "controller-meta"),
+		"WK_STORAGE_CONTROLLER_RAFT_PATH="+filepath.Join(dir, "controller-raft"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_CLUSTER_GROUP_COUNT=8",
+		"WK_CLUSTER_CONTROLLER_REPLICA_N=3",
+		"WK_CLUSTER_GROUP_REPLICA_N=3",
+		`WK_CLUSTER_NODES=[{"id":3,"addr":"127.0.0.1:7002"},{"id":1,"addr":"127.0.0.1:7000"},{"id":2,"addr":"127.0.0.1:7001"}]`,
+	)
+
+	cfg, err := loadConfig(configPath)
+	require.NoError(t, err)
+	require.Equal(t, 3, cfg.Cluster.ControllerReplicaN)
+	require.Equal(t, 3, cfg.Cluster.GroupReplicaN)
+	require.Equal(t, filepath.Join(dir, "controller-meta"), cfg.Storage.ControllerMetaPath)
+	require.Equal(t, filepath.Join(dir, "controller-raft"), cfg.Storage.ControllerRaftPath)
+	require.Nil(t, cfg.Cluster.Groups)
+}

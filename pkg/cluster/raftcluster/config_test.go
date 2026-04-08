@@ -122,11 +122,38 @@ func TestConfigValidate_DuplicateGroupID(t *testing.T) {
 	}
 }
 
+func TestConfigValidateAllowsDynamicManagedGroups(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.Groups = nil
+	cfg.GroupCount = 8
+	cfg.ControllerReplicaN = 3
+	cfg.GroupReplicaN = 3
+
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestConfigValidateRejectsDynamicManagedGroupsWhenLocalNodeMissing(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.Groups = nil
+	cfg.GroupCount = 8
+	cfg.ControllerReplicaN = 3
+	cfg.GroupReplicaN = 3
+	cfg.NodeID = 99
+
+	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
+}
+
 func validTestConfig() Config {
 	return Config{
-		NodeID:     1,
-		ListenAddr: ":9001",
-		GroupCount: 1,
+		NodeID:             1,
+		ListenAddr:         ":9001",
+		GroupCount:         1,
+		ControllerReplicaN: 3,
+		GroupReplicaN:      3,
 		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
 			return nil, nil
 		},

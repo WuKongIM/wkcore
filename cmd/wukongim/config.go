@@ -115,6 +115,14 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 	if err != nil {
 		return app.Config{}, err
 	}
+	controllerReplicaN, err := parseInt(v, "WK_CLUSTER_CONTROLLER_REPLICA_N")
+	if err != nil {
+		return app.Config{}, err
+	}
+	groupReplicaN, err := parseInt(v, "WK_CLUSTER_GROUP_REPLICA_N")
+	if err != nil {
+		return app.Config{}, err
+	}
 	tokenAuthOn, err := parseBool(v, "WK_GATEWAY_TOKEN_AUTH_ON")
 	if err != nil {
 		return app.Config{}, err
@@ -168,15 +176,19 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 			DataDir: stringValue(v, "WK_NODE_DATA_DIR"),
 		},
 		Storage: app.StorageConfig{
-			DBPath:         stringValue(v, "WK_STORAGE_DB_PATH"),
-			RaftPath:       stringValue(v, "WK_STORAGE_RAFT_PATH"),
-			ChannelLogPath: stringValue(v, "WK_STORAGE_CHANNEL_LOG_PATH"),
+			DBPath:             stringValue(v, "WK_STORAGE_DB_PATH"),
+			RaftPath:           stringValue(v, "WK_STORAGE_RAFT_PATH"),
+			ChannelLogPath:     stringValue(v, "WK_STORAGE_CHANNEL_LOG_PATH"),
+			ControllerMetaPath: stringValue(v, "WK_STORAGE_CONTROLLER_META_PATH"),
+			ControllerRaftPath: stringValue(v, "WK_STORAGE_CONTROLLER_RAFT_PATH"),
 		},
 		Cluster: app.ClusterConfig{
 			ListenAddr:          stringValue(v, "WK_CLUSTER_LISTEN_ADDR"),
 			GroupCount:          groupCount,
 			Nodes:               nodes,
 			Groups:              groups,
+			ControllerReplicaN:  controllerReplicaN,
+			GroupReplicaN:       groupReplicaN,
 			ForwardTimeout:      forwardTimeout,
 			PoolSize:            poolSize,
 			TickInterval:        tickInterval,

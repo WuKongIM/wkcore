@@ -258,20 +258,22 @@ func build(cfg Config) (_ *App, err error) {
 
 func (c ClusterConfig) runtimeConfig(db *metadb.DB, raftDB *raftstorage.DB, nodeID uint64) raftcluster.Config {
 	return raftcluster.Config{
-		NodeID:          multiraft.NodeID(nodeID),
-		ListenAddr:      c.ListenAddr,
-		GroupCount:      c.GroupCount,
-		NewStorage:      newStorageFactory(raftDB),
-		NewStateMachine: metafsm.NewStateMachineFactory(db),
-		Nodes:           c.runtimeNodes(),
-		Groups:          c.runtimeGroups(),
-		ForwardTimeout:  c.ForwardTimeout,
-		PoolSize:        c.PoolSize,
-		TickInterval:    c.TickInterval,
-		RaftWorkers:     c.RaftWorkers,
-		ElectionTick:    c.ElectionTick,
-		HeartbeatTick:   c.HeartbeatTick,
-		DialTimeout:     c.DialTimeout,
+		NodeID:             multiraft.NodeID(nodeID),
+		ListenAddr:         c.ListenAddr,
+		GroupCount:         c.GroupCount,
+		ControllerReplicaN: c.ControllerReplicaN,
+		GroupReplicaN:      c.GroupReplicaN,
+		NewStorage:         newStorageFactory(raftDB),
+		NewStateMachine:    metafsm.NewStateMachineFactory(db),
+		Nodes:              c.runtimeNodes(),
+		Groups:             c.runtimeGroups(),
+		ForwardTimeout:     c.ForwardTimeout,
+		PoolSize:           c.PoolSize,
+		TickInterval:       c.TickInterval,
+		RaftWorkers:        c.RaftWorkers,
+		ElectionTick:       c.ElectionTick,
+		HeartbeatTick:      c.HeartbeatTick,
+		DialTimeout:        c.DialTimeout,
 	}
 }
 
