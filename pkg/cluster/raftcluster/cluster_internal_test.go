@@ -98,6 +98,18 @@ func (f fakeControllerClient) ListRuntimeViews(_ context.Context) ([]controllerm
 	return append([]controllermeta.GroupRuntimeView(nil), f.runtimeViews...), f.listRuntimeViewsErr
 }
 
+func (f fakeControllerClient) Operator(_ context.Context, _ groupcontroller.OperatorRequest) error {
+	return nil
+}
+
+func (f fakeControllerClient) GetTask(_ context.Context, _ uint32) (controllermeta.ReconcileTask, error) {
+	return controllermeta.ReconcileTask{}, controllermeta.ErrNotFound
+}
+
+func (f fakeControllerClient) ForceReconcile(_ context.Context, _ uint32) error {
+	return nil
+}
+
 func newStartedTestServer(t *testing.T) *nodetransport.Server {
 	t.Helper()
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/groupcontroller"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
@@ -17,24 +18,42 @@ const (
 	controllerRPCHeartbeat        string            = "heartbeat"
 	controllerRPCListAssignments  string            = "list_assignments"
 	controllerRPCListRuntimeViews string            = "list_runtime_views"
+	controllerRPCOperator         string            = "operator"
+	controllerRPCGetTask          string            = "get_task"
+	controllerRPCForceReconcile   string            = "force_reconcile"
+	controllerRPCTaskResult       string            = "task_result"
 )
 
 type controllerRPCRequest struct {
-	Kind   string                       `json:"kind"`
-	Report *groupcontroller.AgentReport `json:"report,omitempty"`
+	Kind    string                           `json:"kind"`
+	GroupID uint32                           `json:"group_id,omitempty"`
+	Report  *groupcontroller.AgentReport     `json:"report,omitempty"`
+	Op      *groupcontroller.OperatorRequest `json:"op,omitempty"`
+	Advance *controllerTaskAdvance           `json:"advance,omitempty"`
+}
+
+type controllerTaskAdvance struct {
+	GroupID uint32    `json:"group_id"`
+	Now     time.Time `json:"now"`
+	Err     string    `json:"err,omitempty"`
 }
 
 type controllerRPCResponse struct {
 	NotLeader    bool                              `json:"not_leader,omitempty"`
+	NotFound     bool                              `json:"not_found,omitempty"`
 	LeaderID     uint64                            `json:"leader_id,omitempty"`
 	Assignments  []controllermeta.GroupAssignment  `json:"assignments,omitempty"`
 	RuntimeViews []controllermeta.GroupRuntimeView `json:"runtime_views,omitempty"`
+	Task         *controllermeta.ReconcileTask     `json:"task,omitempty"`
 }
 
 type controllerAPI interface {
 	Report(ctx context.Context, report groupcontroller.AgentReport) error
 	RefreshAssignments(ctx context.Context) ([]controllermeta.GroupAssignment, error)
 	ListRuntimeViews(ctx context.Context) ([]controllermeta.GroupRuntimeView, error)
+	Operator(ctx context.Context, op groupcontroller.OperatorRequest) error
+	GetTask(ctx context.Context, groupID uint32) (controllermeta.ReconcileTask, error)
+	ForceReconcile(ctx context.Context, groupID uint32) error
 }
 
 type controllerClient struct {
@@ -83,6 +102,51 @@ func (c *controllerClient) ListRuntimeViews(ctx context.Context) ([]controllerme
 		return nil, err
 	}
 	return resp.RuntimeViews, nil
+}
+
+func (c *controllerClient) Operator(ctx context.Context, op groupcontroller.OperatorRequest) error {
+	_, err := c.call(ctx, controllerRPCRequest{
+		Kind: controllerRPCOperator,
+		Op:   &op,
+	})
+	return err
+}
+
+func (c *controllerClient) GetTask(ctx context.Context, groupID uint32) (controllermeta.ReconcileTask, error) {
+	resp, err := c.call(ctx, controllerRPCRequest{
+		Kind:    controllerRPCGetTask,
+		GroupID: groupID,
+	})
+	if err != nil {
+		return controllermeta.ReconcileTask{}, err
+	}
+	if resp.NotFound || resp.Task == nil {
+		return controllermeta.ReconcileTask{}, controllermeta.ErrNotFound
+	}
+	return *resp.Task, nil
+}
+
+func (c *controllerClient) ForceReconcile(ctx context.Context, groupID uint32) error {
+	_, err := c.call(ctx, controllerRPCRequest{
+		Kind:    controllerRPCForceReconcile,
+		GroupID: groupID,
+	})
+	return err
+}
+
+func (c *controllerClient) ReportTaskResult(ctx context.Context, groupID uint32, taskErr error) error {
+	advance := &controllerTaskAdvance{
+		GroupID: groupID,
+		Now:     time.Now(),
+	}
+	if taskErr != nil {
+		advance.Err = taskErr.Error()
+	}
+	_, err := c.call(ctx, controllerRPCRequest{
+		Kind: controllerRPCTaskResult,
+		Advance: advance,
+	})
+	return err
 }
 
 func (c *controllerClient) call(ctx context.Context, req controllerRPCRequest) (controllerRPCResponse, error) {

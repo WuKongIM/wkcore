@@ -35,6 +35,7 @@ type Cluster struct {
 	controllerSM     *groupcontroller.StateMachine
 	controller       *controllerraft.Service
 	controllerClient controllerAPI
+	agent            *groupAgent
 	assignments      *assignmentCache
 	runtimePeersMu   sync.RWMutex
 	runtimePeers     map[multiraft.GroupID][]multiraft.NodeID
@@ -85,6 +86,7 @@ func (c *Cluster) startServer() error {
 	c.server.Handle(msgTypeRaft, c.handleRaftMessage)
 	c.rpcMux.Handle(rpcServiceForward, c.handleForwardRPC)
 	c.rpcMux.Handle(rpcServiceController, c.handleControllerRPC)
+	c.rpcMux.Handle(rpcServiceManagedGroup, c.handleManagedGroupRPC)
 	c.server.HandleRPCMux(c.rpcMux)
 	if err := c.server.Start(c.cfg.ListenAddr); err != nil {
 		return fmt.Errorf("start server: %w", err)
@@ -173,7 +175,13 @@ func (c *Cluster) startControllerClient() {
 	if !c.cfg.ControllerEnabled() {
 		return
 	}
-	c.controllerClient = newControllerClient(c, c.cfg.DerivedControllerNodes(), c.assignments)
+	client := newControllerClient(c, c.cfg.DerivedControllerNodes(), c.assignments)
+	c.controllerClient = client
+	c.agent = &groupAgent{
+		cluster: c,
+		client:  client,
+		cache:   c.assignments,
+	}
 }
 
 func (c *Cluster) startObservationLoop() {
@@ -187,6 +195,7 @@ func (c *Cluster) startObservationLoop() {
 
 		for {
 			c.observeOnce(context.Background())
+			c.controllerTickOnce(context.Background())
 			select {
 			case <-c.observationStop:
 				return
@@ -197,6 +206,9 @@ func (c *Cluster) startObservationLoop() {
 }
 
 func (c *Cluster) seedLegacyGroupsIfConfigured() error {
+	if c.cfg.ControllerEnabled() {
+		return nil
+	}
 	ctx := context.Background()
 	for _, g := range c.cfg.Groups {
 		if err := c.openOrBootstrapGroup(ctx, g); err != nil {
@@ -278,35 +290,100 @@ func (c *Cluster) Stop() {
 }
 
 func (c *Cluster) observeOnce(ctx context.Context) {
-	if c.controllerClient == nil || c.runtime == nil || c.stopped.Load() {
+	if c.agent == nil || c.runtime == nil || c.stopped.Load() {
+		return
+	}
+	_ = c.agent.HeartbeatOnce(ctx)
+	assignCtx, cancel := withControllerTimeout(ctx)
+	err := c.agent.SyncAssignments(assignCtx)
+	cancel()
+	if err == nil {
+		applyCtx, cancel := withControllerTimeout(ctx)
+		_ = c.agent.ApplyAssignments(applyCtx)
+		cancel()
+	}
+}
+
+func (c *Cluster) controllerTickOnce(ctx context.Context) {
+	if c.controller == nil || c.controllerMeta == nil || c.stopped.Load() {
+		return
+	}
+	if c.controller.LeaderID() != uint64(c.cfg.NodeID) {
 		return
 	}
 
-	now := time.Now()
-	for _, groupID := range c.runtime.Groups() {
-		status, err := c.runtime.Status(groupID)
-		if err != nil {
-			continue
-		}
+	tickCtx, cancel := withControllerTimeout(ctx)
+	_ = c.controller.Propose(tickCtx, groupcontroller.Command{
+		Kind:    groupcontroller.CommandKindEvaluateTimeouts,
+		Advance: &groupcontroller.TaskAdvance{Now: time.Now()},
+	})
+	cancel()
 
-		view := buildRuntimeView(now, groupID, status, c.observationPeersForGroup(groupID))
-		reportCtx, cancel := withControllerTimeout(ctx)
-		err = c.controllerClient.Report(reportCtx, groupcontroller.AgentReport{
-			NodeID:         uint64(c.cfg.NodeID),
-			Addr:           c.controllerReportAddr(),
-			ObservedAt:     now,
-			CapacityWeight: 1,
-			Runtime:        &view,
-		})
-		cancel()
-		if isControllerRedirect(err) || err == nil {
-			continue
-		}
+	state, err := c.snapshotPlannerState(ctx)
+	if err != nil {
+		return
+	}
+	planner := groupcontroller.NewPlanner(groupcontroller.PlannerConfig{
+		GroupCount: c.cfg.GroupCount,
+		ReplicaN:   c.cfg.GroupReplicaN,
+	})
+	decision, err := planner.NextDecision(ctx, state)
+	if err != nil || decision.GroupID == 0 || decision.Task == nil {
+		return
+	}
+	if decision.Task.Kind == controllermeta.TaskKindRebalance {
+		return
+	}
+	if _, exists := state.Tasks[decision.GroupID]; exists {
+		return
 	}
 
-	assignCtx, cancel := withControllerTimeout(ctx)
-	_, _ = c.controllerClient.RefreshAssignments(assignCtx)
+	proposeCtx, cancel := withControllerTimeout(ctx)
+	_ = c.controller.Propose(proposeCtx, groupcontroller.Command{
+		Kind:       groupcontroller.CommandKindAssignmentTaskUpdate,
+		Assignment: &decision.Assignment,
+		Task:       decision.Task,
+	})
 	cancel()
+}
+
+func (c *Cluster) snapshotPlannerState(ctx context.Context) (groupcontroller.PlannerState, error) {
+	nodes, err := c.controllerMeta.ListNodes(ctx)
+	if err != nil {
+		return groupcontroller.PlannerState{}, err
+	}
+	assignments, err := c.controllerMeta.ListAssignments(ctx)
+	if err != nil {
+		return groupcontroller.PlannerState{}, err
+	}
+	views, err := c.controllerMeta.ListRuntimeViews(ctx)
+	if err != nil {
+		return groupcontroller.PlannerState{}, err
+	}
+	tasks, err := c.controllerMeta.ListTasks(ctx)
+	if err != nil {
+		return groupcontroller.PlannerState{}, err
+	}
+	state := groupcontroller.PlannerState{
+		Now:         time.Now(),
+		Nodes:       make(map[uint64]controllermeta.ClusterNode, len(nodes)),
+		Assignments: make(map[uint32]controllermeta.GroupAssignment, len(assignments)),
+		Runtime:     make(map[uint32]controllermeta.GroupRuntimeView, len(views)),
+		Tasks:       make(map[uint32]controllermeta.ReconcileTask, len(tasks)),
+	}
+	for _, node := range nodes {
+		state.Nodes[node.NodeID] = node
+	}
+	for _, assignment := range assignments {
+		state.Assignments[assignment.GroupID] = assignment
+	}
+	for _, view := range views {
+		state.Runtime[view.GroupID] = view
+	}
+	for _, task := range tasks {
+		state.Tasks[task.GroupID] = task
+	}
+	return state, nil
 }
 
 // handleRaftMessage is the server handler for msgTypeRaft.
@@ -429,14 +506,38 @@ func (c *Cluster) PeersForGroup(groupID multiraft.GroupID) []multiraft.NodeID {
 
 func (c *Cluster) ListObservedRuntimeViews(ctx context.Context) ([]controllermeta.GroupRuntimeView, error) {
 	if c.controllerClient != nil {
-		queryCtx, cancel := withControllerTimeout(ctx)
-		defer cancel()
-		return c.controllerClient.ListRuntimeViews(queryCtx)
+		var views []controllermeta.GroupRuntimeView
+		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
+			queryCtx, cancel := withControllerTimeout(attemptCtx)
+			defer cancel()
+			var err error
+			views, err = c.controllerClient.ListRuntimeViews(queryCtx)
+			return err
+		})
+		return views, err
 	}
 	if c.controllerMeta != nil {
 		return c.controllerMeta.ListRuntimeViews(ctx)
 	}
 	return nil, ErrNotStarted
+}
+
+func (c *Cluster) ListGroupAssignments(ctx context.Context) ([]controllermeta.GroupAssignment, error) {
+	if c.controllerClient != nil {
+		var assignments []controllermeta.GroupAssignment
+		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
+			queryCtx, cancel := withControllerTimeout(attemptCtx)
+			defer cancel()
+			var err error
+			assignments, err = c.controllerClient.RefreshAssignments(queryCtx)
+			return err
+		})
+		return assignments, err
+	}
+	if c.controllerMeta != nil {
+		return c.controllerMeta.ListAssignments(ctx)
+	}
+	return c.ListCachedAssignments(), nil
 }
 
 func (c *Cluster) ListCachedAssignments() []controllermeta.GroupAssignment {
@@ -549,6 +650,32 @@ func (c *Cluster) handleControllerRPC(ctx context.Context, body []byte) ([]byte,
 			return nil, err
 		}
 		return json.Marshal(controllerRPCResponse{})
+	case controllerRPCTaskResult:
+		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
+			return marshalRedirect()
+		}
+		if req.Advance == nil {
+			return nil, ErrInvalidConfig
+		}
+		advance := &groupcontroller.TaskAdvance{
+			GroupID: req.Advance.GroupID,
+			Now:     req.Advance.Now,
+		}
+		if req.Advance.Err != "" {
+			advance.Err = errors.New(req.Advance.Err)
+		}
+		proposeCtx, cancel := withControllerTimeout(ctx)
+		defer cancel()
+		if err := c.controller.Propose(proposeCtx, groupcontroller.Command{
+			Kind:    groupcontroller.CommandKindTaskResult,
+			Advance: advance,
+		}); err != nil {
+			if errors.Is(err, controllerraft.ErrNotLeader) {
+				return marshalRedirect()
+			}
+			return nil, err
+		}
+		return json.Marshal(controllerRPCResponse{})
 	case controllerRPCListAssignments:
 		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
 			return marshalRedirect()
@@ -567,6 +694,45 @@ func (c *Cluster) handleControllerRPC(ctx context.Context, body []byte) ([]byte,
 			return nil, err
 		}
 		return json.Marshal(controllerRPCResponse{RuntimeViews: views})
+	case controllerRPCOperator:
+		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
+			return marshalRedirect()
+		}
+		if req.Op == nil {
+			return nil, ErrInvalidConfig
+		}
+		proposeCtx, cancel := withControllerTimeout(ctx)
+		defer cancel()
+		if err := c.controller.Propose(proposeCtx, groupcontroller.Command{
+			Kind: groupcontroller.CommandKindOperatorRequest,
+			Op:   req.Op,
+		}); err != nil {
+			if errors.Is(err, controllerraft.ErrNotLeader) {
+				return marshalRedirect()
+			}
+			return nil, err
+		}
+		return json.Marshal(controllerRPCResponse{})
+	case controllerRPCGetTask:
+		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
+			return marshalRedirect()
+		}
+		task, err := c.controllerMeta.GetTask(ctx, req.GroupID)
+		if errors.Is(err, controllermeta.ErrNotFound) {
+			return json.Marshal(controllerRPCResponse{NotFound: true})
+		}
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(controllerRPCResponse{Task: &task})
+	case controllerRPCForceReconcile:
+		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
+			return marshalRedirect()
+		}
+		if err := c.forceReconcileOnLeader(ctx, req.GroupID); err != nil {
+			return nil, err
+		}
+		return json.Marshal(controllerRPCResponse{})
 	default:
 		return nil, ErrInvalidConfig
 	}

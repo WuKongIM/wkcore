@@ -2,6 +2,7 @@ package raftcluster_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/controllermeta"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metafsm"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metastore"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
@@ -58,6 +60,8 @@ func newStartedTestNode(
 	nodes []raftcluster.NodeConfig,
 	groups []raftcluster.GroupConfig,
 	groupCount int,
+	groupReplicaN int,
+	controllerReplicaN int,
 	withController bool,
 ) *testNode {
 	t.Helper()
@@ -80,9 +84,11 @@ func newStartedTestNode(
 	}
 
 	cfg := raftcluster.Config{
-		NodeID:     nodeID,
-		ListenAddr: listenAddr,
-		GroupCount: uint32(groupCount),
+		NodeID:             nodeID,
+		ListenAddr:         listenAddr,
+		GroupCount:         uint32(groupCount),
+		GroupReplicaN:      groupReplicaN,
+		ControllerReplicaN: controllerReplicaN,
 		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
 			return raftDB.ForGroup(uint64(groupID)), nil
 		},
@@ -132,7 +138,7 @@ func startSingleNode(t testing.TB, groupCount int) *testNode {
 	}
 
 	nodes := []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}}
-	return newStartedTestNode(t, dir, 1, "127.0.0.1:0", nodes, groups, groupCount, false)
+	return newStartedTestNode(t, dir, 1, "127.0.0.1:0", nodes, groups, groupCount, 1, 1, false)
 }
 
 func startThreeNodes(t testing.TB, groupCount int) []*testNode {
@@ -176,6 +182,8 @@ func startThreeNodes(t testing.TB, groupCount int) []*testNode {
 			nodes,
 			groups,
 			groupCount,
+			3,
+			3,
 			false,
 		)
 	}
@@ -196,7 +204,7 @@ func startSingleNodeWithController(t testing.TB, groupCount int, legacyGroupCoun
 	}
 
 	nodes := []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}}
-	return newStartedTestNode(t, dir, 1, "127.0.0.1:0", nodes, groups, groupCount, true)
+	return newStartedTestNode(t, dir, 1, "127.0.0.1:0", nodes, groups, groupCount, 1, 1, true)
 }
 
 func startThreeNodesWithController(t testing.TB, groupCount int, legacyReplicaN int) []*testNode {
@@ -220,19 +228,6 @@ func startThreeNodesWithController(t testing.TB, groupCount int, legacyReplicaN 
 		listeners[i].Close()
 	}
 
-	peers := []multiraft.NodeID{1, 2, 3}
-	if legacyReplicaN < len(peers) {
-		peers = peers[:legacyReplicaN]
-	}
-
-	groups := make([]raftcluster.GroupConfig, groupCount)
-	for i := range groupCount {
-		groups[i] = raftcluster.GroupConfig{
-			GroupID: multiraft.GroupID(i + 1),
-			Peers:   append([]multiraft.NodeID(nil), peers...),
-		}
-	}
-
 	testNodes := make([]*testNode, 3)
 	root := t.TempDir()
 	for i := range 3 {
@@ -243,12 +238,81 @@ func startThreeNodesWithController(t testing.TB, groupCount int, legacyReplicaN 
 			multiraft.NodeID(i+1),
 			nodes[i].Addr,
 			nodes,
-			groups,
+			nil,
 			groupCount,
+			legacyReplicaN,
+			3,
 			true,
 		)
 	}
+	waitForControllerAssignments(t, testNodes, groupCount)
 	return testNodes
+}
+
+func startFourNodesWithController(t testing.TB, groupCount int, replicaN int) []*testNode {
+	t.Helper()
+
+	listeners := make([]net.Listener, 4)
+	for i := range 4 {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen %d: %v", i, err)
+		}
+		listeners[i] = ln
+	}
+
+	nodes := make([]raftcluster.NodeConfig, 4)
+	for i := range 4 {
+		nodes[i] = raftcluster.NodeConfig{
+			NodeID: multiraft.NodeID(i + 1),
+			Addr:   listeners[i].Addr().String(),
+		}
+		listeners[i].Close()
+	}
+
+	testNodes := make([]*testNode, 4)
+	root := t.TempDir()
+	for i := range 4 {
+		dir := filepath.Join(root, fmt.Sprintf("n%d", i+1))
+		testNodes[i] = newStartedTestNode(
+			t,
+			dir,
+			multiraft.NodeID(i+1),
+			nodes[i].Addr,
+			nodes,
+			nil,
+			groupCount,
+			replicaN,
+			3,
+			true,
+		)
+	}
+	waitForControllerAssignments(t, testNodes, groupCount)
+	return testNodes
+}
+
+func startFourNodesWithInjectedRepairFailure(t testing.TB, groupCount int, replicaN int) []*testNode {
+	t.Helper()
+	nodes := startFourNodesWithController(t, groupCount, replicaN)
+	waitForStableLeader(t, assignedNodesForGroup(t, nodes, 1), 1)
+	restore := raftcluster.SetManagedGroupExecutionTestHook(func(groupID uint32, task controllermeta.ReconcileTask) error {
+		if groupID == 1 && task.Kind == controllermeta.TaskKindRepair {
+			return errors.New("injected repair failure")
+		}
+		return nil
+	})
+	t.Cleanup(restore)
+	require.NoError(t, nodes[0].cluster.MarkNodeDraining(context.Background(), 2))
+	require.Eventually(t, func() bool {
+		task, err := nodes[0].cluster.GetReconcileTask(context.Background(), 1)
+		return err == nil && task.Attempt >= 1
+	}, 10*time.Second, 100*time.Millisecond)
+	return nodes
+}
+
+func startFourNodesWithPermanentRepairFailure(t testing.TB, groupCount int, replicaN int) []*testNode {
+	t.Helper()
+	return startFourNodesWithInjectedRepairFailure(t, groupCount, replicaN)
 }
 
 func stopNodes(nodes []*testNode) {
@@ -257,6 +321,53 @@ func stopNodes(nodes []*testNode) {
 			node.stop()
 		}
 	}
+}
+
+func waitForControllerAssignments(t testing.TB, nodes []*testNode, groupCount int) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		for _, node := range nodes {
+			if node == nil || node.cluster == nil {
+				continue
+			}
+			assignments, err := node.cluster.ListGroupAssignments(context.Background())
+			if err == nil && len(assignments) == groupCount {
+				return true
+			}
+		}
+		return false
+	}, 10*time.Second, 100*time.Millisecond)
+}
+
+func assignedNodesForGroup(t testing.TB, nodes []*testNode, groupID uint32) []*testNode {
+	t.Helper()
+
+	for _, node := range nodes {
+		if node == nil || node.cluster == nil {
+			continue
+		}
+		assignments, err := node.cluster.ListGroupAssignments(context.Background())
+		if err != nil {
+			continue
+		}
+		for _, assignment := range assignments {
+			if assignment.GroupID != groupID {
+				continue
+			}
+			assigned := make([]*testNode, 0, len(assignment.DesiredPeers))
+			for _, peer := range assignment.DesiredPeers {
+				idx := int(peer) - 1
+				if idx >= 0 && idx < len(nodes) && nodes[idx] != nil {
+					assigned = append(assigned, nodes[idx])
+				}
+			}
+			require.NotEmpty(t, assigned)
+			return assigned
+		}
+	}
+
+	t.Fatalf("no assignment found for group %d", groupID)
+	return nil
 }
 
 func waitForLeader(t testing.TB, c *raftcluster.Cluster, groupID uint64) {
@@ -363,7 +474,7 @@ func restartNode(t testing.TB, nodes []*testNode, idx int) *testNode {
 
 	old.stop()
 
-	restarted := newStartedTestNode(t, dir, nodeID, listenAddr, clusterNodes, groups, groupCount, false)
+	restarted := newStartedTestNode(t, dir, nodeID, listenAddr, clusterNodes, groups, groupCount, len(clusterNodes), len(clusterNodes), false)
 	nodes[idx] = restarted
 	return restarted
 }
@@ -486,4 +597,107 @@ func TestClusterGroupIDsNoLongerDependOnStaticGroupConfig(t *testing.T) {
 	defer node.stop()
 
 	require.Equal(t, []multiraft.GroupID{1, 2, 3, 4, 5, 6, 7, 8}, node.cluster.GroupIDs())
+}
+
+func TestClusterBootstrapsManagedGroupsFromControllerAssignments(t *testing.T) {
+	nodes := startThreeNodesWithController(t, 4, 3)
+	defer stopNodes(nodes)
+
+	for groupID := 1; groupID <= 4; groupID++ {
+		waitForStableLeader(t, nodes, uint64(groupID))
+	}
+}
+
+func TestClusterContinuesServingWithOneReplicaNodeDown(t *testing.T) {
+	nodes := startThreeNodesWithController(t, 1, 3)
+	defer stopNodes(nodes)
+
+	leaderIdx := int(waitForStableLeader(t, nodes, 1) - 1)
+	nodes[leaderIdx].stop()
+
+	require.Eventually(t, func() bool {
+		_, err := nodes[(leaderIdx+1)%3].cluster.LeaderOf(1)
+		return err == nil
+	}, 10*time.Second, 100*time.Millisecond)
+}
+
+func TestClusterListGroupAssignmentsReflectsControllerState(t *testing.T) {
+	nodes := startFourNodesWithController(t, 2, 3)
+	defer stopNodes(nodes)
+
+	assignments, err := nodes[0].cluster.ListGroupAssignments(context.Background())
+	require.NoError(t, err)
+	require.Len(t, assignments, 2)
+	require.Len(t, assignments[0].DesiredPeers, 3)
+}
+
+func TestClusterTransferGroupLeaderDelegatesToManagedGroup(t *testing.T) {
+	nodes := startThreeNodesWithController(t, 1, 3)
+	defer stopNodes(nodes)
+
+	currentLeader := waitForStableLeader(t, nodes, 1)
+	target := multiraft.NodeID(1)
+	if currentLeader == target {
+		target = 2
+	}
+
+	require.NoError(t, nodes[0].cluster.TransferGroupLeader(context.Background(), 1, target))
+	require.Eventually(t, func() bool {
+		leader, err := nodes[0].cluster.LeaderOf(1)
+		return err == nil && leader == target
+	}, 10*time.Second, 100*time.Millisecond)
+}
+
+func TestClusterMarkNodeDrainingMovesAssignmentsAway(t *testing.T) {
+	nodes := startFourNodesWithController(t, 2, 3)
+	defer stopNodes(nodes)
+
+	require.NoError(t, nodes[0].cluster.MarkNodeDraining(context.Background(), 1))
+	require.Eventually(t, func() bool {
+		assignments, err := nodes[0].cluster.ListGroupAssignments(context.Background())
+		if err != nil {
+			return false
+		}
+		for _, assignment := range assignments {
+			for _, peer := range assignment.DesiredPeers {
+				if peer == 1 {
+					return false
+				}
+			}
+		}
+		return true
+	}, 20*time.Second, 200*time.Millisecond)
+}
+
+func TestClusterForceReconcileRetriesFailedRepair(t *testing.T) {
+	nodes := startFourNodesWithInjectedRepairFailure(t, 1, 3)
+	defer stopNodes(nodes)
+
+	require.NoError(t, nodes[0].cluster.ForceReconcile(context.Background(), 1))
+	require.Eventually(t, func() bool {
+		task, err := nodes[0].cluster.GetReconcileTask(context.Background(), 1)
+		return err == nil && task.Attempt >= 2
+	}, 10*time.Second, 100*time.Millisecond)
+}
+
+func TestClusterSurfacesFailedRepairAfterRetryExhaustion(t *testing.T) {
+	nodes := startFourNodesWithPermanentRepairFailure(t, 1, 3)
+	defer stopNodes(nodes)
+
+	require.Eventually(t, func() bool {
+		task, err := nodes[0].cluster.GetReconcileTask(context.Background(), 1)
+		return err == nil && task.Status == raftcluster.TaskStatusFailed && task.Attempt == 3
+	}, 20*time.Second, 200*time.Millisecond)
+}
+
+func TestClusterRecoverGroupReturnsManualRecoveryErrorWhenQuorumLost(t *testing.T) {
+	nodes := startThreeNodesWithController(t, 1, 3)
+	defer stopNodes(nodes)
+
+	waitForStableLeader(t, nodes, 1)
+	nodes[1].stop()
+	nodes[2].stop()
+
+	err := nodes[0].cluster.RecoverGroup(context.Background(), 1, raftcluster.RecoverStrategyLatestLiveReplica)
+	require.ErrorIs(t, err, raftcluster.ErrManualRecoveryRequired)
 }

@@ -57,6 +57,8 @@ func (sm *StateMachine) Apply(ctx context.Context, cmd Command) error {
 			return controllermeta.ErrInvalidArgument
 		}
 		return sm.applyTaskResult(ctx, *cmd.Advance)
+	case CommandKindAssignmentTaskUpdate:
+		return sm.applyAssignmentTaskUpdate(ctx, cmd.Assignment, cmd.Task)
 	default:
 		return controllermeta.ErrInvalidArgument
 	}
@@ -174,6 +176,19 @@ func (sm *StateMachine) applyTaskResult(ctx context.Context, advance TaskAdvance
 	task.Status = controllermeta.TaskStatusRetrying
 	task.NextRunAt = advance.Now.Add(sm.retryDelay(task.Attempt))
 	return sm.store.UpsertTask(ctx, task)
+}
+
+func (sm *StateMachine) applyAssignmentTaskUpdate(ctx context.Context, assignment *controllermeta.GroupAssignment, task *controllermeta.ReconcileTask) error {
+	switch {
+	case assignment != nil && task != nil:
+		return sm.store.UpsertAssignmentTask(ctx, *assignment, *task)
+	case assignment != nil:
+		return sm.store.UpsertAssignment(ctx, *assignment)
+	case task != nil:
+		return sm.store.UpsertTask(ctx, *task)
+	default:
+		return controllermeta.ErrInvalidArgument
+	}
 }
 
 func (sm *StateMachine) retryDelay(attempt uint32) time.Duration {

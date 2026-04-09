@@ -14,6 +14,7 @@ const (
 	CommandKindOperatorRequest
 	CommandKindEvaluateTimeouts
 	CommandKindTaskResult
+	CommandKindAssignmentTaskUpdate
 )
 
 type OperatorKind uint8
@@ -44,8 +45,10 @@ type TaskAdvance struct {
 }
 
 type Command struct {
-	Kind    CommandKind
-	Report  *AgentReport
-	Op      *OperatorRequest
-	Advance *TaskAdvance
+	Kind       CommandKind
+	Report     *AgentReport
+	Op         *OperatorRequest
+	Advance    *TaskAdvance
+	Assignment *controllermeta.GroupAssignment
+	Task       *controllermeta.ReconcileTask
 }
