@@ -457,6 +457,114 @@ func TestPeerSessionSendReturnsErrStoppedWhenClientStops(t *testing.T) {
 	}
 }
 
+func TestPeerSessionSendDispatchesProgressAckRPC(t *testing.T) {
+	server := nodetransport.NewServer()
+	mux := nodetransport.NewRPCMux()
+	got := make(chan isrnode.ProgressAckEnvelope, 1)
+	mux.Handle(RPCServiceProgressAck, func(ctx context.Context, body []byte) ([]byte, error) {
+		ack, err := decodeProgressAck(body)
+		if err != nil {
+			return nil, err
+		}
+		got <- ack
+		return nil, nil
+	})
+	server.HandleRPCMux(mux)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("server.Start() error = %v", err)
+	}
+	defer server.Stop()
+
+	client := nodetransport.NewClient(nodetransport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{2: server.Listener().Addr().String()},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter := newAdapterWithTestTimeout(t, client, time.Second)
+	session := adapter.SessionManager().Session(2)
+	env := isrnode.Envelope{
+		Peer:       2,
+		GroupKey:   "g-progress",
+		Epoch:      3,
+		Generation: 7,
+		RequestID:  1,
+		Kind:       isrnode.MessageKindProgressAck,
+		ProgressAck: &isrnode.ProgressAckEnvelope{
+			GroupKey:    "g-progress",
+			Epoch:       3,
+			Generation:  7,
+			ReplicaID:   1,
+			MatchOffset: 11,
+		},
+	}
+
+	if err := session.Send(env); err != nil {
+		t.Fatalf("session.Send() error = %v", err)
+	}
+
+	select {
+	case ack := <-got:
+		if ack.MatchOffset != 11 {
+			t.Fatalf("MatchOffset = %d, want 11", ack.MatchOffset)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for progress ack rpc")
+	}
+}
+
+func TestAdapterHandleProgressAckInvokesRegisteredHandler(t *testing.T) {
+	client := nodetransport.NewClient(nodetransport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	mux := nodetransport.NewRPCMux()
+	adapter, err := New(Options{
+		LocalNode: 1,
+		Client:    client,
+		RPCMux:    mux,
+		FetchService: fetchServiceFunc(func(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
+			return isrnode.FetchResponseEnvelope{}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	delivered := make(chan isrnode.Envelope, 1)
+	adapter.RegisterHandler(func(env isrnode.Envelope) {
+		delivered <- env
+	})
+
+	body, err := encodeProgressAck(isrnode.ProgressAckEnvelope{
+		GroupKey:    "g-progress",
+		Epoch:       3,
+		Generation:  7,
+		ReplicaID:   2,
+		MatchOffset: 19,
+	})
+	if err != nil {
+		t.Fatalf("encodeProgressAck() error = %v", err)
+	}
+
+	servicePayload := append([]byte{RPCServiceProgressAck}, body...)
+	if _, err := mux.HandleRPC(context.Background(), servicePayload); err != nil {
+		t.Fatalf("HandleRPC() error = %v", err)
+	}
+
+	select {
+	case env := <-delivered:
+		if env.Kind != isrnode.MessageKindProgressAck {
+			t.Fatalf("Kind = %v, want progress ack", env.Kind)
+		}
+		if env.ProgressAck == nil || env.ProgressAck.MatchOffset != 19 {
+			t.Fatalf("ProgressAck = %+v", env.ProgressAck)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for delivered progress ack")
+	}
+}
+
 type staticDiscovery struct {
 	addrs map[uint64]string
 }

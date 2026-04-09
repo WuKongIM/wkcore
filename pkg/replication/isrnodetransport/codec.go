@@ -11,10 +11,12 @@ import (
 )
 
 const (
-	RPCServiceFetch uint8 = 2
+	RPCServiceFetch       uint8 = 2
+	RPCServiceProgressAck uint8 = 3
 
 	fetchRequestCodecVersion  byte = 1
 	fetchResponseCodecVersion byte = 1
+	progressAckCodecVersion   byte = 1
 )
 
 func encodeFetchRequest(req isrnode.FetchRequestEnvelope) ([]byte, error) {
@@ -190,6 +192,62 @@ func decodeFetchResponse(data []byte) (isrnode.FetchResponseEnvelope, error) {
 		return isrnode.FetchResponseEnvelope{}, fmt.Errorf("isrnodetransport: trailing fetch response payload bytes")
 	}
 	return resp, nil
+}
+
+func encodeProgressAck(ack isrnode.ProgressAckEnvelope) ([]byte, error) {
+	buf := bytes.NewBuffer(make([]byte, 0, 64))
+	buf.WriteByte(progressAckCodecVersion)
+	if err := writeGroupKey(buf, ack.GroupKey); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(buf, binary.BigEndian, ack.Epoch); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(buf, binary.BigEndian, ack.Generation); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(buf, binary.BigEndian, uint64(ack.ReplicaID)); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(buf, binary.BigEndian, ack.MatchOffset); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func decodeProgressAck(data []byte) (isrnode.ProgressAckEnvelope, error) {
+	rd := bytes.NewReader(data)
+	version, err := rd.ReadByte()
+	if err != nil {
+		return isrnode.ProgressAckEnvelope{}, err
+	}
+	if version != progressAckCodecVersion {
+		return isrnode.ProgressAckEnvelope{}, fmt.Errorf("isrnodetransport: unknown progress ack codec version %d", version)
+	}
+
+	groupKey, err := readGroupKey(rd)
+	if err != nil {
+		return isrnode.ProgressAckEnvelope{}, err
+	}
+	ack := isrnode.ProgressAckEnvelope{GroupKey: groupKey}
+	if err := binary.Read(rd, binary.BigEndian, &ack.Epoch); err != nil {
+		return isrnode.ProgressAckEnvelope{}, err
+	}
+	if err := binary.Read(rd, binary.BigEndian, &ack.Generation); err != nil {
+		return isrnode.ProgressAckEnvelope{}, err
+	}
+	var replicaID uint64
+	if err := binary.Read(rd, binary.BigEndian, &replicaID); err != nil {
+		return isrnode.ProgressAckEnvelope{}, err
+	}
+	ack.ReplicaID = isr.NodeID(replicaID)
+	if err := binary.Read(rd, binary.BigEndian, &ack.MatchOffset); err != nil {
+		return isrnode.ProgressAckEnvelope{}, err
+	}
+	if rd.Len() != 0 {
+		return isrnode.ProgressAckEnvelope{}, fmt.Errorf("isrnodetransport: trailing progress ack payload bytes")
+	}
+	return ack, nil
 }
 
 func writeGroupKey(buf *bytes.Buffer, groupKey isr.GroupKey) error {

@@ -66,6 +66,7 @@ func New(opts Options) (*Adapter, error) {
 	}
 	adapter.sessions = newSessionManager(adapter)
 	opts.RPCMux.Handle(RPCServiceFetch, adapter.handleRPC)
+	opts.RPCMux.Handle(RPCServiceProgressAck, adapter.handleProgressAckRPC)
 	return adapter, nil
 }
 
@@ -93,6 +94,22 @@ func (a *Adapter) handleRPC(ctx context.Context, body []byte) ([]byte, error) {
 		return nil, err
 	}
 	return encodeFetchResponse(resp)
+}
+
+func (a *Adapter) handleProgressAckRPC(ctx context.Context, body []byte) ([]byte, error) {
+	ack, err := decodeProgressAck(body)
+	if err != nil {
+		return nil, err
+	}
+	a.deliver(isrnode.Envelope{
+		Peer:        ack.ReplicaID,
+		GroupKey:    ack.GroupKey,
+		Epoch:       ack.Epoch,
+		Generation:  ack.Generation,
+		Kind:        isrnode.MessageKindProgressAck,
+		ProgressAck: &ack,
+	})
+	return nil, nil
 }
 
 func (a *Adapter) deliver(env isrnode.Envelope) {

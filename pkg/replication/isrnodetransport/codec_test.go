@@ -63,3 +63,25 @@ func TestFetchResponseCodecRoundTrip(t *testing.T) {
 		t.Fatalf("records = %+v, want %+v", got.Records, resp.Records)
 	}
 }
+
+func TestProgressAckCodecRoundTrip(t *testing.T) {
+	ack := isrnode.ProgressAckEnvelope{
+		GroupKey:    isr.GroupKey("g1"),
+		Epoch:       3,
+		Generation:  7,
+		ReplicaID:   2,
+		MatchOffset: 11,
+	}
+
+	data, err := encodeProgressAck(ack)
+	if err != nil {
+		t.Fatalf("encodeProgressAck() error = %v", err)
+	}
+	got, err := decodeProgressAck(data)
+	if err != nil {
+		t.Fatalf("decodeProgressAck() error = %v", err)
+	}
+	if got != ack {
+		t.Fatalf("ack = %+v, want %+v", got, ack)
+	}
+}

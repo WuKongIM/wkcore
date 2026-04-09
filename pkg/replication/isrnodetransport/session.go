@@ -48,50 +48,66 @@ func (m *sessionManager) Session(peer isr.NodeID) isrnode.PeerSession {
 }
 
 func (s *peerSession) Send(env isrnode.Envelope) error {
-	if env.Kind != isrnode.MessageKindFetchRequest {
+	switch env.Kind {
+	case isrnode.MessageKindFetchRequest:
+		if env.FetchRequest == nil {
+			return fmt.Errorf("isrnodetransport: missing fetch request payload")
+		}
+
+		body, err := encodeFetchRequest(*env.FetchRequest)
+		if err != nil {
+			return err
+		}
+		pendingBytes := int64(len(body))
+		s.trackPending(pendingBytes)
+		pendingReleased := false
+		defer func() {
+			if !pendingReleased {
+				s.releasePending(pendingBytes)
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), s.adapter.rpcTimeout)
+		defer cancel()
+
+		respBody, err := s.adapter.client.RPCService(ctx, uint64(s.peer), fetchRPCShardKey(env.GroupKey), RPCServiceFetch, body)
+		if err != nil {
+			return err
+		}
+		resp, err := decodeFetchResponse(respBody)
+		if err != nil {
+			return err
+		}
+		s.releasePending(pendingBytes)
+		pendingReleased = true
+
+		s.adapter.deliver(isrnode.Envelope{
+			Peer:          s.peer,
+			GroupKey:      resp.GroupKey,
+			Epoch:         resp.Epoch,
+			Generation:    resp.Generation,
+			RequestID:     env.RequestID,
+			Kind:          isrnode.MessageKindFetchResponse,
+			FetchResponse: &resp,
+		})
+		return nil
+	case isrnode.MessageKindProgressAck:
+		if env.ProgressAck == nil {
+			return fmt.Errorf("isrnodetransport: missing progress ack payload")
+		}
+
+		body, err := encodeProgressAck(*env.ProgressAck)
+		if err != nil {
+			return err
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), s.adapter.rpcTimeout)
+		defer cancel()
+		_, err = s.adapter.client.RPCService(ctx, uint64(s.peer), fetchRPCShardKey(env.GroupKey), RPCServiceProgressAck, body)
+		return err
+	default:
 		return fmt.Errorf("isrnodetransport: unsupported envelope kind %d", env.Kind)
 	}
-	if env.FetchRequest == nil {
-		return fmt.Errorf("isrnodetransport: missing fetch request payload")
-	}
-
-	body, err := encodeFetchRequest(*env.FetchRequest)
-	if err != nil {
-		return err
-	}
-	pendingBytes := int64(len(body))
-	s.trackPending(pendingBytes)
-	pendingReleased := false
-	defer func() {
-		if !pendingReleased {
-			s.releasePending(pendingBytes)
-		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), s.adapter.rpcTimeout)
-	defer cancel()
-
-	respBody, err := s.adapter.client.RPCService(ctx, uint64(s.peer), fetchRPCShardKey(env.GroupKey), RPCServiceFetch, body)
-	if err != nil {
-		return err
-	}
-	resp, err := decodeFetchResponse(respBody)
-	if err != nil {
-		return err
-	}
-	s.releasePending(pendingBytes)
-	pendingReleased = true
-
-	s.adapter.deliver(isrnode.Envelope{
-		Peer:          s.peer,
-		GroupKey:      resp.GroupKey,
-		Epoch:         resp.Epoch,
-		Generation:    resp.Generation,
-		RequestID:     env.RequestID,
-		Kind:          isrnode.MessageKindFetchResponse,
-		FetchResponse: &resp,
-	})
-	return nil
 }
 
 func (s *peerSession) TryBatch(env isrnode.Envelope) bool {
