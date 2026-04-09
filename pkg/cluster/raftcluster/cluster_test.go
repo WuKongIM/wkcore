@@ -193,6 +193,15 @@ func TestWaitForManagedGroupsSettledReturnsQuicklyAfterAssignmentsExist(t *testi
 	require.Less(t, time.Since(start), 2*time.Second)
 }
 
+func TestStopNodesReturnsWithoutFixedThreeSecondDelay(t *testing.T) {
+	nodes := startThreeNodes(t, 1)
+
+	start := time.Now()
+	stopNodes(nodes)
+
+	require.Less(t, time.Since(start), time.Second)
+}
+
 func startSingleNode(t testing.TB, groupCount int) *testNode {
 	t.Helper()
 	dir := t.TempDir()
@@ -469,7 +478,7 @@ func stopNodes(nodes []*testNode) {
 	// Pebble-backed raft storage can still be finalizing the last batch commit
 	// when the test temp dir cleanup runs. Give teardown a brief grace window.
 	if stopped {
-		time.Sleep(3 * time.Second)
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
