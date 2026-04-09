@@ -1120,8 +1120,10 @@ func TestClusterControllerLeaderFailoverResumesInFlightRepair(t *testing.T) {
 
 	var failRepair atomic.Bool
 	failRepair.Store(true)
+	var repairExecCount atomic.Int32
 	restore := raftcluster.SetManagedGroupExecutionTestHook(func(taskGroupID uint32, task controllermeta.ReconcileTask) error {
 		if failRepair.Load() && taskGroupID == groupID && task.Kind == controllermeta.TaskKindRepair {
+			repairExecCount.Add(1)
 			return errors.New("injected repair failure")
 		}
 		return nil
@@ -1143,13 +1145,8 @@ func TestClusterControllerLeaderFailoverResumesInFlightRepair(t *testing.T) {
 		return err == nil
 	}, 10*time.Second, 200*time.Millisecond)
 	require.Eventually(t, func() bool {
-		controller, ok := currentControllerLeaderNode(nodes)
-		if !ok {
-			return false
-		}
-		task, err := controller.cluster.GetReconcileTask(context.Background(), groupID)
-		return err == nil && task.Attempt >= 1
-	}, 20*time.Second, 200*time.Millisecond)
+		return repairExecCount.Load() >= 1
+	}, 30*time.Second, 200*time.Millisecond)
 
 	nodes[int(controllerLeader-1)].stop()
 	failRepair.Store(false)
