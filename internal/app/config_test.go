@@ -41,6 +41,8 @@ func TestConfigApplyDefaultsDerivesStoragePathsFromDataDir(t *testing.T) {
 	require.Equal(t, "/tmp/wukong-node-1/data", cfg.Storage.DBPath)
 	require.Equal(t, "/tmp/wukong-node-1/raft", cfg.Storage.RaftPath)
 	require.Equal(t, "/tmp/wukong-node-1/channellog", cfg.Storage.ChannelLogPath)
+	require.Equal(t, "/tmp/wukong-node-1/controller-meta", cfg.Storage.ControllerMetaPath)
+	require.Equal(t, "/tmp/wukong-node-1/controller-raft", cfg.Storage.ControllerRaftPath)
 }
 
 func TestConfigRejectsNodeIDSnowflakeOverflow(t *testing.T) {
@@ -50,9 +52,37 @@ func TestConfigRejectsNodeIDSnowflakeOverflow(t *testing.T) {
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
-func TestConfigValidateRejectsMismatchedGroupCount(t *testing.T) {
+func TestConfigValidateRejectsZeroGroupCount(t *testing.T) {
 	cfg := validConfig()
-	cfg.Cluster.GroupCount = 2
+	cfg.Cluster.GroupCount = 0
+
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
+}
+
+func TestConfigValidateRejectsStaticClusterGroups(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cluster.Groups = []GroupConfig{{ID: 1, Peers: []uint64{1}}}
+
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
+}
+
+func TestConfigValidateAllowsNilStaticGroupsWithExplicitGroupCount(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cluster.Groups = nil
+	cfg.Cluster.GroupCount = 1
+
+	require.NoError(t, cfg.ApplyDefaultsAndValidate())
+}
+
+func TestConfigValidateRejectsInvalidControllerReplicaN(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cluster.ControllerReplicaN = 4
+	cfg.Cluster.GroupReplicaN = 3
+	cfg.Cluster.Nodes = []NodeConfigRef{
+		{ID: 3, Addr: "127.0.0.1:7002"},
+		{ID: 1, Addr: "127.0.0.1:7000"},
+		{ID: 2, Addr: "127.0.0.1:7001"},
+	}
 
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
@@ -90,27 +120,6 @@ func TestConfigValidateRejectsDuplicateClusterNodeIDs(t *testing.T) {
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
-func TestConfigValidateRejectsDuplicateGroupIDs(t *testing.T) {
-	cfg := validConfig()
-	cfg.Cluster.Groups = []GroupConfig{
-		{ID: 1, Peers: []uint64{1}},
-		{ID: 1, Peers: []uint64{1}},
-	}
-	cfg.Cluster.GroupCount = 2
-
-	require.Error(t, cfg.ApplyDefaultsAndValidate())
-}
-
-func TestConfigValidateRejectsNonContiguousGroupIDs(t *testing.T) {
-	cfg := validConfig()
-	cfg.Cluster.Groups = []GroupConfig{
-		{ID: 100, Peers: []uint64{1}},
-	}
-	cfg.Cluster.GroupCount = 1
-
-	require.Error(t, cfg.ApplyDefaultsAndValidate())
-}
-
 func TestConfigValidateRejectsNodeMissingFromClusterNodes(t *testing.T) {
 	cfg := validConfig()
 	cfg.Node.ID = 2
@@ -118,13 +127,11 @@ func TestConfigValidateRejectsNodeMissingFromClusterNodes(t *testing.T) {
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
-func TestConfigValidateRejectsNodeMissingFromGroupPeers(t *testing.T) {
+func TestConfigValidateRejectsLocalNodeMissingFromClusterNodes(t *testing.T) {
 	cfg := validConfig()
-	cfg.Node.ID = 2
-	cfg.Cluster.Nodes = []NodeConfigRef{
-		{ID: 1, Addr: "127.0.0.1:7000"},
-		{ID: 2, Addr: "127.0.0.1:7001"},
-	}
+	cfg.Node.ID = 9
+	cfg.Cluster.ControllerReplicaN = 3
+	cfg.Cluster.GroupReplicaN = 3
 
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
@@ -180,16 +187,18 @@ func validConfig() Config {
 			DataDir: "/tmp/wukong-node-1",
 		},
 		Cluster: ClusterConfig{
-			ListenAddr:     "127.0.0.1:7000",
-			Nodes:          []NodeConfigRef{{ID: 1, Addr: "127.0.0.1:7000"}},
-			Groups:         []GroupConfig{{ID: 1, Peers: []uint64{1}}},
-			ForwardTimeout: 5 * time.Second,
-			PoolSize:       4,
-			TickInterval:   100 * time.Millisecond,
-			RaftWorkers:    2,
-			ElectionTick:   10,
-			HeartbeatTick:  1,
-			DialTimeout:    5 * time.Second,
+			ListenAddr:         "127.0.0.1:7000",
+			GroupCount:         1,
+			Nodes:              []NodeConfigRef{{ID: 1, Addr: "127.0.0.1:7000"}},
+			ControllerReplicaN: 1,
+			GroupReplicaN:      1,
+			ForwardTimeout:     5 * time.Second,
+			PoolSize:           4,
+			TickInterval:       100 * time.Millisecond,
+			RaftWorkers:        2,
+			ElectionTick:       10,
+			HeartbeatTick:      1,
+			DialTimeout:        5 * time.Second,
 		},
 		API: APIConfig{},
 		Gateway: GatewayConfig{

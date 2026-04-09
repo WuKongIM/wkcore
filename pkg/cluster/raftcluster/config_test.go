@@ -22,11 +22,11 @@ func TestConfigValidate_GroupCountZero(t *testing.T) {
 	}
 }
 
-func TestConfigValidate_GroupCountMismatch(t *testing.T) {
+func TestConfigValidate_AllowsLegacyGroupsBelowGroupCount(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.GroupCount = 5
-	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
-		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -122,11 +122,74 @@ func TestConfigValidate_DuplicateGroupID(t *testing.T) {
 	}
 }
 
+func TestConfigValidateAllowsControllerConfigWithLegacyGroups(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.ControllerReplicaN = 3
+	cfg.GroupReplicaN = 3
+
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestConfigValidateAllowsNilGroupsWithExplicitGroupCount(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.Groups = nil
+	cfg.ControllerReplicaN = 3
+	cfg.GroupReplicaN = 3
+
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestConfigValidateRejectsLocalNodeMissingWithLegacyGroups(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.ControllerReplicaN = 3
+	cfg.GroupReplicaN = 3
+	cfg.NodeID = 99
+
+	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
+}
+
+func TestConfigValidateRejectsOnlyOneControllerPath(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.ControllerRaftPath = ""
+
+	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
+}
+
+func TestConfigDerivedControllerNodesSortsAndTruncates(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.Nodes = []NodeConfig{
+		{NodeID: 3, Addr: "127.0.0.1:9003"},
+		{NodeID: 1, Addr: "127.0.0.1:9001"},
+		{NodeID: 2, Addr: "127.0.0.1:9002"},
+	}
+	cfg.ControllerReplicaN = 2
+
+	derived := cfg.DerivedControllerNodes()
+	if len(derived) != 2 {
+		t.Fatalf("len(derived) = %d", len(derived))
+	}
+	if derived[0].NodeID != 1 || derived[1].NodeID != 2 {
+		t.Fatalf("derived controller nodes = %+v", derived)
+	}
+}
+
 func validTestConfig() Config {
 	return Config{
-		NodeID:     1,
-		ListenAddr: ":9001",
-		GroupCount: 1,
+		NodeID:             1,
+		ListenAddr:         ":9001",
+		GroupCount:         1,
+		ControllerMetaPath: "/tmp/controller-meta",
+		ControllerRaftPath: "/tmp/controller-raft",
+		ControllerReplicaN: 3,
+		GroupReplicaN:      3,
 		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
 			return nil, nil
 		},

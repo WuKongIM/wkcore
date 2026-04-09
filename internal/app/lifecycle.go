@@ -15,7 +15,6 @@ const (
 	apiStopTimeout              = 5 * time.Second
 	defaultDataPlaneDialTimeout = 5 * time.Second
 	presenceLeaderReadyTimeout  = 10 * time.Second
-	presenceLeaderPollInterval  = 50 * time.Millisecond
 )
 
 func (a *App) Start() error {
@@ -35,6 +34,11 @@ func (a *App) Start() error {
 		return err
 	}
 	a.clusterOn.Store(true)
+	if err := a.waitForManagedGroupsReady(); err != nil {
+		_ = a.stopClusterWithError()
+		a.started.Store(false)
+		return err
+	}
 	if a.channelMetaSync != nil || a.startChannelMetaSyncFn != nil {
 		if err := a.startChannelMetaSync(); err != nil {
 			_ = a.stopClusterWithError()
@@ -196,9 +200,6 @@ func (a *App) startPresence() error {
 	if a.startPresenceFn != nil {
 		return a.startPresenceFn()
 	}
-	if err := a.waitForPresenceLeaders(); err != nil {
-		return err
-	}
 	if a.presenceWorker == nil {
 		return nil
 	}
@@ -295,39 +296,6 @@ func (a *App) stopAPI() error {
 	return a.api.Stop(ctx)
 }
 
-func (a *App) waitForPresenceLeaders() error {
-	if a == nil || a.cluster == nil {
-		return nil
-	}
-	groupIDs := a.cluster.GroupIDs()
-	if len(groupIDs) == 0 {
-		return nil
-	}
-
-	deadline := time.Now().Add(presenceLeaderReadyTimeout)
-	var lastErr error
-	for {
-		allReady := true
-		for _, groupID := range groupIDs {
-			if _, err := a.cluster.LeaderOf(groupID); err != nil {
-				allReady = false
-				lastErr = err
-				break
-			}
-		}
-		if allReady {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			if lastErr != nil {
-				return lastErr
-			}
-			return ErrNotBuilt
-		}
-		time.Sleep(presenceLeaderPollInterval)
-	}
-}
-
 func (a *App) stopCluster() {
 	if !a.clusterOn.Swap(false) {
 		return
@@ -345,6 +313,15 @@ func (a *App) stopCluster() {
 func (a *App) stopClusterWithError() error {
 	a.stopCluster()
 	return nil
+}
+
+func (a *App) waitForManagedGroupsReady() error {
+	if a == nil || a.cluster == nil {
+		return nil
+	}
+	readyCtx, cancel := context.WithTimeout(context.Background(), presenceLeaderReadyTimeout)
+	defer cancel()
+	return a.cluster.WaitForManagedGroupsReady(readyCtx)
 }
 
 func (a *App) closeRaftDB() error {

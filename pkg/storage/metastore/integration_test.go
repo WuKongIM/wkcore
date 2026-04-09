@@ -282,9 +282,11 @@ func TestStoreUpsertAndGetChannelRuntimeMeta(t *testing.T) {
 	raftDB := openTestRaftDBAt(t, filepath.Join(root, "raft"))
 
 	cluster, err := raftcluster.NewCluster(raftcluster.Config{
-		NodeID:     1,
-		ListenAddr: "127.0.0.1:0",
-		GroupCount: 1,
+		NodeID:             1,
+		ListenAddr:         "127.0.0.1:0",
+		GroupCount:         1,
+		ControllerReplicaN: 1,
+		GroupReplicaN:      1,
 		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
 			return raftDB.ForGroup(uint64(groupID)), nil
 		},
@@ -347,9 +349,11 @@ func TestStoreCreateUserAndUpsertDevice(t *testing.T) {
 	raftDB := openTestRaftDBAt(t, filepath.Join(root, "raft"))
 
 	cluster, err := raftcluster.NewCluster(raftcluster.Config{
-		NodeID:     1,
-		ListenAddr: "127.0.0.1:0",
-		GroupCount: 1,
+		NodeID:             1,
+		ListenAddr:         "127.0.0.1:0",
+		GroupCount:         1,
+		ControllerReplicaN: 1,
+		GroupReplicaN:      1,
 		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
 			return raftDB.ForGroup(uint64(groupID)), nil
 		},
@@ -403,9 +407,11 @@ func TestStoreListChannelRuntimeMeta(t *testing.T) {
 	raftDB := openTestRaftDBAt(t, filepath.Join(root, "raft"))
 
 	cluster, err := raftcluster.NewCluster(raftcluster.Config{
-		NodeID:     1,
-		ListenAddr: "127.0.0.1:0",
-		GroupCount: 2,
+		NodeID:             1,
+		ListenAddr:         "127.0.0.1:0",
+		GroupCount:         2,
+		ControllerReplicaN: 1,
+		GroupReplicaN:      1,
 		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
 			return raftDB.ForGroup(uint64(groupID)), nil
 		},

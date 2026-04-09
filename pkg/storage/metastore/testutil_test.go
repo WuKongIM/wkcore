@@ -184,9 +184,11 @@ func startTwoNodeShardedStores(t testing.TB) []*testStoreNode {
 		raftDB := openTestRaftDBAt(t, filepath.Join(dir, "raft"))
 
 		cluster, err := raftcluster.NewCluster(raftcluster.Config{
-			NodeID:     multiraft.NodeID(i + 1),
-			ListenAddr: nodes[i].Addr,
-			GroupCount: 2,
+			NodeID:             multiraft.NodeID(i + 1),
+			ListenAddr:         nodes[i].Addr,
+			GroupCount:         2,
+			ControllerReplicaN: len(nodes),
+			GroupReplicaN:      len(nodes),
 			NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
 				return raftDB.ForGroup(uint64(groupID)), nil
 			},

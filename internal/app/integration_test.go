@@ -22,7 +22,6 @@ const appReadTimeout = 2 * time.Second
 
 func TestAppStartAcceptsWKProtoConnectionAndStopsCleanly(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.Cluster.ListenAddr = "127.0.0.1:0"
 
 	app, err := New(cfg)
 	require.NoError(t, err)
@@ -52,7 +51,6 @@ func TestAppStartAcceptsWKProtoConnectionAndStopsCleanly(t *testing.T) {
 
 func TestAppStartPreloadsLocalChannelRuntimeMeta(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.Cluster.ListenAddr = "127.0.0.1:0"
 
 	app, err := New(cfg)
 	require.NoError(t, err)
@@ -88,7 +86,6 @@ func TestAppStartPreloadsLocalChannelRuntimeMeta(t *testing.T) {
 
 func TestAppStartWiresMessageSendThroughDurableChannelLog(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.Cluster.ListenAddr = "127.0.0.1:0"
 
 	app, err := New(cfg)
 	require.NoError(t, err)
@@ -143,7 +140,6 @@ func TestAppStartWiresMessageSendThroughDurableChannelLog(t *testing.T) {
 
 func TestAppSendReturnsBeforeRealtimeAckArrives(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.Cluster.ListenAddr = "127.0.0.1:0"
 	channelID := deliveryusecase.EncodePersonChannel("u1", "u2")
 
 	app, err := New(cfg)
@@ -187,7 +183,6 @@ func TestAppSendReturnsBeforeRealtimeAckArrives(t *testing.T) {
 
 func TestAppRecvAckCompletesLocalInflightRoute(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.Cluster.ListenAddr = "127.0.0.1:0"
 	channelID := deliveryusecase.EncodePersonChannel("u1", "u2")
 
 	app, err := New(cfg)
@@ -231,7 +226,6 @@ func TestAppRecvAckCompletesLocalInflightRoute(t *testing.T) {
 
 func TestAppSessionCloseDropsRealtimeRouteAndDoesNotBlockSend(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.Cluster.ListenAddr = "127.0.0.1:0"
 	channelID := deliveryusecase.EncodePersonChannel("u1", "u2")
 
 	app, err := New(cfg)
@@ -284,7 +278,6 @@ func TestAppSessionCloseDropsRealtimeRouteAndDoesNotBlockSend(t *testing.T) {
 
 func TestAppStartServesLegacyUserTokenEndpoint(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.Cluster.ListenAddr = "127.0.0.1:0"
 	cfg.API.ListenAddr = "127.0.0.1:0"
 
 	app, err := New(cfg)

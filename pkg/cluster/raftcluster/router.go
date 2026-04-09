@@ -29,6 +29,9 @@ func (r *Router) SlotForKey(key string) multiraft.GroupID {
 }
 
 func (r *Router) LeaderOf(groupID multiraft.GroupID) (multiraft.NodeID, error) {
+	if r == nil || r.runtime == nil {
+		return 0, ErrNotStarted
+	}
 	status, err := r.runtime.Status(groupID)
 	if err != nil {
 		return 0, err

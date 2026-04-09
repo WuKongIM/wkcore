@@ -168,11 +168,10 @@ func newThreeNodeConversationSyncHarness(t *testing.T) *threeNodeAppHarness {
 		cfg.Storage = StorageConfig{}
 		cfg.Cluster.ListenAddr = clusterAddrs[nodeID]
 		cfg.Cluster.Nodes = append([]NodeConfigRef(nil), clusterNodes...)
-		cfg.Cluster.Groups = []GroupConfig{{
-			ID:    1,
-			Peers: []uint64{1, 2, 3},
-		}}
 		cfg.Cluster.GroupCount = 1
+		cfg.Cluster.ControllerReplicaN = 3
+		cfg.Cluster.GroupReplicaN = 3
+		cfg.Cluster.Groups = nil
 		cfg.Cluster.TickInterval = 10 * time.Millisecond
 		cfg.Cluster.ElectionTick = 10
 		cfg.Cluster.HeartbeatTick = 1
