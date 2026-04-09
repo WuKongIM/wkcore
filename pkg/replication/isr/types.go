@@ -92,6 +92,13 @@ type ApplyFetchRequest struct {
 	LeaderHW   uint64
 }
 
+type ProgressAckRequest struct {
+	GroupKey    GroupKey
+	Epoch       uint64
+	ReplicaID   NodeID
+	MatchOffset uint64
+}
+
 type SnapshotApplier interface {
 	InstallSnapshot(ctx context.Context, snap Snapshot) error
 }
@@ -146,5 +153,6 @@ type Replica interface {
 	Append(ctx context.Context, batch []Record) (CommitResult, error)
 	Fetch(ctx context.Context, req FetchRequest) (FetchResult, error)
 	ApplyFetch(ctx context.Context, req ApplyFetchRequest) error
+	ApplyProgressAck(ctx context.Context, req ProgressAckRequest) error
 	Status() ReplicaState
 }
