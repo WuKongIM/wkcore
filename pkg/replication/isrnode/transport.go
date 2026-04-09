@@ -30,6 +30,16 @@ func (r *runtime) handleEnvelope(env Envelope) {
 		r.drainPeerQueue(env.Peer)
 		return
 	}
+	if env.Kind == MessageKindFetchFailure {
+		r.releasePeerInflight(env.Peer)
+		r.releaseGroupInflight(env.GroupKey, env.Peer)
+		if g != nil {
+			r.retryReplication(env.GroupKey, env.Peer, true)
+			r.scheduleFollowerReplication(env.GroupKey, env.Peer)
+		}
+		r.drainPeerQueue(env.Peer)
+		return
+	}
 
 	if g == nil {
 		return

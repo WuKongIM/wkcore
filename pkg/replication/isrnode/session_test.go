@@ -95,6 +95,37 @@ func TestReplicationRequestUsesReplicaOffsetEpochInsteadOfGroupMetaEpoch(t *test
 	}
 }
 
+func TestReplicationRequestUsesPeerSessionBatchingWhenAccepted(t *testing.T) {
+	env := newSessionTestEnv(t)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2711, 4, 1, []isr.NodeID{1, 2}))
+
+	replica := env.factory.replicas[0]
+	replica.mu.Lock()
+	replica.state.LEO = 6
+	replica.state.Epoch = 4
+	replica.state.OffsetEpoch = 4
+	replica.mu.Unlock()
+
+	session := env.sessions.session(2)
+	session.setTryBatch(true)
+
+	env.runtime.enqueueReplication(testGroupKey(2711), 2)
+	env.runtime.runScheduler()
+
+	if got := session.sendCount(); got != 0 {
+		t.Fatalf("expected batched fetch request to avoid direct send, got %d sends", got)
+	}
+	if got := session.batchCount(); got != 1 {
+		t.Fatalf("expected one batched fetch request, got %d", got)
+	}
+	if session.batched[0].Kind != MessageKindFetchRequest {
+		t.Fatalf("batched kind = %v, want fetch request", session.batched[0].Kind)
+	}
+	if session.batched[0].FetchRequest == nil || session.batched[0].FetchRequest.FetchOffset != 6 {
+		t.Fatalf("batched fetch request = %+v", session.batched[0].FetchRequest)
+	}
+}
+
 func TestQueuedReplicationRecomputesReplicaProgressBetweenSends(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(272, 4, 1, []isr.NodeID{1, 2}))
@@ -530,6 +561,38 @@ func TestLeaderAppliesProgressAckWithoutWaitingForNextFetch(t *testing.T) {
 	}
 }
 
+func TestFetchFailureEnvelopeReleasesInflightAndRetriesReplication(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.AutoRunScheduler = true
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(255, 4, 2, []isr.NodeID{1, 2}))
+
+	session := env.sessions.session(2)
+	env.runtime.runScheduler()
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected initial follower fetch request, got %d sends", got)
+	}
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		GroupKey:   testGroupKey(255),
+		Generation: 1,
+		Epoch:      4,
+		Kind:       MessageKindFetchFailure,
+	})
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := session.sendCount(); got >= 2 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	t.Fatalf("expected fetch failure to trigger immediate retry, got %d sends", session.sendCount())
+}
+
 func TestEmptyFetchResponseUsesRetryIntervalBeforeFollowerRefetch(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.AutoRunScheduler = true
@@ -886,10 +949,12 @@ type trackingPeerSession struct {
 	sends        int
 	last         Envelope
 	sent         []Envelope
+	batched      []Envelope
 	sendErr      error
 	sendErrs     []error
 	backpressure BackpressureState
 	afterSend    func()
+	tryBatch     bool
 }
 
 func (s *trackingPeerSession) Send(env Envelope) error {
@@ -916,7 +981,13 @@ func (s *trackingPeerSession) Send(env Envelope) error {
 }
 
 func (s *trackingPeerSession) TryBatch(env Envelope) bool {
-	return false
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.tryBatch {
+		return false
+	}
+	s.batched = append(s.batched, env)
+	return true
 }
 
 func (s *trackingPeerSession) Flush() error {
@@ -939,10 +1010,22 @@ func (s *trackingPeerSession) sendCount() int {
 	return s.sends
 }
 
+func (s *trackingPeerSession) batchCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.batched)
+}
+
 func (s *trackingPeerSession) setBackpressure(state BackpressureState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.backpressure = state
+}
+
+func (s *trackingPeerSession) setTryBatch(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tryBatch = v
 }
 
 func (s *trackingPeerSession) setSendErr(err error) {

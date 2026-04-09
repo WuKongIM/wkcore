@@ -12,6 +12,7 @@ type MessageKind uint8
 const (
 	MessageKindFetchRequest MessageKind = iota + 1
 	MessageKindFetchResponse
+	MessageKindFetchFailure
 	MessageKindProgressAck
 	MessageKindTruncate
 	MessageKindSnapshotChunk
@@ -81,6 +82,25 @@ type FetchResponseEnvelope struct {
 	TruncateTo *uint64
 	LeaderHW   uint64
 	Records    []isr.Record
+}
+
+type FetchBatchRequestEnvelope struct {
+	Items []FetchBatchRequestItem
+}
+
+type FetchBatchRequestItem struct {
+	RequestID uint64
+	Request   FetchRequestEnvelope
+}
+
+type FetchBatchResponseEnvelope struct {
+	Items []FetchBatchResponseItem
+}
+
+type FetchBatchResponseItem struct {
+	RequestID uint64
+	Response  *FetchResponseEnvelope
+	Error     string
 }
 
 type ProgressAckEnvelope struct {

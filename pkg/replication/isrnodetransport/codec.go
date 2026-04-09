@@ -13,9 +13,12 @@ import (
 const (
 	RPCServiceFetch       uint8 = 2
 	RPCServiceProgressAck uint8 = 3
+	RPCServiceFetchBatch  uint8 = 4
 
 	fetchRequestCodecVersion  byte = 1
 	fetchResponseCodecVersion byte = 1
+	fetchBatchRequestVersion  byte = 1
+	fetchBatchResponseVersion byte = 1
 	progressAckCodecVersion   byte = 1
 )
 
@@ -190,6 +193,177 @@ func decodeFetchResponse(data []byte) (isrnode.FetchResponseEnvelope, error) {
 	}
 	if rd.Len() != 0 {
 		return isrnode.FetchResponseEnvelope{}, fmt.Errorf("isrnodetransport: trailing fetch response payload bytes")
+	}
+	return resp, nil
+}
+
+func encodeFetchBatchRequest(req isrnode.FetchBatchRequestEnvelope) ([]byte, error) {
+	buf := bytes.NewBuffer(make([]byte, 0, 128))
+	buf.WriteByte(fetchBatchRequestVersion)
+	if err := binary.Write(buf, binary.BigEndian, uint32(len(req.Items))); err != nil {
+		return nil, err
+	}
+	for _, item := range req.Items {
+		if err := binary.Write(buf, binary.BigEndian, item.RequestID); err != nil {
+			return nil, err
+		}
+		itemPayload, err := encodeFetchRequest(item.Request)
+		if err != nil {
+			return nil, err
+		}
+		if err := binary.Write(buf, binary.BigEndian, uint32(len(itemPayload))); err != nil {
+			return nil, err
+		}
+		if _, err := buf.Write(itemPayload); err != nil {
+			return nil, err
+		}
+	}
+	return buf.Bytes(), nil
+}
+
+func decodeFetchBatchRequest(data []byte) (isrnode.FetchBatchRequestEnvelope, error) {
+	rd := bytes.NewReader(data)
+	version, err := rd.ReadByte()
+	if err != nil {
+		return isrnode.FetchBatchRequestEnvelope{}, err
+	}
+	if version != fetchBatchRequestVersion {
+		return isrnode.FetchBatchRequestEnvelope{}, fmt.Errorf("isrnodetransport: unknown fetch batch request codec version %d", version)
+	}
+
+	var count uint32
+	if err := binary.Read(rd, binary.BigEndian, &count); err != nil {
+		return isrnode.FetchBatchRequestEnvelope{}, err
+	}
+	req := isrnode.FetchBatchRequestEnvelope{
+		Items: make([]isrnode.FetchBatchRequestItem, 0, count),
+	}
+	for i := uint32(0); i < count; i++ {
+		var item isrnode.FetchBatchRequestItem
+		if err := binary.Read(rd, binary.BigEndian, &item.RequestID); err != nil {
+			return isrnode.FetchBatchRequestEnvelope{}, err
+		}
+		var payloadLen uint32
+		if err := binary.Read(rd, binary.BigEndian, &payloadLen); err != nil {
+			return isrnode.FetchBatchRequestEnvelope{}, err
+		}
+		payload := make([]byte, payloadLen)
+		if _, err := io.ReadFull(rd, payload); err != nil {
+			return isrnode.FetchBatchRequestEnvelope{}, err
+		}
+		item.Request, err = decodeFetchRequest(payload)
+		if err != nil {
+			return isrnode.FetchBatchRequestEnvelope{}, err
+		}
+		req.Items = append(req.Items, item)
+	}
+	if rd.Len() != 0 {
+		return isrnode.FetchBatchRequestEnvelope{}, fmt.Errorf("isrnodetransport: trailing fetch batch request payload bytes")
+	}
+	return req, nil
+}
+
+func encodeFetchBatchResponse(resp isrnode.FetchBatchResponseEnvelope) ([]byte, error) {
+	buf := bytes.NewBuffer(make([]byte, 0, 128))
+	buf.WriteByte(fetchBatchResponseVersion)
+	if err := binary.Write(buf, binary.BigEndian, uint32(len(resp.Items))); err != nil {
+		return nil, err
+	}
+	for _, item := range resp.Items {
+		if err := binary.Write(buf, binary.BigEndian, item.RequestID); err != nil {
+			return nil, err
+		}
+		if item.Error != "" {
+			buf.WriteByte(1)
+			if err := binary.Write(buf, binary.BigEndian, uint32(len(item.Error))); err != nil {
+				return nil, err
+			}
+			if _, err := buf.WriteString(item.Error); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		buf.WriteByte(0)
+		if item.Response == nil {
+			if err := binary.Write(buf, binary.BigEndian, uint32(0)); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		payload, err := encodeFetchResponse(*item.Response)
+		if err != nil {
+			return nil, err
+		}
+		if err := binary.Write(buf, binary.BigEndian, uint32(len(payload))); err != nil {
+			return nil, err
+		}
+		if _, err := buf.Write(payload); err != nil {
+			return nil, err
+		}
+	}
+	return buf.Bytes(), nil
+}
+
+func decodeFetchBatchResponse(data []byte) (isrnode.FetchBatchResponseEnvelope, error) {
+	rd := bytes.NewReader(data)
+	version, err := rd.ReadByte()
+	if err != nil {
+		return isrnode.FetchBatchResponseEnvelope{}, err
+	}
+	if version != fetchBatchResponseVersion {
+		return isrnode.FetchBatchResponseEnvelope{}, fmt.Errorf("isrnodetransport: unknown fetch batch response codec version %d", version)
+	}
+
+	var count uint32
+	if err := binary.Read(rd, binary.BigEndian, &count); err != nil {
+		return isrnode.FetchBatchResponseEnvelope{}, err
+	}
+	resp := isrnode.FetchBatchResponseEnvelope{
+		Items: make([]isrnode.FetchBatchResponseItem, 0, count),
+	}
+	for i := uint32(0); i < count; i++ {
+		var item isrnode.FetchBatchResponseItem
+		if err := binary.Read(rd, binary.BigEndian, &item.RequestID); err != nil {
+			return isrnode.FetchBatchResponseEnvelope{}, err
+		}
+		flag, err := rd.ReadByte()
+		if err != nil {
+			return isrnode.FetchBatchResponseEnvelope{}, err
+		}
+		switch flag {
+		case 0:
+			var payloadLen uint32
+			if err := binary.Read(rd, binary.BigEndian, &payloadLen); err != nil {
+				return isrnode.FetchBatchResponseEnvelope{}, err
+			}
+			if payloadLen > 0 {
+				payload := make([]byte, payloadLen)
+				if _, err := io.ReadFull(rd, payload); err != nil {
+					return isrnode.FetchBatchResponseEnvelope{}, err
+				}
+				fetchResp, err := decodeFetchResponse(payload)
+				if err != nil {
+					return isrnode.FetchBatchResponseEnvelope{}, err
+				}
+				item.Response = &fetchResp
+			}
+		case 1:
+			var errLen uint32
+			if err := binary.Read(rd, binary.BigEndian, &errLen); err != nil {
+				return isrnode.FetchBatchResponseEnvelope{}, err
+			}
+			errPayload := make([]byte, errLen)
+			if _, err := io.ReadFull(rd, errPayload); err != nil {
+				return isrnode.FetchBatchResponseEnvelope{}, err
+			}
+			item.Error = string(errPayload)
+		default:
+			return isrnode.FetchBatchResponseEnvelope{}, fmt.Errorf("isrnodetransport: unknown fetch batch response item flag %d", flag)
+		}
+		resp.Items = append(resp.Items, item)
+	}
+	if rd.Len() != 0 {
+		return isrnode.FetchBatchResponseEnvelope{}, fmt.Errorf("isrnodetransport: trailing fetch batch response payload bytes")
 	}
 	return resp, nil
 }

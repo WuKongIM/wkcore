@@ -66,6 +66,7 @@ func New(opts Options) (*Adapter, error) {
 	}
 	adapter.sessions = newSessionManager(adapter)
 	opts.RPCMux.Handle(RPCServiceFetch, adapter.handleRPC)
+	opts.RPCMux.Handle(RPCServiceFetchBatch, adapter.handleFetchBatchRPC)
 	opts.RPCMux.Handle(RPCServiceProgressAck, adapter.handleProgressAckRPC)
 	return adapter, nil
 }
@@ -94,6 +95,28 @@ func (a *Adapter) handleRPC(ctx context.Context, body []byte) ([]byte, error) {
 		return nil, err
 	}
 	return encodeFetchResponse(resp)
+}
+
+func (a *Adapter) handleFetchBatchRPC(ctx context.Context, body []byte) ([]byte, error) {
+	req, err := decodeFetchBatchRequest(body)
+	if err != nil {
+		return nil, err
+	}
+	resp := isrnode.FetchBatchResponseEnvelope{
+		Items: make([]isrnode.FetchBatchResponseItem, 0, len(req.Items)),
+	}
+	for _, item := range req.Items {
+		itemResp := isrnode.FetchBatchResponseItem{RequestID: item.RequestID}
+		fetchResp, fetchErr := a.fetchService.ServeFetch(ctx, item.Request)
+		if fetchErr != nil {
+			itemResp.Error = fetchErr.Error()
+		} else {
+			fetchRespCopy := fetchResp
+			itemResp.Response = &fetchRespCopy
+		}
+		resp.Items = append(resp.Items, itemResp)
+	}
+	return encodeFetchBatchResponse(resp)
 }
 
 func (a *Adapter) handleProgressAckRPC(ctx context.Context, body []byte) ([]byte, error) {
