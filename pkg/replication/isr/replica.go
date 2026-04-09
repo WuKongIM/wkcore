@@ -1,17 +1,40 @@
 package isr
 
 import (
+	"context"
 	"sync"
 	"time"
 )
 
+type appendGroupCommitConfig struct {
+	maxWait    time.Duration
+	maxRecords int
+	maxBytes   int
+}
+
+type appendCompletion struct {
+	result CommitResult
+	err    error
+}
+
+type appendRequest struct {
+	ctx       context.Context
+	batch     []Record
+	byteCount int
+	waiter    *appendWaiter
+}
+
 type replica struct {
 	mu sync.RWMutex
+
+	advanceMu sync.Mutex
+	appendMu sync.Mutex
 
 	localNode NodeID
 
 	log         LogStore
 	checkpoints CheckpointStore
+	applyFetch  ApplyFetchStore
 	history     EpochHistoryStore
 	snapshots   SnapshotApplier
 	now         func() time.Time
@@ -22,6 +45,11 @@ type replica struct {
 	waiters      []*appendWaiter
 	epochHistory []EpochPoint
 	recovered    bool
+
+	appendGroupCommit appendGroupCommitConfig
+	appendPending     []*appendRequest
+	appendCollecting  bool
+	appendSignal      chan struct{}
 }
 
 func NewReplica(cfg ReplicaConfig) (Replica, error) {
@@ -48,9 +76,16 @@ func NewReplica(cfg ReplicaConfig) (Replica, error) {
 		localNode:   cfg.LocalNode,
 		log:         cfg.LogStore,
 		checkpoints: cfg.CheckpointStore,
+		applyFetch:  cfg.ApplyFetchStore,
 		history:     cfg.EpochHistoryStore,
 		snapshots:   cfg.SnapshotApplier,
 		now:         cfg.Now,
+		appendGroupCommit: appendGroupCommitConfig{
+			maxWait:    effectiveAppendGroupCommitMaxWait(cfg.AppendGroupCommitMaxWait),
+			maxRecords: effectiveAppendGroupCommitMaxRecords(cfg.AppendGroupCommitMaxRecords),
+			maxBytes:   effectiveAppendGroupCommitMaxBytes(cfg.AppendGroupCommitMaxBytes),
+		},
+		appendSignal: make(chan struct{}, 1),
 		state: ReplicaState{
 			Role: RoleFollower,
 		},
@@ -61,7 +96,30 @@ func NewReplica(cfg ReplicaConfig) (Replica, error) {
 	return r, nil
 }
 
+func effectiveAppendGroupCommitMaxWait(configured time.Duration) time.Duration {
+	if configured > 0 {
+		return configured
+	}
+	return time.Millisecond
+}
+
+func effectiveAppendGroupCommitMaxRecords(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	return 64
+}
+
+func effectiveAppendGroupCommitMaxBytes(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	return 64 * 1024
+}
+
 func (r *replica) ApplyMeta(meta GroupMeta) error {
+	r.appendMu.Lock()
+	defer r.appendMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -72,6 +130,8 @@ func (r *replica) ApplyMeta(meta GroupMeta) error {
 }
 
 func (r *replica) BecomeLeader(meta GroupMeta) error {
+	r.appendMu.Lock()
+	defer r.appendMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.state.Role == RoleTombstoned {
@@ -124,6 +184,8 @@ func (r *replica) BecomeLeader(meta GroupMeta) error {
 }
 
 func (r *replica) BecomeFollower(meta GroupMeta) error {
+	r.appendMu.Lock()
+	defer r.appendMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -141,6 +203,8 @@ func (r *replica) BecomeFollower(meta GroupMeta) error {
 }
 
 func (r *replica) Tombstone() error {
+	r.appendMu.Lock()
+	defer r.appendMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

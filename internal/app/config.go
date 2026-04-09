@@ -31,18 +31,21 @@ type StorageConfig struct {
 }
 
 type ClusterConfig struct {
-	ListenAddr          string
-	GroupCount          uint32
-	Nodes               []NodeConfigRef
-	Groups              []GroupConfig
-	ForwardTimeout      time.Duration
-	PoolSize            int
-	TickInterval        time.Duration
-	RaftWorkers         int
-	ElectionTick        int
-	HeartbeatTick       int
-	DialTimeout         time.Duration
-	DataPlaneRPCTimeout time.Duration
+	ListenAddr                string
+	GroupCount                uint32
+	Nodes                     []NodeConfigRef
+	Groups                    []GroupConfig
+	ForwardTimeout            time.Duration
+	PoolSize                  int
+	DataPlanePoolSize         int
+	TickInterval              time.Duration
+	RaftWorkers               int
+	ElectionTick              int
+	HeartbeatTick             int
+	DialTimeout               time.Duration
+	DataPlaneRPCTimeout       time.Duration
+	DataPlaneMaxFetchInflight int
+	DataPlaneMaxPendingFetch  int
 }
 
 type NodeConfigRef struct {
@@ -174,6 +177,9 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	if c.Conversation.SubscriberPageSize <= 0 {
 		c.Conversation.SubscriberPageSize = 512
 	}
+	c.Cluster.DataPlanePoolSize = effectiveDataPlanePoolSize(c.Cluster.PoolSize, c.Cluster.DataPlanePoolSize)
+	c.Cluster.DataPlaneMaxFetchInflight = effectiveDataPlaneMaxFetchInflight(c.Cluster.PoolSize, c.Cluster.DataPlaneMaxFetchInflight)
+	c.Cluster.DataPlaneMaxPendingFetch = effectiveDataPlaneMaxPendingFetch(c.Cluster.PoolSize, c.Cluster.DataPlaneMaxPendingFetch)
 
 	nodeSet := make(map[uint64]struct{}, len(c.Cluster.Nodes))
 	selfNodeFound := false

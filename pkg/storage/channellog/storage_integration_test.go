@@ -164,7 +164,7 @@ func TestClusterAppendDoesNotFailAfterAtomicCheckpointIdempotencyCommit(t *testi
 		directPutErr: errors.New("direct put should be skipped after checkpoint commit"),
 	}
 
-	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), db, key, state, channelGroupKey(key))
+	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), store, db, key, state, channelGroupKey(key))
 	if err != nil {
 		t.Fatalf("newCheckpointBridge() error = %v", err)
 	}

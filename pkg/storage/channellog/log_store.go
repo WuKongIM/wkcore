@@ -18,19 +18,33 @@ func (s *Store) validate() error {
 }
 
 func (s *Store) appendPayloads(payloads [][]byte) (uint64, error) {
+	return s.appendPayloadsWithCommit(payloads, pebble.Sync, true)
+}
+
+func (s *Store) appendPayloadsNoSync(payloads [][]byte) (uint64, error) {
+	return s.appendPayloadsWithCommit(payloads, pebble.NoSync, false)
+}
+
+func (s *Store) appendPayloadsWithCommit(payloads [][]byte, commitOpts *pebble.WriteOptions, recordCommit bool) (uint64, error) {
 	if err := s.validate(); err != nil {
 		return 0, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 
+	s.mu.Lock()
 	base, err := s.leoLocked()
 	if err != nil {
+		s.mu.Unlock()
 		return 0, err
 	}
 	if len(payloads) == 0 {
+		s.mu.Unlock()
 		return base, nil
 	}
+	s.writeInProgress.Store(true)
+	s.mu.Unlock()
+	defer s.writeInProgress.Store(false)
 
 	batch := s.db.db.NewBatch()
 	defer batch.Close()
@@ -42,12 +56,78 @@ func (s *Store) appendPayloads(payloads [][]byte) (uint64, error) {
 			return 0, err
 		}
 	}
+	if err := batch.Commit(commitOpts); err != nil {
+		return 0, err
+	}
+	if recordCommit {
+		s.recordDurableCommit()
+	}
+	s.mu.Lock()
+	s.cachedLEO = base + uint64(len(payloads))
+	s.leoLoaded = true
+	s.mu.Unlock()
+	return base, nil
+}
+
+func (s *Store) applyFetchedRecords(records []isr.Record, committed []appliedMessage, checkpoint *isr.Checkpoint) (uint64, error) {
+	if err := s.validate(); err != nil {
+		return 0, err
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	s.mu.Lock()
+	base, err := s.leoLocked()
+	if err != nil {
+		s.mu.Unlock()
+		return 0, err
+	}
+	if len(records) == 0 && checkpoint == nil {
+		s.mu.Unlock()
+		return base, nil
+	}
+	s.writeInProgress.Store(true)
+	s.mu.Unlock()
+	defer s.writeInProgress.Store(false)
+
+	batch := s.db.db.NewBatch()
+	defer batch.Close()
+
+	for i, record := range records {
+		key := encodeLogRecordKey(s.groupKey, base+uint64(i))
+		value := append([]byte(nil), record.Payload...)
+		if err := batch.Set(key, value, pebble.NoSync); err != nil {
+			return 0, err
+		}
+	}
+	for _, msg := range committed {
+		if err := batch.Set(
+			encodeIdempotencyKey(s.groupKey, msg.key),
+			encodeIdempotencyEntry(msg.entry),
+			pebble.NoSync,
+		); err != nil {
+			return 0, err
+		}
+	}
+	if checkpoint != nil {
+		if err := batch.Set(
+			encodeCheckpointKey(s.groupKey),
+			encodeCheckpoint(*checkpoint),
+			pebble.NoSync,
+		); err != nil {
+			return 0, err
+		}
+	}
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return 0, err
 	}
-	s.cachedLEO = base + uint64(len(payloads))
+	s.recordDurableCommit()
+	s.mu.Lock()
+	s.cachedLEO = base + uint64(len(records))
 	s.leoLoaded = true
-	return base, nil
+	s.mu.Unlock()
+	return s.cachedLEO, nil
 }
 
 func (s *Store) readOffsets(fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
@@ -61,6 +141,8 @@ func (s *Store) leo() (uint64, error) {
 	if err := s.validate(); err != nil {
 		return 0, err
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.leoLocked()
@@ -99,16 +181,22 @@ func (s *Store) truncateOffsets(to uint64) error {
 	if err := s.validate(); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 
+	s.mu.Lock()
 	leo, err := s.leoLocked()
 	if err != nil {
+		s.mu.Unlock()
 		return err
 	}
 	if to >= leo {
+		s.mu.Unlock()
 		return nil
 	}
+	s.writeInProgress.Store(true)
+	s.mu.Unlock()
+	defer s.writeInProgress.Store(false)
 
 	prefix := encodeLogPrefix(s.groupKey)
 	batch := s.db.db.NewBatch()
@@ -119,8 +207,11 @@ func (s *Store) truncateOffsets(to uint64) error {
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return err
 	}
+	s.recordDurableCommit()
+	s.mu.Lock()
 	s.cachedLEO = to
 	s.leoLoaded = true
+	s.mu.Unlock()
 	return nil
 }
 

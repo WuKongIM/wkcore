@@ -46,6 +46,9 @@ func (s *Store) isrSnapshotApplier() isr.SnapshotApplier {
 }
 
 func (b *isrLogStoreBridge) LEO() uint64 {
+	if b.store.writeInProgress.Load() {
+		return b.cachedLEO()
+	}
 	// isr.LogStore exposes LEO without an error return. Keep using the last
 	// successful value rather than crashing the process if the store becomes
 	// unavailable later.
@@ -61,7 +64,7 @@ func (b *isrLogStoreBridge) Append(records []isr.Record) (uint64, error) {
 	for _, record := range records {
 		payloads = append(payloads, record.Payload)
 	}
-	base, err := b.store.appendPayloads(payloads)
+	base, err := b.store.appendPayloadsNoSync(payloads)
 	if err != nil {
 		return 0, err
 	}
@@ -104,6 +107,8 @@ func (b *isrLogStoreBridge) Truncate(to uint64) error {
 }
 
 func (b *isrLogStoreBridge) Sync() error {
+	// Leader appends become durable when the later checkpoint/idempotency commit
+	// fsyncs the shared WAL, so we avoid a second pre-commit sync here.
 	return b.store.sync()
 }
 

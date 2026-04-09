@@ -34,11 +34,15 @@ func (s *stateStore) PutIdempotency(key IdempotencyKey, entry IdempotencyEntry) 
 	if err := s.validateKey(key); err != nil {
 		return err
 	}
-	return s.store.db.db.Set(
+	if err := s.store.db.db.Set(
 		encodeIdempotencyKey(s.store.groupKey, key),
 		encodeIdempotencyEntry(entry),
 		pebble.Sync,
-	)
+	); err != nil {
+		return err
+	}
+	s.store.recordDurableCommit()
+	return nil
 }
 
 func (s *stateStore) GetIdempotency(key IdempotencyKey) (IdempotencyEntry, bool, error) {
@@ -134,7 +138,11 @@ func (s *stateStore) Restore(snapshot []byte) error {
 			return err
 		}
 	}
-	return batch.Commit(pebble.Sync)
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+	s.store.recordDurableCommit()
+	return nil
 }
 
 func (s *stateStore) CommitCommitted(checkpoint isr.Checkpoint, batch []appliedMessage) error {
@@ -148,7 +156,11 @@ func (s *stateStore) CommitCommitted(checkpoint isr.Checkpoint, batch []appliedM
 	if err := s.writeCommitted(writeBatch, checkpoint, batch); err != nil {
 		return err
 	}
-	return writeBatch.Commit(pebble.Sync)
+	if err := writeBatch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+	s.store.recordDurableCommit()
+	return nil
 }
 
 func (s *stateStore) CommitCommittedWithCheckpoint(checkpoint isr.Checkpoint, batch []appliedMessage) error {
@@ -169,7 +181,11 @@ func (s *stateStore) CommitCommittedWithCheckpoint(checkpoint isr.Checkpoint, ba
 	); err != nil {
 		return err
 	}
-	return writeBatch.Commit(pebble.Sync)
+	if err := writeBatch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+	s.store.recordDurableCommit()
+	return nil
 }
 
 func (s *stateStore) validate() error {

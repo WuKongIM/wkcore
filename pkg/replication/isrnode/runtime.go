@@ -2,6 +2,7 @@ package isrnode
 
 import (
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -151,6 +152,11 @@ func (r *runtime) ApplyMeta(meta isr.GroupMeta) error {
 	if !ok {
 		return ErrGroupNotFound
 	}
+
+	if shouldSkipReplicaApplyMeta(g, r.cfg.LocalNode, meta) {
+		g.setMeta(meta)
+		return nil
+	}
 	if err := applyReplicaMeta(g.replica, r.cfg.LocalNode, meta); err != nil {
 		return err
 	}
@@ -183,6 +189,37 @@ func (r *runtime) enqueueReplication(groupKey isr.GroupKey, peer isr.NodeID) {
 	g.enqueueReplication(peer)
 	g.markReplication()
 	r.enqueueScheduler(groupKey)
+}
+
+func shouldSkipReplicaApplyMeta(g *group, localNode isr.NodeID, next isr.GroupMeta) bool {
+	if g == nil {
+		return false
+	}
+
+	current := g.metaSnapshot()
+	if !groupMetaEqual(current, next) {
+		return false
+	}
+
+	state := g.Status()
+	expectedRole := isr.RoleFollower
+	if next.Leader == localNode {
+		expectedRole = isr.RoleLeader
+	}
+	if state.Role != expectedRole {
+		return false
+	}
+	return state.GroupKey == next.GroupKey && state.Epoch == next.Epoch && state.Leader == next.Leader
+}
+
+func groupMetaEqual(a, b isr.GroupMeta) bool {
+	return a.GroupKey == b.GroupKey &&
+		a.Epoch == b.Epoch &&
+		a.Leader == b.Leader &&
+		a.MinISR == b.MinISR &&
+		a.LeaseUntil.Equal(b.LeaseUntil) &&
+		slices.Equal(a.Replicas, b.Replicas) &&
+		slices.Equal(a.ISR, b.ISR)
 }
 
 func (r *runtime) runScheduler() {

@@ -75,6 +75,10 @@ func (r *runtime) applyFetchResponseEnvelope(g *group, peer isr.NodeID, env Fetc
 
 	meta := g.metaSnapshot()
 	if meta.Leader != r.cfg.LocalNode {
+		if len(env.Records) == 0 && env.TruncateTo == nil {
+			r.scheduleFollowerReplication(g.id, meta.Leader)
+			return nil
+		}
 		state := g.Status()
 		err := r.sendEnvelope(Envelope{
 			Peer:       meta.Leader,

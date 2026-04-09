@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
+	"github.com/cockroachdb/pebble/v2"
+	"github.com/cockroachdb/pebble/v2/vfs"
 )
 
 func TestStoreBridgesReplicaAppendAndRecoverCommittedLog(t *testing.T) {
@@ -89,7 +91,7 @@ func TestStoreBridgesReplicaApplyFetchAndRecoverFollowerState(t *testing.T) {
 	key := ChannelKey{ChannelID: "c1", ChannelType: 1}
 	store := db.ForChannel(key)
 
-	replica := newStoreReplica(t, store, 2)
+	replica := newChannelLogReplica(t, store, 2)
 	meta := followerMeta(store.groupKey, 7, 1, 2)
 	if err := replica.ApplyMeta(meta); err != nil {
 		t.Fatalf("ApplyMeta() error = %v", err)
@@ -146,6 +148,87 @@ func TestStoreBridgesReplicaApplyFetchAndRecoverFollowerState(t *testing.T) {
 	}
 	if len(msgs) != 2 {
 		t.Fatalf("len(msgs) = %d, want 2", len(msgs))
+	}
+}
+
+func TestStoreReplicaApplyFetchUsesSingleDurableCommit(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	}()
+
+	key := ChannelKey{ChannelID: "c1", ChannelType: 1}
+	store := db.ForChannel(key)
+	replica := newChannelLogReplica(t, store, 2)
+	meta := followerMeta(store.groupKey, 7, 1, 2)
+	if err := replica.ApplyMeta(meta); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+	if err := replica.BecomeFollower(meta); err != nil {
+		t.Fatalf("BecomeFollower() error = %v", err)
+	}
+
+	before := store.durableCommitCount.Load()
+	if err := replica.ApplyFetch(context.Background(), isr.ApplyFetchRequest{
+		GroupKey: meta.GroupKey,
+		Epoch:    meta.Epoch,
+		Leader:   meta.Leader,
+		Records: []isr.Record{
+			mustStoredRecord(t, 1, "one"),
+			mustStoredRecord(t, 2, "two"),
+		},
+		LeaderHW: 2,
+	}); err != nil {
+		t.Fatalf("ApplyFetch() error = %v", err)
+	}
+	after := store.durableCommitCount.Load()
+	if got := after - before; got != 1 {
+		t.Fatalf("durable commit delta = %d, want 1", got)
+	}
+}
+
+func TestChannelLogReplicaAppendUsesSingleDurableSync(t *testing.T) {
+	fs := newCountingFS(vfs.NewMem())
+	pdb, err := pebble.Open("test", &pebble.Options{FS: fs})
+	if err != nil {
+		t.Fatalf("pebble.Open() error = %v", err)
+	}
+	db := &DB{
+		db:     pdb,
+		stores: make(map[ChannelKey]*Store),
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	}()
+
+	key := ChannelKey{ChannelID: "c1", ChannelType: 1}
+	store := db.ForChannel(key)
+	replica := newChannelLogReplica(t, store, 1)
+	meta := singleReplicaMeta(store.groupKey, 7, 1)
+	if err := replica.ApplyMeta(meta); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+	if err := replica.BecomeLeader(meta); err != nil {
+		t.Fatalf("BecomeLeader() error = %v", err)
+	}
+
+	before := fs.syncCount.Load()
+	if _, err := replica.Append(context.Background(), []isr.Record{
+		mustStoredRecord(t, 1, "one"),
+	}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	after := fs.syncCount.Load()
+	if got := after - before; got != 1 {
+		t.Fatalf("sync count delta = %d, want 1", got)
 	}
 }
 
@@ -299,6 +382,18 @@ func newStoreReplica(t testing.TB, store *Store, localNode isr.NodeID) isr.Repli
 		EpochHistoryStore: store.isrEpochHistoryStore(),
 		SnapshotApplier:   store.isrSnapshotApplier(),
 		Now:               func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+	})
+	if err != nil {
+		t.Fatalf("NewReplica() error = %v", err)
+	}
+	return replica
+}
+
+func newChannelLogReplica(t testing.TB, store *Store, localNode isr.NodeID) isr.Replica {
+	t.Helper()
+
+	replica, err := NewReplica(store, localNode, func() time.Time {
+		return time.Unix(1_700_000_000, 0).UTC()
 	})
 	if err != nil {
 		t.Fatalf("NewReplica() error = %v", err)

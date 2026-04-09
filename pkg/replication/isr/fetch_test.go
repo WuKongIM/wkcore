@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestFetchRejectsInvalidBudget(t *testing.T) {
@@ -90,5 +91,81 @@ func TestFetchUpdatesLeaderProgressFromFollowerAck(t *testing.T) {
 	}
 	if got := env.replica.progress[2]; got != 5 {
 		t.Fatalf("progress[2] = %d", got)
+	}
+}
+
+func TestFetchDoesNotHoldReplicaLockAcrossLogRead(t *testing.T) {
+	env := newFetchEnvWithHistory(t)
+	env.log.readStarted = make(chan struct{}, 1)
+	env.log.readContinue = make(chan struct{})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := env.replica.Fetch(context.Background(), FetchRequest{
+			GroupKey:    "group-10",
+			Epoch:       7,
+			ReplicaID:   2,
+			FetchOffset: 0,
+			OffsetEpoch: 3,
+			MaxBytes:    1024,
+		})
+		done <- err
+	}()
+
+	<-env.log.readStarted
+
+	statusReady := make(chan struct{}, 1)
+	go func() {
+		_ = env.replica.Status()
+		statusReady <- struct{}{}
+	}()
+
+	select {
+	case <-statusReady:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Status blocked while Fetch log.Read was in progress")
+	}
+
+	close(env.log.readContinue)
+	if err := <-done; err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+}
+
+func TestFetchDoesNotHoldReplicaLockAcrossCheckpointStore(t *testing.T) {
+	env := newFetchEnvWithHistory(t)
+	env.checkpoints.storeStarted = make(chan struct{}, 1)
+	env.checkpoints.storeContinue = make(chan struct{})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := env.replica.Fetch(context.Background(), FetchRequest{
+			GroupKey:    "group-10",
+			Epoch:       7,
+			ReplicaID:   2,
+			FetchOffset: 6,
+			OffsetEpoch: 7,
+			MaxBytes:    1024,
+		})
+		done <- err
+	}()
+
+	<-env.checkpoints.storeStarted
+
+	statusReady := make(chan struct{}, 1)
+	go func() {
+		_ = env.replica.Status()
+		statusReady <- struct{}{}
+	}()
+
+	select {
+	case <-statusReady:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Status blocked while Fetch checkpoint.Store was in progress")
+	}
+
+	close(env.checkpoints.storeContinue)
+	if err := <-done; err != nil {
+		t.Fatalf("Fetch() error = %v", err)
 	}
 }

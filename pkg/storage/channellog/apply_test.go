@@ -37,7 +37,7 @@ func TestCheckpointBridgeReplaysCommittedRecordsIntoIdempotencyState(t *testing.
 			},
 		},
 	}
-	bridge, err := newCheckpointBridge(&memoryCheckpointStore{}, log, key, store, channelGroupKey(key))
+	bridge, err := newCheckpointBridge(&memoryCheckpointStore{}, nil, log, key, store, channelGroupKey(key))
 	if err != nil {
 		t.Fatalf("newCheckpointBridge() error = %v", err)
 	}
@@ -83,7 +83,7 @@ func TestCheckpointBridgeUsesAtomicCheckpointCommitWhenSupported(t *testing.T) {
 	}
 	base := &failingCheckpointStore{err: errors.New("checkpoint should not be called")}
 
-	bridge, err := newCheckpointBridge(base, log, key, state, channelGroupKey(key))
+	bridge, err := newCheckpointBridge(base, nil, log, key, state, channelGroupKey(key))
 	if err != nil {
 		t.Fatalf("newCheckpointBridge() error = %v", err)
 	}
@@ -135,7 +135,7 @@ func TestCheckpointBridgeSkipsMessagesWithoutClientMsgNo(t *testing.T) {
 		},
 	}
 
-	bridge, err := newCheckpointBridge(&memoryCheckpointStore{}, log, key, store, channelGroupKey(key))
+	bridge, err := newCheckpointBridge(&memoryCheckpointStore{}, nil, log, key, store, channelGroupKey(key))
 	if err != nil {
 		t.Fatalf("newCheckpointBridge() error = %v", err)
 	}

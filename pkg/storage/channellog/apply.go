@@ -25,6 +25,7 @@ type atomicCheckpointStateStore interface {
 
 type checkpointBridge struct {
 	base     isr.CheckpointStore
+	store    *Store
 	log      MessageLog
 	key      ChannelKey
 	state    ChannelStateStore
@@ -32,13 +33,14 @@ type checkpointBridge struct {
 	prevHW   uint64
 }
 
-func newCheckpointBridge(base isr.CheckpointStore, log MessageLog, key ChannelKey, state ChannelStateStore, groupKey isr.GroupKey) (*checkpointBridge, error) {
+func newCheckpointBridge(base isr.CheckpointStore, store *Store, log MessageLog, key ChannelKey, state ChannelStateStore, groupKey isr.GroupKey) (*checkpointBridge, error) {
 	checkpoint, err := base.Load()
 	if err != nil && !errors.Is(err, isr.ErrEmptyState) {
 		return nil, err
 	}
 	return &checkpointBridge{
 		base:     base,
+		store:    store,
 		log:      log,
 		key:      key,
 		state:    state,
@@ -117,6 +119,111 @@ func (b *checkpointBridge) readCommittedBatch(nextHW uint64) ([]appliedMessage, 
 		})
 	}
 	return batch, nil
+}
+
+func (b *checkpointBridge) StoreApplyFetch(req isr.ApplyFetchStoreRequest) (uint64, error) {
+	if b.store == nil {
+		return 0, isr.ErrInvalidConfig
+	}
+
+	currentLEO, err := b.store.leo()
+	if err != nil {
+		return 0, err
+	}
+
+	committed, err := b.readCommittedBatchForApplyFetch(currentLEO, req)
+	if err != nil {
+		return 0, err
+	}
+
+	leo, err := b.store.applyFetchedRecords(req.Records, committed, req.Checkpoint)
+	if err != nil {
+		return 0, err
+	}
+	if req.Checkpoint != nil {
+		b.prevHW = req.Checkpoint.HW
+	}
+	return leo, nil
+}
+
+func (b *checkpointBridge) readCommittedBatchForApplyFetch(base uint64, req isr.ApplyFetchStoreRequest) ([]appliedMessage, error) {
+	if req.Checkpoint == nil || req.Checkpoint.HW <= b.prevHW {
+		return nil, nil
+	}
+
+	nextHW := req.Checkpoint.HW
+	batch := make([]appliedMessage, 0, int(nextHW-b.prevHW))
+
+	existingUpper := minUint64(nextHW, base)
+	if existingUpper > b.prevHW {
+		records, err := b.log.Read(b.groupKey, b.prevHW, int(existingUpper-b.prevHW), math.MaxInt)
+		if err != nil {
+			return nil, err
+		}
+		for _, record := range records {
+			msg, ok, err := appliedMessageFromLogRecord(b.key, record)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				batch = append(batch, msg)
+			}
+		}
+	}
+
+	newUpper := minUint64(nextHW, base+uint64(len(req.Records)))
+	start := maxUint64(b.prevHW, base)
+	for offset := start; offset < newUpper; offset++ {
+		record := LogRecord{
+			Offset:  offset,
+			Payload: req.Records[offset-base].Payload,
+		}
+		msg, ok, err := appliedMessageFromLogRecord(b.key, record)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			batch = append(batch, msg)
+		}
+	}
+	return batch, nil
+}
+
+func appliedMessageFromLogRecord(key ChannelKey, record LogRecord) (appliedMessage, bool, error) {
+	message, err := decodeMessageRecord(record)
+	if err != nil {
+		return appliedMessage{}, false, err
+	}
+	if message.ClientMsgNo == "" {
+		return appliedMessage{}, false, nil
+	}
+	return appliedMessage{
+		key: IdempotencyKey{
+			ChannelID:   key.ChannelID,
+			ChannelType: key.ChannelType,
+			FromUID:     message.FromUID,
+			ClientMsgNo: message.ClientMsgNo,
+		},
+		entry: IdempotencyEntry{
+			MessageID:  message.MessageID,
+			MessageSeq: message.MessageSeq,
+			Offset:     record.Offset,
+		},
+	}, true, nil
+}
+
+func minUint64(a, b uint64) uint64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxUint64(a, b uint64) uint64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 type snapshotBridge struct {

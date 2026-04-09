@@ -20,21 +20,23 @@ func (r *replica) setReplicaProgressLocked(replicaID NodeID, matchOffset uint64)
 	r.progress[replicaID] = matchOffset
 }
 
-func (r *replica) advanceHWLocked() error {
-	if len(r.meta.ISR) == 0 || r.meta.MinISR == 0 {
-		return nil
+func (r *replica) advanceHW() error {
+	r.advanceMu.Lock()
+	defer r.advanceMu.Unlock()
+
+	r.mu.Lock()
+	checkpoint, candidate, err := r.nextHWCheckpointLocked()
+	r.mu.Unlock()
+	if err != nil || checkpoint == nil {
+		return err
 	}
 
-	matches := make([]uint64, 0, len(r.meta.ISR))
-	for _, id := range r.meta.ISR {
-		matches = append(matches, r.progress[id])
-	}
-	if len(matches) < r.meta.MinISR {
-		return nil
+	if err := r.checkpoints.Store(*checkpoint); err != nil {
+		return err
 	}
 
-	slices.Sort(matches)
-	candidate := matches[len(matches)-r.meta.MinISR]
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if candidate <= r.state.HW {
 		return nil
 	}
@@ -42,18 +44,42 @@ func (r *replica) advanceHWLocked() error {
 		return ErrCorruptState
 	}
 
+	r.state.HW = candidate
+	r.notifyReadyWaitersLocked()
+	return nil
+}
+
+func (r *replica) nextHWCheckpointLocked() (*Checkpoint, uint64, error) {
+	if r.state.Role != RoleLeader && r.state.Role != RoleFencedLeader {
+		return nil, 0, nil
+	}
+	if len(r.meta.ISR) == 0 || r.meta.MinISR == 0 {
+		return nil, 0, nil
+	}
+
+	matches := make([]uint64, 0, len(r.meta.ISR))
+	for _, id := range r.meta.ISR {
+		matches = append(matches, r.progress[id])
+	}
+	if len(matches) < r.meta.MinISR {
+		return nil, 0, nil
+	}
+
+	slices.Sort(matches)
+	candidate := matches[len(matches)-r.meta.MinISR]
+	if candidate <= r.state.HW {
+		return nil, 0, nil
+	}
+	if candidate > r.state.LEO {
+		return nil, 0, ErrCorruptState
+	}
+
 	checkpoint := Checkpoint{
 		Epoch:          r.state.Epoch,
 		LogStartOffset: r.state.LogStartOffset,
 		HW:             candidate,
 	}
-	if err := r.checkpoints.Store(checkpoint); err != nil {
-		return err
-	}
-
-	r.state.HW = candidate
-	r.notifyReadyWaitersLocked()
-	return nil
+	return &checkpoint, candidate, nil
 }
 
 func (r *replica) notifyReadyWaitersLocked() {
@@ -65,7 +91,7 @@ func (r *replica) notifyReadyWaitersLocked() {
 	for _, waiter := range r.waiters {
 		if r.state.HW >= waiter.target {
 			waiter.result.NextCommitHW = r.state.HW
-			waiter.ch <- waiter.result
+			waiter.ch <- appendCompletion{result: waiter.result}
 			close(waiter.ch)
 			continue
 		}

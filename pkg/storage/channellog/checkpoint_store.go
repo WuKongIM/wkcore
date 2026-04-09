@@ -26,7 +26,11 @@ func (s *Store) storeCheckpoint(checkpoint isr.Checkpoint) error {
 	if err := s.validate(); err != nil {
 		return err
 	}
-	return s.db.db.Set(encodeCheckpointKey(s.groupKey), encodeCheckpoint(checkpoint), pebble.Sync)
+	if err := s.db.db.Set(encodeCheckpointKey(s.groupKey), encodeCheckpoint(checkpoint), pebble.Sync); err != nil {
+		return err
+	}
+	s.recordDurableCommit()
+	return nil
 }
 
 func (s *Store) storeCheckpointAndMaybeDeleteSnapshot(checkpoint isr.Checkpoint, deleteSnapshot bool) error {
@@ -45,5 +49,9 @@ func (s *Store) storeCheckpointAndMaybeDeleteSnapshot(checkpoint isr.Checkpoint,
 			return err
 		}
 	}
-	return batch.Commit(pebble.Sync)
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+	s.recordDurableCommit()
+	return nil
 }

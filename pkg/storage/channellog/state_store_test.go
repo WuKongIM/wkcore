@@ -1,6 +1,11 @@
 package channellog
 
-import "testing"
+import (
+	"sync/atomic"
+	"testing"
+
+	"github.com/cockroachdb/pebble/v2/vfs"
+)
 
 func TestStoreStateFactoryPersistsIdempotencyAndRestoresSnapshotAtOffset(t *testing.T) {
 	db := openTestDB(t)
@@ -164,4 +169,73 @@ func TestStoreStateFactoryRoundTripsFullIdempotencyStateAtCurrentOffset(t *testi
 	if got != secondEntry {
 		t.Fatalf("restored second entry = %+v, want %+v", got, secondEntry)
 	}
+}
+
+type countingFS struct {
+	vfs.FS
+	syncCount atomic.Int64
+}
+
+func newCountingFS(base vfs.FS) *countingFS {
+	return &countingFS{FS: base}
+}
+
+func (fs *countingFS) Create(name string, category vfs.DiskWriteCategory) (vfs.File, error) {
+	file, err := fs.FS.Create(name, category)
+	if err != nil {
+		return nil, err
+	}
+	return &countingFile{File: file, syncCount: &fs.syncCount}, nil
+}
+
+func (fs *countingFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
+	file, err := fs.FS.Open(name, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &countingFile{File: file, syncCount: &fs.syncCount}, nil
+}
+
+func (fs *countingFS) OpenReadWrite(name string, category vfs.DiskWriteCategory, opts ...vfs.OpenOption) (vfs.File, error) {
+	file, err := fs.FS.OpenReadWrite(name, category, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &countingFile{File: file, syncCount: &fs.syncCount}, nil
+}
+
+func (fs *countingFS) OpenDir(name string) (vfs.File, error) {
+	file, err := fs.FS.OpenDir(name)
+	if err != nil {
+		return nil, err
+	}
+	return &countingFile{File: file, syncCount: &fs.syncCount}, nil
+}
+
+func (fs *countingFS) ReuseForWrite(oldname, newname string, category vfs.DiskWriteCategory) (vfs.File, error) {
+	file, err := fs.FS.ReuseForWrite(oldname, newname, category)
+	if err != nil {
+		return nil, err
+	}
+	return &countingFile{File: file, syncCount: &fs.syncCount}, nil
+}
+
+type countingFile struct {
+	vfs.File
+	syncCount *atomic.Int64
+}
+
+func (f *countingFile) Sync() error {
+	f.syncCount.Add(1)
+	return f.File.Sync()
+}
+
+func (f *countingFile) SyncData() error {
+	f.syncCount.Add(1)
+	return f.File.SyncData()
+}
+
+func (f *countingFile) SyncTo(length int64) (bool, error) {
+	f.syncCount.Add(1)
+	return f.File.SyncTo(length)
 }

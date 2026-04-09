@@ -91,6 +91,40 @@ func TestNewConfiguresISRMaxFetchInflightPeerFromClusterPoolSize(t *testing.T) {
 	require.Equal(t, 4, appISRMaxFetchInflightPeerLimit(t, app))
 }
 
+func TestNewConfiguresIndependentDataPlaneLimits(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Cluster.PoolSize = 1
+	setClusterConfigIntField(t, &cfg.Cluster, "DataPlaneMaxFetchInflight", 7)
+
+	app, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, app.Stop())
+	})
+
+	require.Equal(t, 7, appISRMaxFetchInflightPeerLimit(t, app))
+}
+
+func TestStartChannelMetaSyncUsesExplicitDataPlaneSettings(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Cluster.PoolSize = 1
+	setClusterConfigIntField(t, &cfg.Cluster, "DataPlanePoolSize", 9)
+	setClusterConfigIntField(t, &cfg.Cluster, "DataPlaneMaxPendingFetch", 11)
+
+	app, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, app.Stop())
+	})
+
+	require.NoError(t, app.startCluster())
+	app.clusterOn.Store(true)
+	require.NoError(t, app.startChannelMetaSync())
+	app.channelMetaOn.Store(true)
+	require.Equal(t, 9, appDataPlanePoolSize(t, app))
+	require.Equal(t, 11, appDataPlaneAdapterMaxPendingFetch(t, app))
+}
+
 func TestBuildCreatesPresenceAppAndNodeAccess(t *testing.T) {
 	cfg := testConfig(t)
 
@@ -716,4 +750,47 @@ func appISRMaxFetchInflightPeerLimit(t *testing.T, app *App) int {
 		t.Fatal("isr runtime limits missing MaxFetchInflightPeer field")
 	}
 	return int(maxInflight.Int())
+}
+
+func setClusterConfigIntField(t *testing.T, cfg *ClusterConfig, name string, value int) {
+	t.Helper()
+
+	field := reflect.ValueOf(cfg).Elem().FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("ClusterConfig is missing field %s", name)
+	}
+	ptr := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
+	ptr.SetInt(int64(value))
+}
+
+func appDataPlanePoolSize(t *testing.T, app *App) int {
+	t.Helper()
+
+	require.NotNil(t, app.dataPlanePool)
+	pool := reflect.ValueOf(app.dataPlanePool).Elem()
+	size := pool.FieldByName("size")
+	if !size.IsValid() {
+		t.Fatal("dataPlanePool is missing size field")
+	}
+	return int(size.Int())
+}
+
+func appDataPlaneAdapterMaxPendingFetch(t *testing.T, app *App) int {
+	t.Helper()
+
+	require.NotNil(t, app.isrTransport)
+	bridge := reflect.ValueOf(app.isrTransport).Elem()
+	adapterField := bridge.FieldByName("adapter")
+	if !adapterField.IsValid() {
+		t.Fatal("isrTransportBridge is missing adapter field")
+	}
+	if adapterField.IsNil() {
+		t.Fatal("isr transport adapter is nil")
+	}
+	adapter := adapterField.Elem()
+	maxPending := adapter.FieldByName("maxPending")
+	if !maxPending.IsValid() {
+		t.Fatal("data plane adapter is missing maxPending field")
+	}
+	return int(maxPending.Int())
 }

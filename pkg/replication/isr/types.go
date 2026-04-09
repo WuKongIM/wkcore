@@ -109,6 +109,15 @@ type CheckpointStore interface {
 	Store(Checkpoint) error
 }
 
+type ApplyFetchStoreRequest struct {
+	Records    []Record
+	Checkpoint *Checkpoint
+}
+
+type ApplyFetchStore interface {
+	StoreApplyFetch(req ApplyFetchStoreRequest) (leo uint64, err error)
+}
+
 type EpochHistoryStore interface {
 	Load() ([]EpochPoint, error)
 	Append(point EpochPoint) error
@@ -116,12 +125,16 @@ type EpochHistoryStore interface {
 }
 
 type ReplicaConfig struct {
-	LocalNode         NodeID
-	LogStore          LogStore
-	CheckpointStore   CheckpointStore
-	EpochHistoryStore EpochHistoryStore
-	SnapshotApplier   SnapshotApplier
-	Now               func() time.Time
+	LocalNode                   NodeID
+	LogStore                    LogStore
+	CheckpointStore             CheckpointStore
+	ApplyFetchStore             ApplyFetchStore
+	EpochHistoryStore           EpochHistoryStore
+	SnapshotApplier             SnapshotApplier
+	Now                         func() time.Time
+	AppendGroupCommitMaxWait    time.Duration
+	AppendGroupCommitMaxRecords int
+	AppendGroupCommitMaxBytes   int
 }
 
 type Replica interface {

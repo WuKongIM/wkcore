@@ -3,6 +3,7 @@ package isr
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 func (r *replica) recoverFromStores() error {
@@ -29,10 +30,10 @@ func (r *replica) recoverFromStores() error {
 
 	leo := r.log.LEO()
 	if checkpoint.HW > leo {
-		return ErrCorruptState
+		return fmt.Errorf("%w: checkpoint hw %d > leo %d", ErrCorruptState, checkpoint.HW, leo)
 	}
 	if len(history) > 0 && history[len(history)-1].StartOffset > leo {
-		return ErrCorruptState
+		return fmt.Errorf("%w: epoch history start %d > leo %d", ErrCorruptState, history[len(history)-1].StartOffset, leo)
 	}
 
 	if leo > checkpoint.HW {
@@ -84,6 +85,8 @@ func validateEpochHistory(history []EpochPoint) error {
 }
 
 func (r *replica) InstallSnapshot(ctx context.Context, snap Snapshot) error {
+	r.appendMu.Lock()
+	defer r.appendMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

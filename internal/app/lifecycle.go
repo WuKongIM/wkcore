@@ -143,10 +143,7 @@ func (a *App) startChannelMetaSync() error {
 	}
 	if a.dataPlanePool == nil || a.dataPlaneClient == nil {
 		discovery := raftcluster.NewStaticDiscovery(a.cfg.Cluster.runtimeNodes())
-		poolSize := a.cfg.Cluster.PoolSize
-		if poolSize <= 0 {
-			poolSize = 1
-		}
+		poolSize := a.cfg.Cluster.DataPlanePoolSize
 		dialTimeout := a.cfg.Cluster.DialTimeout
 		if dialTimeout <= 0 {
 			dialTimeout = defaultDataPlaneDialTimeout
@@ -159,7 +156,7 @@ func (a *App) startChannelMetaSync() error {
 			RPCMux:             a.cluster.RPCMux(),
 			FetchService:       a.isrRuntime,
 			RPCTimeout:         a.cfg.Cluster.DataPlaneRPCTimeout,
-			MaxPendingFetchRPC: dataPlaneMaxFetchInflightPeer(a.cfg.Cluster.PoolSize),
+			MaxPendingFetchRPC: a.cfg.Cluster.DataPlaneMaxPendingFetch,
 		})
 		if err != nil {
 			a.dataPlaneClient.Stop()

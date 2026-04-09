@@ -402,7 +402,7 @@ func TestFetchResponseDecodesPayloadIntoApplyFetch(t *testing.T) {
 	}
 }
 
-func TestFetchResponseQueuesImmediateFollowerRefetch(t *testing.T) {
+func TestNonEmptyFetchResponseQueuesImmediateFollowerRefetch(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.FollowerReplicationRetryInterval = time.Hour
 	})
@@ -435,6 +435,45 @@ func TestFetchResponseQueuesImmediateFollowerRefetch(t *testing.T) {
 	if session.last.GroupKey != testGroupKey(251) {
 		t.Fatalf("last group = %q, want %q", session.last.GroupKey, testGroupKey(251))
 	}
+}
+
+func TestEmptyFetchResponseUsesRetryIntervalBeforeFollowerRefetch(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.AutoRunScheduler = true
+		cfg.FollowerReplicationRetryInterval = 20 * time.Millisecond
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(252, 4, 2, []isr.NodeID{1, 2}))
+
+	session := env.sessions.session(2)
+	env.runtime.runScheduler()
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected initial follower fetch request, got %d sends", got)
+	}
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		GroupKey:   testGroupKey(252),
+		Generation: 1,
+		Epoch:      4,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 1,
+		},
+	})
+
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected empty fetch response to avoid immediate follower re-fetch, got %d sends", got)
+	}
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := session.sendCount(); got >= 2 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	t.Fatalf("expected empty fetch response to trigger delayed follower re-fetch, got %d sends", session.sendCount())
 }
 
 func TestServeFetchReturnsReplicaFetchResult(t *testing.T) {

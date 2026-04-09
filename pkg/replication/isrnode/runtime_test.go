@@ -74,6 +74,38 @@ func TestApplyMetaTransitionsReplicaRoleWithLeadershipChanges(t *testing.T) {
 	}
 }
 
+func TestApplyMetaSkipsReplicaUpdateWhenMetaUnchangedForFollower(t *testing.T) {
+	env := newTestEnv(t)
+	meta := testMeta(34, 1, 2, []isr.NodeID{1, 2})
+
+	mustEnsure(t, env.runtime, meta)
+	replica := env.factory.replicas[0]
+	before := len(replica.metaCalls)
+
+	if err := env.runtime.ApplyMeta(meta); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+	if got := len(replica.metaCalls); got != before {
+		t.Fatalf("meta call count = %d, want %d", got, before)
+	}
+}
+
+func TestApplyMetaSkipsReplicaUpdateWhenMetaUnchangedForLeader(t *testing.T) {
+	env := newTestEnv(t)
+	meta := testMeta(35, 1, 1, []isr.NodeID{1, 2})
+
+	mustEnsure(t, env.runtime, meta)
+	replica := env.factory.replicas[0]
+	before := len(replica.metaCalls)
+
+	if err := env.runtime.ApplyMeta(meta); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+	if got := len(replica.metaCalls); got != before {
+		t.Fatalf("meta call count = %d, want %d", got, before)
+	}
+}
+
 func TestEnsureGroupReturnsErrTooManyGroups(t *testing.T) {
 	env := newTestEnvWithOptions(t, withMaxGroups(1))
 	mustEnsure(t, env.runtime, testMeta(41, 1, 1, []isr.NodeID{1, 2}))

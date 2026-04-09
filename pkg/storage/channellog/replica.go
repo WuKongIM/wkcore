@@ -10,11 +10,12 @@ func NewReplica(store *Store, localNode isr.NodeID, now func() time.Time) (isr.R
 	if now == nil {
 		now = time.Now
 	}
+
 	state, err := store.db.StateStoreFactory().ForChannel(store.key)
 	if err != nil {
 		return nil, err
 	}
-	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), store.db, store.key, state, store.groupKey)
+	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), store, store.db, store.key, state, store.groupKey)
 	if err != nil {
 		return nil, err
 	}
@@ -22,6 +23,7 @@ func NewReplica(store *Store, localNode isr.NodeID, now func() time.Time) (isr.R
 		LocalNode:         localNode,
 		LogStore:          store.isrLogStore(),
 		CheckpointStore:   checkpoints,
+		ApplyFetchStore:   checkpoints,
 		EpochHistoryStore: store.isrEpochHistoryStore(),
 		SnapshotApplier:   newSnapshotBridge(store.isrSnapshotApplier(), state),
 		Now:               now,

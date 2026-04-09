@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestApplyFetchTruncatesUncommittedTailBeforeAppending(t *testing.T) {
@@ -70,6 +71,48 @@ func TestApplyFetchAdvancesCheckpointToMinLeaderHWAndLEO(t *testing.T) {
 	}
 }
 
+func TestApplyFetchUsesAtomicStoreOnAppendOnlyHotPath(t *testing.T) {
+	env := newTestEnv(t)
+	env.localNode = 2
+	env.applyFetch = &fakeApplyFetchStore{}
+	env.checkpoints.loadErr = nil
+	env.checkpoints.checkpoint = Checkpoint{
+		Epoch:          7,
+		LogStartOffset: 0,
+		HW:             0,
+	}
+	env.history.loadErr = nil
+	env.history.points = []EpochPoint{{Epoch: 7, StartOffset: 0}}
+	env.replica = newReplicaFromEnvWithApplyFetchStore(t, env)
+	env.replica.mustApplyMeta(t, activeMeta(7, 1))
+	if err := env.replica.BecomeFollower(activeMeta(7, 1)); err != nil {
+		t.Fatalf("BecomeFollower() error = %v", err)
+	}
+
+	err := env.replica.ApplyFetch(context.Background(), ApplyFetchRequest{
+		GroupKey: "group-10",
+		Epoch:    7,
+		Leader:   1,
+		Records:  []Record{{Payload: []byte("a"), SizeBytes: 1}},
+		LeaderHW: 1,
+	})
+	if err != nil {
+		t.Fatalf("ApplyFetch() error = %v", err)
+	}
+	if env.applyFetch.calls != 1 {
+		t.Fatalf("apply fetch store calls = %d, want 1", env.applyFetch.calls)
+	}
+	if env.log.appendCount != 0 {
+		t.Fatalf("log appendCount = %d, want 0", env.log.appendCount)
+	}
+	if env.log.syncCount != 0 {
+		t.Fatalf("log syncCount = %d, want 0", env.log.syncCount)
+	}
+	if got := len(env.checkpoints.stored); got != 0 {
+		t.Fatalf("checkpoint writes = %d, want 0", got)
+	}
+}
+
 func TestApplyFetchSkipsCheckpointWriteWhenHWDoesNotAdvance(t *testing.T) {
 	env := newFollowerEnv(t)
 
@@ -122,5 +165,41 @@ func TestApplyFetchRejectsTruncateBelowHW(t *testing.T) {
 	})
 	if !errors.Is(err, ErrCorruptState) {
 		t.Fatalf("expected ErrCorruptState, got %v", err)
+	}
+}
+
+func TestApplyFetchDoesNotHoldReplicaLockAcrossLogSync(t *testing.T) {
+	env := newFollowerEnv(t)
+	env.log.syncStarted = make(chan struct{}, 1)
+	env.log.syncContinue = make(chan struct{})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- env.replica.ApplyFetch(context.Background(), ApplyFetchRequest{
+			GroupKey: "group-10",
+			Epoch:    7,
+			Leader:   1,
+			Records:  []Record{{Payload: []byte("a"), SizeBytes: 1}},
+			LeaderHW: 1,
+		})
+	}()
+
+	<-env.log.syncStarted
+
+	statusReady := make(chan struct{}, 1)
+	go func() {
+		_ = env.replica.Status()
+		statusReady <- struct{}{}
+	}()
+
+	select {
+	case <-statusReady:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Status blocked while ApplyFetch log.Sync was in progress")
+	}
+
+	close(env.log.syncContinue)
+	if err := <-done; err != nil {
+		t.Fatalf("ApplyFetch() error = %v", err)
 	}
 }

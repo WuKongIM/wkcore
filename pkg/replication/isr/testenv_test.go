@@ -12,10 +12,15 @@ type fakeLogStore struct {
 	mu            sync.Mutex
 	records       []Record
 	leo           uint64
+	appendCount   int
 	syncCount     int
 	truncateCalls []uint64
 	calls         *callLog
 	appendSignal  chan uint64
+	readStarted   chan struct{}
+	readContinue  chan struct{}
+	syncStarted   chan struct{}
+	syncContinue  chan struct{}
 }
 
 func (f *fakeLogStore) LEO() uint64 {
@@ -28,6 +33,7 @@ func (f *fakeLogStore) Append(records []Record) (uint64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	f.appendCount++
 	base := f.leo
 	for _, record := range records {
 		f.records = append(f.records, cloneRecord(record))
@@ -45,6 +51,15 @@ func (f *fakeLogStore) Append(records []Record) (uint64, error) {
 func (f *fakeLogStore) Read(from uint64, maxBytes int) ([]Record, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.readStarted != nil {
+		select {
+		case f.readStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.readContinue != nil {
+		<-f.readContinue
+	}
 
 	if from >= uint64(len(f.records)) {
 		return nil, nil
@@ -92,6 +107,15 @@ func (f *fakeLogStore) Sync() error {
 	if f.calls != nil {
 		f.calls.add("log.sync")
 	}
+	if f.syncStarted != nil {
+		select {
+		case f.syncStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.syncContinue != nil {
+		<-f.syncContinue
+	}
 	return nil
 }
 
@@ -101,6 +125,8 @@ type fakeCheckpointStore struct {
 	loadErr    error
 	stored     []Checkpoint
 	calls      *callLog
+	storeStarted  chan struct{}
+	storeContinue chan struct{}
 }
 
 func (f *fakeCheckpointStore) Load() (Checkpoint, error) {
@@ -116,6 +142,15 @@ func (f *fakeCheckpointStore) Store(checkpoint Checkpoint) error {
 	f.stored = append(f.stored, checkpoint)
 	if f.calls != nil {
 		f.calls.add(fmt.Sprintf("checkpoint.store:%d", checkpoint.HW))
+	}
+	if f.storeStarted != nil {
+		select {
+		case f.storeStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.storeContinue != nil {
+		<-f.storeContinue
 	}
 	return nil
 }
@@ -231,6 +266,7 @@ type testEnv struct {
 	checkpoints *fakeCheckpointStore
 	history     *fakeEpochHistoryStore
 	snapshots   *fakeSnapshotApplier
+	applyFetch  *fakeApplyFetchStore
 	clock       *manualClock
 	calls       *callLog
 	replica     *replica
@@ -279,6 +315,27 @@ func newReplicaFromEnv(t testing.TB, env *testEnv) *replica {
 	return r
 }
 
+func newReplicaFromEnvWithApplyFetchStore(t testing.TB, env *testEnv) *replica {
+	t.Helper()
+
+	cfg := env.config()
+	if env.applyFetch != nil {
+		setReplicaConfigFieldIfPresent(&cfg, "ApplyFetchStore", env.applyFetch)
+	}
+
+	got, err := NewReplica(cfg)
+	if err != nil {
+		t.Fatalf("NewReplica() error = %v", err)
+	}
+
+	r, ok := got.(*replica)
+	if !ok {
+		t.Fatalf("NewReplica() type = %T", got)
+	}
+	env.replica = r
+	return r
+}
+
 func newTestReplica(t testing.TB) *replica {
 	t.Helper()
 	return newReplicaFromEnv(t, newTestEnv(t))
@@ -292,6 +349,41 @@ func cloneRecord(record Record) Record {
 func cloneSnapshot(snap Snapshot) Snapshot {
 	snap.Payload = append([]byte(nil), snap.Payload...)
 	return snap
+}
+
+type fakeApplyFetchStore struct {
+	calls      int
+	leo        uint64
+	lastReq    ApplyFetchStoreRequest
+	returnErr  error
+	returnLEO  uint64
+}
+
+func (f *fakeApplyFetchStore) StoreApplyFetch(req ApplyFetchStoreRequest) (uint64, error) {
+	f.calls++
+	f.lastReq = cloneApplyFetchStoreRequest(req)
+	if f.returnErr != nil {
+		return 0, f.returnErr
+	}
+	if f.returnLEO != 0 {
+		return f.returnLEO, nil
+	}
+	f.leo += uint64(len(req.Records))
+	return f.leo, nil
+}
+
+func cloneApplyFetchStoreRequest(req ApplyFetchStoreRequest) ApplyFetchStoreRequest {
+	cloned := ApplyFetchStoreRequest{
+		Records: make([]Record, 0, len(req.Records)),
+	}
+	for _, record := range req.Records {
+		cloned.Records = append(cloned.Records, cloneRecord(record))
+	}
+	if req.Checkpoint != nil {
+		value := *req.Checkpoint
+		cloned.Checkpoint = &value
+	}
+	return cloned
 }
 
 type callLog struct {

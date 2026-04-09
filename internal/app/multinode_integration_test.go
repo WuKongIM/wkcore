@@ -540,6 +540,17 @@ func TestThreeNodeAppHarnessRestartNodePreservesDataDir(t *testing.T) {
 	harness.waitForStableLeader(t, 1)
 }
 
+func TestThreeNodeAppHarnessUsesExplicitDataPlaneConcurrency(t *testing.T) {
+	harness := newThreeNodeAppHarness(t)
+
+	for _, app := range harness.orderedApps() {
+		require.Equal(t, 1, app.cfg.Cluster.PoolSize)
+		require.Equal(t, 8, app.cfg.Cluster.DataPlanePoolSize)
+		require.Equal(t, 16, app.cfg.Cluster.DataPlaneMaxFetchInflight)
+		require.Equal(t, 16, app.cfg.Cluster.DataPlaneMaxPendingFetch)
+	}
+}
+
 type threeNodeAppHarness struct {
 	apps  map[uint64]*App
 	specs map[uint64]appNodeSpec
@@ -586,6 +597,9 @@ func newThreeNodeAppHarness(t *testing.T) *threeNodeAppHarness {
 		cfg.Cluster.ForwardTimeout = 2 * time.Second
 		cfg.Cluster.DialTimeout = 2 * time.Second
 		cfg.Cluster.PoolSize = 1
+		cfg.Cluster.DataPlanePoolSize = 8
+		cfg.Cluster.DataPlaneMaxFetchInflight = 16
+		cfg.Cluster.DataPlaneMaxPendingFetch = 16
 		cfg.API.ListenAddr = apiAddrs[nodeID]
 		cfg.Gateway.Listeners = []gateway.ListenerOptions{
 			binding.TCPWKProto("tcp-wkproto", gatewayAddrs[nodeID]),
