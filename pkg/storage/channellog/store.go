@@ -17,7 +17,7 @@ type Store struct {
 	cachedLEO uint64
 	leoLoaded bool
 
-	writeInProgress atomic.Bool
+	writeInProgress    atomic.Bool
 	durableCommitCount atomic.Int64
 }
 
@@ -26,4 +26,11 @@ func (s *Store) recordDurableCommit() {
 		return
 	}
 	s.durableCommitCount.Add(1)
+}
+
+func (s *Store) commitCoordinator() *commitCoordinator {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	return s.db.commitCoordinator()
 }

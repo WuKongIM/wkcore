@@ -6,6 +6,7 @@ import (
 	"math"
 
 	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
+	"github.com/cockroachdb/pebble/v2"
 )
 
 type appliedMessage struct {
@@ -21,6 +22,11 @@ type committingStateStore interface {
 type atomicCheckpointStateStore interface {
 	ChannelStateStore
 	CommitCommittedWithCheckpoint(checkpoint isr.Checkpoint, batch []appliedMessage) error
+}
+
+type batchCheckpointStateStore interface {
+	ChannelStateStore
+	BuildCommitCommittedWithCheckpoint(writeBatch *pebble.Batch, checkpoint isr.Checkpoint, batch []appliedMessage) error
 }
 
 type checkpointBridge struct {
@@ -58,6 +64,30 @@ func (b *checkpointBridge) Store(checkpoint isr.Checkpoint) error {
 	if err != nil {
 		return err
 	}
+	if b.store != nil {
+		if coordinator := b.store.commitCoordinator(); coordinator != nil {
+			if len(batch) == 0 || canBuildCheckpointState(b.state) {
+				if err := coordinator.submit(commitRequest{
+					groupKey: b.groupKey,
+					build: func(writeBatch *pebble.Batch) error {
+						if len(batch) > 0 {
+							store := b.state.(batchCheckpointStateStore)
+							return store.BuildCommitCommittedWithCheckpoint(writeBatch, checkpoint, batch)
+						}
+						return b.store.writeCheckpoint(writeBatch, checkpoint)
+					},
+					publish: func() error {
+						b.store.recordDurableCommit()
+						b.prevHW = checkpoint.HW
+						return nil
+					},
+				}); err != nil {
+					return err
+				}
+				return nil
+			}
+		}
+	}
 	if len(batch) > 0 {
 		if store, ok := b.state.(atomicCheckpointStateStore); ok {
 			if err := store.CommitCommittedWithCheckpoint(checkpoint, batch); err != nil {
@@ -83,6 +113,14 @@ func (b *checkpointBridge) Store(checkpoint isr.Checkpoint) error {
 	}
 	b.prevHW = checkpoint.HW
 	return nil
+}
+
+func canBuildCheckpointState(state ChannelStateStore) bool {
+	if state == nil {
+		return false
+	}
+	_, ok := state.(batchCheckpointStateStore)
+	return ok
 }
 
 func (b *checkpointBridge) readCommittedBatch(nextHW uint64) ([]appliedMessage, error) {

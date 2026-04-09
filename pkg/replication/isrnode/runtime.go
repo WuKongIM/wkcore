@@ -15,12 +15,18 @@ const (
 	defaultFollowerReplicationRetryDelay = 10 * time.Millisecond
 )
 
+type replicationRetryState struct {
+	pending      bool
+	timer        *time.Timer
+	timerVersion uint64
+}
+
 type runtime struct {
 	cfg Config
 
 	mu               sync.RWMutex
 	groups           map[isr.GroupKey]*group
-	replicationRetry map[isr.GroupKey]map[isr.NodeID]bool
+	replicationRetry map[isr.GroupKey]map[isr.NodeID]*replicationRetryState
 	scheduler        *scheduler
 	tombstones       map[isr.GroupKey]map[uint64]tombstone
 	sessions         peerSessionCache
@@ -61,7 +67,7 @@ func New(cfg Config) (Runtime, error) {
 	r := &runtime{
 		cfg:              cfg,
 		groups:           make(map[isr.GroupKey]*group),
-		replicationRetry: make(map[isr.GroupKey]map[isr.NodeID]bool),
+		replicationRetry: make(map[isr.GroupKey]map[isr.NodeID]*replicationRetryState),
 		scheduler:        newScheduler(),
 		sessions:         newPeerSessionCache(),
 		peerRequests:     newPeerRequestState(),
@@ -128,20 +134,25 @@ func (r *runtime) EnsureGroup(meta isr.GroupMeta) error {
 
 func (r *runtime) RemoveGroup(groupKey isr.GroupKey) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	r.dropExpiredTombstonesLocked(r.cfg.Now())
 
 	g, ok := r.groupLocked(groupKey)
 	if !ok {
+		r.mu.Unlock()
 		return ErrGroupNotFound
 	}
 	delete(r.groups, groupKey)
-	delete(r.replicationRetry, groupKey)
+	timers := r.clearReplicationRetriesLocked(groupKey, 0, false)
 	if err := g.replica.Tombstone(); err != nil {
+		r.mu.Unlock()
+		stopTimers(timers)
+		r.mu.Lock()
 		return err
 	}
 	r.tombstoneGroupLocked(g)
+	r.mu.Unlock()
+	stopTimers(timers)
 	return nil
 }
 
@@ -161,6 +172,7 @@ func (r *runtime) ApplyMeta(meta isr.GroupMeta) error {
 		return err
 	}
 	g.setMeta(meta)
+	stopTimers(r.clearStaleReplicationRetries(meta.GroupKey, meta))
 	if meta.Leader != r.cfg.LocalNode {
 		r.retryReplication(meta.GroupKey, meta.Leader, true)
 	}
@@ -255,10 +267,28 @@ func (r *runtime) enqueueScheduler(groupKey isr.GroupKey) {
 }
 
 func (r *runtime) scheduleFollowerReplication(groupKey isr.GroupKey, leader isr.NodeID) {
-	time.AfterFunc(r.cfg.FollowerReplicationRetryInterval, func() {
-		r.retryReplication(groupKey, leader, false)
-		r.enqueueScheduler(groupKey)
+	r.mu.Lock()
+	g, ok := r.groups[groupKey]
+	if !ok {
+		r.mu.Unlock()
+		return
+	}
+	meta := g.metaSnapshot()
+	if !r.isReplicationPeerValid(meta, leader) {
+		r.mu.Unlock()
+		return
+	}
+	state := r.replicationRetryStateLocked(groupKey, leader)
+	if state.timer != nil {
+		r.mu.Unlock()
+		return
+	}
+	state.timerVersion++
+	version := state.timerVersion
+	state.timer = time.AfterFunc(r.cfg.FollowerReplicationRetryInterval, func() {
+		r.fireFollowerReplicationRetry(groupKey, leader, version)
 	})
+	r.mu.Unlock()
 }
 
 func (r *runtime) processReplication(groupKey isr.GroupKey) {
@@ -376,28 +406,163 @@ func (r *runtime) markReplicationRetry(groupKey isr.GroupKey, peer isr.NodeID) b
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	peers, ok := r.replicationRetry[groupKey]
-	if !ok {
-		peers = make(map[isr.NodeID]bool)
-		r.replicationRetry[groupKey] = peers
-	}
-	if peers[peer] {
+	state := r.replicationRetryStateLocked(groupKey, peer)
+	if state.pending {
 		return false
 	}
-	peers[peer] = true
+	state.pending = true
 	return true
 }
 
 func (r *runtime) clearReplicationRetry(groupKey isr.GroupKey, peer isr.NodeID) {
 	r.mu.Lock()
+	r.clearReplicationRetryLocked(groupKey, peer)
+	r.mu.Unlock()
+}
+
+func (r *runtime) fireFollowerReplicationRetry(groupKey isr.GroupKey, peer isr.NodeID, version uint64) {
+	r.mu.Lock()
+	peers, ok := r.replicationRetry[groupKey]
+	if !ok {
+		r.mu.Unlock()
+		return
+	}
+	state, ok := peers[peer]
+	if !ok || state.timer == nil || state.timerVersion != version {
+		r.mu.Unlock()
+		return
+	}
+	state.timer = nil
+
+	g, ok := r.groups[groupKey]
+	if !ok {
+		state.pending = false
+		r.dropReplicationRetryStateLocked(groupKey, peer)
+		r.mu.Unlock()
+		return
+	}
+	meta := g.metaSnapshot()
+	if !r.isReplicationPeerValid(meta, peer) {
+		state.pending = false
+		r.dropReplicationRetryStateLocked(groupKey, peer)
+		r.mu.Unlock()
+		return
+	}
+	r.mu.Unlock()
+
+	r.retryReplication(groupKey, peer, false)
+	r.enqueueScheduler(groupKey)
+}
+
+func (r *runtime) clearStaleReplicationRetries(groupKey isr.GroupKey, meta isr.GroupMeta) []*time.Timer {
+	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	peers, ok := r.replicationRetry[groupKey]
 	if !ok {
+		return nil
+	}
+
+	timers := make([]*time.Timer, 0, len(peers))
+	for peer, state := range peers {
+		if r.isReplicationPeerValid(meta, peer) {
+			continue
+		}
+		state.pending = false
+		state.timerVersion++
+		if state.timer != nil {
+			timers = append(timers, state.timer)
+			state.timer = nil
+		}
+		delete(peers, peer)
+	}
+	if len(peers) == 0 {
+		delete(r.replicationRetry, groupKey)
+	}
+	return timers
+}
+
+func (r *runtime) clearReplicationRetryLocked(groupKey isr.GroupKey, peer isr.NodeID) {
+	peers, ok := r.replicationRetry[groupKey]
+	if !ok {
+		return
+	}
+	state, ok := peers[peer]
+	if !ok {
+		return
+	}
+	state.pending = false
+	r.dropReplicationRetryStateLocked(groupKey, peer)
+}
+
+func (r *runtime) clearReplicationRetriesLocked(groupKey isr.GroupKey, keepPeer isr.NodeID, keepMatching bool) []*time.Timer {
+	peers, ok := r.replicationRetry[groupKey]
+	if !ok {
+		return nil
+	}
+
+	timers := make([]*time.Timer, 0, len(peers))
+	for peer, state := range peers {
+		if keepMatching && peer == keepPeer {
+			continue
+		}
+		state.pending = false
+		state.timerVersion++
+		if state.timer != nil {
+			timers = append(timers, state.timer)
+			state.timer = nil
+		}
+		delete(peers, peer)
+	}
+	if len(peers) == 0 {
+		delete(r.replicationRetry, groupKey)
+	}
+	return timers
+}
+
+func (r *runtime) replicationRetryStateLocked(groupKey isr.GroupKey, peer isr.NodeID) *replicationRetryState {
+	peers, ok := r.replicationRetry[groupKey]
+	if !ok {
+		peers = make(map[isr.NodeID]*replicationRetryState)
+		r.replicationRetry[groupKey] = peers
+	}
+	state, ok := peers[peer]
+	if !ok {
+		state = &replicationRetryState{}
+		peers[peer] = state
+	}
+	return state
+}
+
+func (r *runtime) dropReplicationRetryStateLocked(groupKey isr.GroupKey, peer isr.NodeID) {
+	peers, ok := r.replicationRetry[groupKey]
+	if !ok {
+		return
+	}
+	state, ok := peers[peer]
+	if !ok || state.pending || state.timer != nil {
 		return
 	}
 	delete(peers, peer)
 	if len(peers) == 0 {
 		delete(r.replicationRetry, groupKey)
 	}
+}
+
+func stopTimers(timers []*time.Timer) {
+	for _, timer := range timers {
+		if timer != nil {
+			timer.Stop()
+		}
+	}
+}
+
+func (r *runtime) isReplicationPeerValid(meta isr.GroupMeta, peer isr.NodeID) bool {
+	if peer == 0 || peer == r.cfg.LocalNode {
+		return false
+	}
+	if meta.Leader == r.cfg.LocalNode {
+		return slices.Contains(meta.Replicas, peer)
+	}
+	return meta.Leader == peer
 }

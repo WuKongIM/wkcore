@@ -11,10 +11,10 @@ import (
 	"github.com/cockroachdb/pebble/v2/vfs"
 )
 
-func TestISRBridgeLEODoesNotBlockWhileApplyFetchedRecordsCommits(t *testing.T) {
+func TestStoreApplyFetchPublishesLEOOnlyAfterCoordinatorCommit(t *testing.T) {
 	db, fs := openBlockingSyncTestDB(t)
 	store := db.ForChannel(ChannelKey{ChannelID: "c1", ChannelType: 1})
-	bridge := store.isrLogStore()
+	db.commitCoordinator().flushWindow = 0
 
 	leo, err := store.leo()
 	if err != nil {
@@ -24,27 +24,97 @@ func TestISRBridgeLEODoesNotBlockWhileApplyFetchedRecordsCommits(t *testing.T) {
 		t.Fatalf("warmup leo = %d, want 0", leo)
 	}
 
+	state, err := db.StateStoreFactory().ForChannel(store.key)
+	if err != nil {
+		t.Fatalf("StateStoreFactory().ForChannel() error = %v", err)
+	}
+	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), store, db, store.key, state, store.groupKey)
+	if err != nil {
+		t.Fatalf("newCheckpointBridge() error = %v", err)
+	}
+
 	fs.enableNextSyncBlock()
 	applyDone := make(chan error, 1)
 	go func() {
-		_, err := store.applyFetchedRecords(
-			[]isr.Record{{Payload: []byte("one")}},
-			nil,
-			&isr.Checkpoint{Epoch: 3, HW: 1},
-		)
+		_, err := checkpoints.StoreApplyFetch(isr.ApplyFetchStoreRequest{
+			Records:    []isr.Record{mustStoredRecord(t, 1, "one")},
+			Checkpoint: &isr.Checkpoint{Epoch: 3, HW: 1},
+		})
 		applyDone <- err
 	}()
 
 	select {
 	case <-fs.syncStarted:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for applyFetchedRecords() to reach durable commit")
+		t.Fatal("timeout waiting for StoreApplyFetch() to reach durable commit")
+	}
+
+	store.mu.Lock()
+	blockedLEO := store.cachedLEO
+	store.mu.Unlock()
+	if blockedLEO != 0 {
+		close(fs.syncContinue)
+		<-applyDone
+		t.Fatalf("cached LEO during blocked coordinator commit = %d, want 0", blockedLEO)
+	}
+
+	close(fs.syncContinue)
+	if err := <-applyDone; err != nil {
+		t.Fatalf("StoreApplyFetch() error = %v", err)
+	}
+
+	leo, err = store.leo()
+	if err != nil {
+		t.Fatalf("leo() after commit error = %v", err)
+	}
+	if leo != 1 {
+		t.Fatalf("leo() after commit = %d, want 1", leo)
+	}
+}
+
+func TestISRBridgeLEODoesNotBlockWhileCoordinatorSyncIsInFlight(t *testing.T) {
+	db, fs := openBlockingSyncTestDB(t)
+	store := db.ForChannel(ChannelKey{ChannelID: "c1", ChannelType: 1})
+	db.commitCoordinator().flushWindow = 0
+	logBridge := store.isrLogStore()
+
+	leo, err := store.leo()
+	if err != nil {
+		t.Fatalf("leo() warmup error = %v", err)
+	}
+	if leo != 0 {
+		t.Fatalf("warmup leo = %d, want 0", leo)
+	}
+
+	state, err := db.StateStoreFactory().ForChannel(store.key)
+	if err != nil {
+		t.Fatalf("StateStoreFactory().ForChannel() error = %v", err)
+	}
+	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), store, db, store.key, state, store.groupKey)
+	if err != nil {
+		t.Fatalf("newCheckpointBridge() error = %v", err)
+	}
+
+	fs.enableNextSyncBlock()
+	applyDone := make(chan error, 1)
+	go func() {
+		_, err := checkpoints.StoreApplyFetch(isr.ApplyFetchStoreRequest{
+			Records:    []isr.Record{mustStoredRecord(t, 1, "one")},
+			Checkpoint: &isr.Checkpoint{Epoch: 3, HW: 1},
+		})
+		applyDone <- err
+	}()
+
+	select {
+	case <-fs.syncStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for StoreApplyFetch() to reach durable commit")
 	}
 
 	leoDone := make(chan struct{})
 	var blockedLEO uint64
 	go func() {
-		blockedLEO = bridge.LEO()
+		blockedLEO = logBridge.LEO()
 		close(leoDone)
 	}()
 
@@ -53,7 +123,7 @@ func TestISRBridgeLEODoesNotBlockWhileApplyFetchedRecordsCommits(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 		close(fs.syncContinue)
 		<-applyDone
-		t.Fatal("bridge LEO() blocked while applyFetchedRecords() commit was in progress")
+		t.Fatal("bridge LEO() blocked while coordinator commit was in progress")
 	}
 
 	if blockedLEO != 0 {
@@ -64,7 +134,7 @@ func TestISRBridgeLEODoesNotBlockWhileApplyFetchedRecordsCommits(t *testing.T) {
 
 	close(fs.syncContinue)
 	if err := <-applyDone; err != nil {
-		t.Fatalf("applyFetchedRecords() error = %v", err)
+		t.Fatalf("StoreApplyFetch() error = %v", err)
 	}
 
 	leo, err = store.leo()

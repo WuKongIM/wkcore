@@ -7,9 +7,10 @@ import (
 )
 
 type DB struct {
-	mu     sync.Mutex
-	db     *pebble.DB
-	stores map[ChannelKey]*Store
+	mu          sync.Mutex
+	db          *pebble.DB
+	stores      map[ChannelKey]*Store
+	coordinator *commitCoordinator
 }
 
 func Open(path string) (*DB, error) {
@@ -28,13 +29,19 @@ func (db *DB) Close() error {
 		return nil
 	}
 	db.mu.Lock()
-	defer db.mu.Unlock()
 	if db.db == nil {
+		db.mu.Unlock()
 		return nil
 	}
 	pdb := db.db
+	coordinator := db.coordinator
 	db.db = nil
 	db.stores = nil
+	db.coordinator = nil
+	db.mu.Unlock()
+	if coordinator != nil {
+		coordinator.close()
+	}
 	return pdb.Close()
 }
 
@@ -62,4 +69,19 @@ func (db *DB) ForChannel(key ChannelKey) *Store {
 
 func (db *DB) StateStoreFactory() StateStoreFactory {
 	return &stateStoreFactory{db: db}
+}
+
+func (db *DB) commitCoordinator() *commitCoordinator {
+	if db == nil {
+		return nil
+	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.db == nil {
+		return nil
+	}
+	if db.coordinator == nil {
+		db.coordinator = newCommitCoordinator(db.db)
+	}
+	return db.coordinator
 }

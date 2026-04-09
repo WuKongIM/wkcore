@@ -167,6 +167,10 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 	if err != nil {
 		return app.Config{}, err
 	}
+	asyncSendDispatch, err := parseBool(v, "WK_GATEWAY_DEFAULT_SESSION_ASYNC_SEND_DISPATCH")
+	if err != nil {
+		return app.Config{}, err
+	}
 
 	cfg := app.Config{
 		Node: app.NodeConfig{
@@ -208,6 +212,7 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 				MaxOutboundBytes:    maxOutboundBytes,
 				IdleTimeout:         idleTimeout,
 				WriteTimeout:        writeTimeout,
+				AsyncSendDispatch:   asyncSendDispatch,
 				CloseOnHandlerError: closeOnHandlerError,
 			},
 			Listeners: listeners,

@@ -329,6 +329,70 @@ func TestServer(t *testing.T) {
 		}
 	})
 
+	t.Run("throughput send frames do not block later frame dispatch on the same connection", func(t *testing.T) {
+		handler := newTestHandler()
+		sendStarted := make(chan struct{})
+		releaseSend := make(chan struct{})
+		pingSeen := make(chan struct{})
+		handler.onFrame = func(_ *gateway.Context, frame wkframe.Frame) error {
+			switch frame.(type) {
+			case *wkframe.SendPacket:
+				close(sendStarted)
+				<-releaseSend
+			case *wkframe.PingPacket:
+				close(pingSeen)
+			}
+			return nil
+		}
+
+		proto := newScriptedProtocol("fake-proto")
+		proto.pushDecode(decodeResult{
+			frames: []wkframe.Frame{&wkframe.SendPacket{
+				ChannelID:   "u2",
+				ChannelType: wkframe.ChannelTypePerson,
+				ClientSeq:   1,
+				ClientMsgNo: "m1",
+			}},
+			consumed: 1,
+		})
+		proto.pushDecode(decodeResult{})
+		proto.pushDecode(decodeResult{
+			frames:   []wkframe.Frame{&wkframe.PingPacket{}},
+			consumed: 1,
+		})
+
+		srv, transportFactory := newTestServer(t, handler, proto, gateway.SessionOptions{
+			AsyncSendDispatch: true,
+		})
+		if err := srv.Start(); err != nil {
+			t.Fatalf("start failed: %v", err)
+		}
+		t.Cleanup(func() { _ = srv.Stop() })
+
+		transportFactory.MustOpen("listener-a", 1)
+		go transportFactory.MustData("listener-a", 1, []byte("s"))
+
+		waitFor(t, func() bool {
+			select {
+			case <-sendStarted:
+				return true
+			default:
+				return false
+			}
+		})
+
+		go transportFactory.MustData("listener-a", 1, []byte("p"))
+
+		select {
+		case <-pingSeen:
+		case <-time.After(200 * time.Millisecond):
+			t.Fatal("expected ping to dispatch before throughput send finished")
+		}
+
+		close(releaseSend)
+		waitFor(t, func() bool { return handler.frameCount() == 2 })
+	})
+
 	t.Run("listener scoped errors go to OnListenerError before a session exists", func(t *testing.T) {
 		handler := newTestHandler()
 		proto := newScriptedProtocol("fake-proto")

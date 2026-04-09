@@ -69,6 +69,49 @@ func TestGroupPopReplicationPeerQueueReusableAfterDrain(t *testing.T) {
 	}
 }
 
+func TestGroupEnqueueReplicationCoalescesDuplicateQueuedPeerToOneFollowUp(t *testing.T) {
+	g := &group{}
+
+	g.enqueueReplication(2)
+	g.enqueueReplication(2)
+	g.enqueueReplication(2)
+
+	got, ok := g.popReplicationPeer()
+	if !ok {
+		t.Fatal("expected queued peer")
+	}
+	if got != 2 {
+		t.Fatalf("popReplicationPeer() = %d, want 2", got)
+	}
+	if got, ok = g.popReplicationPeer(); !ok {
+		t.Fatal("expected one coalesced follow-up peer")
+	}
+	if got != 2 {
+		t.Fatalf("coalesced follow-up peer = %d, want 2", got)
+	}
+	if _, ok := g.popReplicationPeer(); ok {
+		t.Fatal("expected duplicate queued peers to coalesce to a single follow-up")
+	}
+}
+
+func TestGroupEnqueueReplicationAllowsPeerAfterPreviousEntryPopped(t *testing.T) {
+	g := &group{}
+
+	g.enqueueReplication(2)
+	if _, ok := g.popReplicationPeer(); !ok {
+		t.Fatal("expected initial queued peer")
+	}
+
+	g.enqueueReplication(2)
+	got, ok := g.popReplicationPeer()
+	if !ok {
+		t.Fatal("expected peer to be queueable again after pop")
+	}
+	if got != 2 {
+		t.Fatalf("popReplicationPeer() after requeue = %d, want 2", got)
+	}
+}
+
 func TestSchedulerPendingQueuePreservesFIFO(t *testing.T) {
 	var q schedulerQueue
 

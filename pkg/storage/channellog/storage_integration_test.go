@@ -14,7 +14,7 @@ func TestClusterWithRealStoreAppendFetchAndSeqReads(t *testing.T) {
 	key := ChannelKey{ChannelID: "c1", ChannelType: 1}
 	store := db.ForChannel(key)
 
-	replica := newStoreReplica(t, store, 1)
+	replica := newChannelLogReplica(t, store, 1)
 	meta := singleReplicaMeta(store.groupKey, 7, 1)
 	if err := replica.ApplyMeta(meta); err != nil {
 		t.Fatalf("ApplyMeta() error = %v", err)
@@ -153,6 +153,86 @@ func TestClusterWithRealStoreFetchHidesDirtyTailAfterReplicaRecovery(t *testing.
 	_, err = store.LoadMsg(3)
 	if !errors.Is(err, ErrMessageNotFound) {
 		t.Fatalf("expected ErrMessageNotFound, got %v", err)
+	}
+}
+
+func TestCheckpointBridgeUsesCoordinatorForCommittedState(t *testing.T) {
+	db, fs := openBlockingSyncTestDB(t)
+	key := ChannelKey{ChannelID: "c1", ChannelType: 1}
+	store := db.ForChannel(key)
+	db.commitCoordinator().flushWindow = 0
+
+	payload, err := encodeMessage(Message{
+		MessageID:   11,
+		ChannelID:   key.ChannelID,
+		ChannelType: key.ChannelType,
+		FromUID:     "u1",
+		ClientMsgNo: "msg-one",
+		Payload:     []byte("one"),
+	})
+	if err != nil {
+		t.Fatalf("encodeMessage() error = %v", err)
+	}
+	if _, err := store.appendPayloadsNoSync([][]byte{payload}); err != nil {
+		t.Fatalf("appendPayloadsNoSync() error = %v", err)
+	}
+
+	state, err := db.StateStoreFactory().ForChannel(key)
+	if err != nil {
+		t.Fatalf("StateStoreFactory().ForChannel() error = %v", err)
+	}
+	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), store, db, key, state, store.groupKey)
+	if err != nil {
+		t.Fatalf("newCheckpointBridge() error = %v", err)
+	}
+
+	done := make(chan error, 1)
+	fs.enableNextSyncBlock()
+	go func() {
+		done <- checkpoints.Store(isr.Checkpoint{Epoch: 3, HW: 1})
+	}()
+
+	select {
+	case <-fs.syncStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for checkpoint bridge commit to reach sync")
+	}
+
+	if checkpoints.prevHW != 0 {
+		close(fs.syncContinue)
+		<-done
+		t.Fatalf("checkpoint bridge prevHW before sync = %d, want 0", checkpoints.prevHW)
+	}
+
+	close(fs.syncContinue)
+	if err := <-done; err != nil {
+		t.Fatalf("Store() error = %v", err)
+	}
+
+	entry, ok, err := state.GetIdempotency(IdempotencyKey{
+		ChannelID:   key.ChannelID,
+		ChannelType: key.ChannelType,
+		FromUID:     "u1",
+		ClientMsgNo: "msg-one",
+	})
+	if err != nil {
+		t.Fatalf("GetIdempotency() after sync error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected idempotency entry after sync")
+	}
+	if entry.MessageSeq != 1 || entry.Offset != 0 {
+		t.Fatalf("idempotency entry after sync = %+v", entry)
+	}
+	if checkpoints.prevHW != 1 {
+		t.Fatalf("checkpoint bridge prevHW after sync = %d, want 1", checkpoints.prevHW)
+	}
+	checkpoint, err := store.loadCheckpoint()
+	if err != nil {
+		t.Fatalf("loadCheckpoint() after sync error = %v", err)
+	}
+	if checkpoint.HW != 1 {
+		t.Fatalf("checkpoint after sync = %+v, want HW=1", checkpoint)
 	}
 }
 

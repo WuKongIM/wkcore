@@ -410,6 +410,10 @@ func (s *Server) onData(listener *listenerRuntime, conn transport.Conn, data []b
 				}
 				continue
 			}
+			if asyncFrame, ok := cloneAsyncSendFrame(s.options.DefaultSession.AsyncSendDispatch, frame); ok {
+				s.dispatchFrameAsync(state, replyToken, asyncFrame)
+				continue
+			}
 			if err := s.dispatcher.frame(state, replyToken, frame); err != nil {
 				s.handleHandlerError(state, err)
 				if state.isClosed() {
@@ -420,6 +424,35 @@ func (s *Server) onData(listener *listenerRuntime, conn transport.Conn, data []b
 	}
 
 	return nil
+}
+
+func cloneAsyncSendFrame(enabled bool, frame wkframe.Frame) (wkframe.Frame, bool) {
+	if !enabled {
+		return nil, false
+	}
+
+	send, ok := frame.(*wkframe.SendPacket)
+	if !ok {
+		return nil, false
+	}
+
+	cloned := *send
+	cloned.Payload = append([]byte(nil), send.Payload...)
+	return &cloned, true
+}
+
+func (s *Server) dispatchFrameAsync(state *sessionState, replyToken string, frame wkframe.Frame) {
+	if s == nil {
+		return
+	}
+
+	s.workerWG.Add(1)
+	go func() {
+		defer s.workerWG.Done()
+		if err := s.dispatcher.frame(state, replyToken, frame); err != nil {
+			s.handleHandlerError(state, err)
+		}
+	}()
 }
 
 func (s *Server) handleAuthFrame(state *sessionState, replyToken string, frame wkframe.Frame) (bool, error) {

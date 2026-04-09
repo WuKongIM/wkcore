@@ -28,6 +28,7 @@ const (
 
 type asyncCommittedDispatcher struct {
 	localNodeID  uint64
+	preferLocal  bool
 	channelLog   channellog.Cluster
 	delivery     committedSubmitter
 	conversation committedSubmitter
@@ -50,6 +51,10 @@ func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, msg chann
 }
 
 func (d asyncCommittedDispatcher) routeCommitted(ctx context.Context, msg channellog.Message) {
+	if d.preferLocal {
+		d.submitLocal(ctx, msg)
+		return
+	}
 	if d.channelLog == nil {
 		d.submitLocal(ctx, msg)
 		return

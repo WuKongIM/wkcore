@@ -18,7 +18,7 @@ func (r *runtime) sendEnvelope(env Envelope) error {
 		return ErrBackpressured
 	}
 
-	if session.TryBatch(env) {
+	if env.Kind == MessageKindFetchRequest && session.TryBatch(env) {
 		return nil
 	}
 	if err := session.Send(env); err != nil {

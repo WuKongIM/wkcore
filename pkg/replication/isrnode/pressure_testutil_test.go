@@ -496,6 +496,10 @@ func (r *pressureReplica) ApplyFetch(_ context.Context, _ isr.ApplyFetchRequest)
 	return nil
 }
 
+func (r *pressureReplica) ApplyProgressAck(_ context.Context, _ isr.ProgressAckRequest) error {
+	return nil
+}
+
 func (r *pressureReplica) Status() isr.ReplicaState {
 	r.mu.Lock()
 	defer r.mu.Unlock()

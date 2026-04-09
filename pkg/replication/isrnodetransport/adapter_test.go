@@ -42,6 +42,41 @@ func TestSessionManagerReusesSessionPerPeer(t *testing.T) {
 	}
 }
 
+func TestNewDoesNotCollideWithClusterManagedGroupRPCService(t *testing.T) {
+	const managedGroupRPCServiceID uint8 = 20
+
+	mux := nodetransport.NewRPCMux()
+	mux.Handle(managedGroupRPCServiceID, func(ctx context.Context, body []byte) ([]byte, error) {
+		return nil, nil
+	})
+
+	client := nodetransport.NewClient(nodetransport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("New() panicked after cluster reserved service registration: %v", r)
+		}
+	}()
+
+	adapter, err := New(Options{
+		LocalNode: 1,
+		Client:    client,
+		RPCMux:    mux,
+		FetchService: fetchServiceFunc(func(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
+			return isrnode.FetchResponseEnvelope{}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if adapter == nil {
+		t.Fatal("New() returned nil adapter")
+	}
+}
+
 func TestPeerSessionReportsHardBackpressureWhileRPCInFlight(t *testing.T) {
 	server := nodetransport.NewServer()
 	mux := nodetransport.NewRPCMux()
@@ -454,6 +489,398 @@ func TestPeerSessionSendReturnsErrStoppedWhenClientStops(t *testing.T) {
 
 	if state := session.Backpressure(); state.Level != isrnode.BackpressureNone {
 		t.Fatalf("Backpressure().Level after stop = %v, want none", state.Level)
+	}
+}
+
+func TestPeerSessionSendDispatchesProgressAckRPC(t *testing.T) {
+	server := nodetransport.NewServer()
+	mux := nodetransport.NewRPCMux()
+	got := make(chan isrnode.ProgressAckEnvelope, 1)
+	mux.Handle(RPCServiceProgressAck, func(ctx context.Context, body []byte) ([]byte, error) {
+		ack, err := decodeProgressAck(body)
+		if err != nil {
+			return nil, err
+		}
+		got <- ack
+		return nil, nil
+	})
+	server.HandleRPCMux(mux)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("server.Start() error = %v", err)
+	}
+	defer server.Stop()
+
+	client := nodetransport.NewClient(nodetransport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{2: server.Listener().Addr().String()},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter := newAdapterWithTestTimeout(t, client, time.Second)
+	session := adapter.SessionManager().Session(2)
+	env := isrnode.Envelope{
+		Peer:       2,
+		GroupKey:   "g-progress",
+		Epoch:      3,
+		Generation: 7,
+		RequestID:  1,
+		Kind:       isrnode.MessageKindProgressAck,
+		ProgressAck: &isrnode.ProgressAckEnvelope{
+			GroupKey:    "g-progress",
+			Epoch:       3,
+			Generation:  7,
+			ReplicaID:   1,
+			MatchOffset: 11,
+		},
+	}
+
+	if err := session.Send(env); err != nil {
+		t.Fatalf("session.Send() error = %v", err)
+	}
+
+	select {
+	case ack := <-got:
+		if ack.MatchOffset != 11 {
+			t.Fatalf("MatchOffset = %d, want 11", ack.MatchOffset)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for progress ack rpc")
+	}
+}
+
+func TestAdapterHandleProgressAckInvokesRegisteredHandler(t *testing.T) {
+	client := nodetransport.NewClient(nodetransport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	mux := nodetransport.NewRPCMux()
+	adapter, err := New(Options{
+		LocalNode: 1,
+		Client:    client,
+		RPCMux:    mux,
+		FetchService: fetchServiceFunc(func(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
+			return isrnode.FetchResponseEnvelope{}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	delivered := make(chan isrnode.Envelope, 1)
+	adapter.RegisterHandler(func(env isrnode.Envelope) {
+		delivered <- env
+	})
+
+	body, err := encodeProgressAck(isrnode.ProgressAckEnvelope{
+		GroupKey:    "g-progress",
+		Epoch:       3,
+		Generation:  7,
+		ReplicaID:   2,
+		MatchOffset: 19,
+	})
+	if err != nil {
+		t.Fatalf("encodeProgressAck() error = %v", err)
+	}
+
+	servicePayload := append([]byte{RPCServiceProgressAck}, body...)
+	if _, err := mux.HandleRPC(context.Background(), servicePayload); err != nil {
+		t.Fatalf("HandleRPC() error = %v", err)
+	}
+
+	select {
+	case env := <-delivered:
+		if env.Kind != isrnode.MessageKindProgressAck {
+			t.Fatalf("Kind = %v, want progress ack", env.Kind)
+		}
+		if env.ProgressAck == nil || env.ProgressAck.MatchOffset != 19 {
+			t.Fatalf("ProgressAck = %+v", env.ProgressAck)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for delivered progress ack")
+	}
+}
+
+func TestPeerSessionTryBatchQueuesMultipleFetchRequests(t *testing.T) {
+	client := nodetransport.NewClient(nodetransport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter, err := New(Options{
+		LocalNode: 1,
+		Client:    client,
+		RPCMux:    nodetransport.NewRPCMux(),
+		FetchService: fetchServiceFunc(func(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
+			return isrnode.FetchResponseEnvelope{}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	session := adapter.SessionManager().Session(2)
+	if !session.TryBatch(fetchRequestEnvelopeForTest("g-batch-1")) {
+		t.Fatal("expected first fetch request to be queued for batching")
+	}
+	if !session.TryBatch(fetchRequestEnvelopeForTest("g-batch-2")) {
+		t.Fatal("expected second fetch request to be queued for batching")
+	}
+
+	peer := session.(*peerSession)
+	peer.mu.Lock()
+	queued := len(peer.batchFetchQueue)
+	peer.mu.Unlock()
+	if queued != 2 {
+		t.Fatalf("queued batch fetch requests = %d, want 2", queued)
+	}
+}
+
+func TestPeerSessionFlushSendsSingleFetchBatchRPC(t *testing.T) {
+	server := nodetransport.NewServer()
+	mux := nodetransport.NewRPCMux()
+
+	var (
+		mu          sync.Mutex
+		batchCalls  int
+		singleCalls int
+		batchItems  int
+	)
+
+	mux.Handle(RPCServiceFetch, func(ctx context.Context, body []byte) ([]byte, error) {
+		mu.Lock()
+		singleCalls++
+		mu.Unlock()
+		return encodeFetchResponse(isrnode.FetchResponseEnvelope{
+			GroupKey:   "g-single",
+			Epoch:      3,
+			Generation: 7,
+			LeaderHW:   9,
+		})
+	})
+	mux.Handle(RPCServiceFetchBatch, func(ctx context.Context, body []byte) ([]byte, error) {
+		req, err := decodeFetchBatchRequest(body)
+		if err != nil {
+			return nil, err
+		}
+
+		mu.Lock()
+		batchCalls++
+		batchItems = len(req.Items)
+		mu.Unlock()
+
+		resp := isrnode.FetchBatchResponseEnvelope{
+			Items: make([]isrnode.FetchBatchResponseItem, 0, len(req.Items)),
+		}
+		for _, item := range req.Items {
+			resp.Items = append(resp.Items, isrnode.FetchBatchResponseItem{
+				RequestID: item.RequestID,
+				Response: &isrnode.FetchResponseEnvelope{
+					GroupKey:   item.Request.GroupKey,
+					Epoch:      item.Request.Epoch,
+					Generation: item.Request.Generation,
+					LeaderHW:   item.Request.FetchOffset,
+				},
+			})
+		}
+		return encodeFetchBatchResponse(resp)
+	})
+	server.HandleRPCMux(mux)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("server.Start() error = %v", err)
+	}
+	defer server.Stop()
+
+	client := nodetransport.NewClient(nodetransport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{2: server.Listener().Addr().String()},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter := newAdapterWithTestTimeout(t, client, time.Second)
+	session := adapter.SessionManager().Session(2)
+	if !session.TryBatch(fetchRequestEnvelopeForTest("g-batch-1")) {
+		t.Fatal("expected first fetch request to be queued for batching")
+	}
+	if !session.TryBatch(fetchRequestEnvelopeForTest("g-batch-2")) {
+		t.Fatal("expected second fetch request to be queued for batching")
+	}
+
+	if err := session.Flush(); err != nil {
+		t.Fatalf("session.Flush() error = %v", err)
+	}
+
+	mu.Lock()
+	gotBatchCalls := batchCalls
+	gotSingleCalls := singleCalls
+	gotBatchItems := batchItems
+	mu.Unlock()
+
+	if gotBatchCalls != 1 {
+		t.Fatalf("batch rpc calls = %d, want 1", gotBatchCalls)
+	}
+	if gotSingleCalls != 0 {
+		t.Fatalf("single fetch rpc calls = %d, want 0", gotSingleCalls)
+	}
+	if gotBatchItems != 2 {
+		t.Fatalf("batch item count = %d, want 2", gotBatchItems)
+	}
+}
+
+func TestBatchedFetchResponseFansOutResultsPerGroup(t *testing.T) {
+	server := nodetransport.NewServer()
+	mux := nodetransport.NewRPCMux()
+	mux.Handle(RPCServiceFetchBatch, func(ctx context.Context, body []byte) ([]byte, error) {
+		req, err := decodeFetchBatchRequest(body)
+		if err != nil {
+			return nil, err
+		}
+		resp := isrnode.FetchBatchResponseEnvelope{
+			Items: make([]isrnode.FetchBatchResponseItem, 0, len(req.Items)),
+		}
+		for _, item := range req.Items {
+			resp.Items = append(resp.Items, isrnode.FetchBatchResponseItem{
+				RequestID: item.RequestID,
+				Response: &isrnode.FetchResponseEnvelope{
+					GroupKey:   item.Request.GroupKey,
+					Epoch:      item.Request.Epoch,
+					Generation: item.Request.Generation,
+					LeaderHW:   item.Request.FetchOffset + 100,
+				},
+			})
+		}
+		return encodeFetchBatchResponse(resp)
+	})
+	server.HandleRPCMux(mux)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("server.Start() error = %v", err)
+	}
+	defer server.Stop()
+
+	client := nodetransport.NewClient(nodetransport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{2: server.Listener().Addr().String()},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter := newAdapterWithTestTimeout(t, client, time.Second)
+	delivered := make(chan isrnode.Envelope, 2)
+	adapter.RegisterHandler(func(env isrnode.Envelope) {
+		delivered <- env
+	})
+
+	session := adapter.SessionManager().Session(2)
+	req1 := fetchRequestEnvelopeForTest("g-fanout-1")
+	req1.RequestID = 101
+	req2 := fetchRequestEnvelopeForTest("g-fanout-2")
+	req2.RequestID = 102
+	if !session.TryBatch(req1) {
+		t.Fatal("expected first fetch request to be queued for batching")
+	}
+	if !session.TryBatch(req2) {
+		t.Fatal("expected second fetch request to be queued for batching")
+	}
+	if err := session.Flush(); err != nil {
+		t.Fatalf("session.Flush() error = %v", err)
+	}
+
+	got := make(map[isr.GroupKey]isrnode.Envelope, 2)
+	for i := 0; i < 2; i++ {
+		select {
+		case env := <-delivered:
+			got[env.GroupKey] = env
+		case <-time.After(2 * time.Second):
+			t.Fatalf("delivered envelopes = %d, want 2", len(got))
+		}
+	}
+
+	env1, ok := got[isr.GroupKey("g-fanout-1")]
+	if !ok {
+		t.Fatal("missing fanout response for g-fanout-1")
+	}
+	if env1.Kind != isrnode.MessageKindFetchResponse {
+		t.Fatalf("g-fanout-1 kind = %v, want fetch response", env1.Kind)
+	}
+	if env1.RequestID != 101 {
+		t.Fatalf("g-fanout-1 request id = %d, want 101", env1.RequestID)
+	}
+	if env1.FetchResponse == nil || env1.FetchResponse.LeaderHW != 111 {
+		t.Fatalf("g-fanout-1 response = %+v, want LeaderHW=111", env1.FetchResponse)
+	}
+
+	env2, ok := got[isr.GroupKey("g-fanout-2")]
+	if !ok {
+		t.Fatal("missing fanout response for g-fanout-2")
+	}
+	if env2.Kind != isrnode.MessageKindFetchResponse {
+		t.Fatalf("g-fanout-2 kind = %v, want fetch response", env2.Kind)
+	}
+	if env2.RequestID != 102 {
+		t.Fatalf("g-fanout-2 request id = %d, want 102", env2.RequestID)
+	}
+	if env2.FetchResponse == nil || env2.FetchResponse.LeaderHW != 111 {
+		t.Fatalf("g-fanout-2 response = %+v, want LeaderHW=111", env2.FetchResponse)
+	}
+}
+
+func TestPeerSessionFlushBatchFailureDeliversFetchFailureEnvelope(t *testing.T) {
+	client := nodetransport.NewClient(nodetransport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter := newAdapterWithTestTimeout(t, client, 20*time.Millisecond)
+	delivered := make(chan isrnode.Envelope, 1)
+	adapter.RegisterHandler(func(env isrnode.Envelope) {
+		delivered <- env
+	})
+
+	session := adapter.SessionManager().Session(2)
+	req := fetchRequestEnvelopeForTest("g-batch-fail")
+	req.RequestID = 99
+	if !session.TryBatch(req) {
+		t.Fatal("expected fetch request to be queued for batching")
+	}
+	if err := session.Flush(); err == nil {
+		t.Fatal("expected flush to fail when peer is unavailable")
+	}
+
+	select {
+	case env := <-delivered:
+		if env.Kind != isrnode.MessageKindFetchFailure {
+			t.Fatalf("kind = %v, want fetch failure", env.Kind)
+		}
+		if env.RequestID != 99 || env.GroupKey != isr.GroupKey("g-batch-fail") {
+			t.Fatalf("failure envelope = %+v", env)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for fetch failure envelope")
+	}
+}
+
+func TestPeerSessionBackpressureIncludesQueuedBatchRequests(t *testing.T) {
+	client := nodetransport.NewClient(nodetransport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter := newAdapterWithTestTimeout(t, client, time.Second)
+	session := adapter.SessionManager().Session(2).(*peerSession)
+
+	for i := 0; i < session.maxQueuedFetchRequests(); i++ {
+		req := fetchRequestEnvelopeForTest(fmt.Sprintf("g-queued-%d", i))
+		req.RequestID = uint64(i + 1)
+		if !session.TryBatch(req) {
+			t.Fatalf("TryBatch(%d) returned false", i)
+		}
+	}
+
+	state := session.Backpressure()
+	if state.PendingRequests < session.maxQueuedFetchRequests() {
+		t.Fatalf("PendingRequests = %d, want at least %d", state.PendingRequests, session.maxQueuedFetchRequests())
+	}
+	if state.PendingBytes <= 0 {
+		t.Fatalf("PendingBytes = %d, want > 0", state.PendingBytes)
+	}
+	if state.Level != isrnode.BackpressureHard {
+		t.Fatalf("Backpressure().Level = %v, want hard", state.Level)
 	}
 }
 

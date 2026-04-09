@@ -29,6 +29,7 @@ type SessionOptions struct {
 	MaxOutboundBytes    int
 	IdleTimeout         time.Duration
 	WriteTimeout        time.Duration
+	AsyncSendDispatch   bool
 	CloseOnHandlerError *bool
 }
 

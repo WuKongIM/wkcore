@@ -12,6 +12,8 @@ type MessageKind uint8
 const (
 	MessageKindFetchRequest MessageKind = iota + 1
 	MessageKindFetchResponse
+	MessageKindFetchFailure
+	MessageKindProgressAck
 	MessageKindTruncate
 	MessageKindSnapshotChunk
 	MessageKindAck
@@ -42,6 +44,7 @@ type Envelope struct {
 
 	FetchRequest  *FetchRequestEnvelope
 	FetchResponse *FetchResponseEnvelope
+	ProgressAck   *ProgressAckEnvelope
 }
 
 type TombstonePolicy struct {
@@ -79,6 +82,33 @@ type FetchResponseEnvelope struct {
 	TruncateTo *uint64
 	LeaderHW   uint64
 	Records    []isr.Record
+}
+
+type FetchBatchRequestEnvelope struct {
+	Items []FetchBatchRequestItem
+}
+
+type FetchBatchRequestItem struct {
+	RequestID uint64
+	Request   FetchRequestEnvelope
+}
+
+type FetchBatchResponseEnvelope struct {
+	Items []FetchBatchResponseItem
+}
+
+type FetchBatchResponseItem struct {
+	RequestID uint64
+	Response  *FetchResponseEnvelope
+	Error     string
+}
+
+type ProgressAckEnvelope struct {
+	GroupKey    isr.GroupKey
+	Epoch       uint64
+	Generation  uint64
+	ReplicaID   isr.NodeID
+	MatchOffset uint64
 }
 
 type FetchService interface {
