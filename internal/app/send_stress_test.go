@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -102,8 +103,33 @@ type sendStressOutcome struct {
 }
 
 type sendStressWorkerClient struct {
-	target sendStressTarget
-	conn   net.Conn
+	target  sendStressTarget
+	conn    net.Conn
+	writeMu *sync.Mutex
+}
+
+type sendStressAttemptResult struct {
+	record  sendStressRecord
+	failure string
+	ok      bool
+}
+
+type sendStressPendingAttempt struct {
+	client      sendStressWorkerClient
+	worker      int
+	phase       string
+	iteration   int
+	clientSeq   uint64
+	clientMsgNo string
+	payload     []byte
+	startedAt   time.Time
+	ch          chan sendStressAttemptResult
+	onComplete  func(sendStressAttemptResult)
+}
+
+type sendStressInflightTracker struct {
+	mu      sync.Mutex
+	pending map[uint64]*sendStressPendingAttempt
 }
 
 func (o sendStressOutcome) ErrorRate() float64 {
@@ -239,6 +265,129 @@ func parseSendStressMode(value string) (sendStressMode, bool, error) {
 		return sendStressModeThroughput, true, nil
 	default:
 		return "", true, strconv.ErrSyntax
+	}
+}
+
+func newSendStressInflightTracker() *sendStressInflightTracker {
+	return &sendStressInflightTracker{
+		pending: make(map[uint64]*sendStressPendingAttempt),
+	}
+}
+
+func (t *sendStressInflightTracker) Start(client sendStressWorkerClient, worker int, phase string, iteration int, clientSeq uint64, clientMsgNo string, payload []byte) <-chan sendStressAttemptResult {
+	return t.startAt(client, worker, phase, iteration, clientSeq, clientMsgNo, payload, time.Now(), nil)
+}
+
+func (t *sendStressInflightTracker) startAt(client sendStressWorkerClient, worker int, phase string, iteration int, clientSeq uint64, clientMsgNo string, payload []byte, startedAt time.Time, onComplete func(sendStressAttemptResult)) <-chan sendStressAttemptResult {
+	ch := make(chan sendStressAttemptResult, 1)
+
+	t.mu.Lock()
+	t.pending[clientSeq] = &sendStressPendingAttempt{
+		client:      client,
+		worker:      worker,
+		phase:       phase,
+		iteration:   iteration,
+		clientSeq:   clientSeq,
+		clientMsgNo: clientMsgNo,
+		payload:     payload,
+		startedAt:   startedAt,
+		ch:          ch,
+		onComplete:  onComplete,
+	}
+	t.mu.Unlock()
+	return ch
+}
+
+func (t *sendStressInflightTracker) Complete(sendack *wkframe.SendackPacket, framesBeforeAck []string) error {
+	if sendack == nil {
+		return fmt.Errorf("send stress inflight tracker: nil sendack")
+	}
+
+	t.mu.Lock()
+	attempt, ok := t.pending[sendack.ClientSeq]
+	if ok {
+		delete(t.pending, sendack.ClientSeq)
+	}
+	t.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("send stress inflight tracker: unexpected sendack client_seq=%d", sendack.ClientSeq)
+	}
+	if sendack.ClientMsgNo != attempt.clientMsgNo {
+		t.finish(attempt, sendStressAttemptResult{
+			failure: fmt.Sprintf("worker=%d sender=%s connect_node=%d phase=%s iteration=%d ack_mismatch client_seq=%d client_msg_no=%s/%s", attempt.worker, attempt.client.target.SenderUID, attempt.client.target.ConnectNodeID, attempt.phase, attempt.iteration, sendack.ClientSeq, sendack.ClientMsgNo, attempt.clientMsgNo),
+		})
+		return nil
+	}
+	if sendack.ReasonCode != wkframe.ReasonSuccess || sendack.MessageID == 0 || sendack.MessageSeq == 0 {
+		t.finish(attempt, sendStressAttemptResult{
+			failure: fmt.Sprintf("worker=%d sender=%s connect_node=%d phase=%s iteration=%d reason=%s message_id=%d message_seq=%d", attempt.worker, attempt.client.target.SenderUID, attempt.client.target.ConnectNodeID, attempt.phase, attempt.iteration, sendack.ReasonCode, sendack.MessageID, sendack.MessageSeq),
+		})
+		return nil
+	}
+
+	t.finish(attempt, sendStressAttemptResult{
+		ok: true,
+		record: sendStressRecord{
+			Worker:          attempt.worker,
+			Iteration:       attempt.iteration,
+			SenderUID:       attempt.client.target.SenderUID,
+			RecipientUID:    attempt.client.target.RecipientUID,
+			ChannelID:       attempt.client.target.ChannelID,
+			ChannelType:     attempt.client.target.ChannelType,
+			ClientSeq:       attempt.clientSeq,
+			ClientMsgNo:     attempt.clientMsgNo,
+			Payload:         attempt.payload,
+			MessageID:       sendack.MessageID,
+			MessageSeq:      sendack.MessageSeq,
+			AckLatency:      time.Since(attempt.startedAt),
+			OwnerNodeID:     attempt.client.target.OwnerNodeID,
+			ConnectNodeID:   attempt.client.target.ConnectNodeID,
+			FramesBeforeAck: append([]string(nil), framesBeforeAck...),
+		},
+	})
+	return nil
+}
+
+func (t *sendStressInflightTracker) Fail(clientSeq uint64, failure string) error {
+	t.mu.Lock()
+	attempt, ok := t.pending[clientSeq]
+	if ok {
+		delete(t.pending, clientSeq)
+	}
+	t.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("send stress inflight tracker: missing client_seq=%d", clientSeq)
+	}
+	t.finish(attempt, sendStressAttemptResult{failure: failure})
+	return nil
+}
+
+func (t *sendStressInflightTracker) FailAll(format string, args ...any) {
+	t.mu.Lock()
+	pending := make([]*sendStressPendingAttempt, 0, len(t.pending))
+	for clientSeq, attempt := range t.pending {
+		delete(t.pending, clientSeq)
+		pending = append(pending, attempt)
+	}
+	t.mu.Unlock()
+
+	failure := fmt.Sprintf(format, args...)
+	for _, attempt := range pending {
+		t.finish(attempt, sendStressAttemptResult{failure: failure})
+	}
+}
+
+func (t *sendStressInflightTracker) Pending() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.pending)
+}
+
+func (t *sendStressInflightTracker) finish(attempt *sendStressPendingAttempt, result sendStressAttemptResult) {
+	attempt.ch <- result
+	close(attempt.ch)
+	if attempt.onComplete != nil {
+		attempt.onComplete(result)
 	}
 }
 
@@ -426,6 +575,125 @@ func TestSendStressOutcomeErrorRate(t *testing.T) {
 	require.InDelta(t, 20.0, outcome.ErrorRate(), 0.001)
 }
 
+func TestSendStressThroughputTrackerCompletesOutOfOrderAcks(t *testing.T) {
+	client := sendStressWorkerClient{
+		target: sendStressTarget{
+			SenderUID:     "sender",
+			RecipientUID:  "recipient",
+			ChannelID:     "channel",
+			ChannelType:   wkframe.ChannelTypePerson,
+			OwnerNodeID:   1,
+			ConnectNodeID: 1,
+		},
+	}
+	tracker := newSendStressInflightTracker()
+	first := tracker.Start(client, 0, "measure", 0, 2, "m2", []byte("two"))
+	second := tracker.Start(client, 0, "measure", 1, 3, "m3", []byte("three"))
+
+	require.NoError(t, tracker.Complete(&wkframe.SendackPacket{
+		ClientSeq:   3,
+		ClientMsgNo: "m3",
+		ReasonCode:  wkframe.ReasonSuccess,
+		MessageID:   103,
+		MessageSeq:  203,
+	}, nil))
+	require.NoError(t, tracker.Complete(&wkframe.SendackPacket{
+		ClientSeq:   2,
+		ClientMsgNo: "m2",
+		ReasonCode:  wkframe.ReasonSuccess,
+		MessageID:   102,
+		MessageSeq:  202,
+	}, nil))
+
+	secondResult := <-second
+	require.True(t, secondResult.ok)
+	require.EqualValues(t, 3, secondResult.record.ClientSeq)
+	require.EqualValues(t, 203, secondResult.record.MessageSeq)
+
+	firstResult := <-first
+	require.True(t, firstResult.ok)
+	require.EqualValues(t, 2, firstResult.record.ClientSeq)
+	require.EqualValues(t, 202, firstResult.record.MessageSeq)
+}
+
+func TestRunSendStressWorkersThroughputModeCapsInflightPerWorker(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+	})
+
+	cfg := sendStressConfig{
+		Mode:                 sendStressModeThroughput,
+		MaxInflightPerWorker: 2,
+		MessagesPerWorker:    4,
+		AckTimeout:           2 * time.Second,
+	}
+	client := sendStressWorkerClient{
+		target: sendStressTarget{
+			SenderUID:     "sender",
+			RecipientUID:  "recipient",
+			ChannelID:     "channel",
+			ChannelType:   wkframe.ChannelTypePerson,
+			OwnerNodeID:   1,
+			ConnectNodeID: 1,
+		},
+		conn:    clientConn,
+		writeMu: &sync.Mutex{},
+	}
+
+	serverStarted := make(chan struct{}, cfg.MessagesPerWorker)
+	releaseAcks := make(chan struct{})
+	serverErr := make(chan error, 1)
+	var maxInflight atomic.Int64
+	go func() {
+		serverErr <- runScriptedSendStressAckServer(serverConn, cfg.MessagesPerWorker, serverStarted, releaseAcks, &maxInflight)
+	}()
+
+	done := make(chan struct{})
+	var (
+		records  []sendStressRecord
+		failures []string
+		outcome  sendStressOutcome
+		runErr   error
+	)
+	go func() {
+		outcome, records, failures, runErr = runSendStressWorkerThroughput(client, 0, cfg, time.Now().Add(5*time.Second))
+		close(done)
+	}()
+
+	for i := 0; i < cfg.MaxInflightPerWorker; i++ {
+		select {
+		case <-serverStarted:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for initial inflight sends")
+		}
+	}
+
+	select {
+	case <-serverStarted:
+		t.Fatal("worker exceeded max inflight before acknowledgements were released")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(releaseAcks)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for throughput worker to finish")
+	}
+
+	require.NoError(t, runErr)
+	require.NoError(t, <-serverErr)
+	require.Empty(t, failures)
+	require.Len(t, records, cfg.MessagesPerWorker)
+	require.EqualValues(t, cfg.MessagesPerWorker, outcome.Total)
+	require.EqualValues(t, cfg.MessagesPerWorker, outcome.Success)
+	require.Zero(t, outcome.Failed)
+	require.LessOrEqual(t, maxInflight.Load(), int64(cfg.MaxInflightPerWorker))
+}
+
 func TestSendStressThreeNode(t *testing.T) {
 	cfg := loadSendStressConfig(t)
 	requireSendStressEnabled(t, cfg)
@@ -582,8 +850,9 @@ func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []
 		app := harness.apps[target.ConnectNodeID]
 		require.NotNil(t, app, "connect node %d is not running", target.ConnectNodeID)
 		clients = append(clients, sendStressWorkerClient{
-			target: target,
-			conn:   runSendStressClient(t, app, target.SenderUID, cfg),
+			target:  target,
+			conn:    runSendStressClient(t, app, target.SenderUID, cfg),
+			writeMu: &sync.Mutex{},
 		})
 	}
 	defer func() {
@@ -622,29 +891,33 @@ func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			var (
+				workerOutcome  sendStressOutcome
+				workerRecords  []sendStressRecord
+				workerFailures []string
+				err            error
+			)
+			if cfg.Mode == sendStressModeThroughput {
+				workerOutcome, workerRecords, workerFailures, err = runSendStressWorkerThroughput(client, worker, cfg, deadline)
+			} else {
+				workerOutcome, workerRecords, workerFailures = runSendStressWorkerLatency(client, worker, cfg, deadline)
+			}
+			if err != nil {
+				workerFailures = append(workerFailures, err.Error())
+			}
 
-			for iteration := 0; iteration < cfg.MessagesPerWorker; iteration++ {
-				if time.Now().After(deadline) {
-					return
-				}
+			total.Add(workerOutcome.Total)
+			success.Add(workerOutcome.Success)
+			failed.Add(workerOutcome.Failed)
 
-				total.Add(1)
-
-				clientSeq := uint64(iteration + 2)
-				clientMsgNo := fmt.Sprintf("send-stress-%d-%s-%02d-%d", worker, client.target.SenderUID, iteration, cfg.Seed)
-				payload := []byte(fmt.Sprintf("send-stress payload worker=%d sender=%s recipient=%s iteration=%d seed=%d", worker, client.target.SenderUID, client.target.RecipientUID, iteration, cfg.Seed))
-				record, failure, ok := executeSendStressAttempt(client, worker, "measure", iteration, clientSeq, clientMsgNo, payload, cfg.AckTimeout)
-				if !ok {
-					failed.Add(1)
-					appendFailure("%s", failure)
-					return
-				}
-				success.Add(1)
-
-				mu.Lock()
-				records = append(records, record)
+			mu.Lock()
+			records = append(records, workerRecords...)
+			for _, record := range workerRecords {
 				latencies = append(latencies, record.AckLatency)
-				mu.Unlock()
+			}
+			mu.Unlock()
+			for _, failure := range workerFailures {
+				appendFailure("%s", failure)
 			}
 		}()
 	}
@@ -662,7 +935,9 @@ func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []
 		qps = float64(outcome.Success) / elapsed.Seconds()
 	}
 	t.Logf(
-		"send stress metrics: duration=%s workers=%d senders=%d total=%d success=%d failed=%d qps=%.2f p50=%s p95=%s p99=%s max=%s verification_count=%d verification_failures=%d",
+		"send stress metrics: mode=%s max_inflight=%d duration=%s workers=%d senders=%d total=%d success=%d failed=%d qps=%.2f p50=%s p95=%s p99=%s max=%s verification_count=%d verification_failures=%d",
+		cfg.Mode,
+		cfg.MaxInflightPerWorker,
 		elapsed,
 		cfg.Workers,
 		cfg.Senders,
@@ -682,6 +957,175 @@ func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []
 	}
 
 	return outcome, records, failures
+}
+
+func runSendStressWorkerLatency(client sendStressWorkerClient, worker int, cfg sendStressConfig, deadline time.Time) (sendStressOutcome, []sendStressRecord, []string) {
+	records := make([]sendStressRecord, 0, cfg.MessagesPerWorker)
+	failures := make([]string, 0, 1)
+	outcome := sendStressOutcome{}
+
+	for iteration := 0; iteration < cfg.MessagesPerWorker; iteration++ {
+		if time.Now().After(deadline) {
+			break
+		}
+
+		outcome.Total++
+		clientSeq := uint64(iteration + 2)
+		clientMsgNo := fmt.Sprintf("send-stress-%d-%s-%02d-%d", worker, client.target.SenderUID, iteration, cfg.Seed)
+		payload := []byte(fmt.Sprintf("send-stress payload worker=%d sender=%s recipient=%s iteration=%d seed=%d", worker, client.target.SenderUID, client.target.RecipientUID, iteration, cfg.Seed))
+		record, failure, ok := executeSendStressAttempt(client, worker, "measure", iteration, clientSeq, clientMsgNo, payload, cfg.AckTimeout)
+		if !ok {
+			outcome.Failed++
+			failures = append(failures, failure)
+			break
+		}
+		outcome.Success++
+		records = append(records, record)
+	}
+	return outcome, records, failures
+}
+
+func runSendStressWorkerThroughput(client sendStressWorkerClient, worker int, cfg sendStressConfig, deadline time.Time) (sendStressOutcome, []sendStressRecord, []string, error) {
+	if cfg.MaxInflightPerWorker <= 0 {
+		return sendStressOutcome{}, nil, nil, fmt.Errorf("%s must be > 0, got %d", sendStressMaxInflightEnv, cfg.MaxInflightPerWorker)
+	}
+
+	var (
+		outcome  sendStressOutcome
+		records  = make([]sendStressRecord, 0, cfg.MessagesPerWorker)
+		failures = make([]string, 0, 1)
+		mu       sync.Mutex
+	)
+	appendResult := func(result sendStressAttemptResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		if result.ok {
+			outcome.Success++
+			records = append(records, result.record)
+			return
+		}
+		outcome.Failed++
+		if len(failures) < 8 {
+			failures = append(failures, result.failure)
+		}
+	}
+
+	tracker := newSendStressInflightTracker()
+	slots := make(chan struct{}, cfg.MaxInflightPerWorker)
+	writerDone := make(chan struct{})
+	readerErrCh := make(chan error, 1)
+	stopWriter := make(chan struct{})
+	var stopWriterOnce sync.Once
+	stop := func() {
+		stopWriterOnce.Do(func() {
+			close(stopWriter)
+		})
+	}
+
+	go func() {
+		readerErrCh <- readSendStressThroughputAcks(client, cfg.AckTimeout, tracker, writerDone, stop)
+	}()
+
+	nextClientSeq := uint64(2)
+	for iteration := 0; iteration < cfg.MessagesPerWorker; iteration++ {
+		if time.Now().After(deadline) {
+			break
+		}
+		stopped := false
+		select {
+		case <-stopWriter:
+			stopped = true
+		default:
+		}
+		if stopped {
+			break
+		}
+
+		slots <- struct{}{}
+		mu.Lock()
+		outcome.Total++
+		mu.Unlock()
+
+		clientSeq := nextClientSeq
+		nextClientSeq++
+		clientMsgNo := fmt.Sprintf("send-stress-%d-%s-%02d-%d", worker, client.target.SenderUID, iteration, cfg.Seed)
+		payload := []byte(fmt.Sprintf("send-stress payload worker=%d sender=%s recipient=%s iteration=%d seed=%d", worker, client.target.SenderUID, client.target.RecipientUID, iteration, cfg.Seed))
+		packet := &wkframe.SendPacket{
+			ChannelID:   client.target.RecipientUID,
+			ChannelType: client.target.ChannelType,
+			ClientSeq:   clientSeq,
+			ClientMsgNo: clientMsgNo,
+			Payload:     payload,
+		}
+		_ = tracker.startAt(client, worker, "measure", iteration, clientSeq, clientMsgNo, payload, time.Now(), func(result sendStressAttemptResult) {
+			appendResult(result)
+			<-slots
+		})
+		if err := writeSendStressClientFrame(client, packet, cfg.AckTimeout); err != nil {
+			_ = tracker.Fail(clientSeq, fmt.Sprintf("worker=%d sender=%s connect_node=%d phase=%s iteration=%d write error=%v", worker, client.target.SenderUID, client.target.ConnectNodeID, "measure", iteration, err))
+			stop()
+			break
+		}
+	}
+
+	close(writerDone)
+	readerErr := <-readerErrCh
+	if readerErr != nil {
+		return outcome, records, failures, readerErr
+	}
+	return outcome, records, failures, nil
+}
+
+func readSendStressThroughputAcks(client sendStressWorkerClient, ackTimeout time.Duration, tracker *sendStressInflightTracker, writerDone <-chan struct{}, stopWriter func()) error {
+	for {
+		if tracker.Pending() == 0 {
+			select {
+			case <-writerDone:
+				return nil
+			default:
+			}
+		}
+
+		frame, err := readSendStressFrameWithin(client.conn, minSendStressDuration(ackTimeout, 200*time.Millisecond))
+		if err != nil {
+			if isSendStressTimeout(err) {
+				select {
+				case <-writerDone:
+					if tracker.Pending() == 0 {
+						return nil
+					}
+				default:
+				}
+				continue
+			}
+			tracker.FailAll("throughput ack reader error: %v", err)
+			stopWriter()
+			return err
+		}
+
+		switch pkt := frame.(type) {
+		case *wkframe.SendackPacket:
+			if err := tracker.Complete(pkt, nil); err != nil {
+				tracker.FailAll("throughput ack reader mismatch: %v", err)
+				stopWriter()
+				return err
+			}
+		case *wkframe.RecvPacket:
+			if err := writeSendStressClientFrame(client, &wkframe.RecvackPacket{
+				MessageID:  pkt.MessageID,
+				MessageSeq: pkt.MessageSeq,
+			}, ackTimeout); err != nil {
+				tracker.FailAll("throughput recvack write error: %v", err)
+				stopWriter()
+				return err
+			}
+		default:
+			err := fmt.Errorf("unexpected frame while waiting for throughput sendack: %T", frame)
+			tracker.FailAll("%v", err)
+			stopWriter()
+			return err
+		}
+	}
 }
 
 func warmupSendStressClients(t *testing.T, clients []sendStressWorkerClient, cfg sendStressConfig) []sendStressRecord {
@@ -737,7 +1181,7 @@ func executeSendStressAttempt(client sendStressWorkerClient, worker int, phase s
 	}
 
 	sendStart := time.Now()
-	if err := writeSendStressFrame(client.conn, packet, ackTimeout); err != nil {
+	if err := writeSendStressClientFrame(client, packet, ackTimeout); err != nil {
 		return sendStressRecord{}, fmt.Sprintf("worker=%d sender=%s connect_node=%d phase=%s iteration=%d write error=%v", worker, client.target.SenderUID, client.target.ConnectNodeID, phase, iteration, err), false
 	}
 
@@ -852,6 +1296,15 @@ func dialSendStressClient(app *App, senderUID string, cfg sendStressConfig) (net
 	return conn, nil
 }
 
+func writeSendStressClientFrame(client sendStressWorkerClient, frame wkframe.Frame, timeout time.Duration) error {
+	if client.writeMu == nil {
+		return writeSendStressFrame(client.conn, frame, timeout)
+	}
+	client.writeMu.Lock()
+	defer client.writeMu.Unlock()
+	return writeSendStressFrame(client.conn, frame, timeout)
+}
+
 func writeSendStressFrame(conn net.Conn, frame wkframe.Frame, timeout time.Duration) error {
 	payload, err := codec.New().EncodeFrame(frame, wkframe.LatestVersion)
 	if err != nil {
@@ -865,6 +1318,21 @@ func writeSendStressFrame(conn net.Conn, frame wkframe.Frame, timeout time.Durat
 	}()
 	_, err = conn.Write(payload)
 	return err
+}
+
+func minSendStressDuration(a, b time.Duration) time.Duration {
+	if a <= 0 {
+		return b
+	}
+	if b <= 0 || a < b {
+		return a
+	}
+	return b
+}
+
+func isSendStressTimeout(err error) bool {
+	var netErr net.Error
+	return err != nil && errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func readSendStressFrameWithin(conn net.Conn, timeout time.Duration) (wkframe.Frame, error) {
@@ -904,6 +1372,100 @@ func waitForSendStressSendack(conn net.Conn, timeout time.Duration) (*wkframe.Se
 			}
 		default:
 			return nil, framesBeforeAck, fmt.Errorf("unexpected frame while waiting for sendack: %T", frame)
+		}
+	}
+}
+
+func runScriptedSendStressAckServer(conn net.Conn, expected int, started chan<- struct{}, releaseAcks <-chan struct{}, maxInflight *atomic.Int64) error {
+	type ackEnvelope struct {
+		packet *wkframe.SendackPacket
+	}
+
+	acks := make(chan ackEnvelope, expected)
+	readerErrCh := make(chan error, 1)
+	var currentInflight atomic.Int64
+
+	go func() {
+		for i := 0; i < expected; i++ {
+			frame, err := readSendStressFrameWithin(conn, 5*time.Second)
+			if err != nil {
+				readerErrCh <- err
+				close(acks)
+				return
+			}
+			send, ok := frame.(*wkframe.SendPacket)
+			if !ok {
+				readerErrCh <- fmt.Errorf("expected *wkframe.SendPacket, got %T", frame)
+				close(acks)
+				return
+			}
+			inflight := currentInflight.Add(1)
+			if maxInflight != nil {
+				for {
+					prev := maxInflight.Load()
+					if inflight <= prev || maxInflight.CompareAndSwap(prev, inflight) {
+						break
+					}
+				}
+			}
+			started <- struct{}{}
+			acks <- ackEnvelope{
+				packet: &wkframe.SendackPacket{
+					ClientSeq:   send.ClientSeq,
+					ClientMsgNo: send.ClientMsgNo,
+					ReasonCode:  wkframe.ReasonSuccess,
+					MessageID:   int64(1000 + send.ClientSeq),
+					MessageSeq:  send.ClientSeq,
+				},
+			}
+		}
+		close(acks)
+		readerErrCh <- nil
+	}()
+
+	pending := make([]ackEnvelope, 0, expected)
+	released := false
+	flushPending := func() error {
+		for len(pending) > 0 {
+			env := pending[0]
+			pending = pending[1:]
+			if err := writeSendStressFrame(conn, env.packet, 5*time.Second); err != nil {
+				return err
+			}
+			currentInflight.Add(-1)
+		}
+		return nil
+	}
+
+	releaseCh := releaseAcks
+	for {
+		select {
+		case env, ok := <-acks:
+			if !ok {
+				if !released && releaseCh != nil {
+					<-releaseCh
+					releaseCh = nil
+					released = true
+				}
+				if err := flushPending(); err != nil {
+					return err
+				}
+				return <-readerErrCh
+			}
+			if released {
+				if err := writeSendStressFrame(conn, env.packet, 5*time.Second); err != nil {
+					return err
+				}
+				currentInflight.Add(-1)
+				continue
+			}
+			pending = append(pending, env)
+		case <-releaseCh:
+			released = true
+			releaseCh = nil
+			if err := flushPending(); err != nil {
+				return err
+			}
 		}
 	}
 }
