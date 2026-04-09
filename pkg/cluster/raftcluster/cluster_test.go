@@ -48,6 +48,7 @@ const (
 	testClusterPoolSize       = 1
 	testLeaderPollInterval    = 50 * time.Millisecond
 	testLeaderConfirmations   = 4
+	testManagedGroupProbeWait = 300 * time.Millisecond
 )
 
 func testClusterTimingConfig() raftcluster.Config {
@@ -180,6 +181,16 @@ func TestStableLeaderWithinUsesShortConfirmationWindow(t *testing.T) {
 	waitForStableLeader(t, nodes, 1)
 
 	require.Less(t, time.Since(start), time.Second)
+}
+
+func TestWaitForManagedGroupsSettledReturnsQuicklyAfterAssignmentsExist(t *testing.T) {
+	nodes := startThreeNodesWithControllerWithSettle(t, 4, 3, false)
+	waitForControllerAssignments(t, nodes, 4)
+
+	start := time.Now()
+	waitForManagedGroupsSettled(t, nodes, 4)
+
+	require.Less(t, time.Since(start), 2*time.Second)
 }
 
 func startSingleNode(t testing.TB, groupCount int) *testNode {
@@ -508,7 +519,7 @@ func waitForManagedGroupsSettled(t testing.TB, nodes []*testNode, groupCount int
 				}
 				groupNodes = append(groupNodes, nodes[idx])
 			}
-			if _, err := stableLeaderWithin(groupNodes, uint64(assignment.GroupID), 2*time.Second); err != nil {
+			if _, err := stableLeaderWithin(groupNodes, uint64(assignment.GroupID), testManagedGroupProbeWait); err != nil {
 				return false
 			}
 			if _, err := probe.cluster.GetReconcileTask(context.Background(), assignment.GroupID); err == nil {
@@ -518,7 +529,7 @@ func waitForManagedGroupsSettled(t testing.TB, nodes []*testNode, groupCount int
 			}
 		}
 		return true
-	}, 30*time.Second, 200*time.Millisecond)
+	}, 30*time.Second, 100*time.Millisecond)
 }
 
 func snapshotAssignments(t testing.TB, nodes []*testNode, groupCount int) []controllermeta.GroupAssignment {
