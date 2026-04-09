@@ -130,6 +130,38 @@ func TestServiceProposeReturnsRunLoopErrorAfterExit(t *testing.T) {
 	require.ErrorIs(t, err, sentinel)
 }
 
+func TestFailInflightProposalsOnLeaderLossFailsQueuedAndIndexed(t *testing.T) {
+	queuedResp := make(chan error, 1)
+	indexedResp := make(chan error, 1)
+	queue := []trackedProposal{{resp: queuedResp}}
+	byIndex := map[uint64]trackedProposal{
+		7: {resp: indexedResp},
+	}
+
+	failInflightProposalsOnLeaderLoss(raft.StateFollower, &queue, byIndex)
+
+	require.Empty(t, queue)
+	require.Empty(t, byIndex)
+	require.ErrorIs(t, <-queuedResp, ErrNotLeader)
+	require.ErrorIs(t, <-indexedResp, ErrNotLeader)
+}
+
+func TestFailInflightProposalsOnLeaderLossLeavesLeaderRequestsIntact(t *testing.T) {
+	resp := make(chan error, 1)
+	queue := []trackedProposal{{resp: resp}}
+	byIndex := map[uint64]trackedProposal{}
+
+	failInflightProposalsOnLeaderLoss(raft.StateLeader, &queue, byIndex)
+
+	require.Len(t, queue, 1)
+	require.Empty(t, byIndex)
+	select {
+	case err := <-resp:
+		t.Fatalf("unexpected inflight failure: %v", err)
+	default:
+	}
+}
+
 type testEnv struct {
 	root     string
 	addrs    map[uint64]string

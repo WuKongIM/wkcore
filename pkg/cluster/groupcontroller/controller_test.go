@@ -554,6 +554,7 @@ func TestStateMachineMarksTaskFailedAfterRetryExhaustion(t *testing.T) {
 		Kind: CommandKindTaskResult,
 		Advance: &TaskAdvance{
 			GroupID: 1,
+			Attempt: 2,
 			Now:     time.Unix(11, 0),
 			Err:     errors.New("learner catch-up timeout"),
 		},
@@ -564,6 +565,43 @@ func TestStateMachineMarksTaskFailedAfterRetryExhaustion(t *testing.T) {
 	require.Equal(t, TaskStatusFailed, task.Status)
 	require.EqualValues(t, 3, task.Attempt)
 	require.Contains(t, task.LastError, "learner catch-up timeout")
+}
+
+func TestStateMachineIgnoresDuplicateTaskResultForAdvancedAttempt(t *testing.T) {
+	store := openControllerStore(t)
+	sm := NewStateMachine(store, StateMachineConfig{
+		MaxTaskAttempts:  3,
+		RetryBackoffBase: time.Second,
+	})
+	ctx := context.Background()
+
+	original := controllermeta.ReconcileTask{
+		GroupID:   1,
+		Kind:      controllermeta.TaskKindRepair,
+		Step:      controllermeta.TaskStepAddLearner,
+		Attempt:   2,
+		NextRunAt: time.Unix(10, 0),
+		LastError: "previous failure",
+		Status:    controllermeta.TaskStatusRetrying,
+	}
+	require.NoError(t, store.UpsertTask(ctx, original))
+
+	require.NoError(t, sm.Apply(ctx, Command{
+		Kind: CommandKindTaskResult,
+		Advance: &TaskAdvance{
+			GroupID: 1,
+			Attempt: 1,
+			Now:     time.Unix(11, 0),
+			Err:     errors.New("stale duplicate failure"),
+		},
+	}))
+
+	task, err := store.GetTask(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, original.Attempt, task.Attempt)
+	require.Equal(t, original.Status, task.Status)
+	require.Equal(t, original.NextRunAt, task.NextRunAt)
+	require.Equal(t, original.LastError, task.LastError)
 }
 
 type stateOption func(*PlannerState)

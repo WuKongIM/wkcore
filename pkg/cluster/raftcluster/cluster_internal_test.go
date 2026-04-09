@@ -446,10 +446,10 @@ func TestObserveOnceAppliesCachedAssignmentsWhenSyncAssignmentsTimesOut(t *testi
 		client: fakeControllerClient{
 			assignmentsErr: context.DeadlineExceeded,
 			tasks:          map[uint32]controllermeta.ReconcileTask{1: task},
-			reportTaskResultFn: func(_ context.Context, groupID uint32, taskErr error) error {
+			reportTaskResultFn: func(_ context.Context, task controllermeta.ReconcileTask, taskErr error) error {
 				reportCalls++
-				if groupID != 1 {
-					t.Fatalf("ReportTaskResult() groupID = %d, want 1", groupID)
+				if task.GroupID != 1 {
+					t.Fatalf("ReportTaskResult() groupID = %d, want 1", task.GroupID)
 				}
 				if taskErr != nil {
 					t.Fatalf("ReportTaskResult() err = %v, want nil", taskErr)
@@ -488,7 +488,7 @@ type fakeControllerClient struct {
 	tasks                map[uint32]controllermeta.ReconcileTask
 	getTaskErr           error
 	reportTaskResultErr  error
-	reportTaskResultFn   func(context.Context, uint32, error) error
+	reportTaskResultFn   func(context.Context, controllermeta.ReconcileTask, error) error
 }
 
 func (f fakeControllerClient) Report(_ context.Context, _ groupcontroller.AgentReport) error {
@@ -537,9 +537,9 @@ func (f fakeControllerClient) ForceReconcile(_ context.Context, _ uint32) error 
 	return nil
 }
 
-func (f fakeControllerClient) ReportTaskResult(ctx context.Context, groupID uint32, taskErr error) error {
+func (f fakeControllerClient) ReportTaskResult(ctx context.Context, task controllermeta.ReconcileTask, taskErr error) error {
 	if f.reportTaskResultFn != nil {
-		return f.reportTaskResultFn(ctx, groupID, taskErr)
+		return f.reportTaskResultFn(ctx, task, taskErr)
 	}
 	return f.reportTaskResultErr
 }
@@ -626,6 +626,36 @@ func TestGroupAgentShouldExecuteRepairTaskOnSourceNodeWhenSourceIsAlive(t *testi
 
 	if !agent.shouldExecuteTask(assignment, task, nodes) {
 		t.Fatal("shouldExecuteTask() = false, want true when local node is the alive source node")
+	}
+}
+
+func TestGroupAgentShouldExecuteRepairTaskOnLocalSourceWithoutNodeSnapshot(t *testing.T) {
+	restoreLeader := setManagedGroupLeaderTestHook(func(_ *Cluster, groupID multiraft.GroupID) (multiraft.NodeID, error, bool) {
+		if groupID != 1 {
+			return 0, nil, false
+		}
+		return 3, nil, true
+	})
+	defer restoreLeader()
+
+	agent := &groupAgent{
+		cluster: &Cluster{cfg: Config{NodeID: 2}},
+	}
+	assignment := controllermeta.GroupAssignment{
+		GroupID:      1,
+		DesiredPeers: []uint64{1, 3, 4},
+	}
+	task := controllermeta.ReconcileTask{
+		GroupID:    1,
+		Kind:       controllermeta.TaskKindRepair,
+		SourceNode: 2,
+		TargetNode: 4,
+		Status:     controllermeta.TaskStatusRetrying,
+		NextRunAt:  time.Now(),
+	}
+
+	if !agent.shouldExecuteTask(assignment, task, nil) {
+		t.Fatal("shouldExecuteTask() = false, want true when local node is the task source")
 	}
 }
 
@@ -912,10 +942,10 @@ func TestGroupAgentRetriesTaskResultReportOnControllerLeaderChange(t *testing.T)
 	client := fakeControllerClient{
 		assignments: []controllermeta.GroupAssignment{assignment},
 		tasks:       map[uint32]controllermeta.ReconcileTask{1: task},
-		reportTaskResultFn: func(_ context.Context, groupID uint32, taskErr error) error {
+		reportTaskResultFn: func(_ context.Context, task controllermeta.ReconcileTask, taskErr error) error {
 			reportCalls++
-			if groupID != 1 {
-				t.Fatalf("ReportTaskResult() groupID = %d, want 1", groupID)
+			if task.GroupID != 1 {
+				t.Fatalf("ReportTaskResult() groupID = %d, want 1", task.GroupID)
 			}
 			if !errors.Is(taskErr, execErr) {
 				t.Fatalf("ReportTaskResult() err = %v, want %v", taskErr, execErr)
@@ -968,10 +998,10 @@ func TestGroupAgentRetriesTaskResultReportAfterTransientControllerTimeout(t *tes
 	client := fakeControllerClient{
 		assignments: []controllermeta.GroupAssignment{assignment},
 		tasks:       map[uint32]controllermeta.ReconcileTask{1: task},
-		reportTaskResultFn: func(_ context.Context, groupID uint32, taskErr error) error {
+		reportTaskResultFn: func(_ context.Context, task controllermeta.ReconcileTask, taskErr error) error {
 			reportCalls++
-			if groupID != 1 {
-				t.Fatalf("ReportTaskResult() groupID = %d, want 1", groupID)
+			if task.GroupID != 1 {
+				t.Fatalf("ReportTaskResult() groupID = %d, want 1", task.GroupID)
 			}
 			if !errors.Is(taskErr, execErr) {
 				t.Fatalf("ReportTaskResult() err = %v, want %v", taskErr, execErr)
@@ -1078,10 +1108,10 @@ func TestGroupAgentDoesNotReexecuteTaskWhileResultReportIsPending(t *testing.T) 
 	client := fakeControllerClient{
 		assignments: []controllermeta.GroupAssignment{assignment},
 		tasks:       map[uint32]controllermeta.ReconcileTask{1: task},
-		reportTaskResultFn: func(_ context.Context, groupID uint32, _ error) error {
+		reportTaskResultFn: func(_ context.Context, task controllermeta.ReconcileTask, _ error) error {
 			reportCalls++
-			if groupID != 1 {
-				t.Fatalf("ReportTaskResult() groupID = %d, want 1", groupID)
+			if task.GroupID != 1 {
+				t.Fatalf("ReportTaskResult() groupID = %d, want 1", task.GroupID)
 			}
 			if !allowReport {
 				return ErrNotLeader
@@ -1114,6 +1144,161 @@ func TestGroupAgentDoesNotReexecuteTaskWhileResultReportIsPending(t *testing.T) 
 	}
 	if reportCalls < 2 {
 		t.Fatalf("ReportTaskResult() calls = %d, want >= 2", reportCalls)
+	}
+}
+
+func TestGroupAgentRetriesPendingTaskReportWithoutRefreshingTask(t *testing.T) {
+	harness := newStandaloneAgentTestCluster(t)
+	assignment := controllermeta.GroupAssignment{
+		GroupID:      1,
+		DesiredPeers: []uint64{1},
+		ConfigEpoch:  1,
+	}
+	task := controllermeta.ReconcileTask{
+		GroupID:   1,
+		Kind:      controllermeta.TaskKindBootstrap,
+		Step:      controllermeta.TaskStepAddLearner,
+		Status:    controllermeta.TaskStatusPending,
+		NextRunAt: time.Now(),
+	}
+	execErr := errors.New("injected execution failure")
+	restore := SetManagedGroupExecutionTestHook(func(groupID uint32, got controllermeta.ReconcileTask) error {
+		if groupID == 1 && got.Kind == controllermeta.TaskKindBootstrap {
+			return execErr
+		}
+		return nil
+	})
+	defer restore()
+
+	getTaskCalls := 0
+	reportCalls := 0
+	client := fakeControllerClient{
+		assignments: []controllermeta.GroupAssignment{assignment},
+		getTaskFn: func(_ context.Context, groupID uint32) (controllermeta.ReconcileTask, error) {
+			getTaskCalls++
+			if groupID != 1 {
+				t.Fatalf("GetTask() groupID = %d, want 1", groupID)
+			}
+			if getTaskCalls <= 2 {
+				return task, nil
+			}
+			return controllermeta.ReconcileTask{}, context.DeadlineExceeded
+		},
+		reportTaskResultFn: func(_ context.Context, got controllermeta.ReconcileTask, taskErr error) error {
+			reportCalls++
+			if got.GroupID != 1 {
+				t.Fatalf("ReportTaskResult() groupID = %d, want 1", got.GroupID)
+			}
+			if got.Attempt != task.Attempt {
+				t.Fatalf("ReportTaskResult() attempt = %d, want %d", got.Attempt, task.Attempt)
+			}
+			if !errors.Is(taskErr, execErr) {
+				t.Fatalf("ReportTaskResult() err = %v, want %v", taskErr, execErr)
+			}
+			if reportCalls == 1 {
+				return context.DeadlineExceeded
+			}
+			return nil
+		},
+	}
+	harness.cluster.assignments.SetAssignments(client.assignments)
+	harness.cluster.agent = &groupAgent{
+		cluster: harness.cluster,
+		client:  client,
+		cache:   harness.cluster.assignments,
+	}
+
+	firstCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := harness.cluster.agent.ApplyAssignments(firstCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ApplyAssignments() first error = %v, want %v", err, context.DeadlineExceeded)
+	}
+	if reportCalls != 1 {
+		t.Fatalf("ReportTaskResult() calls after first ApplyAssignments() = %d, want 1", reportCalls)
+	}
+
+	if err := harness.cluster.agent.ApplyAssignments(context.Background()); err != nil {
+		t.Fatalf("ApplyAssignments() second error = %v", err)
+	}
+	if reportCalls != 2 {
+		t.Fatalf("ReportTaskResult() calls after second ApplyAssignments() = %d, want 2", reportCalls)
+	}
+	if getTaskCalls < 2 {
+		t.Fatalf("GetTask() calls = %d, want >= 2", getTaskCalls)
+	}
+}
+
+func TestGroupAgentExecutesKnownTaskWhenFreshConfirmationTimesOut(t *testing.T) {
+	harness := newStandaloneAgentTestCluster(t)
+	assignment := controllermeta.GroupAssignment{
+		GroupID:      1,
+		DesiredPeers: []uint64{1},
+		ConfigEpoch:  1,
+	}
+	task := controllermeta.ReconcileTask{
+		GroupID:   1,
+		Kind:      controllermeta.TaskKindBootstrap,
+		Step:      controllermeta.TaskStepAddLearner,
+		Status:    controllermeta.TaskStatusPending,
+		NextRunAt: time.Now(),
+	}
+	execErr := errors.New("injected execution failure")
+	execCalls := 0
+	restore := SetManagedGroupExecutionTestHook(func(groupID uint32, got controllermeta.ReconcileTask) error {
+		if groupID == 1 && got.Kind == controllermeta.TaskKindBootstrap {
+			execCalls++
+			return execErr
+		}
+		return nil
+	})
+	defer restore()
+
+	getTaskCalls := 0
+	reportCalls := 0
+	client := fakeControllerClient{
+		assignments: []controllermeta.GroupAssignment{assignment},
+		getTaskFn: func(_ context.Context, groupID uint32) (controllermeta.ReconcileTask, error) {
+			getTaskCalls++
+			if groupID != 1 {
+				t.Fatalf("GetTask() groupID = %d, want 1", groupID)
+			}
+			if getTaskCalls == 1 {
+				return task, nil
+			}
+			return controllermeta.ReconcileTask{}, context.DeadlineExceeded
+		},
+		reportTaskResultFn: func(_ context.Context, got controllermeta.ReconcileTask, taskErr error) error {
+			reportCalls++
+			if got.GroupID != 1 {
+				t.Fatalf("ReportTaskResult() groupID = %d, want 1", got.GroupID)
+			}
+			if got.Attempt != task.Attempt {
+				t.Fatalf("ReportTaskResult() attempt = %d, want %d", got.Attempt, task.Attempt)
+			}
+			if !errors.Is(taskErr, execErr) {
+				t.Fatalf("ReportTaskResult() err = %v, want %v", taskErr, execErr)
+			}
+			return nil
+		},
+	}
+	harness.cluster.assignments.SetAssignments(client.assignments)
+	harness.cluster.agent = &groupAgent{
+		cluster: harness.cluster,
+		client:  client,
+		cache:   harness.cluster.assignments,
+	}
+
+	if err := harness.cluster.agent.ApplyAssignments(context.Background()); err != nil {
+		t.Fatalf("ApplyAssignments() error = %v", err)
+	}
+	if getTaskCalls < 2 {
+		t.Fatalf("GetTask() calls = %d, want >= 2", getTaskCalls)
+	}
+	if execCalls != 1 {
+		t.Fatalf("execution calls = %d, want 1", execCalls)
+	}
+	if reportCalls != 1 {
+		t.Fatalf("ReportTaskResult() calls = %d, want 1", reportCalls)
 	}
 }
 

@@ -40,6 +40,7 @@ type OperatorRequest struct {
 
 type TaskAdvance struct {
 	GroupID uint32
+	Attempt uint32
 	Now     time.Time
 	Err     error
 }

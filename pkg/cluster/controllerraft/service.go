@@ -74,16 +74,17 @@ type loadedMemoryStorage struct {
 }
 
 type commandEnvelope struct {
-	Kind       groupcontroller.CommandKind          `json:"kind"`
-	Report     *groupcontroller.AgentReport         `json:"report,omitempty"`
-	Op         *groupcontroller.OperatorRequest     `json:"op,omitempty"`
-	Advance    *taskAdvanceEnvelope                 `json:"advance,omitempty"`
-	Assignment *groupcontrollerAssignmentEnvelope   `json:"assignment,omitempty"`
+	Kind       groupcontroller.CommandKind           `json:"kind"`
+	Report     *groupcontroller.AgentReport          `json:"report,omitempty"`
+	Op         *groupcontroller.OperatorRequest      `json:"op,omitempty"`
+	Advance    *taskAdvanceEnvelope                  `json:"advance,omitempty"`
+	Assignment *groupcontrollerAssignmentEnvelope    `json:"assignment,omitempty"`
 	Task       *groupcontrollerReconcileTaskEnvelope `json:"task,omitempty"`
 }
 
 type taskAdvanceEnvelope struct {
 	GroupID uint32    `json:"group_id"`
+	Attempt uint32    `json:"attempt,omitempty"`
 	Now     time.Time `json:"now"`
 	Err     string    `json:"err,omitempty"`
 }
@@ -384,6 +385,7 @@ func (s *Service) run(rawNode *raft.RawNode, storageView *storageAdapter, stopCh
 
 			rawNode.Advance(ready)
 			s.updateLeader(rawNode)
+			failInflightProposalsOnLeaderLoss(rawNode.Status().RaftState, &pendingQueue, pendingByIndex)
 		}
 		return nil
 	}
@@ -402,6 +404,7 @@ func (s *Service) run(rawNode *raft.RawNode, storageView *storageAdapter, stopCh
 		case <-ticker.C:
 			rawNode.Tick()
 			s.updateLeader(rawNode)
+			failInflightProposalsOnLeaderLoss(rawNode.Status().RaftState, &pendingQueue, pendingByIndex)
 		case msg := <-s.stepCh:
 			if err := rawNode.Step(msg); err != nil && !errors.Is(err, raft.ErrStepLocalMsg) {
 				s.setError(err)
@@ -409,6 +412,7 @@ func (s *Service) run(rawNode *raft.RawNode, storageView *storageAdapter, stopCh
 				return
 			}
 			s.updateLeader(rawNode)
+			failInflightProposalsOnLeaderLoss(rawNode.Status().RaftState, &pendingQueue, pendingByIndex)
 		case req := <-s.proposeCh:
 			if err := req.ctx.Err(); err != nil {
 				req.resp <- err
@@ -568,6 +572,7 @@ func encodeCommand(cmd groupcontroller.Command) ([]byte, error) {
 	if cmd.Advance != nil {
 		envelope.Advance = &taskAdvanceEnvelope{
 			GroupID: cmd.Advance.GroupID,
+			Attempt: cmd.Advance.Attempt,
 			Now:     cmd.Advance.Now,
 		}
 		if cmd.Advance.Err != nil {
@@ -611,6 +616,7 @@ func decodeCommand(data []byte) (groupcontroller.Command, error) {
 	if envelope.Advance != nil {
 		advance := &groupcontroller.TaskAdvance{
 			GroupID: envelope.Advance.GroupID,
+			Attempt: envelope.Advance.Attempt,
 			Now:     envelope.Advance.Now,
 		}
 		if envelope.Advance.Err != "" {
@@ -691,4 +697,15 @@ func failTracked(queue []trackedProposal, byIndex map[uint64]trackedProposal, er
 		tracked.resp <- err
 		delete(byIndex, index)
 	}
+}
+
+func failInflightProposalsOnLeaderLoss(state raft.StateType, queue *[]trackedProposal, byIndex map[uint64]trackedProposal) {
+	if state == raft.StateLeader {
+		return
+	}
+	if len(*queue) == 0 && len(byIndex) == 0 {
+		return
+	}
+	failTracked(*queue, byIndex, ErrNotLeader)
+	*queue = (*queue)[:0]
 }

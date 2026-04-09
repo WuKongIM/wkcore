@@ -21,28 +21,28 @@ import (
 )
 
 type Cluster struct {
-	cfg              Config
-	server           *nodetransport.Server
-	rpcMux           *nodetransport.RPCMux
-	raftPool         *nodetransport.Pool
-	raftClient       *nodetransport.Client
-	fwdClient        *nodetransport.Client
-	runtime          *multiraft.Runtime
-	router           *Router
-	discovery        *StaticDiscovery
-	controllerMeta   *controllermeta.Store
-	controllerRaftDB *raftstorage.DB
-	controllerSM     *groupcontroller.StateMachine
-	controller       *controllerraft.Service
-	controllerClient controllerAPI
-	agent            *groupAgent
-	assignments      *assignmentCache
-	runtimePeersMu   sync.RWMutex
-	runtimePeers     map[multiraft.GroupID][]multiraft.NodeID
-	observationStop  chan struct{}
-	observationDone  chan struct{}
+	cfg               Config
+	server            *nodetransport.Server
+	rpcMux            *nodetransport.RPCMux
+	raftPool          *nodetransport.Pool
+	raftClient        *nodetransport.Client
+	fwdClient         *nodetransport.Client
+	runtime           *multiraft.Runtime
+	router            *Router
+	discovery         *StaticDiscovery
+	controllerMeta    *controllermeta.Store
+	controllerRaftDB  *raftstorage.DB
+	controllerSM      *groupcontroller.StateMachine
+	controller        *controllerraft.Service
+	controllerClient  controllerAPI
+	agent             *groupAgent
+	assignments       *assignmentCache
+	runtimePeersMu    sync.RWMutex
+	runtimePeers      map[multiraft.GroupID][]multiraft.NodeID
+	observationStop   chan struct{}
+	observationDone   chan struct{}
 	observationCancel context.CancelFunc
-	stopped          atomic.Bool
+	stopped           atomic.Bool
 }
 
 func NewCluster(cfg Config) (*Cluster, error) {
@@ -567,10 +567,8 @@ func (c *Cluster) ListObservedRuntimeViews(ctx context.Context) ([]controllermet
 	if c.controllerClient != nil {
 		var views []controllermeta.GroupRuntimeView
 		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
-			queryCtx, cancel := withControllerTimeout(attemptCtx)
-			defer cancel()
 			var err error
-			views, err = c.controllerClient.ListRuntimeViews(queryCtx)
+			views, err = c.controllerClient.ListRuntimeViews(attemptCtx)
 			return err
 		})
 		if err == nil {
@@ -590,10 +588,8 @@ func (c *Cluster) ListGroupAssignments(ctx context.Context) ([]controllermeta.Gr
 	if c.controllerClient != nil {
 		var assignments []controllermeta.GroupAssignment
 		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
-			queryCtx, cancel := withControllerTimeout(attemptCtx)
-			defer cancel()
 			var err error
-			assignments, err = c.controllerClient.RefreshAssignments(queryCtx)
+			assignments, err = c.controllerClient.RefreshAssignments(attemptCtx)
 			return err
 		})
 		if err == nil {
@@ -796,6 +792,7 @@ func (c *Cluster) handleControllerRPC(ctx context.Context, body []byte) ([]byte,
 		}
 		advance := &groupcontroller.TaskAdvance{
 			GroupID: req.Advance.GroupID,
+			Attempt: req.Advance.Attempt,
 			Now:     req.Advance.Now,
 		}
 		if req.Advance.Err != "" {

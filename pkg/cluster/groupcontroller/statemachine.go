@@ -171,8 +171,14 @@ func (sm *StateMachine) applyTaskResult(ctx context.Context, advance TaskAdvance
 	}
 
 	task, err := sm.store.GetTask(ctx, advance.GroupID)
+	if errors.Is(err, controllermeta.ErrNotFound) {
+		return nil
+	}
 	if err != nil {
 		return err
+	}
+	if task.Attempt != advance.Attempt {
+		return nil
 	}
 	if advance.Err == nil {
 		return sm.store.DeleteTask(ctx, advance.GroupID)

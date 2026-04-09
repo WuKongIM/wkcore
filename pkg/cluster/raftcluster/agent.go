@@ -38,9 +38,7 @@ func (a *groupAgent) HeartbeatOnce(ctx context.Context) error {
 		return ErrNotStarted
 	}
 	now := time.Now()
-	baseCtx, cancel := withControllerTimeout(ctx)
-	err := a.client.Report(baseCtx, groupcontrollerReport(a.cluster, now, nil))
-	cancel()
+	err := a.client.Report(ctx, groupcontrollerReport(a.cluster, now, nil))
 	if err != nil {
 		return err
 	}
@@ -51,9 +49,7 @@ func (a *groupAgent) HeartbeatOnce(ctx context.Context) error {
 			continue
 		}
 		view := buildRuntimeView(now, groupID, status, a.cluster.observationPeersForGroup(groupID))
-		reportCtx, cancel := withControllerTimeout(ctx)
-		err = a.client.Report(reportCtx, groupcontrollerReport(a.cluster, now, &view))
-		cancel()
+		err = a.client.Report(ctx, groupcontrollerReport(a.cluster, now, &view))
 		if err != nil && !isControllerRedirect(err) {
 			return err
 		}
@@ -67,10 +63,8 @@ func (a *groupAgent) SyncAssignments(ctx context.Context) error {
 	}
 	var assignments []controllermeta.GroupAssignment
 	err := a.retryControllerCall(ctx, func(attemptCtx context.Context) error {
-		queryCtx, cancel := withControllerTimeout(attemptCtx)
-		defer cancel()
 		var err error
-		assignments, err = a.client.RefreshAssignments(queryCtx)
+		assignments, err = a.client.RefreshAssignments(attemptCtx)
 		return err
 	})
 	if err == nil {
@@ -137,6 +131,10 @@ func (a *groupAgent) ApplyAssignments(ctx context.Context) error {
 
 	taskByGroup := make(map[uint32]controllermeta.ReconcileTask, len(assignments))
 	for _, assignment := range assignments {
+		if pending, ok := a.pendingTaskReport(assignment.GroupID); ok {
+			taskByGroup[assignment.GroupID] = pending.task
+			continue
+		}
 		task, err := a.getTask(ctx, assignment.GroupID)
 		if errors.Is(err, controllermeta.ErrNotFound) {
 			continue
@@ -207,7 +205,7 @@ func (a *groupAgent) ApplyAssignments(ctx context.Context) error {
 			if !sameReconcileTaskIdentity(pending.task, task) {
 				a.clearPendingTaskReport(assignment.GroupID)
 			} else {
-				reportErr := a.reportTaskResult(ctx, assignment.GroupID, pending.taskErr)
+				reportErr := a.reportTaskResult(ctx, pending.task, pending.taskErr)
 				if reportErr != nil {
 					return reportErr
 				}
@@ -221,13 +219,18 @@ func (a *groupAgent) ApplyAssignments(ctx context.Context) error {
 			continue
 		}
 		freshTask, err := a.getTask(ctx, assignment.GroupID)
-		if errors.Is(err, controllermeta.ErrNotFound) {
+		switch {
+		case errors.Is(err, controllermeta.ErrNotFound):
 			continue
-		}
-		if err != nil {
-			return err
-		}
-		if !sameReconcileTaskIdentity(freshTask, task) {
+		case err != nil:
+			if !controllerReadFallbackAllowed(err) {
+				return err
+			}
+			// The earlier task snapshot already proved this attempt was runnable.
+			// If a best-effort revalidation times out during controller churn, keep
+			// the known task moving rather than starving the retry loop.
+			freshTask = task
+		case !sameReconcileTaskIdentity(freshTask, task):
 			continue
 		}
 		task = freshTask
@@ -235,7 +238,7 @@ func (a *groupAgent) ApplyAssignments(ctx context.Context) error {
 			assignment: assignment,
 			task:       task,
 		})
-		reportErr := a.reportTaskResult(ctx, assignment.GroupID, execErr)
+		reportErr := a.reportTaskResult(ctx, task, execErr)
 		if reportErr != nil {
 			a.storePendingTaskReport(assignment.GroupID, task, execErr)
 			return reportErr
@@ -252,8 +255,11 @@ func (a *groupAgent) shouldExecuteTask(assignment controllermeta.GroupAssignment
 	localNodeID := uint64(a.cluster.cfg.NodeID)
 	switch task.Kind {
 	case controllermeta.TaskKindRepair, controllermeta.TaskKindRebalance:
+		if task.SourceNode == localNodeID {
+			return true
+		}
 		if shouldPreferSourceTaskExecutor(task, nodes) {
-			return task.SourceNode == localNodeID
+			return false
 		}
 		leaderID, err := a.cluster.currentManagedGroupLeader(multiraft.GroupID(assignment.GroupID))
 		if err == nil {
@@ -310,14 +316,12 @@ func taskKeepsSourceGroupOpen(task controllermeta.ReconcileTask, localNodeID uin
 	}
 }
 
-func (a *groupAgent) reportTaskResult(ctx context.Context, groupID uint32, taskErr error) error {
+func (a *groupAgent) reportTaskResult(ctx context.Context, task controllermeta.ReconcileTask, taskErr error) error {
 	if a == nil || a.cluster == nil || a.client == nil {
 		return ErrNotStarted
 	}
 	return a.cluster.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
-		reportCtx, cancel := withControllerTimeout(attemptCtx)
-		defer cancel()
-		return a.client.ReportTaskResult(reportCtx, groupID, taskErr)
+		return a.client.ReportTaskResult(attemptCtx, task, taskErr)
 	})
 }
 
@@ -327,10 +331,8 @@ func (a *groupAgent) listControllerNodes(ctx context.Context) ([]controllermeta.
 	}
 	var nodes []controllermeta.ClusterNode
 	err := a.retryControllerCall(ctx, func(attemptCtx context.Context) error {
-		queryCtx, cancel := withControllerTimeout(attemptCtx)
-		defer cancel()
 		var err error
-		nodes, err = a.client.ListNodes(queryCtx)
+		nodes, err = a.client.ListNodes(attemptCtx)
 		return err
 	})
 	if err == nil || !controllerReadFallbackAllowed(err) || a.cluster == nil || a.cluster.controllerMeta == nil {
@@ -345,10 +347,8 @@ func (a *groupAgent) listRuntimeViews(ctx context.Context) ([]controllermeta.Gro
 	}
 	var views []controllermeta.GroupRuntimeView
 	err := a.retryControllerCall(ctx, func(attemptCtx context.Context) error {
-		queryCtx, cancel := withControllerTimeout(attemptCtx)
-		defer cancel()
 		var err error
-		views, err = a.client.ListRuntimeViews(queryCtx)
+		views, err = a.client.ListRuntimeViews(attemptCtx)
 		return err
 	})
 	if err == nil || !controllerReadFallbackAllowed(err) || a.cluster == nil || a.cluster.controllerMeta == nil {
@@ -363,10 +363,8 @@ func (a *groupAgent) getTask(ctx context.Context, groupID uint32) (controllermet
 	}
 	var task controllermeta.ReconcileTask
 	err := a.retryControllerCall(ctx, func(attemptCtx context.Context) error {
-		queryCtx, cancel := withControllerTimeout(attemptCtx)
-		defer cancel()
 		var err error
-		task, err = a.client.GetTask(queryCtx, groupID)
+		task, err = a.client.GetTask(attemptCtx, groupID)
 		return err
 	})
 	if err == nil || !controllerReadFallbackAllowed(err) || a.cluster == nil || a.cluster.controllerMeta == nil {

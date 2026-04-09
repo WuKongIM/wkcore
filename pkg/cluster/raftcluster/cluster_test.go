@@ -1090,20 +1090,77 @@ func TestClusterMarkNodeDrainingMovesAssignmentsAway(t *testing.T) {
 }
 
 func TestClusterForceReconcileRetriesFailedRepair(t *testing.T) {
-	nodes := startFourNodesWithInjectedRepairFailure(t, 1, 3)
+	nodes := startFourNodesWithController(t, 1, 3)
 	defer stopNodes(nodes)
 
-	requireControllerCommand(t, nodes, func(cluster *raftcluster.Cluster) error {
-		return cluster.ForceReconcile(context.Background(), 1)
+	type execution struct {
+		at      time.Time
+		attempt uint32
+	}
+
+	execCh := make(chan execution, 8)
+	restore := raftcluster.SetManagedGroupExecutionTestHook(func(groupID uint32, task controllermeta.ReconcileTask) error {
+		if groupID == 1 && task.Kind == controllermeta.TaskKindRepair {
+			select {
+			case execCh <- execution{at: time.Now(), attempt: task.Attempt}:
+			default:
+			}
+			return errors.New("injected repair failure")
+		}
+		return nil
 	})
+	defer restore()
+
+	requireControllerCommand(t, nodes, func(cluster *raftcluster.Cluster) error {
+		return cluster.MarkNodeDraining(context.Background(), 2)
+	})
+
+	select {
+	case firstExec := <-execCh:
+		require.Equal(t, uint32(0), firstExec.attempt)
+	case <-time.After(20 * time.Second):
+		t.Fatal("timed out waiting for first repair execution")
+	}
+
+	var retryTask controllermeta.ReconcileTask
 	require.Eventually(t, func() bool {
-		controller, ok := currentControllerLeaderNode(nodes)
-		if !ok {
+		task, err := nodes[0].cluster.GetReconcileTask(context.Background(), 1)
+		if err != nil {
 			return false
 		}
-		task, err := controller.cluster.GetReconcileTask(context.Background(), 1)
-		return err == nil && task.Attempt >= 2
+		if task.Attempt != 1 || task.Status != raftcluster.TaskStatusRetrying {
+			return false
+		}
+		if time.Until(task.NextRunAt) < 500*time.Millisecond {
+			return false
+		}
+		retryTask = task
+		return true
 	}, 20*time.Second, 100*time.Millisecond)
+
+	for len(execCh) > 0 {
+		<-execCh
+	}
+
+	forceAt := time.Now()
+	requireControllerCommand(t, nodes, func(cluster *raftcluster.Cluster) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		return cluster.ForceReconcile(ctx, 1)
+	})
+
+	select {
+	case forcedExec := <-execCh:
+		require.Equal(t, uint32(1), forcedExec.attempt)
+		require.True(t, forcedExec.at.Before(retryTask.NextRunAt),
+			"forced execution should happen before original next_run_at: exec=%s next_run_at=%s",
+			forcedExec.at.Format(time.RFC3339Nano),
+			retryTask.NextRunAt.Format(time.RFC3339Nano),
+		)
+		require.Less(t, forcedExec.at.Sub(forceAt), 800*time.Millisecond)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for forced repair retry")
+	}
 }
 
 func TestClusterSurfacesFailedRepairAfterRetryExhaustion(t *testing.T) {
@@ -1111,13 +1168,12 @@ func TestClusterSurfacesFailedRepairAfterRetryExhaustion(t *testing.T) {
 	defer stopNodes(nodes)
 
 	require.Eventually(t, func() bool {
-		controller, ok := currentControllerLeaderNode(nodes)
-		if !ok {
-			return false
-		}
-		task, err := controller.cluster.GetReconcileTask(context.Background(), 1)
-		return err == nil && task.Status == raftcluster.TaskStatusFailed && task.Attempt == 3
-	}, 30*time.Second, 200*time.Millisecond)
+		task, err := nodes[0].cluster.GetReconcileTask(context.Background(), 1)
+		return err == nil &&
+			task.Status == raftcluster.TaskStatusFailed &&
+			task.Attempt == 3 &&
+			task.LastError == "injected repair failure"
+	}, 60*time.Second, 200*time.Millisecond)
 }
 
 func TestClusterRecoverGroupReturnsManualRecoveryErrorWhenQuorumLost(t *testing.T) {

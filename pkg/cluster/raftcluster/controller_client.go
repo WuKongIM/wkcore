@@ -35,6 +35,7 @@ type controllerRPCRequest struct {
 
 type controllerTaskAdvance struct {
 	GroupID uint32    `json:"group_id"`
+	Attempt uint32    `json:"attempt,omitempty"`
 	Now     time.Time `json:"now"`
 	Err     string    `json:"err,omitempty"`
 }
@@ -57,7 +58,7 @@ type controllerAPI interface {
 	Operator(ctx context.Context, op groupcontroller.OperatorRequest) error
 	GetTask(ctx context.Context, groupID uint32) (controllermeta.ReconcileTask, error)
 	ForceReconcile(ctx context.Context, groupID uint32) error
-	ReportTaskResult(ctx context.Context, groupID uint32, taskErr error) error
+	ReportTaskResult(ctx context.Context, task controllermeta.ReconcileTask, taskErr error) error
 }
 
 type controllerClient struct {
@@ -146,9 +147,10 @@ func (c *controllerClient) ForceReconcile(ctx context.Context, groupID uint32) e
 	return err
 }
 
-func (c *controllerClient) ReportTaskResult(ctx context.Context, groupID uint32, taskErr error) error {
+func (c *controllerClient) ReportTaskResult(ctx context.Context, task controllermeta.ReconcileTask, taskErr error) error {
 	advance := &controllerTaskAdvance{
-		GroupID: groupID,
+		GroupID: task.GroupID,
+		Attempt: task.Attempt,
 		Now:     time.Now(),
 	}
 	if taskErr != nil {
@@ -164,6 +166,9 @@ func (c *controllerClient) ReportTaskResult(ctx context.Context, groupID uint32,
 func (c *controllerClient) call(ctx context.Context, req controllerRPCRequest) (controllerRPCResponse, error) {
 	if c == nil || c.cluster == nil {
 		return controllerRPCResponse{}, ErrNotStarted
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	body, err := json.Marshal(req)
@@ -186,7 +191,12 @@ func (c *controllerClient) call(ctx context.Context, req controllerRPCRequest) (
 		}
 		tried[target] = struct{}{}
 
-		respBody, err := c.cluster.RPCService(ctx, target, controllerRPCShardKey, rpcServiceController, body)
+		// Give each peer probe its own budget so a slow stale leader does not
+		// consume the entire controller retry window before we reach the current
+		// leader.
+		rpcCtx, cancel := withControllerTimeout(ctx)
+		respBody, err := c.cluster.RPCService(rpcCtx, target, controllerRPCShardKey, rpcServiceController, body)
+		cancel()
 		if err != nil {
 			if c.cachedLeader() == target {
 				c.clearLeader()

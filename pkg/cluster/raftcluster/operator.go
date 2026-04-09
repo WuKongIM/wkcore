@@ -32,9 +32,7 @@ func (c *Cluster) MarkNodeDraining(ctx context.Context, nodeID uint64) error {
 		return ErrNotStarted
 	}
 	return c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
-		opCtx, cancel := withControllerTimeout(attemptCtx)
-		defer cancel()
-		return c.controllerClient.Operator(opCtx, groupcontroller.OperatorRequest{
+		return c.controllerClient.Operator(attemptCtx, groupcontroller.OperatorRequest{
 			Kind:   groupcontroller.OperatorMarkNodeDraining,
 			NodeID: nodeID,
 		})
@@ -46,9 +44,7 @@ func (c *Cluster) ResumeNode(ctx context.Context, nodeID uint64) error {
 		return ErrNotStarted
 	}
 	return c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
-		opCtx, cancel := withControllerTimeout(attemptCtx)
-		defer cancel()
-		return c.controllerClient.Operator(opCtx, groupcontroller.OperatorRequest{
+		return c.controllerClient.Operator(attemptCtx, groupcontroller.OperatorRequest{
 			Kind:   groupcontroller.OperatorResumeNode,
 			NodeID: nodeID,
 		})
@@ -59,10 +55,8 @@ func (c *Cluster) GetReconcileTask(ctx context.Context, groupID uint32) (control
 	if c.controllerClient != nil {
 		var task controllermeta.ReconcileTask
 		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
-			queryCtx, cancel := withControllerTimeout(attemptCtx)
-			defer cancel()
 			var err error
-			task, err = c.controllerClient.GetTask(queryCtx, groupID)
+			task, err = c.controllerClient.GetTask(attemptCtx, groupID)
 			return err
 		})
 		if err == nil {
@@ -81,9 +75,7 @@ func (c *Cluster) GetReconcileTask(ctx context.Context, groupID uint32) (control
 func (c *Cluster) ForceReconcile(ctx context.Context, groupID uint32) error {
 	if c.controllerClient != nil {
 		return c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
-			forceCtx, cancel := withControllerTimeout(attemptCtx)
-			defer cancel()
-			return c.controllerClient.ForceReconcile(forceCtx, groupID)
+			return c.controllerClient.ForceReconcile(attemptCtx, groupID)
 		})
 	}
 	if c.controller != nil && c.controller.LeaderID() == uint64(c.cfg.NodeID) {
