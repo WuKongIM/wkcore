@@ -46,6 +46,8 @@ const (
 	testClusterDialTimeout    = 750 * time.Millisecond
 	testClusterForwardTimeout = 750 * time.Millisecond
 	testClusterPoolSize       = 1
+	testLeaderPollInterval    = 50 * time.Millisecond
+	testLeaderConfirmations   = 4
 )
 
 func testClusterTimingConfig() raftcluster.Config {
@@ -169,6 +171,15 @@ func TestTestClusterTimingConfigUsesFastTiming(t *testing.T) {
 	require.Equal(t, 750*time.Millisecond, cfg.DialTimeout)
 	require.Equal(t, 750*time.Millisecond, cfg.ForwardTimeout)
 	require.Equal(t, 1, cfg.PoolSize)
+}
+
+func TestStableLeaderWithinUsesShortConfirmationWindow(t *testing.T) {
+	nodes := startThreeNodes(t, 1)
+
+	start := time.Now()
+	waitForStableLeader(t, nodes, 1)
+
+	require.Less(t, time.Since(start), time.Second)
 }
 
 func startSingleNode(t testing.TB, groupCount int) *testNode {
@@ -766,7 +777,6 @@ func stableLeaderWithin(testNodes []*testNode, groupID uint64, timeout time.Dura
 	deadline := time.Now().Add(timeout)
 	var stableLeader multiraft.NodeID
 	stableCount := 0
-	requiredStable := 10
 
 	for time.Now().Before(deadline) {
 		var leaderID multiraft.NodeID
@@ -794,14 +804,14 @@ func stableLeaderWithin(testNodes []*testNode, groupID uint64, timeout time.Dura
 				stableLeader = leaderID
 				stableCount = 1
 			}
-			if stableCount >= requiredStable {
+			if stableCount >= testLeaderConfirmations {
 				return stableLeader, nil
 			}
 		} else {
 			stableCount = 0
 			stableLeader = 0
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(testLeaderPollInterval)
 	}
 	return 0, fmt.Errorf("no stable leader for group %d", groupID)
 }
