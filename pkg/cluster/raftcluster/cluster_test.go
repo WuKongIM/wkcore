@@ -39,6 +39,26 @@ type testNode struct {
 	withController     bool
 }
 
+const (
+	testClusterTickInterval   = 25 * time.Millisecond
+	testClusterElectionTick   = 6
+	testClusterHeartbeatTick  = 1
+	testClusterDialTimeout    = 750 * time.Millisecond
+	testClusterForwardTimeout = 750 * time.Millisecond
+	testClusterPoolSize       = 1
+)
+
+func testClusterTimingConfig() raftcluster.Config {
+	return raftcluster.Config{
+		TickInterval:   testClusterTickInterval,
+		ElectionTick:   testClusterElectionTick,
+		HeartbeatTick:  testClusterHeartbeatTick,
+		DialTimeout:    testClusterDialTimeout,
+		ForwardTimeout: testClusterForwardTimeout,
+		PoolSize:       testClusterPoolSize,
+	}
+}
+
 func (n *testNode) stop() {
 	if n == nil {
 		return
@@ -103,6 +123,12 @@ func newStartedTestNode(
 		Groups:             append([]raftcluster.GroupConfig(nil), groups...),
 		ControllerMetaPath: controllerMetaPath,
 		ControllerRaftPath: controllerRaftPath,
+		TickInterval:       testClusterTickInterval,
+		ElectionTick:       testClusterElectionTick,
+		HeartbeatTick:      testClusterHeartbeatTick,
+		DialTimeout:        testClusterDialTimeout,
+		ForwardTimeout:     testClusterForwardTimeout,
+		PoolSize:           testClusterPoolSize,
 	}
 
 	c, err := raftcluster.NewCluster(cfg)
@@ -132,6 +158,17 @@ func newStartedTestNode(
 		controllerReplicaN: controllerReplicaN,
 		withController:     withController,
 	}
+}
+
+func TestTestClusterTimingConfigUsesFastTiming(t *testing.T) {
+	cfg := testClusterTimingConfig()
+
+	require.Equal(t, 25*time.Millisecond, cfg.TickInterval)
+	require.Equal(t, 6, cfg.ElectionTick)
+	require.Equal(t, 1, cfg.HeartbeatTick)
+	require.Equal(t, 750*time.Millisecond, cfg.DialTimeout)
+	require.Equal(t, 750*time.Millisecond, cfg.ForwardTimeout)
+	require.Equal(t, 1, cfg.PoolSize)
 }
 
 func startSingleNode(t testing.TB, groupCount int) *testNode {
