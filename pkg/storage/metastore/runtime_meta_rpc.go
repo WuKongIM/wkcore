@@ -20,10 +20,10 @@ const (
 )
 
 type runtimeMetaRPCRequest struct {
-	Op          string `json:"op"`
-	GroupID     uint64 `json:"group_id"`
-	ChannelID   string `json:"channel_id,omitempty"`
-	ChannelType int64  `json:"channel_type,omitempty"`
+	Op          string                   `json:"op"`
+	GroupID     uint64                   `json:"group_id"`
+	ChannelID   string                   `json:"channel_id,omitempty"`
+	ChannelType int64                    `json:"channel_type,omitempty"`
 	Keys        []metadb.ConversationKey `json:"keys,omitempty"`
 }
 
@@ -79,6 +79,12 @@ func (s *Store) listChannelRuntimeMetaAuthoritative(ctx context.Context, groupID
 		GroupID: uint64(groupID),
 	})
 	if err != nil {
+		// Managed groups are opened lazily. If a slot has not been bootstrapped
+		// yet, treat it as currently having no runtime metadata and let the next
+		// refresh pick it up once the controller brings the group online.
+		if errors.Is(err, raftcluster.ErrGroupNotFound) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return append([]metadb.ChannelRuntimeMeta(nil), resp.Metas...), nil
