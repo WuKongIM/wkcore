@@ -105,6 +105,7 @@ type sendStressOutcome struct {
 type sendStressWorkerClient struct {
 	target  sendStressTarget
 	conn    net.Conn
+	reader  *sendStressFrameReader
 	writeMu *sync.Mutex
 }
 
@@ -130,6 +131,59 @@ type sendStressPendingAttempt struct {
 type sendStressInflightTracker struct {
 	mu      sync.Mutex
 	pending map[uint64]*sendStressPendingAttempt
+}
+
+type sendStressFrameReader struct {
+	conn    net.Conn
+	codec   codec.Protocol
+	buf     []byte
+	scratch []byte
+}
+
+func newSendStressFrameReader(conn net.Conn) *sendStressFrameReader {
+	return &sendStressFrameReader{
+		conn:    conn,
+		codec:   codec.New(),
+		scratch: make([]byte, 4096),
+	}
+}
+
+func (r *sendStressFrameReader) ReadWithin(timeout time.Duration) (wkframe.Frame, error) {
+	if r == nil || r.conn == nil {
+		return nil, fmt.Errorf("send stress frame reader: nil connection")
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if len(r.buf) > 0 {
+			frame, size, err := r.codec.DecodeFrame(r.buf, wkframe.LatestVersion)
+			if err != nil {
+				return nil, err
+			}
+			if frame != nil && size > 0 {
+				copy(r.buf, r.buf[size:])
+				r.buf = r.buf[:len(r.buf)-size]
+				return frame, nil
+			}
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, &net.OpError{Err: os.ErrDeadlineExceeded}
+		}
+		if err := r.conn.SetReadDeadline(time.Now().Add(remaining)); err != nil {
+			return nil, err
+		}
+		n, err := r.conn.Read(r.scratch)
+		_ = r.conn.SetReadDeadline(time.Time{})
+		if n > 0 {
+			r.buf = append(r.buf, r.scratch[:n]...)
+		}
+		if err != nil {
+			if isSendStressTimeout(err) {
+				continue
+			}
+			return nil, err
+		}
+	}
 }
 
 func (o sendStressOutcome) ErrorRate() float64 {
@@ -616,6 +670,45 @@ func TestSendStressThroughputTrackerCompletesOutOfOrderAcks(t *testing.T) {
 	require.EqualValues(t, 202, firstResult.record.MessageSeq)
 }
 
+func TestSendStressFrameReaderPreservesPartialFrameAcrossTimeout(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+	})
+
+	reader := newSendStressFrameReader(clientConn)
+	ack := &wkframe.SendackPacket{
+		ClientSeq:   9,
+		ClientMsgNo: "m9",
+		ReasonCode:  wkframe.ReasonSuccess,
+		MessageID:   109,
+		MessageSeq:  209,
+	}
+	payload, err := codec.New().EncodeFrame(ack, wkframe.LatestVersion)
+	require.NoError(t, err)
+	require.Greater(t, len(payload), 4)
+
+	go func() {
+		_, _ = serverConn.Write(payload[:3])
+		time.Sleep(80 * time.Millisecond)
+		_, _ = serverConn.Write(payload[3:])
+	}()
+
+	_, err = reader.ReadWithin(20 * time.Millisecond)
+	require.Error(t, err)
+	require.True(t, isSendStressTimeout(err))
+
+	frame, err := reader.ReadWithin(time.Second)
+	require.NoError(t, err)
+	got, ok := frame.(*wkframe.SendackPacket)
+	require.True(t, ok)
+	require.EqualValues(t, ack.ClientSeq, got.ClientSeq)
+	require.Equal(t, ack.ClientMsgNo, got.ClientMsgNo)
+	require.EqualValues(t, ack.MessageID, got.MessageID)
+	require.EqualValues(t, ack.MessageSeq, got.MessageSeq)
+}
+
 func TestRunSendStressWorkersThroughputModeCapsInflightPerWorker(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	t.Cleanup(func() {
@@ -639,6 +732,7 @@ func TestRunSendStressWorkersThroughputModeCapsInflightPerWorker(t *testing.T) {
 			ConnectNodeID: 1,
 		},
 		conn:    clientConn,
+		reader:  newSendStressFrameReader(clientConn),
 		writeMu: &sync.Mutex{},
 	}
 
@@ -849,9 +943,11 @@ func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []
 		target := targets[worker]
 		app := harness.apps[target.ConnectNodeID]
 		require.NotNil(t, app, "connect node %d is not running", target.ConnectNodeID)
+		conn := runSendStressClient(t, app, target.SenderUID, cfg)
 		clients = append(clients, sendStressWorkerClient{
 			target:  target,
-			conn:    runSendStressClient(t, app, target.SenderUID, cfg),
+			conn:    conn,
+			reader:  newSendStressFrameReader(conn),
 			writeMu: &sync.Mutex{},
 		})
 	}
@@ -1086,7 +1182,7 @@ func readSendStressThroughputAcks(client sendStressWorkerClient, ackTimeout time
 			}
 		}
 
-		frame, err := readSendStressFrameWithin(client.conn, minSendStressDuration(ackTimeout, 200*time.Millisecond))
+		frame, err := readSendStressClientFrame(client, minSendStressDuration(ackTimeout, 200*time.Millisecond))
 		if err != nil {
 			if isSendStressTimeout(err) {
 				select {
@@ -1185,7 +1281,7 @@ func executeSendStressAttempt(client sendStressWorkerClient, worker int, phase s
 		return sendStressRecord{}, fmt.Sprintf("worker=%d sender=%s connect_node=%d phase=%s iteration=%d write error=%v", worker, client.target.SenderUID, client.target.ConnectNodeID, phase, iteration, err), false
 	}
 
-	sendack, framesBeforeAck, err := waitForSendStressSendack(client.conn, ackTimeout)
+	sendack, framesBeforeAck, err := waitForSendStressSendack(client, ackTimeout)
 	ackLatency := time.Since(sendStart)
 	if err != nil {
 		return sendStressRecord{}, fmt.Sprintf("worker=%d sender=%s connect_node=%d phase=%s iteration=%d readack error=%v", worker, client.target.SenderUID, client.target.ConnectNodeID, phase, iteration, err), false
@@ -1335,6 +1431,13 @@ func isSendStressTimeout(err error) bool {
 	return err != nil && errors.As(err, &netErr) && netErr.Timeout()
 }
 
+func readSendStressClientFrame(client sendStressWorkerClient, timeout time.Duration) (wkframe.Frame, error) {
+	if client.reader != nil {
+		return client.reader.ReadWithin(timeout)
+	}
+	return readSendStressFrameWithin(client.conn, timeout)
+}
+
 func readSendStressFrameWithin(conn net.Conn, timeout time.Duration) (wkframe.Frame, error) {
 	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, err
@@ -1345,7 +1448,7 @@ func readSendStressFrameWithin(conn net.Conn, timeout time.Duration) (wkframe.Fr
 	return codec.New().DecodePacketWithConn(conn, wkframe.LatestVersion)
 }
 
-func waitForSendStressSendack(conn net.Conn, timeout time.Duration) (*wkframe.SendackPacket, []string, error) {
+func waitForSendStressSendack(client sendStressWorkerClient, timeout time.Duration) (*wkframe.SendackPacket, []string, error) {
 	deadline := time.Now().Add(timeout)
 	framesBeforeAck := make([]string, 0, 2)
 	for {
@@ -1354,7 +1457,7 @@ func waitForSendStressSendack(conn net.Conn, timeout time.Duration) (*wkframe.Se
 			return nil, framesBeforeAck, fmt.Errorf("timed out waiting for sendack")
 		}
 
-		frame, err := readSendStressFrameWithin(conn, remaining)
+		frame, err := readSendStressClientFrame(client, remaining)
 		if err != nil {
 			return nil, framesBeforeAck, err
 		}
@@ -1364,7 +1467,7 @@ func waitForSendStressSendack(conn net.Conn, timeout time.Duration) (*wkframe.Se
 			return pkt, framesBeforeAck, nil
 		case *wkframe.RecvPacket:
 			framesBeforeAck = append(framesBeforeAck, fmt.Sprintf("recv(message_id=%d,message_seq=%d,client_seq=%d,client_msg_no=%s,payload=%q)", pkt.MessageID, pkt.MessageSeq, pkt.ClientSeq, pkt.ClientMsgNo, string(pkt.Payload)))
-			if err := writeSendStressFrame(conn, &wkframe.RecvackPacket{
+			if err := writeSendStressClientFrame(client, &wkframe.RecvackPacket{
 				MessageID:  pkt.MessageID,
 				MessageSeq: pkt.MessageSeq,
 			}, remaining); err != nil {
