@@ -1,4 +1,4 @@
-# WuKongIM single-node cluster example configuration.
+# WuKongIM single-node cluster example configuration using automatic managed groups.
 
 WK_NODE_ID=1
 WK_NODE_NAME=node-1
@@ -15,7 +15,6 @@ WK_CLUSTER_TICK_INTERVAL=200ms
 WK_CLUSTER_DIAL_TIMEOUT=2s
 WK_CLUSTER_DATA_PLANE_RPC_TIMEOUT=250ms
 WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]
-WK_CLUSTER_GROUPS=[{"id":1,"peers":[1]}]
 
 WK_API_LISTEN_ADDR=0.0.0.0:5001
 

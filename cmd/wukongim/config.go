@@ -132,9 +132,8 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 	if err != nil {
 		return app.Config{}, err
 	}
-	groups, err := parseJSONValue[[]app.GroupConfig](v, "WK_CLUSTER_GROUPS")
-	if err != nil {
-		return app.Config{}, err
+	if raw := strings.TrimSpace(stringValue(v, "WK_CLUSTER_GROUPS")); raw != "" {
+		return app.Config{}, fmt.Errorf("%w: WK_CLUSTER_GROUPS is no longer supported; remove static group peers and keep WK_CLUSTER_GROUP_COUNT only", app.ErrInvalidConfig)
 	}
 	listeners, err := parseListeners(v)
 	if err != nil {
@@ -186,7 +185,6 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 			ListenAddr:          stringValue(v, "WK_CLUSTER_LISTEN_ADDR"),
 			GroupCount:          groupCount,
 			Nodes:               nodes,
-			Groups:              groups,
 			ControllerReplicaN:  controllerReplicaN,
 			GroupReplicaN:       groupReplicaN,
 			ForwardTimeout:      forwardTimeout,

@@ -17,6 +17,9 @@ const (
 	managedGroupRPCStatus         string = "status"
 	managedGroupRPCChangeConfig   string = "change_config"
 	managedGroupRPCTransferLeader string = "transfer_leader"
+	managedGroupLeaderWaitTimeout        = 5 * time.Second
+	managedGroupCatchUpTimeout           = 5 * time.Second
+	managedGroupLeaderMoveTimeout        = 5 * time.Second
 )
 
 type managedGroupRPCRequest struct {
@@ -243,6 +246,9 @@ func (c *Cluster) executeReconcileTask(ctx context.Context, assignment assignmen
 		}); err != nil {
 			return err
 		}
+		if err := c.waitForManagedGroupCatchUp(ctx, groupID, multiraft.NodeID(assignment.task.TargetNode)); err != nil {
+			return err
+		}
 		if err := c.ensureLeaderMovedOffSource(
 			ctx,
 			groupID,
@@ -368,7 +374,7 @@ func (c *Cluster) transferGroupLeaderRemote(ctx context.Context, leaderID multir
 }
 
 func (c *Cluster) waitForManagedGroupLeader(ctx context.Context, groupID multiraft.GroupID) error {
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(managedGroupLeaderWaitTimeout)
 	for {
 		if time.Now().After(deadline) {
 			return context.DeadlineExceeded
@@ -385,7 +391,7 @@ func (c *Cluster) waitForManagedGroupLeader(ctx context.Context, groupID multira
 }
 
 func (c *Cluster) waitForManagedGroupCatchUp(ctx context.Context, groupID multiraft.GroupID, targetNode multiraft.NodeID) error {
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(managedGroupCatchUpTimeout)
 	for {
 		if time.Now().After(deadline) {
 			return context.DeadlineExceeded
@@ -424,7 +430,7 @@ func (c *Cluster) ensureLeaderMovedOffSource(ctx context.Context, groupID multir
 	if sourceNode == 0 || targetNode == 0 {
 		return nil
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(managedGroupLeaderMoveTimeout)
 	for {
 		if time.Now().After(deadline) {
 			return ErrLeaderNotStable

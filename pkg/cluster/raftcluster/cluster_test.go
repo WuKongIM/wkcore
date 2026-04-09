@@ -2,10 +2,13 @@ package raftcluster_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"path/filepath"
+	"sort"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,16 +24,19 @@ import (
 
 // testNode bundles a cluster, store, and storage resources for testing.
 type testNode struct {
-	cluster    *raftcluster.Cluster
-	store      *metastore.Store
-	db         *metadb.DB
-	raftDB     *raftstorage.DB
-	nodeID     multiraft.NodeID
-	dir        string
-	listenAddr string
-	nodes      []raftcluster.NodeConfig
-	groups     []raftcluster.GroupConfig
-	groupCount int
+	cluster            *raftcluster.Cluster
+	store              *metastore.Store
+	db                 *metadb.DB
+	raftDB             *raftstorage.DB
+	nodeID             multiraft.NodeID
+	dir                string
+	listenAddr         string
+	nodes              []raftcluster.NodeConfig
+	groups             []raftcluster.GroupConfig
+	groupCount         int
+	groupReplicaN      int
+	controllerReplicaN int
+	withController     bool
 }
 
 func (n *testNode) stop() {
@@ -112,16 +118,19 @@ func newStartedTestNode(
 	}
 
 	return &testNode{
-		cluster:    c,
-		store:      metastore.New(c, db),
-		db:         db,
-		raftDB:     raftDB,
-		nodeID:     nodeID,
-		dir:        dir,
-		listenAddr: listenAddr,
-		nodes:      append([]raftcluster.NodeConfig(nil), nodes...),
-		groups:     append([]raftcluster.GroupConfig(nil), groups...),
-		groupCount: groupCount,
+		cluster:            c,
+		store:              metastore.New(c, db),
+		db:                 db,
+		raftDB:             raftDB,
+		nodeID:             nodeID,
+		dir:                dir,
+		listenAddr:         listenAddr,
+		nodes:              append([]raftcluster.NodeConfig(nil), nodes...),
+		groups:             append([]raftcluster.GroupConfig(nil), groups...),
+		groupCount:         groupCount,
+		groupReplicaN:      groupReplicaN,
+		controllerReplicaN: controllerReplicaN,
+		withController:     withController,
 	}
 }
 
@@ -138,7 +147,9 @@ func startSingleNode(t testing.TB, groupCount int) *testNode {
 	}
 
 	nodes := []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}}
-	return newStartedTestNode(t, dir, 1, "127.0.0.1:0", nodes, groups, groupCount, 1, 1, false)
+	node := newStartedTestNode(t, dir, 1, "127.0.0.1:0", nodes, groups, groupCount, 1, 1, false)
+	t.Cleanup(func() { stopNodes([]*testNode{node}) })
+	return node
 }
 
 func startThreeNodes(t testing.TB, groupCount int) []*testNode {
@@ -187,6 +198,7 @@ func startThreeNodes(t testing.TB, groupCount int) []*testNode {
 			false,
 		)
 	}
+	t.Cleanup(func() { stopNodes(testNodes) })
 
 	return testNodes
 }
@@ -204,10 +216,16 @@ func startSingleNodeWithController(t testing.TB, groupCount int, legacyGroupCoun
 	}
 
 	nodes := []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}}
-	return newStartedTestNode(t, dir, 1, "127.0.0.1:0", nodes, groups, groupCount, 1, 1, true)
+	node := newStartedTestNode(t, dir, 1, "127.0.0.1:0", nodes, groups, groupCount, 1, 1, true)
+	t.Cleanup(func() { stopNodes([]*testNode{node}) })
+	return node
 }
 
 func startThreeNodesWithController(t testing.TB, groupCount int, legacyReplicaN int) []*testNode {
+	return startThreeNodesWithControllerWithSettle(t, groupCount, legacyReplicaN, true)
+}
+
+func startThreeNodesWithControllerWithSettle(t testing.TB, groupCount int, legacyReplicaN int, settle bool) []*testNode {
 	t.Helper()
 
 	listeners := make([]net.Listener, 3)
@@ -245,7 +263,10 @@ func startThreeNodesWithController(t testing.TB, groupCount int, legacyReplicaN 
 			true,
 		)
 	}
-	waitForControllerAssignments(t, testNodes, groupCount)
+	t.Cleanup(func() { stopNodes(testNodes) })
+	if settle {
+		waitForManagedGroupsSettled(t, testNodes, groupCount)
+	}
 	return testNodes
 }
 
@@ -287,7 +308,64 @@ func startFourNodesWithController(t testing.TB, groupCount int, replicaN int) []
 			true,
 		)
 	}
-	waitForControllerAssignments(t, testNodes, groupCount)
+	t.Cleanup(func() { stopNodes(testNodes) })
+	waitForManagedGroupsSettled(t, testNodes, groupCount)
+	return testNodes
+}
+
+func startThreeOfFourNodesWithController(t testing.TB, groupCount int, replicaN int) []*testNode {
+	t.Helper()
+
+	listeners := make([]net.Listener, 4)
+	for i := range 4 {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen %d: %v", i, err)
+		}
+		listeners[i] = ln
+	}
+
+	nodes := make([]raftcluster.NodeConfig, 4)
+	for i := range 4 {
+		nodes[i] = raftcluster.NodeConfig{
+			NodeID: multiraft.NodeID(i + 1),
+			Addr:   listeners[i].Addr().String(),
+		}
+		listeners[i].Close()
+	}
+
+	testNodes := make([]*testNode, 4)
+	root := t.TempDir()
+	for i := range 4 {
+		dir := filepath.Join(root, fmt.Sprintf("n%d", i+1))
+		if i < 3 {
+			testNodes[i] = newStartedTestNode(
+				t,
+				dir,
+				multiraft.NodeID(i+1),
+				nodes[i].Addr,
+				nodes,
+				nil,
+				groupCount,
+				replicaN,
+				3,
+				true,
+			)
+			continue
+		}
+		testNodes[i] = &testNode{
+			nodeID:             multiraft.NodeID(i + 1),
+			dir:                dir,
+			listenAddr:         nodes[i].Addr,
+			nodes:              append([]raftcluster.NodeConfig(nil), nodes...),
+			groupCount:         groupCount,
+			groupReplicaN:      replicaN,
+			controllerReplicaN: 3,
+			withController:     true,
+		}
+	}
+	t.Cleanup(func() { stopNodes(testNodes) })
+	waitForManagedGroupsSettled(t, testNodes[:3], groupCount)
 	return testNodes
 }
 
@@ -302,11 +380,17 @@ func startFourNodesWithInjectedRepairFailure(t testing.TB, groupCount int, repli
 		return nil
 	})
 	t.Cleanup(restore)
-	require.NoError(t, nodes[0].cluster.MarkNodeDraining(context.Background(), 2))
+	requireControllerCommand(t, nodes, func(cluster *raftcluster.Cluster) error {
+		return cluster.MarkNodeDraining(context.Background(), 2)
+	})
 	require.Eventually(t, func() bool {
-		task, err := nodes[0].cluster.GetReconcileTask(context.Background(), 1)
+		controller, ok := currentControllerLeaderNode(nodes)
+		if !ok {
+			return false
+		}
+		task, err := controller.cluster.GetReconcileTask(context.Background(), 1)
 		return err == nil && task.Attempt >= 1
-	}, 10*time.Second, 100*time.Millisecond)
+	}, 20*time.Second, 100*time.Millisecond)
 	return nodes
 }
 
@@ -316,10 +400,17 @@ func startFourNodesWithPermanentRepairFailure(t testing.TB, groupCount int, repl
 }
 
 func stopNodes(nodes []*testNode) {
+	stopped := false
 	for _, node := range nodes {
-		if node != nil {
+		if node != nil && (node.cluster != nil || node.raftDB != nil || node.db != nil) {
 			node.stop()
+			stopped = true
 		}
+	}
+	// Pebble-backed raft storage can still be finalizing the last batch commit
+	// when the test temp dir cleanup runs. Give teardown a brief grace window.
+	if stopped {
+		time.Sleep(3 * time.Second)
 	}
 }
 
@@ -336,7 +427,258 @@ func waitForControllerAssignments(t testing.TB, nodes []*testNode, groupCount in
 			}
 		}
 		return false
+	}, 20*time.Second, 100*time.Millisecond)
+}
+
+func waitForManagedGroupsSettled(t testing.TB, nodes []*testNode, groupCount int) {
+	t.Helper()
+	waitForControllerAssignments(t, nodes, groupCount)
+
+	require.Eventually(t, func() bool {
+		assignments, ok := loadAssignments(nodes, groupCount)
+		if !ok || len(assignments) != groupCount {
+			return false
+		}
+
+		var probe *testNode
+		for _, node := range nodes {
+			if node != nil && node.cluster != nil {
+				probe = node
+				break
+			}
+		}
+		if probe == nil {
+			return false
+		}
+
+		for _, assignment := range assignments {
+			groupNodes := make([]*testNode, 0, len(assignment.DesiredPeers))
+			for _, peer := range assignment.DesiredPeers {
+				idx := int(peer) - 1
+				if idx < 0 || idx >= len(nodes) || nodes[idx] == nil || nodes[idx].cluster == nil {
+					return false
+				}
+				groupNodes = append(groupNodes, nodes[idx])
+			}
+			if _, err := stableLeaderWithin(groupNodes, uint64(assignment.GroupID), 2*time.Second); err != nil {
+				return false
+			}
+			if _, err := probe.cluster.GetReconcileTask(context.Background(), assignment.GroupID); err == nil {
+				return false
+			} else if !errors.Is(err, controllermeta.ErrNotFound) {
+				return false
+			}
+		}
+		return true
+	}, 30*time.Second, 200*time.Millisecond)
+}
+
+func snapshotAssignments(t testing.TB, nodes []*testNode, groupCount int) []controllermeta.GroupAssignment {
+	t.Helper()
+
+	var snapshot []controllermeta.GroupAssignment
+	require.Eventually(t, func() bool {
+		assignments, ok := loadAssignments(nodes, groupCount)
+		if ok {
+			snapshot = assignments
+			return true
+		}
+		return false
 	}, 10*time.Second, 100*time.Millisecond)
+	return snapshot
+}
+
+func loadAssignments(nodes []*testNode, groupCount int) ([]controllermeta.GroupAssignment, bool) {
+	for _, node := range nodes {
+		if node == nil || node.cluster == nil {
+			continue
+		}
+		assignments, err := node.cluster.ListGroupAssignments(context.Background())
+		if err == nil && len(assignments) == groupCount {
+			return assignments, true
+		}
+	}
+	return nil, false
+}
+
+func assignmentsContainPeer(assignments []controllermeta.GroupAssignment, peer uint64) bool {
+	for _, assignment := range assignments {
+		for _, candidate := range assignment.DesiredPeers {
+			if candidate == peer {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func groupAssignedToPeerAndController(assignments []controllermeta.GroupAssignment, peer, controllerLeader uint64) uint32 {
+	for _, assignment := range assignments {
+		hasPeer := false
+		hasControllerLeader := false
+		for _, candidate := range assignment.DesiredPeers {
+			if candidate == peer {
+				hasPeer = true
+			}
+			if candidate == controllerLeader {
+				hasControllerLeader = true
+			}
+		}
+		if hasPeer && hasControllerLeader {
+			return assignment.GroupID
+		}
+	}
+	return 0
+}
+
+func groupForControllerLeader(assignments []controllermeta.GroupAssignment, controllerLeader uint64) (uint32, uint64) {
+	for _, assignment := range assignments {
+		hasLeader := false
+		var sourceNode uint64
+		for _, candidate := range assignment.DesiredPeers {
+			if candidate == controllerLeader {
+				hasLeader = true
+				continue
+			}
+			if sourceNode == 0 || candidate < sourceNode {
+				sourceNode = candidate
+			}
+		}
+		if hasLeader && sourceNode != 0 {
+			return assignment.GroupID, sourceNode
+		}
+	}
+	return 0, 0
+}
+
+type controllerProbeRequest struct {
+	Kind string `json:"kind"`
+}
+
+type controllerProbeResponse struct {
+	NotLeader bool   `json:"not_leader,omitempty"`
+	LeaderID  uint64 `json:"leader_id,omitempty"`
+}
+
+func waitForControllerLeader(t testing.TB, nodes []*testNode) uint64 {
+	t.Helper()
+
+	payload, err := json.Marshal(controllerProbeRequest{Kind: "list_assignments"})
+	require.NoError(t, err)
+
+	var leaderID uint64
+	require.Eventually(t, func() bool {
+		for _, node := range nodes {
+			if node == nil || node.cluster == nil {
+				continue
+			}
+			controllerPeers := append([]raftcluster.NodeConfig(nil), node.nodes...)
+			sort.Slice(controllerPeers, func(i, j int) bool {
+				return controllerPeers[i].NodeID < controllerPeers[j].NodeID
+			})
+			if len(controllerPeers) > node.controllerReplicaN {
+				controllerPeers = controllerPeers[:node.controllerReplicaN]
+			}
+			for _, peer := range controllerPeers {
+				respBody, err := node.cluster.RPCService(
+					context.Background(),
+					peer.NodeID,
+					multiraft.GroupID(^uint32(0)),
+					14,
+					payload,
+				)
+				if err != nil {
+					continue
+				}
+				var resp controllerProbeResponse
+				if err := json.Unmarshal(respBody, &resp); err != nil {
+					continue
+				}
+				if resp.NotLeader && resp.LeaderID != 0 {
+					leaderID = resp.LeaderID
+					return true
+				}
+				leaderID = uint64(peer.NodeID)
+				return true
+			}
+		}
+		return false
+	}, 10*time.Second, 100*time.Millisecond)
+	return leaderID
+}
+
+func currentControllerLeaderNode(nodes []*testNode) (*testNode, bool) {
+	payload, err := json.Marshal(controllerProbeRequest{Kind: "list_assignments"})
+	if err != nil {
+		return nil, false
+	}
+
+	for _, node := range nodes {
+		if node == nil || node.cluster == nil {
+			continue
+		}
+		controllerPeers := append([]raftcluster.NodeConfig(nil), node.nodes...)
+		sort.Slice(controllerPeers, func(i, j int) bool {
+			return controllerPeers[i].NodeID < controllerPeers[j].NodeID
+		})
+		if len(controllerPeers) > node.controllerReplicaN {
+			controllerPeers = controllerPeers[:node.controllerReplicaN]
+		}
+		for _, peer := range controllerPeers {
+			respBody, err := node.cluster.RPCService(
+				context.Background(),
+				peer.NodeID,
+				multiraft.GroupID(^uint32(0)),
+				14,
+				payload,
+			)
+			if err != nil {
+				continue
+			}
+			var resp controllerProbeResponse
+			if err := json.Unmarshal(respBody, &resp); err != nil {
+				continue
+			}
+			leaderID := peer.NodeID
+			if resp.NotLeader {
+				if resp.LeaderID == 0 {
+					continue
+				}
+				leaderID = multiraft.NodeID(resp.LeaderID)
+			}
+			idx := int(leaderID) - 1
+			if idx >= 0 && idx < len(nodes) && nodes[idx] != nil && nodes[idx].cluster != nil {
+				return nodes[idx], true
+			}
+		}
+	}
+	return nil, false
+}
+
+func controllerLeaderNode(t testing.TB, nodes []*testNode) *testNode {
+	t.Helper()
+	leaderID := waitForControllerLeader(t, nodes)
+	idx := int(leaderID) - 1
+	require.GreaterOrEqual(t, idx, 0)
+	require.Less(t, idx, len(nodes))
+	require.NotNil(t, nodes[idx])
+	require.NotNil(t, nodes[idx].cluster)
+	return nodes[idx]
+}
+
+func requireControllerCommand(t testing.TB, nodes []*testNode, fn func(*raftcluster.Cluster) error) {
+	t.Helper()
+
+	var lastErr error
+	require.Eventually(t, func() bool {
+		controller, ok := currentControllerLeaderNode(nodes)
+		if !ok {
+			lastErr = raftcluster.ErrNoLeader
+			return false
+		}
+		lastErr = fn(controller.cluster)
+		return lastErr == nil
+	}, 15*time.Second, 200*time.Millisecond, "last controller command error: %v", lastErr)
 }
 
 func assignedNodesForGroup(t testing.TB, nodes []*testNode, groupID uint32) []*testNode {
@@ -474,7 +816,18 @@ func restartNode(t testing.TB, nodes []*testNode, idx int) *testNode {
 
 	old.stop()
 
-	restarted := newStartedTestNode(t, dir, nodeID, listenAddr, clusterNodes, groups, groupCount, len(clusterNodes), len(clusterNodes), false)
+	restarted := newStartedTestNode(
+		t,
+		dir,
+		nodeID,
+		listenAddr,
+		clusterNodes,
+		groups,
+		groupCount,
+		old.groupReplicaN,
+		old.controllerReplicaN,
+		old.withController,
+	)
 	nodes[idx] = restarted
 	return restarted
 }
@@ -583,13 +936,13 @@ func TestThreeNodeClusterReelectsAfterLeaderRestart(t *testing.T) {
 }
 
 func TestClusterReportsRuntimeViewsToController(t *testing.T) {
-	nodes := startThreeNodesWithController(t, 4, 3)
+	nodes := startThreeNodesWithControllerWithSettle(t, 4, 3, false)
 	defer stopNodes(nodes)
 
 	require.Eventually(t, func() bool {
 		views, err := nodes[0].cluster.ListObservedRuntimeViews(context.Background())
 		return err == nil && len(views) == 4
-	}, 10*time.Second, 100*time.Millisecond)
+	}, 40*time.Second, 100*time.Millisecond)
 }
 
 func TestClusterGroupIDsNoLongerDependOnStaticGroupConfig(t *testing.T) {
@@ -673,11 +1026,17 @@ func TestClusterForceReconcileRetriesFailedRepair(t *testing.T) {
 	nodes := startFourNodesWithInjectedRepairFailure(t, 1, 3)
 	defer stopNodes(nodes)
 
-	require.NoError(t, nodes[0].cluster.ForceReconcile(context.Background(), 1))
+	requireControllerCommand(t, nodes, func(cluster *raftcluster.Cluster) error {
+		return cluster.ForceReconcile(context.Background(), 1)
+	})
 	require.Eventually(t, func() bool {
-		task, err := nodes[0].cluster.GetReconcileTask(context.Background(), 1)
+		controller, ok := currentControllerLeaderNode(nodes)
+		if !ok {
+			return false
+		}
+		task, err := controller.cluster.GetReconcileTask(context.Background(), 1)
 		return err == nil && task.Attempt >= 2
-	}, 10*time.Second, 100*time.Millisecond)
+	}, 20*time.Second, 100*time.Millisecond)
 }
 
 func TestClusterSurfacesFailedRepairAfterRetryExhaustion(t *testing.T) {
@@ -685,9 +1044,13 @@ func TestClusterSurfacesFailedRepairAfterRetryExhaustion(t *testing.T) {
 	defer stopNodes(nodes)
 
 	require.Eventually(t, func() bool {
-		task, err := nodes[0].cluster.GetReconcileTask(context.Background(), 1)
+		controller, ok := currentControllerLeaderNode(nodes)
+		if !ok {
+			return false
+		}
+		task, err := controller.cluster.GetReconcileTask(context.Background(), 1)
 		return err == nil && task.Status == raftcluster.TaskStatusFailed && task.Attempt == 3
-	}, 20*time.Second, 200*time.Millisecond)
+	}, 30*time.Second, 200*time.Millisecond)
 }
 
 func TestClusterRecoverGroupReturnsManualRecoveryErrorWhenQuorumLost(t *testing.T) {
@@ -700,4 +1063,112 @@ func TestClusterRecoverGroupReturnsManualRecoveryErrorWhenQuorumLost(t *testing.
 
 	err := nodes[0].cluster.RecoverGroup(context.Background(), 1, raftcluster.RecoverStrategyLatestLiveReplica)
 	require.ErrorIs(t, err, raftcluster.ErrManualRecoveryRequired)
+}
+
+func TestClusterRebalancesAfterNewWorkerNodeJoins(t *testing.T) {
+	nodes := startThreeOfFourNodesWithController(t, 2, 3)
+	defer stopNodes(nodes)
+
+	assignments := snapshotAssignments(t, nodes[:3], 2)
+	require.False(t, assignmentsContainPeer(assignments, 4))
+
+	nodes[3] = restartNode(t, nodes, 3)
+
+	require.Eventually(t, func() bool {
+		assignments, ok := loadAssignments(nodes, 2)
+		return ok && assignmentsContainPeer(assignments, 4)
+	}, 20*time.Second, 200*time.Millisecond)
+}
+
+func TestClusterRebalancesAfterRecoveredNodeReturns(t *testing.T) {
+	nodes := startFourNodesWithController(t, 2, 3)
+	defer stopNodes(nodes)
+
+	require.Eventually(t, func() bool {
+		assignments, ok := loadAssignments(nodes, 2)
+		return ok && assignmentsContainPeer(assignments, 4)
+	}, 20*time.Second, 200*time.Millisecond)
+
+	requireControllerCommand(t, nodes, func(cluster *raftcluster.Cluster) error {
+		return cluster.MarkNodeDraining(context.Background(), 4)
+	})
+
+	require.Eventually(t, func() bool {
+		assignments, ok := loadAssignments(nodes, 2)
+		return ok && !assignmentsContainPeer(assignments, 4)
+	}, 20*time.Second, 200*time.Millisecond)
+
+	requireControllerCommand(t, nodes, func(cluster *raftcluster.Cluster) error {
+		return cluster.ResumeNode(context.Background(), 4)
+	})
+
+	require.Eventually(t, func() bool {
+		assignments, ok := loadAssignments(nodes, 2)
+		return ok && assignmentsContainPeer(assignments, 4)
+	}, 20*time.Second, 200*time.Millisecond)
+}
+
+func TestClusterControllerLeaderFailoverResumesInFlightRepair(t *testing.T) {
+	nodes := startFourNodesWithController(t, 2, 3)
+	defer stopNodes(nodes)
+
+	controllerLeader := waitForControllerLeader(t, nodes)
+	assignments := snapshotAssignments(t, nodes, 2)
+	groupID, sourceNode := groupForControllerLeader(assignments, controllerLeader)
+	require.NotZero(t, groupID)
+	require.NotZero(t, sourceNode)
+
+	var failRepair atomic.Bool
+	failRepair.Store(true)
+	restore := raftcluster.SetManagedGroupExecutionTestHook(func(taskGroupID uint32, task controllermeta.ReconcileTask) error {
+		if failRepair.Load() && taskGroupID == groupID && task.Kind == controllermeta.TaskKindRepair {
+			return errors.New("injected repair failure")
+		}
+		return nil
+	})
+	defer restore()
+
+	requireControllerCommand(t, nodes, func(cluster *raftcluster.Cluster) error {
+		return cluster.MarkNodeDraining(context.Background(), sourceNode)
+	})
+	require.Eventually(t, func() bool {
+		controller, ok := currentControllerLeaderNode(nodes)
+		if !ok {
+			return false
+		}
+		if err := controller.cluster.ForceReconcile(context.Background(), groupID); err != nil {
+			return false
+		}
+		_, err := controller.cluster.GetReconcileTask(context.Background(), groupID)
+		return err == nil
+	}, 10*time.Second, 200*time.Millisecond)
+	require.Eventually(t, func() bool {
+		controller, ok := currentControllerLeaderNode(nodes)
+		if !ok {
+			return false
+		}
+		task, err := controller.cluster.GetReconcileTask(context.Background(), groupID)
+		return err == nil && task.Attempt >= 1
+	}, 20*time.Second, 200*time.Millisecond)
+
+	nodes[int(controllerLeader-1)].stop()
+	failRepair.Store(false)
+
+	require.Eventually(t, func() bool {
+		assignments, ok := loadAssignments(nodes, 2)
+		if !ok {
+			return false
+		}
+		for _, assignment := range assignments {
+			if assignment.GroupID == groupID {
+				for _, peer := range assignment.DesiredPeers {
+					if peer == sourceNode {
+						return false
+					}
+				}
+				return true
+			}
+		}
+		return false
+	}, 20*time.Second, 200*time.Millisecond)
 }

@@ -63,7 +63,7 @@ func build(cfg Config) (_ *App, err error) {
 		return nil, fmt.Errorf("app: open raftstorage: %w", err)
 	}
 
-	app.cluster, err = raftcluster.NewCluster(cfg.Cluster.runtimeConfig(app.db, app.raftDB, cfg.Node.ID))
+	app.cluster, err = raftcluster.NewCluster(cfg.Cluster.runtimeConfig(cfg.Storage, app.db, app.raftDB, cfg.Node.ID))
 	if err != nil {
 		return nil, fmt.Errorf("app: create cluster: %w", err)
 	}
@@ -256,17 +256,18 @@ func build(cfg Config) (_ *App, err error) {
 	return app, nil
 }
 
-func (c ClusterConfig) runtimeConfig(db *metadb.DB, raftDB *raftstorage.DB, nodeID uint64) raftcluster.Config {
+func (c ClusterConfig) runtimeConfig(storage StorageConfig, db *metadb.DB, raftDB *raftstorage.DB, nodeID uint64) raftcluster.Config {
 	return raftcluster.Config{
 		NodeID:             multiraft.NodeID(nodeID),
 		ListenAddr:         c.ListenAddr,
 		GroupCount:         c.GroupCount,
+		ControllerMetaPath: storage.ControllerMetaPath,
+		ControllerRaftPath: storage.ControllerRaftPath,
 		ControllerReplicaN: c.ControllerReplicaN,
 		GroupReplicaN:      c.GroupReplicaN,
 		NewStorage:         newStorageFactory(raftDB),
 		NewStateMachine:    metafsm.NewStateMachineFactory(db),
 		Nodes:              c.runtimeNodes(),
-		Groups:             c.runtimeGroups(),
 		ForwardTimeout:     c.ForwardTimeout,
 		PoolSize:           c.PoolSize,
 		TickInterval:       c.TickInterval,
@@ -286,21 +287,6 @@ func (c ClusterConfig) runtimeNodes() []raftcluster.NodeConfig {
 		})
 	}
 	return nodes
-}
-
-func (c ClusterConfig) runtimeGroups() []raftcluster.GroupConfig {
-	groups := make([]raftcluster.GroupConfig, 0, len(c.Groups))
-	for _, group := range c.Groups {
-		peers := make([]multiraft.NodeID, 0, len(group.Peers))
-		for _, peerID := range group.Peers {
-			peers = append(peers, multiraft.NodeID(peerID))
-		}
-		groups = append(groups, raftcluster.GroupConfig{
-			GroupID: multiraft.GroupID(group.ID),
-			Peers:   peers,
-		})
-	}
-	return groups
 }
 
 const conversationFetchMaxBytes = 1 << 20

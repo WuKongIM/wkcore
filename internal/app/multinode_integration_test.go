@@ -27,6 +27,56 @@ import (
 
 const multinodeAppReadTimeout = 20 * time.Second
 
+func TestAppThreeNodeClusterStartsWithoutStaticGroupPeers(t *testing.T) {
+	harness := newThreeNodeManagedAppHarness(t)
+
+	require.Eventually(t, func() bool {
+		for _, app := range harness.orderedApps() {
+			assignments, err := app.Cluster().ListGroupAssignments(context.Background())
+			if err != nil || len(assignments) != 1 {
+				return false
+			}
+		}
+		return true
+	}, 10*time.Second, 50*time.Millisecond)
+
+	require.NotZero(t, harness.waitForStableLeader(t, 1))
+}
+
+func TestAppMajorityAvailableAfterSingleReplicaNodeFailure(t *testing.T) {
+	harness := newThreeNodeManagedAppHarness(t)
+	leaderID := harness.waitForStableLeader(t, 1)
+	harness.stopNode(t, leaderID)
+	survivorLeaderID := harness.waitForLeaderChange(t, 1, leaderID)
+	survivorLeader := harness.apps[survivorLeaderID]
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	channelID := fmt.Sprintf("majority-channel-%d", time.Now().UnixNano())
+	require.NoError(t, survivorLeader.Store().CreateChannel(ctx, channelID, int64(wkframe.ChannelTypeGroup)))
+	for _, app := range harness.runningApps() {
+		app := app
+		require.Eventually(t, func() bool {
+			channel, err := app.Store().GetChannel(context.Background(), channelID, int64(wkframe.ChannelTypeGroup))
+			return err == nil && channel.ChannelID == channelID
+		}, 5*time.Second, 20*time.Millisecond)
+	}
+}
+
+func TestAppManagedGroupStartupAllowsSubsetAssignmentsPerNode(t *testing.T) {
+	harness := newThreeNodeManagedAppHarnessWithLayout(t, 4, 2)
+
+	require.Eventually(t, func() bool {
+		for _, app := range harness.orderedApps() {
+			assignments, err := app.Cluster().ListGroupAssignments(context.Background())
+			if err != nil || len(assignments) != 4 {
+				return false
+			}
+		}
+		return true
+	}, 10*time.Second, 50*time.Millisecond)
+}
+
 func TestThreeNodeAppGatewaySendUsesDurableCommit(t *testing.T) {
 	harness := newThreeNodeAppHarness(t)
 	leaderID := harness.waitForStableLeader(t, 1)
@@ -550,6 +600,18 @@ type appNodeSpec struct {
 }
 
 func newThreeNodeAppHarness(t *testing.T) *threeNodeAppHarness {
+	return newThreeNodeAppHarnessWithOptions(t, 1, 3)
+}
+
+func newThreeNodeManagedAppHarness(t *testing.T) *threeNodeAppHarness {
+	return newThreeNodeManagedAppHarnessWithLayout(t, 1, 3)
+}
+
+func newThreeNodeManagedAppHarnessWithLayout(t *testing.T, groupCount uint32, groupReplicaN int) *threeNodeAppHarness {
+	return newThreeNodeAppHarnessWithOptions(t, groupCount, groupReplicaN)
+}
+
+func newThreeNodeAppHarnessWithOptions(t *testing.T, groupCount uint32, groupReplicaN int) *threeNodeAppHarness {
 	t.Helper()
 
 	clusterAddrs := reserveTestTCPAddrs(t, 3)
@@ -575,11 +637,10 @@ func newThreeNodeAppHarness(t *testing.T) *threeNodeAppHarness {
 		cfg.Storage = StorageConfig{}
 		cfg.Cluster.ListenAddr = clusterAddrs[nodeID]
 		cfg.Cluster.Nodes = append([]NodeConfigRef(nil), clusterNodes...)
-		cfg.Cluster.Groups = []GroupConfig{{
-			ID:    1,
-			Peers: []uint64{1, 2, 3},
-		}}
-		cfg.Cluster.GroupCount = 1
+		cfg.Cluster.GroupCount = groupCount
+		cfg.Cluster.ControllerReplicaN = 3
+		cfg.Cluster.GroupReplicaN = groupReplicaN
+		cfg.Cluster.Groups = nil
 		cfg.Cluster.TickInterval = 10 * time.Millisecond
 		cfg.Cluster.ElectionTick = 10
 		cfg.Cluster.HeartbeatTick = 1

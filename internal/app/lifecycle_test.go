@@ -621,11 +621,14 @@ func testConfig(t *testing.T) Config {
 	t.Helper()
 
 	cfg := validConfig()
+	clusterAddr := reserveTestTCPAddrs(t, 1)[1]
 	cfg.Node.DataDir = t.TempDir()
 	cfg.Storage = StorageConfig{
 		DBPath:   filepath.Join(cfg.Node.DataDir, "data"),
 		RaftPath: filepath.Join(cfg.Node.DataDir, "raft"),
 	}
+	cfg.Cluster.ListenAddr = clusterAddr
+	cfg.Cluster.Nodes = []NodeConfigRef{{ID: cfg.Node.ID, Addr: clusterAddr}}
 	cfg.Gateway.Listeners[0].Address = "127.0.0.1:0"
 	return cfg
 }

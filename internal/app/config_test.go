@@ -52,36 +52,26 @@ func TestConfigRejectsNodeIDSnowflakeOverflow(t *testing.T) {
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
-func TestConfigValidateRejectsMismatchedGroupCount(t *testing.T) {
+func TestConfigValidateRejectsZeroGroupCount(t *testing.T) {
 	cfg := validConfig()
-	cfg.Cluster.GroupCount = 2
+	cfg.Cluster.GroupCount = 0
 
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
-func TestConfigValidateAllowsControllerConfigWithLegacyGroups(t *testing.T) {
+func TestConfigValidateRejectsStaticClusterGroups(t *testing.T) {
 	cfg := validConfig()
-	cfg.Cluster.ControllerReplicaN = 3
-	cfg.Cluster.GroupReplicaN = 3
-	cfg.Cluster.Nodes = []NodeConfigRef{
-		{ID: 3, Addr: "127.0.0.1:7002"},
-		{ID: 1, Addr: "127.0.0.1:7000"},
-		{ID: 2, Addr: "127.0.0.1:7001"},
-	}
+	cfg.Cluster.Groups = []GroupConfig{{ID: 1, Peers: []uint64{1}}}
 
-	require.NoError(t, cfg.ApplyDefaultsAndValidate())
-	require.Equal(t, []NodeConfigRef{
-		{ID: 1, Addr: "127.0.0.1:7000"},
-		{ID: 2, Addr: "127.0.0.1:7001"},
-		{ID: 3, Addr: "127.0.0.1:7002"},
-	}, cfg.Cluster.DerivedControllerNodes())
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
-func TestConfigValidateRejectsNilStaticGroupsInCurrentPhase(t *testing.T) {
+func TestConfigValidateAllowsNilStaticGroupsWithExplicitGroupCount(t *testing.T) {
 	cfg := validConfig()
 	cfg.Cluster.Groups = nil
+	cfg.Cluster.GroupCount = 1
 
-	require.Error(t, cfg.ApplyDefaultsAndValidate())
+	require.NoError(t, cfg.ApplyDefaultsAndValidate())
 }
 
 func TestConfigValidateRejectsInvalidControllerReplicaN(t *testing.T) {
@@ -130,27 +120,6 @@ func TestConfigValidateRejectsDuplicateClusterNodeIDs(t *testing.T) {
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
-func TestConfigValidateRejectsDuplicateGroupIDs(t *testing.T) {
-	cfg := validConfig()
-	cfg.Cluster.Groups = []GroupConfig{
-		{ID: 1, Peers: []uint64{1}},
-		{ID: 1, Peers: []uint64{1}},
-	}
-	cfg.Cluster.GroupCount = 2
-
-	require.Error(t, cfg.ApplyDefaultsAndValidate())
-}
-
-func TestConfigValidateRejectsNonContiguousGroupIDs(t *testing.T) {
-	cfg := validConfig()
-	cfg.Cluster.Groups = []GroupConfig{
-		{ID: 100, Peers: []uint64{1}},
-	}
-	cfg.Cluster.GroupCount = 1
-
-	require.Error(t, cfg.ApplyDefaultsAndValidate())
-}
-
 func TestConfigValidateRejectsNodeMissingFromClusterNodes(t *testing.T) {
 	cfg := validConfig()
 	cfg.Node.ID = 2
@@ -163,17 +132,6 @@ func TestConfigValidateRejectsLocalNodeMissingFromClusterNodes(t *testing.T) {
 	cfg.Node.ID = 9
 	cfg.Cluster.ControllerReplicaN = 3
 	cfg.Cluster.GroupReplicaN = 3
-
-	require.Error(t, cfg.ApplyDefaultsAndValidate())
-}
-
-func TestConfigValidateRejectsNodeMissingFromGroupPeers(t *testing.T) {
-	cfg := validConfig()
-	cfg.Node.ID = 2
-	cfg.Cluster.Nodes = []NodeConfigRef{
-		{ID: 1, Addr: "127.0.0.1:7000"},
-		{ID: 2, Addr: "127.0.0.1:7001"},
-	}
 
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
@@ -230,8 +188,8 @@ func validConfig() Config {
 		},
 		Cluster: ClusterConfig{
 			ListenAddr:         "127.0.0.1:7000",
+			GroupCount:         1,
 			Nodes:              []NodeConfigRef{{ID: 1, Addr: "127.0.0.1:7000"}},
-			Groups:             []GroupConfig{{ID: 1, Peers: []uint64{1}}},
 			ControllerReplicaN: 1,
 			GroupReplicaN:      1,
 			ForwardTimeout:     5 * time.Second,

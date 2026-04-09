@@ -13,10 +13,11 @@ import (
 )
 
 const (
-	rpcServiceController          uint8             = 2
+	rpcServiceController          uint8             = 14
 	controllerRPCShardKey         multiraft.GroupID = multiraft.GroupID(^uint32(0))
 	controllerRPCHeartbeat        string            = "heartbeat"
 	controllerRPCListAssignments  string            = "list_assignments"
+	controllerRPCListNodes        string            = "list_nodes"
 	controllerRPCListRuntimeViews string            = "list_runtime_views"
 	controllerRPCOperator         string            = "operator"
 	controllerRPCGetTask          string            = "get_task"
@@ -42,6 +43,7 @@ type controllerRPCResponse struct {
 	NotLeader    bool                              `json:"not_leader,omitempty"`
 	NotFound     bool                              `json:"not_found,omitempty"`
 	LeaderID     uint64                            `json:"leader_id,omitempty"`
+	Nodes        []controllermeta.ClusterNode      `json:"nodes,omitempty"`
 	Assignments  []controllermeta.GroupAssignment  `json:"assignments,omitempty"`
 	RuntimeViews []controllermeta.GroupRuntimeView `json:"runtime_views,omitempty"`
 	Task         *controllermeta.ReconcileTask     `json:"task,omitempty"`
@@ -49,6 +51,7 @@ type controllerRPCResponse struct {
 
 type controllerAPI interface {
 	Report(ctx context.Context, report groupcontroller.AgentReport) error
+	ListNodes(ctx context.Context) ([]controllermeta.ClusterNode, error)
 	RefreshAssignments(ctx context.Context) ([]controllermeta.GroupAssignment, error)
 	ListRuntimeViews(ctx context.Context) ([]controllermeta.GroupRuntimeView, error)
 	Operator(ctx context.Context, op groupcontroller.OperatorRequest) error
@@ -84,6 +87,14 @@ func (c *controllerClient) Report(ctx context.Context, report groupcontroller.Ag
 		Report: &report,
 	})
 	return err
+}
+
+func (c *controllerClient) ListNodes(ctx context.Context) ([]controllermeta.ClusterNode, error) {
+	resp, err := c.call(ctx, controllerRPCRequest{Kind: controllerRPCListNodes})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Nodes, nil
 }
 
 func (c *controllerClient) RefreshAssignments(ctx context.Context) ([]controllermeta.GroupAssignment, error) {

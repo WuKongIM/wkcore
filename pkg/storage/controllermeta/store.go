@@ -3,6 +3,7 @@ package controllermeta
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -105,6 +106,95 @@ func (s *Store) UpsertNode(ctx context.Context, node ClusterNode) error {
 	defer s.mu.Unlock()
 
 	return s.writeValueLocked(encodeNodeKey(node.NodeID), encodeClusterNode(node))
+}
+
+func (s *Store) UpsertNodeAndDeleteRepairTasks(ctx context.Context, node ClusterNode) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
+	if err := s.checkContext(ctx); err != nil {
+		return err
+	}
+	if node.NodeID == 0 || node.Addr == "" || node.CapacityWeight < 0 || !validNodeStatus(node.Status) {
+		return ErrInvalidArgument
+	}
+	node = normalizeClusterNode(node)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tasks, err := s.listTasksLocked(ctx)
+	if err != nil {
+		return err
+	}
+	assignments, err := s.listAssignmentsLocked(ctx)
+	if err != nil {
+		return err
+	}
+	assignmentsByGroup := make(map[uint32]GroupAssignment, len(assignments))
+	for _, assignment := range assignments {
+		assignmentsByGroup[assignment.GroupID] = assignment
+	}
+
+	writes := []batchWrite{{
+		key:   encodeNodeKey(node.NodeID),
+		value: encodeClusterNode(node),
+	}}
+	for _, task := range tasks {
+		if task.Kind != TaskKindRepair || task.SourceNode != node.NodeID {
+			continue
+		}
+		if assignment, ok := assignmentsByGroup[task.GroupID]; ok {
+			if restored, changed := restoreRepairAssignment(assignment, task); changed {
+				assignmentsByGroup[task.GroupID] = restored
+				writes = append(writes, batchWrite{
+					key:   encodeGroupKey(recordPrefixAssignment, restored.GroupID),
+					value: encodeGroupAssignment(restored),
+				})
+			}
+		}
+		writes = append(writes, batchWrite{
+			key:    encodeGroupKey(recordPrefixTask, task.GroupID),
+			delete: true,
+		})
+	}
+	return s.writeBatchLocked(writes)
+}
+
+func restoreRepairAssignment(assignment GroupAssignment, task ReconcileTask) (GroupAssignment, bool) {
+	if assignment.GroupID == 0 || assignment.GroupID != task.GroupID {
+		return GroupAssignment{}, false
+	}
+	if task.SourceNode == 0 || task.TargetNode == 0 {
+		return GroupAssignment{}, false
+	}
+	if containsUint64(assignment.DesiredPeers, task.SourceNode) || !containsUint64(assignment.DesiredPeers, task.TargetNode) {
+		return GroupAssignment{}, false
+	}
+
+	restored := assignment
+	peers := make([]uint64, 0, len(assignment.DesiredPeers))
+	for _, peer := range assignment.DesiredPeers {
+		if peer == task.TargetNode {
+			continue
+		}
+		peers = append(peers, peer)
+	}
+	peers = append(peers, task.SourceNode)
+	sort.Slice(peers, func(i, j int) bool { return peers[i] < peers[j] })
+
+	restored.DesiredPeers = peers
+	restored.ConfigEpoch++
+	return normalizeGroupAssignment(restored), true
+}
+
+func containsUint64(values []uint64, target uint64) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) GetAssignment(ctx context.Context, groupID uint32) (GroupAssignment, error) {
@@ -529,6 +619,7 @@ func (s *Store) writeValueLocked(key, value []byte) error {
 type batchWrite struct {
 	key   []byte
 	value []byte
+	delete bool
 }
 
 func (s *Store) writeBatchLocked(writes []batchWrite) error {
@@ -539,6 +630,12 @@ func (s *Store) writeBatchLocked(writes []batchWrite) error {
 	defer batch.Close()
 
 	for _, write := range writes {
+		if write.delete {
+			if err := batch.Delete(write.key, nil); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := batch.Set(write.key, write.value, nil); err != nil {
 			return err
 		}

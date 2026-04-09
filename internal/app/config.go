@@ -113,19 +113,16 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	if len(c.Cluster.Nodes) == 0 {
 		return fmt.Errorf("%w: cluster nodes must be set", ErrInvalidConfig)
 	}
-	if len(c.Cluster.Groups) == 0 {
-		return fmt.Errorf("%w: cluster groups must be set", ErrInvalidConfig)
-	}
 	if len(c.Gateway.Listeners) == 0 {
 		return fmt.Errorf("%w: gateway listeners must be set", ErrInvalidConfig)
 	}
 	if c.Gateway.TokenAuthOn {
 		return fmt.Errorf("%w: gateway token auth requires verifier hooks", ErrInvalidConfig)
 	}
-
-	if c.Cluster.GroupCount == 0 {
-		c.Cluster.GroupCount = uint32(len(c.Cluster.Groups))
+	if len(c.Cluster.Groups) > 0 {
+		return fmt.Errorf("%w: Cluster.Groups is no longer supported; remove static group peers and keep Cluster.GroupCount only", ErrInvalidConfig)
 	}
+
 	if c.Cluster.GroupCount == 0 {
 		return fmt.Errorf("%w: cluster group count must be set", ErrInvalidConfig)
 	}
@@ -249,41 +246,6 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 
 	if !selfNodeFound {
 		return fmt.Errorf("%w: node id %d not found in cluster nodes", ErrInvalidConfig, c.Node.ID)
-	}
-	if len(c.Cluster.Groups) > 0 {
-		groupSet := make(map[uint32]struct{}, len(c.Cluster.Groups))
-		selfPeerFound := false
-		for _, group := range c.Cluster.Groups {
-			if group.ID == 0 {
-				return fmt.Errorf("%w: cluster group id must be set", ErrInvalidConfig)
-			}
-			if group.ID > c.Cluster.GroupCount {
-				return fmt.Errorf("%w: cluster group id %d exceeds group count %d", ErrInvalidConfig, group.ID, c.Cluster.GroupCount)
-			}
-			if _, ok := groupSet[group.ID]; ok {
-				return fmt.Errorf("%w: duplicate cluster group id %d", ErrInvalidConfig, group.ID)
-			}
-			groupSet[group.ID] = struct{}{}
-			if len(group.Peers) == 0 {
-				return fmt.Errorf("%w: cluster group peers must be set", ErrInvalidConfig)
-			}
-			for _, peerID := range group.Peers {
-				if _, ok := nodeSet[peerID]; !ok {
-					return fmt.Errorf("%w: peer %d not found in cluster nodes", ErrInvalidConfig, peerID)
-				}
-				if peerID == c.Node.ID {
-					selfPeerFound = true
-				}
-			}
-		}
-		for expectedID := uint32(1); expectedID <= c.Cluster.GroupCount; expectedID++ {
-			if _, ok := groupSet[expectedID]; !ok {
-				return fmt.Errorf("%w: cluster group id %d missing from configured groups", ErrInvalidConfig, expectedID)
-			}
-		}
-		if !selfPeerFound {
-			return fmt.Errorf("%w: node id %d not present as a peer in any group", ErrInvalidConfig, c.Node.ID)
-		}
 	}
 
 	return nil

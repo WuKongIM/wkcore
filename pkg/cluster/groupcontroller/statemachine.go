@@ -22,12 +22,24 @@ type StateMachine struct {
 	cfg   StateMachineConfig
 }
 
+const (
+	defaultSuspectTimeout   = 3 * time.Second
+	defaultDeadTimeout      = 10 * time.Second
+	defaultRetryBackoffBase = time.Second
+)
+
 func NewStateMachine(store *controllermeta.Store, cfg StateMachineConfig) *StateMachine {
+	if cfg.SuspectTimeout <= 0 {
+		cfg.SuspectTimeout = defaultSuspectTimeout
+	}
+	if cfg.DeadTimeout <= 0 {
+		cfg.DeadTimeout = defaultDeadTimeout
+	}
 	if cfg.MaxTaskAttempts <= 0 {
 		cfg.MaxTaskAttempts = 3
 	}
 	if cfg.RetryBackoffBase <= 0 {
-		cfg.RetryBackoffBase = time.Second
+		cfg.RetryBackoffBase = defaultRetryBackoffBase
 	}
 	return &StateMachine{store: store, cfg: cfg}
 }
@@ -120,6 +132,7 @@ func (sm *StateMachine) applyOperatorRequest(ctx context.Context, op OperatorReq
 		node.Status = controllermeta.NodeStatusDraining
 	case OperatorResumeNode:
 		node.Status = controllermeta.NodeStatusAlive
+		return sm.store.UpsertNodeAndDeleteRepairTasks(ctx, node)
 	default:
 		return controllermeta.ErrInvalidArgument
 	}
@@ -179,6 +192,15 @@ func (sm *StateMachine) applyTaskResult(ctx context.Context, advance TaskAdvance
 }
 
 func (sm *StateMachine) applyAssignmentTaskUpdate(ctx context.Context, assignment *controllermeta.GroupAssignment, task *controllermeta.ReconcileTask) error {
+	if task != nil && task.Kind == controllermeta.TaskKindRepair {
+		obsolete, err := sm.repairTaskObsolete(ctx, *task)
+		if err != nil {
+			return err
+		}
+		if obsolete {
+			return nil
+		}
+	}
 	switch {
 	case assignment != nil && task != nil:
 		return sm.store.UpsertAssignmentTask(ctx, *assignment, *task)
@@ -188,6 +210,27 @@ func (sm *StateMachine) applyAssignmentTaskUpdate(ctx context.Context, assignmen
 		return sm.store.UpsertTask(ctx, *task)
 	default:
 		return controllermeta.ErrInvalidArgument
+	}
+}
+
+func (sm *StateMachine) repairTaskObsolete(ctx context.Context, task controllermeta.ReconcileTask) (bool, error) {
+	if task.SourceNode == 0 {
+		return false, nil
+	}
+
+	node, err := sm.store.GetNode(ctx, task.SourceNode)
+	switch {
+	case errors.Is(err, controllermeta.ErrNotFound):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+
+	switch node.Status {
+	case controllermeta.NodeStatusDead, controllermeta.NodeStatusDraining:
+		return false, nil
+	default:
+		return true, nil
 	}
 }
 

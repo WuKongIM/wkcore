@@ -14,7 +14,7 @@ type Planner struct {
 
 func NewPlanner(cfg PlannerConfig) *Planner {
 	if cfg.RebalanceSkewThreshold <= 0 {
-		cfg.RebalanceSkewThreshold = 1
+		cfg.RebalanceSkewThreshold = 2
 	}
 	return &Planner{cfg: cfg}
 }

@@ -65,7 +65,12 @@ func (c *Cluster) GetReconcileTask(ctx context.Context, groupID uint32) (control
 			task, err = c.controllerClient.GetTask(queryCtx, groupID)
 			return err
 		})
-		return task, err
+		if err == nil {
+			return task, nil
+		}
+		if !controllerReadFallbackAllowed(err) || c.controllerMeta == nil {
+			return controllermeta.ReconcileTask{}, err
+		}
 	}
 	if c.controllerMeta != nil {
 		return c.controllerMeta.GetTask(ctx, groupID)
@@ -230,7 +235,7 @@ func (c *Cluster) retryControllerCommand(ctx context.Context, fn func(context.Co
 		if err == nil {
 			return nil
 		}
-		if !errors.Is(err, ErrNotLeader) && !errors.Is(err, ErrNoLeader) {
+		if !controllerCommandRetryAllowed(err) {
 			return err
 		}
 		lastErr = err

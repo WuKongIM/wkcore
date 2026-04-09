@@ -77,6 +77,39 @@ func TestPlannerRebalancesOnlyWhenSkewExceedsThreshold(t *testing.T) {
 	require.Equal(t, uint64(4), decision.Task.TargetNode)
 }
 
+func TestPlannerRebalancesWhenSkewMatchesThreshold(t *testing.T) {
+	planner := NewPlanner(PlannerConfig{GroupCount: 2, ReplicaN: 3, RebalanceSkewThreshold: 2})
+	state := testState(
+		aliveNode(1), aliveNode(2), aliveNode(3), aliveNode(4),
+		withAssignment(1, 1, 2, 3),
+		withAssignment(2, 1, 2, 3),
+		withRuntimeView(1, []uint64{1, 2, 3}, true),
+		withRuntimeView(2, []uint64{1, 2, 3}, true),
+	)
+
+	decision, err := planner.NextDecision(context.Background(), state)
+	require.NoError(t, err)
+	require.NotNil(t, decision.Task)
+	require.Equal(t, controllermeta.TaskKindRebalance, decision.Task.Kind)
+	require.Equal(t, uint64(4), decision.Task.TargetNode)
+}
+
+func TestPlannerDoesNotRebalanceOptimalSingleSkewDistribution(t *testing.T) {
+	planner := NewPlanner(PlannerConfig{GroupCount: 2, ReplicaN: 3})
+	state := testState(
+		aliveNode(1), aliveNode(2), aliveNode(3), aliveNode(4),
+		withAssignment(1, 1, 2, 3),
+		withAssignment(2, 1, 2, 4),
+		withRuntimeView(1, []uint64{1, 2, 3}, true),
+		withRuntimeView(2, []uint64{1, 2, 4}, true),
+	)
+
+	decision, err := planner.NextDecision(context.Background(), state)
+	require.NoError(t, err)
+	require.Zero(t, decision.GroupID)
+	require.Nil(t, decision.Task)
+}
+
 func TestPlannerStopsAutomaticChangesAfterQuorumLoss(t *testing.T) {
 	planner := NewPlanner(PlannerConfig{GroupCount: 1, ReplicaN: 3})
 	state := testState(
@@ -285,6 +318,53 @@ func TestStateMachineTransitionsNodeStatusFromSuspectToDeadToAlive(t *testing.T)
 	require.Equal(t, NodeStatusAlive, node.Status)
 }
 
+func TestStateMachineDefaultConfigAppliesHeartbeatTimeouts(t *testing.T) {
+	store := openControllerStore(t)
+	sm := NewStateMachine(store, StateMachineConfig{})
+	ctx := context.Background()
+
+	require.NoError(t, sm.Apply(ctx, Command{
+		Kind: CommandKindNodeHeartbeat,
+		Report: &AgentReport{
+			NodeID:     1,
+			Addr:       "127.0.0.1:7000",
+			ObservedAt: time.Unix(0, 0),
+		},
+	}))
+	require.NoError(t, sm.Apply(ctx, Command{
+		Kind:    CommandKindEvaluateTimeouts,
+		Advance: &TaskAdvance{Now: time.Unix(2, 0)},
+	}))
+
+	node, err := store.GetNode(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, NodeStatusAlive, node.Status)
+
+	require.NoError(t, sm.Apply(ctx, Command{
+		Kind:    CommandKindEvaluateTimeouts,
+		Advance: &TaskAdvance{Now: time.Unix(3, 0)},
+	}))
+	node, err = store.GetNode(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, NodeStatusSuspect, node.Status)
+
+	require.NoError(t, sm.Apply(ctx, Command{
+		Kind:    CommandKindEvaluateTimeouts,
+		Advance: &TaskAdvance{Now: time.Unix(10, 0)},
+	}))
+	node, err = store.GetNode(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, NodeStatusSuspect, node.Status)
+
+	require.NoError(t, sm.Apply(ctx, Command{
+		Kind:    CommandKindEvaluateTimeouts,
+		Advance: &TaskAdvance{Now: time.Unix(11, 0)},
+	}))
+	node, err = store.GetNode(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, NodeStatusDead, node.Status)
+}
+
 func TestStateMachineRequiresResumeToLeaveDraining(t *testing.T) {
 	store := openControllerStore(t)
 	sm := NewStateMachine(store, StateMachineConfig{})
@@ -314,6 +394,143 @@ func TestStateMachineRequiresResumeToLeaveDraining(t *testing.T) {
 	node, err = store.GetNode(ctx, 2)
 	require.NoError(t, err)
 	require.Equal(t, NodeStatusAlive, node.Status)
+}
+
+func TestStateMachineResumeNodeClearsRepairTasksForThatNode(t *testing.T) {
+	store := openControllerStore(t)
+	sm := NewStateMachine(store, StateMachineConfig{})
+	ctx := context.Background()
+
+	require.NoError(t, sm.Apply(ctx, Command{
+		Kind: CommandKindOperatorRequest,
+		Op:   &OperatorRequest{Kind: OperatorMarkNodeDraining, NodeID: 2},
+	}))
+	require.NoError(t, store.UpsertTask(ctx, controllermeta.ReconcileTask{
+		GroupID:    1,
+		Kind:       controllermeta.TaskKindRepair,
+		Step:       controllermeta.TaskStepAddLearner,
+		SourceNode: 2,
+		TargetNode: 4,
+		Status:     controllermeta.TaskStatusPending,
+		NextRunAt:  time.Unix(10, 0),
+	}))
+	require.NoError(t, store.UpsertTask(ctx, controllermeta.ReconcileTask{
+		GroupID:    2,
+		Kind:       controllermeta.TaskKindRepair,
+		Step:       controllermeta.TaskStepAddLearner,
+		SourceNode: 3,
+		TargetNode: 4,
+		Status:     controllermeta.TaskStatusPending,
+		NextRunAt:  time.Unix(11, 0),
+	}))
+	require.NoError(t, store.UpsertTask(ctx, controllermeta.ReconcileTask{
+		GroupID:    3,
+		Kind:       controllermeta.TaskKindRebalance,
+		Step:       controllermeta.TaskStepAddLearner,
+		SourceNode: 2,
+		TargetNode: 4,
+		Status:     controllermeta.TaskStatusPending,
+		NextRunAt:  time.Unix(12, 0),
+	}))
+
+	require.NoError(t, sm.Apply(ctx, Command{
+		Kind: CommandKindOperatorRequest,
+		Op:   &OperatorRequest{Kind: OperatorResumeNode, NodeID: 2},
+	}))
+
+	node, err := store.GetNode(ctx, 2)
+	require.NoError(t, err)
+	require.Equal(t, NodeStatusAlive, node.Status)
+
+	_, err = store.GetTask(ctx, 1)
+	require.ErrorIs(t, err, controllermeta.ErrNotFound)
+
+	task, err := store.GetTask(ctx, 2)
+	require.NoError(t, err)
+	require.Equal(t, uint32(2), task.GroupID)
+
+	task, err = store.GetTask(ctx, 3)
+	require.NoError(t, err)
+	require.Equal(t, controllermeta.TaskKindRebalance, task.Kind)
+}
+
+func TestStateMachineIgnoresStaleRepairProposalAfterResume(t *testing.T) {
+	store := openControllerStore(t)
+	sm := NewStateMachine(store, StateMachineConfig{})
+	ctx := context.Background()
+
+	require.NoError(t, sm.Apply(ctx, Command{
+		Kind: CommandKindOperatorRequest,
+		Op:   &OperatorRequest{Kind: OperatorMarkNodeDraining, NodeID: 2},
+	}))
+	require.NoError(t, sm.Apply(ctx, Command{
+		Kind: CommandKindOperatorRequest,
+		Op:   &OperatorRequest{Kind: OperatorResumeNode, NodeID: 2},
+	}))
+
+	assignment := controllermeta.GroupAssignment{
+		GroupID:      1,
+		DesiredPeers: []uint64{1, 3, 4},
+		ConfigEpoch:  2,
+	}
+	task := controllermeta.ReconcileTask{
+		GroupID:    1,
+		Kind:       controllermeta.TaskKindRepair,
+		Step:       controllermeta.TaskStepAddLearner,
+		SourceNode: 2,
+		TargetNode: 4,
+		Status:     controllermeta.TaskStatusPending,
+		NextRunAt:  time.Unix(20, 0),
+	}
+	require.NoError(t, sm.Apply(ctx, Command{
+		Kind:       CommandKindAssignmentTaskUpdate,
+		Assignment: &assignment,
+		Task:       &task,
+	}))
+
+	_, err := store.GetAssignment(ctx, 1)
+	require.ErrorIs(t, err, controllermeta.ErrNotFound)
+
+	_, err = store.GetTask(ctx, 1)
+	require.ErrorIs(t, err, controllermeta.ErrNotFound)
+}
+
+func TestStateMachineResumeNodeRestoresAssignmentFromPendingRepair(t *testing.T) {
+	store := openControllerStore(t)
+	sm := NewStateMachine(store, StateMachineConfig{})
+	ctx := context.Background()
+
+	require.NoError(t, sm.Apply(ctx, Command{
+		Kind: CommandKindOperatorRequest,
+		Op:   &OperatorRequest{Kind: OperatorMarkNodeDraining, NodeID: 4},
+	}))
+	require.NoError(t, store.UpsertAssignment(ctx, controllermeta.GroupAssignment{
+		GroupID:      1,
+		DesiredPeers: []uint64{1, 2, 3},
+		ConfigEpoch:  2,
+	}))
+	require.NoError(t, store.UpsertTask(ctx, controllermeta.ReconcileTask{
+		GroupID:    1,
+		Kind:       controllermeta.TaskKindRepair,
+		Step:       controllermeta.TaskStepAddLearner,
+		SourceNode: 4,
+		TargetNode: 3,
+		Status:     controllermeta.TaskStatusPending,
+		NextRunAt:  time.Unix(21, 0),
+	}))
+
+	require.NoError(t, sm.Apply(ctx, Command{
+		Kind: CommandKindOperatorRequest,
+		Op:   &OperatorRequest{Kind: OperatorResumeNode, NodeID: 4},
+	}))
+
+	assignment, err := store.GetAssignment(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{1, 2, 4}, assignment.DesiredPeers)
+	require.EqualValues(t, 3, assignment.ConfigEpoch)
+
+	_, err = store.GetTask(ctx, 1)
+	require.ErrorIs(t, err, controllermeta.ErrNotFound)
 }
 
 func TestStateMachineMarksTaskFailedAfterRetryExhaustion(t *testing.T) {
