@@ -13,12 +13,11 @@ import (
 type assignmentTaskState struct {
 	assignment controllermeta.GroupAssignment
 	task       controllermeta.ReconcileTask
-	view       controllermeta.GroupRuntimeView
 }
 
 type groupAgent struct {
 	cluster *Cluster
-	client  *controllerClient
+	client  controllerAPI
 	cache   *assignmentCache
 }
 
@@ -67,6 +66,7 @@ func (a *groupAgent) ApplyAssignments(ctx context.Context) error {
 	if len(assignments) == 0 {
 		return nil
 	}
+	now := time.Now()
 
 	viewByGroup := make(map[uint32]controllermeta.GroupRuntimeView, len(assignments))
 	if views, err := a.client.ListRuntimeViews(ctx); err == nil {
@@ -80,11 +80,18 @@ func (a *groupAgent) ApplyAssignments(ctx context.Context) error {
 			continue
 		}
 		_, hasView := viewByGroup[assignment.GroupID]
-		if err := a.cluster.ensureManagedGroupLocal(ctx, multiraft.GroupID(assignment.GroupID), assignment.DesiredPeers, !hasView); err != nil {
+		if err := a.cluster.ensureManagedGroupLocal(
+			ctx,
+			multiraft.GroupID(assignment.GroupID),
+			assignment.DesiredPeers,
+			hasView,
+			false,
+		); err != nil {
 			return err
 		}
 	}
 
+	taskByGroup := make(map[uint32]controllermeta.ReconcileTask, len(assignments))
 	for _, assignment := range assignments {
 		task, err := a.client.GetTask(ctx, assignment.GroupID)
 		if errors.Is(err, controllermeta.ErrNotFound) {
@@ -93,13 +100,37 @@ func (a *groupAgent) ApplyAssignments(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if !reconcileTaskRunnable(time.Now(), task) || !a.shouldExecuteTask(assignment) {
+		taskByGroup[assignment.GroupID] = task
+	}
+
+	for _, assignment := range assignments {
+		if !assignmentContainsPeer(assignment.DesiredPeers, uint64(a.cluster.cfg.NodeID)) {
+			continue
+		}
+		task, ok := taskByGroup[assignment.GroupID]
+		if !ok {
+			continue
+		}
+		_, hasView := viewByGroup[assignment.GroupID]
+		bootstrapAuthorized := task.Kind == controllermeta.TaskKindBootstrap &&
+			reconcileTaskRunnable(now, task)
+		if bootstrapAuthorized {
+			if err := a.cluster.ensureManagedGroupLocal(
+				ctx,
+				multiraft.GroupID(assignment.GroupID),
+				assignment.DesiredPeers,
+				hasView,
+				true,
+			); err != nil {
+				return err
+			}
+		}
+		if !reconcileTaskRunnable(now, task) || !a.shouldExecuteTask(assignment) {
 			continue
 		}
 		execErr := a.cluster.executeReconcileTask(ctx, assignmentTaskState{
 			assignment: assignment,
 			task:       task,
-			view:       viewByGroup[assignment.GroupID],
 		})
 		reportCtx, cancel := withControllerTimeout(ctx)
 		reportErr := a.client.ReportTaskResult(reportCtx, assignment.GroupID, execErr)

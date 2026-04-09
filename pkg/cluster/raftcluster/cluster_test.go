@@ -11,8 +11,8 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/controllermeta"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metafsm"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/metastore"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"

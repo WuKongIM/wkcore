@@ -54,6 +54,7 @@ type controllerAPI interface {
 	Operator(ctx context.Context, op groupcontroller.OperatorRequest) error
 	GetTask(ctx context.Context, groupID uint32) (controllermeta.ReconcileTask, error)
 	ForceReconcile(ctx context.Context, groupID uint32) error
+	ReportTaskResult(ctx context.Context, groupID uint32, taskErr error) error
 }
 
 type controllerClient struct {
@@ -143,7 +144,7 @@ func (c *controllerClient) ReportTaskResult(ctx context.Context, groupID uint32,
 		advance.Err = taskErr.Error()
 	}
 	_, err := c.call(ctx, controllerRPCRequest{
-		Kind: controllerRPCTaskResult,
+		Kind:    controllerRPCTaskResult,
 		Advance: advance,
 	})
 	return err

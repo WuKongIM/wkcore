@@ -11,6 +11,9 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/cluster/groupcontroller"
 	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/storage/controllermeta"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/metafsm"
+	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
 	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
 )
 
@@ -84,6 +87,9 @@ type fakeControllerClient struct {
 	assignmentsErr      error
 	runtimeViews        []controllermeta.GroupRuntimeView
 	listRuntimeViewsErr error
+	tasks               map[uint32]controllermeta.ReconcileTask
+	getTaskErr          error
+	reportTaskResultErr error
 }
 
 func (f fakeControllerClient) Report(_ context.Context, _ groupcontroller.AgentReport) error {
@@ -102,12 +108,236 @@ func (f fakeControllerClient) Operator(_ context.Context, _ groupcontroller.Oper
 	return nil
 }
 
-func (f fakeControllerClient) GetTask(_ context.Context, _ uint32) (controllermeta.ReconcileTask, error) {
+func (f fakeControllerClient) GetTask(_ context.Context, groupID uint32) (controllermeta.ReconcileTask, error) {
+	if f.getTaskErr != nil {
+		return controllermeta.ReconcileTask{}, f.getTaskErr
+	}
+	if task, ok := f.tasks[groupID]; ok {
+		return task, nil
+	}
 	return controllermeta.ReconcileTask{}, controllermeta.ErrNotFound
 }
 
 func (f fakeControllerClient) ForceReconcile(_ context.Context, _ uint32) error {
 	return nil
+}
+
+func (f fakeControllerClient) ReportTaskResult(_ context.Context, _ uint32, _ error) error {
+	return f.reportTaskResultErr
+}
+
+type standaloneAgentTestCluster struct {
+	cluster *Cluster
+	raftDB  *raftstorage.DB
+	metaDB  *metadb.DB
+}
+
+func (c *standaloneAgentTestCluster) Close() {
+	if c == nil {
+		return
+	}
+	if c.cluster != nil {
+		c.cluster.Stop()
+		c.cluster = nil
+	}
+	if c.raftDB != nil {
+		_ = c.raftDB.Close()
+		c.raftDB = nil
+	}
+	if c.metaDB != nil {
+		_ = c.metaDB.Close()
+		c.metaDB = nil
+	}
+}
+
+func newStandaloneAgentTestCluster(t *testing.T) *standaloneAgentTestCluster {
+	t.Helper()
+
+	dir := t.TempDir()
+	metaDB, err := metadb.Open(filepath.Join(dir, "data"))
+	if err != nil {
+		t.Fatalf("open metadb: %v", err)
+	}
+	raftDB, err := raftstorage.Open(filepath.Join(dir, "raft"))
+	if err != nil {
+		_ = metaDB.Close()
+		t.Fatalf("open raftstorage: %v", err)
+	}
+
+	cluster, err := NewCluster(Config{
+		NodeID:        1,
+		ListenAddr:    "127.0.0.1:0",
+		GroupCount:    1,
+		GroupReplicaN: 1,
+		Nodes: []NodeConfig{
+			{NodeID: 1, Addr: "127.0.0.1:0"},
+		},
+		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
+			return raftDB.ForGroup(uint64(groupID)), nil
+		},
+		NewStateMachine: metafsm.NewStateMachineFactory(metaDB),
+	})
+	if err != nil {
+		_ = raftDB.Close()
+		_ = metaDB.Close()
+		t.Fatalf("NewCluster() error = %v", err)
+	}
+	if err := cluster.Start(); err != nil {
+		_ = raftDB.Close()
+		_ = metaDB.Close()
+		t.Fatalf("cluster.Start() error = %v", err)
+	}
+
+	t.Cleanup(func() {
+		(&standaloneAgentTestCluster{
+			cluster: cluster,
+			raftDB:  raftDB,
+			metaDB:  metaDB,
+		}).Close()
+	})
+
+	return &standaloneAgentTestCluster{
+		cluster: cluster,
+		raftDB:  raftDB,
+		metaDB:  metaDB,
+	}
+}
+
+func TestGroupAgentSkipsBootstrapUntilBootstrapTaskExists(t *testing.T) {
+	harness := newStandaloneAgentTestCluster(t)
+	assignment := controllermeta.GroupAssignment{
+		GroupID:      1,
+		DesiredPeers: []uint64{1},
+		ConfigEpoch:  1,
+	}
+	client := fakeControllerClient{
+		assignments: []controllermeta.GroupAssignment{assignment},
+	}
+	harness.cluster.assignments.SetAssignments(client.assignments)
+	harness.cluster.agent = &groupAgent{
+		cluster: harness.cluster,
+		client:  client,
+		cache:   harness.cluster.assignments,
+	}
+
+	if err := harness.cluster.agent.ApplyAssignments(context.Background()); err != nil {
+		t.Fatalf("ApplyAssignments() error = %v", err)
+	}
+
+	_, err := harness.cluster.runtime.Status(1)
+	if !errors.Is(err, multiraft.ErrGroupNotFound) {
+		t.Fatalf("runtime.Status() error = %v, want %v", err, multiraft.ErrGroupNotFound)
+	}
+}
+
+func TestGroupAgentBootstrapsBrandNewGroupWhenBootstrapTaskExists(t *testing.T) {
+	harness := newStandaloneAgentTestCluster(t)
+	assignment := controllermeta.GroupAssignment{
+		GroupID:      1,
+		DesiredPeers: []uint64{1},
+		ConfigEpoch:  1,
+	}
+	client := fakeControllerClient{
+		assignments: []controllermeta.GroupAssignment{assignment},
+		tasks: map[uint32]controllermeta.ReconcileTask{
+			1: {
+				GroupID:   1,
+				Kind:      controllermeta.TaskKindBootstrap,
+				Step:      controllermeta.TaskStepAddLearner,
+				Status:    controllermeta.TaskStatusPending,
+				NextRunAt: time.Now(),
+			},
+		},
+	}
+	harness.cluster.assignments.SetAssignments(client.assignments)
+	harness.cluster.agent = &groupAgent{
+		cluster: harness.cluster,
+		client:  client,
+		cache:   harness.cluster.assignments,
+	}
+
+	if err := harness.cluster.agent.ApplyAssignments(context.Background()); err != nil {
+		t.Fatalf("ApplyAssignments() error = %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := harness.cluster.runtime.Status(1); err == nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("group 1 was not bootstrapped")
+}
+
+func TestGroupAgentReopensPersistedGroupBeforeTaskFetch(t *testing.T) {
+	harness := newStandaloneAgentTestCluster(t)
+	requireNoError := func(err error) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	requireNoError(harness.cluster.ensureManagedGroupLocal(context.Background(), 1, []uint64{1}, false, true))
+	requireNoError(harness.cluster.waitForManagedGroupLeader(context.Background(), 1))
+	requireNoError(harness.cluster.runtime.CloseGroup(context.Background(), 1))
+
+	taskErr := errors.New("task fetch failed")
+	assignment := controllermeta.GroupAssignment{
+		GroupID:      1,
+		DesiredPeers: []uint64{1},
+		ConfigEpoch:  1,
+	}
+	client := fakeControllerClient{
+		assignments: []controllermeta.GroupAssignment{assignment},
+		getTaskErr:  taskErr,
+	}
+	harness.cluster.assignments.SetAssignments(client.assignments)
+	harness.cluster.agent = &groupAgent{
+		cluster: harness.cluster,
+		client:  client,
+		cache:   harness.cluster.assignments,
+	}
+
+	err := harness.cluster.agent.ApplyAssignments(context.Background())
+	if !errors.Is(err, taskErr) {
+		t.Fatalf("ApplyAssignments() error = %v, want %v", err, taskErr)
+	}
+	if _, err := harness.cluster.runtime.Status(1); err != nil {
+		t.Fatalf("runtime.Status() error = %v", err)
+	}
+}
+
+func TestWaitForManagedGroupCatchUpRequiresTargetToReachLeaderCommit(t *testing.T) {
+	restoreLeader := setManagedGroupLeaderTestHook(func(_ *Cluster, groupID multiraft.GroupID) (multiraft.NodeID, error, bool) {
+		if groupID != 1 {
+			return 0, nil, false
+		}
+		return 1, nil, true
+	})
+	defer restoreLeader()
+
+	restore := setManagedGroupStatusTestHook(func(_ *Cluster, nodeID multiraft.NodeID, groupID multiraft.GroupID) (managedGroupStatus, error, bool) {
+		if groupID != 1 {
+			return managedGroupStatus{}, nil, false
+		}
+		switch nodeID {
+		case 1:
+			return managedGroupStatus{LeaderID: 1, CommitIndex: 9, AppliedIndex: 9}, nil, true
+		case 4:
+			return managedGroupStatus{LeaderID: 1, CommitIndex: 9, AppliedIndex: 3}, nil, true
+		default:
+			return managedGroupStatus{}, ErrGroupNotFound, true
+		}
+	})
+	defer restore()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err := (&Cluster{}).waitForManagedGroupCatchUp(ctx, 1, 4)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waitForManagedGroupCatchUp() error = %v, want %v", err, context.DeadlineExceeded)
+	}
 }
 
 func newStartedTestServer(t *testing.T) *nodetransport.Server {

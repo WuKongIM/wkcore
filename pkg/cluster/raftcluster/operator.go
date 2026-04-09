@@ -24,7 +24,7 @@ type RecoverStrategy uint8
 
 const (
 	RecoverStrategyLatestLiveReplica RecoverStrategy = iota + 1
-	controllerLeaderWaitTimeout                       = 10 * time.Second
+	controllerLeaderWaitTimeout                      = 10 * time.Second
 )
 
 func (c *Cluster) MarkNodeDraining(ctx context.Context, nodeID uint64) error {

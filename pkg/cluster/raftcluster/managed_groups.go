@@ -20,25 +20,47 @@ const (
 )
 
 type managedGroupRPCRequest struct {
-	Kind       string                `json:"kind"`
-	GroupID    uint32                `json:"group_id"`
-	TargetNode uint64                `json:"target_node,omitempty"`
-	ChangeType multiraft.ChangeType  `json:"change_type,omitempty"`
-	NodeID     uint64                `json:"node_id,omitempty"`
+	Kind       string               `json:"kind"`
+	GroupID    uint32               `json:"group_id"`
+	TargetNode uint64               `json:"target_node,omitempty"`
+	ChangeType multiraft.ChangeType `json:"change_type,omitempty"`
+	NodeID     uint64               `json:"node_id,omitempty"`
 }
 
 type managedGroupRPCResponse struct {
-	NotLeader bool   `json:"not_leader,omitempty"`
-	NotFound  bool   `json:"not_found,omitempty"`
-	Timeout   bool   `json:"timeout,omitempty"`
-	Message   string `json:"message,omitempty"`
+	NotLeader    bool   `json:"not_leader,omitempty"`
+	NotFound     bool   `json:"not_found,omitempty"`
+	Timeout      bool   `json:"timeout,omitempty"`
+	Message      string `json:"message,omitempty"`
+	LeaderID     uint64 `json:"leader_id,omitempty"`
+	CommitIndex  uint64 `json:"commit_index,omitempty"`
+	AppliedIndex uint64 `json:"applied_index,omitempty"`
 }
 
 type ManagedGroupExecutionTestHook func(groupID uint32, task controllermeta.ReconcileTask) error
 
+type managedGroupStatus struct {
+	LeaderID     multiraft.NodeID
+	CommitIndex  uint64
+	AppliedIndex uint64
+}
+
+type managedGroupStatusTestHook func(c *Cluster, nodeID multiraft.NodeID, groupID multiraft.GroupID) (managedGroupStatus, error, bool)
+type managedGroupLeaderTestHook func(c *Cluster, groupID multiraft.GroupID) (multiraft.NodeID, error, bool)
+
 var managedGroupExecutionTestHook struct {
 	mu   sync.RWMutex
 	hook ManagedGroupExecutionTestHook
+}
+
+var managedGroupStatusHooks struct {
+	mu   sync.RWMutex
+	hook managedGroupStatusTestHook
+}
+
+var managedGroupLeaderHooks struct {
+	mu   sync.RWMutex
+	hook managedGroupLeaderTestHook
 }
 
 func SetManagedGroupExecutionTestHook(hook ManagedGroupExecutionTestHook) func() {
@@ -53,6 +75,30 @@ func SetManagedGroupExecutionTestHook(hook ManagedGroupExecutionTestHook) func()
 	}
 }
 
+func setManagedGroupStatusTestHook(hook managedGroupStatusTestHook) func() {
+	managedGroupStatusHooks.mu.Lock()
+	prev := managedGroupStatusHooks.hook
+	managedGroupStatusHooks.hook = hook
+	managedGroupStatusHooks.mu.Unlock()
+	return func() {
+		managedGroupStatusHooks.mu.Lock()
+		managedGroupStatusHooks.hook = prev
+		managedGroupStatusHooks.mu.Unlock()
+	}
+}
+
+func setManagedGroupLeaderTestHook(hook managedGroupLeaderTestHook) func() {
+	managedGroupLeaderHooks.mu.Lock()
+	prev := managedGroupLeaderHooks.hook
+	managedGroupLeaderHooks.hook = hook
+	managedGroupLeaderHooks.mu.Unlock()
+	return func() {
+		managedGroupLeaderHooks.mu.Lock()
+		managedGroupLeaderHooks.hook = prev
+		managedGroupLeaderHooks.mu.Unlock()
+	}
+}
+
 func (c *Cluster) handleManagedGroupRPC(ctx context.Context, body []byte) ([]byte, error) {
 	var req managedGroupRPCRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -61,10 +107,14 @@ func (c *Cluster) handleManagedGroupRPC(ctx context.Context, body []byte) ([]byt
 
 	switch req.Kind {
 	case managedGroupRPCStatus:
-		_, err := c.runtime.Status(multiraft.GroupID(req.GroupID))
+		status, err := c.runtime.Status(multiraft.GroupID(req.GroupID))
 		switch {
 		case err == nil:
-			return json.Marshal(managedGroupRPCResponse{})
+			return json.Marshal(managedGroupRPCResponse{
+				LeaderID:     uint64(status.LeaderID),
+				CommitIndex:  status.CommitIndex,
+				AppliedIndex: status.AppliedIndex,
+			})
 		case errors.Is(err, multiraft.ErrGroupNotFound):
 			return json.Marshal(managedGroupRPCResponse{NotFound: true})
 		default:
@@ -99,7 +149,7 @@ func marshalManagedGroupError(err error) ([]byte, error) {
 	}
 }
 
-func (c *Cluster) ensureManagedGroupLocal(ctx context.Context, groupID multiraft.GroupID, desiredPeers []uint64, bootstrap bool) error {
+func (c *Cluster) ensureManagedGroupLocal(ctx context.Context, groupID multiraft.GroupID, desiredPeers []uint64, hasRuntimeView bool, bootstrapAuthorized bool) error {
 	if c.runtime == nil {
 		return ErrNotStarted
 	}
@@ -141,8 +191,8 @@ func (c *Cluster) ensureManagedGroupLocal(ctx context.Context, groupID multiraft
 	}
 
 	peers := nodeIDsFromUint64s(desiredPeers)
-	c.setRuntimePeers(groupID, peers)
-	if bootstrap {
+	if bootstrapAuthorized {
+		c.setRuntimePeers(groupID, peers)
 		if err := c.runtime.BootstrapGroup(ctx, multiraft.BootstrapGroupRequest{
 			Group:  opts,
 			Voters: peers,
@@ -151,6 +201,10 @@ func (c *Cluster) ensureManagedGroupLocal(ctx context.Context, groupID multiraft
 		}
 		return nil
 	}
+	if !hasRuntimeView {
+		return nil
+	}
+	c.setRuntimePeers(groupID, peers)
 	if err := c.runtime.OpenGroup(ctx, opts); err != nil && !errors.Is(err, multiraft.ErrGroupExists) {
 		return err
 	}
@@ -172,8 +226,7 @@ func (c *Cluster) executeReconcileTask(ctx context.Context, assignment assignmen
 
 	switch assignment.task.Kind {
 	case controllermeta.TaskKindBootstrap:
-		_, err := c.LeaderOf(groupID)
-		return err
+		return c.waitForManagedGroupLeader(ctx, groupID)
 	case controllermeta.TaskKindRepair, controllermeta.TaskKindRebalance:
 		if err := c.changeGroupConfig(ctx, groupID, multiraft.ConfigChange{
 			Type:   multiraft.AddLearner,
@@ -181,7 +234,7 @@ func (c *Cluster) executeReconcileTask(ctx context.Context, assignment assignmen
 		}); err != nil {
 			return err
 		}
-		if err := c.waitForManagedGroupOnNode(ctx, groupID, multiraft.NodeID(assignment.task.TargetNode)); err != nil {
+		if err := c.waitForManagedGroupCatchUp(ctx, groupID, multiraft.NodeID(assignment.task.TargetNode)); err != nil {
 			return err
 		}
 		if err := c.changeGroupConfig(ctx, groupID, multiraft.ConfigChange{
@@ -190,10 +243,13 @@ func (c *Cluster) executeReconcileTask(ctx context.Context, assignment assignmen
 		}); err != nil {
 			return err
 		}
-		if assignment.view.LeaderID == assignment.task.SourceNode && assignment.task.TargetNode != 0 {
-			if err := c.transferGroupLeadership(ctx, groupID, multiraft.NodeID(assignment.task.TargetNode)); err != nil {
-				return err
-			}
+		if err := c.ensureLeaderMovedOffSource(
+			ctx,
+			groupID,
+			multiraft.NodeID(assignment.task.SourceNode),
+			multiraft.NodeID(assignment.task.TargetNode),
+		); err != nil {
+			return err
 		}
 		if assignment.task.SourceNode != 0 {
 			if err := c.changeGroupConfig(ctx, groupID, multiraft.ConfigChange{
@@ -311,21 +367,13 @@ func (c *Cluster) transferGroupLeaderRemote(ctx context.Context, leaderID multir
 	return decodeManagedGroupResponse(respBody)
 }
 
-func (c *Cluster) waitForManagedGroupOnNode(ctx context.Context, groupID multiraft.GroupID, nodeID multiraft.NodeID) error {
+func (c *Cluster) waitForManagedGroupLeader(ctx context.Context, groupID multiraft.GroupID) error {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if time.Now().After(deadline) {
 			return context.DeadlineExceeded
 		}
-		body, err := json.Marshal(managedGroupRPCRequest{
-			Kind:    managedGroupRPCStatus,
-			GroupID: uint32(groupID),
-		})
-		if err != nil {
-			return err
-		}
-		respBody, err := c.RPCService(ctx, nodeID, groupID, rpcServiceManagedGroup, body)
-		if err == nil && decodeManagedGroupResponse(respBody) == nil {
+		if _, err := c.LeaderOf(groupID); err == nil {
 			return nil
 		}
 		select {
@@ -334,6 +382,131 @@ func (c *Cluster) waitForManagedGroupOnNode(ctx context.Context, groupID multira
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+}
+
+func (c *Cluster) waitForManagedGroupCatchUp(ctx context.Context, groupID multiraft.GroupID, targetNode multiraft.NodeID) error {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			return context.DeadlineExceeded
+		}
+		targetStatus, err := c.managedGroupStatusOnNode(ctx, targetNode, groupID)
+		if err == nil {
+			leaderID, leaderErr := c.currentManagedGroupLeader(groupID)
+			if leaderErr == nil && leaderID != 0 {
+				leaderStatus, statusErr := c.managedGroupStatusOnNode(ctx, leaderID, groupID)
+				if statusErr == nil && targetStatus.AppliedIndex >= leaderStatus.CommitIndex {
+					return nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func (c *Cluster) currentManagedGroupLeader(groupID multiraft.GroupID) (multiraft.NodeID, error) {
+	managedGroupLeaderHooks.mu.RLock()
+	hook := managedGroupLeaderHooks.hook
+	managedGroupLeaderHooks.mu.RUnlock()
+	if hook != nil {
+		if leaderID, err, handled := hook(c, groupID); handled {
+			return leaderID, err
+		}
+	}
+	return c.LeaderOf(groupID)
+}
+
+func (c *Cluster) ensureLeaderMovedOffSource(ctx context.Context, groupID multiraft.GroupID, sourceNode, targetNode multiraft.NodeID) error {
+	if sourceNode == 0 || targetNode == 0 {
+		return nil
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			return ErrLeaderNotStable
+		}
+		leaderID, err := c.LeaderOf(groupID)
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+			continue
+		}
+		if leaderID != sourceNode {
+			return nil
+		}
+		if err := c.transferGroupLeadership(ctx, groupID, targetNode); err != nil && !errors.Is(err, ErrNotLeader) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func (c *Cluster) managedGroupStatusOnNode(ctx context.Context, nodeID multiraft.NodeID, groupID multiraft.GroupID) (managedGroupStatus, error) {
+	managedGroupStatusHooks.mu.RLock()
+	hook := managedGroupStatusHooks.hook
+	managedGroupStatusHooks.mu.RUnlock()
+	if hook != nil {
+		if status, err, handled := hook(c, nodeID, groupID); handled {
+			return status, err
+		}
+	}
+
+	if c.IsLocal(nodeID) {
+		return c.localManagedGroupStatus(groupID)
+	}
+
+	body, err := json.Marshal(managedGroupRPCRequest{
+		Kind:    managedGroupRPCStatus,
+		GroupID: uint32(groupID),
+	})
+	if err != nil {
+		return managedGroupStatus{}, err
+	}
+	respBody, err := c.RPCService(ctx, nodeID, groupID, rpcServiceManagedGroup, body)
+	if err != nil {
+		return managedGroupStatus{}, err
+	}
+	var resp managedGroupRPCResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return managedGroupStatus{}, err
+	}
+	if err := decodeManagedGroupResponse(respBody); err != nil {
+		return managedGroupStatus{}, err
+	}
+	return managedGroupStatus{
+		LeaderID:     multiraft.NodeID(resp.LeaderID),
+		CommitIndex:  resp.CommitIndex,
+		AppliedIndex: resp.AppliedIndex,
+	}, nil
+}
+
+func (c *Cluster) localManagedGroupStatus(groupID multiraft.GroupID) (managedGroupStatus, error) {
+	if c.runtime == nil {
+		return managedGroupStatus{}, ErrNotStarted
+	}
+	status, err := c.runtime.Status(groupID)
+	if err != nil {
+		if errors.Is(err, multiraft.ErrGroupNotFound) {
+			return managedGroupStatus{}, ErrGroupNotFound
+		}
+		return managedGroupStatus{}, err
+	}
+	return managedGroupStatus{
+		LeaderID:     status.LeaderID,
+		CommitIndex:  status.CommitIndex,
+		AppliedIndex: status.AppliedIndex,
+	}, nil
 }
 
 func decodeManagedGroupResponse(body []byte) error {
