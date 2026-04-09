@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	RPCServiceFetch       uint8 = 2
-	RPCServiceProgressAck uint8 = 3
-	RPCServiceFetchBatch  uint8 = 4
+	RPCServiceFetch       uint8 = 20
+	RPCServiceProgressAck uint8 = 21
+	RPCServiceFetchBatch  uint8 = 22
 
 	fetchRequestCodecVersion  byte = 1
 	fetchResponseCodecVersion byte = 1
