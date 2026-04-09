@@ -39,6 +39,29 @@ type testNode struct {
 	withController     bool
 }
 
+const (
+	testClusterTickInterval   = 25 * time.Millisecond
+	testClusterElectionTick   = 6
+	testClusterHeartbeatTick  = 1
+	testClusterDialTimeout    = 750 * time.Millisecond
+	testClusterForwardTimeout = 750 * time.Millisecond
+	testClusterPoolSize       = 1
+	testLeaderPollInterval    = 50 * time.Millisecond
+	testLeaderConfirmations   = 4
+	testManagedGroupProbeWait = 300 * time.Millisecond
+)
+
+func testClusterTimingConfig() raftcluster.Config {
+	return raftcluster.Config{
+		TickInterval:   testClusterTickInterval,
+		ElectionTick:   testClusterElectionTick,
+		HeartbeatTick:  testClusterHeartbeatTick,
+		DialTimeout:    testClusterDialTimeout,
+		ForwardTimeout: testClusterForwardTimeout,
+		PoolSize:       testClusterPoolSize,
+	}
+}
+
 func (n *testNode) stop() {
 	if n == nil {
 		return
@@ -103,6 +126,12 @@ func newStartedTestNode(
 		Groups:             append([]raftcluster.GroupConfig(nil), groups...),
 		ControllerMetaPath: controllerMetaPath,
 		ControllerRaftPath: controllerRaftPath,
+		TickInterval:       testClusterTickInterval,
+		ElectionTick:       testClusterElectionTick,
+		HeartbeatTick:      testClusterHeartbeatTick,
+		DialTimeout:        testClusterDialTimeout,
+		ForwardTimeout:     testClusterForwardTimeout,
+		PoolSize:           testClusterPoolSize,
 	}
 
 	c, err := raftcluster.NewCluster(cfg)
@@ -132,6 +161,45 @@ func newStartedTestNode(
 		controllerReplicaN: controllerReplicaN,
 		withController:     withController,
 	}
+}
+
+func TestTestClusterTimingConfigUsesFastTiming(t *testing.T) {
+	cfg := testClusterTimingConfig()
+
+	require.Equal(t, 25*time.Millisecond, cfg.TickInterval)
+	require.Equal(t, 6, cfg.ElectionTick)
+	require.Equal(t, 1, cfg.HeartbeatTick)
+	require.Equal(t, 750*time.Millisecond, cfg.DialTimeout)
+	require.Equal(t, 750*time.Millisecond, cfg.ForwardTimeout)
+	require.Equal(t, 1, cfg.PoolSize)
+}
+
+func TestStableLeaderWithinUsesShortConfirmationWindow(t *testing.T) {
+	nodes := startThreeNodes(t, 1)
+
+	start := time.Now()
+	waitForStableLeader(t, nodes, 1)
+
+	require.Less(t, time.Since(start), time.Second)
+}
+
+func TestWaitForManagedGroupsSettledReturnsQuicklyAfterAssignmentsExist(t *testing.T) {
+	nodes := startThreeNodesWithControllerWithSettle(t, 4, 3, false)
+	waitForControllerAssignments(t, nodes, 4)
+
+	start := time.Now()
+	waitForManagedGroupsSettled(t, nodes, 4)
+
+	require.Less(t, time.Since(start), 2*time.Second)
+}
+
+func TestStopNodesReturnsWithoutFixedThreeSecondDelay(t *testing.T) {
+	nodes := startThreeNodes(t, 1)
+
+	start := time.Now()
+	stopNodes(nodes)
+
+	require.Less(t, time.Since(start), time.Second)
 }
 
 func startSingleNode(t testing.TB, groupCount int) *testNode {
@@ -410,7 +478,7 @@ func stopNodes(nodes []*testNode) {
 	// Pebble-backed raft storage can still be finalizing the last batch commit
 	// when the test temp dir cleanup runs. Give teardown a brief grace window.
 	if stopped {
-		time.Sleep(3 * time.Second)
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
@@ -460,7 +528,7 @@ func waitForManagedGroupsSettled(t testing.TB, nodes []*testNode, groupCount int
 				}
 				groupNodes = append(groupNodes, nodes[idx])
 			}
-			if _, err := stableLeaderWithin(groupNodes, uint64(assignment.GroupID), 2*time.Second); err != nil {
+			if _, err := stableLeaderWithin(groupNodes, uint64(assignment.GroupID), testManagedGroupProbeWait); err != nil {
 				return false
 			}
 			if _, err := probe.cluster.GetReconcileTask(context.Background(), assignment.GroupID); err == nil {
@@ -470,7 +538,7 @@ func waitForManagedGroupsSettled(t testing.TB, nodes []*testNode, groupCount int
 			}
 		}
 		return true
-	}, 30*time.Second, 200*time.Millisecond)
+	}, 30*time.Second, 100*time.Millisecond)
 }
 
 func snapshotAssignments(t testing.TB, nodes []*testNode, groupCount int) []controllermeta.GroupAssignment {
@@ -729,7 +797,6 @@ func stableLeaderWithin(testNodes []*testNode, groupID uint64, timeout time.Dura
 	deadline := time.Now().Add(timeout)
 	var stableLeader multiraft.NodeID
 	stableCount := 0
-	requiredStable := 10
 
 	for time.Now().Before(deadline) {
 		var leaderID multiraft.NodeID
@@ -757,14 +824,14 @@ func stableLeaderWithin(testNodes []*testNode, groupID uint64, timeout time.Dura
 				stableLeader = leaderID
 				stableCount = 1
 			}
-			if stableCount >= requiredStable {
+			if stableCount >= testLeaderConfirmations {
 				return stableLeader, nil
 			}
 		} else {
 			stableCount = 0
 			stableLeader = 0
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(testLeaderPollInterval)
 	}
 	return 0, fmt.Errorf("no stable leader for group %d", groupID)
 }
