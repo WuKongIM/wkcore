@@ -28,25 +28,36 @@ import (
 
 const (
 	sendStressEnv                  = "WK_SEND_STRESS"
+	sendStressModeEnv              = "WK_SEND_STRESS_MODE"
 	sendStressDurationEnv          = "WK_SEND_STRESS_DURATION"
 	sendStressWorkersEnv           = "WK_SEND_STRESS_WORKERS"
 	sendStressSendersEnv           = "WK_SEND_STRESS_SENDERS"
 	sendStressMessagesPerWorkerEnv = "WK_SEND_STRESS_MESSAGES_PER_WORKER"
+	sendStressMaxInflightEnv       = "WK_SEND_STRESS_MAX_INFLIGHT_PER_WORKER"
 	sendStressDialTimeoutEnv       = "WK_SEND_STRESS_DIAL_TIMEOUT"
 	sendStressAckTimeoutEnv        = "WK_SEND_STRESS_ACK_TIMEOUT"
 	sendStressSeedEnv              = "WK_SEND_STRESS_SEED"
 	sendStressWarmupAckTimeout     = 12 * time.Second
 )
 
+type sendStressMode string
+
+const (
+	sendStressModeLatency    sendStressMode = "latency"
+	sendStressModeThroughput sendStressMode = "throughput"
+)
+
 type sendStressConfig struct {
-	Enabled           bool
-	Duration          time.Duration
-	Workers           int
-	Senders           int
-	MessagesPerWorker int
-	DialTimeout       time.Duration
-	AckTimeout        time.Duration
-	Seed              int64
+	Enabled              bool
+	Mode                 sendStressMode
+	MaxInflightPerWorker int
+	Duration             time.Duration
+	Workers              int
+	Senders              int
+	MessagesPerWorker    int
+	DialTimeout          time.Duration
+	AckTimeout           time.Duration
+	Seed                 int64
 }
 
 type sendStressLatencySummary struct {
@@ -112,15 +123,27 @@ func loadSendStressConfig(t *testing.T) sendStressConfig {
 	if !ok {
 		enabled = false
 	}
+	mode, ok, err := parseSendStressMode(os.Getenv(sendStressModeEnv))
+	if err != nil {
+		t.Fatalf("parse %s: %v", sendStressModeEnv, err)
+	}
+	if !ok {
+		mode = sendStressModeLatency
+	}
 
 	cfg := sendStressConfig{
-		Enabled:           enabled,
-		Duration:          envDuration(t, sendStressDurationEnv, 5*time.Second),
-		Workers:           envInt(t, sendStressWorkersEnv, max(4, runtime.GOMAXPROCS(0))),
-		MessagesPerWorker: envInt(t, sendStressMessagesPerWorkerEnv, 50),
-		DialTimeout:       envDuration(t, sendStressDialTimeoutEnv, 3*time.Second),
-		AckTimeout:        envDuration(t, sendStressAckTimeoutEnv, 5*time.Second),
-		Seed:              envInt64(t, sendStressSeedEnv, 20260408),
+		Enabled:              enabled,
+		Mode:                 mode,
+		Duration:             envDuration(t, sendStressDurationEnv, 5*time.Second),
+		Workers:              envInt(t, sendStressWorkersEnv, max(4, runtime.GOMAXPROCS(0))),
+		MessagesPerWorker:    envInt(t, sendStressMessagesPerWorkerEnv, 50),
+		DialTimeout:          envDuration(t, sendStressDialTimeoutEnv, 3*time.Second),
+		AckTimeout:           envDuration(t, sendStressAckTimeoutEnv, 5*time.Second),
+		Seed:                 envInt64(t, sendStressSeedEnv, 20260408),
+		MaxInflightPerWorker: 1,
+	}
+	if cfg.Mode == sendStressModeThroughput {
+		cfg.MaxInflightPerWorker = envInt(t, sendStressMaxInflightEnv, 1)
 	}
 
 	if cfg.Workers <= 0 {
@@ -154,6 +177,13 @@ func loadSendStressConfig(t *testing.T) sendStressConfig {
 }
 
 func validateSendStressConfig(cfg sendStressConfig) error {
+	switch cfg.Mode {
+	case "", sendStressModeLatency:
+		cfg.Mode = sendStressModeLatency
+	case sendStressModeThroughput:
+	default:
+		return fmt.Errorf("%s must be one of %q or %q, got %q", sendStressModeEnv, sendStressModeLatency, sendStressModeThroughput, cfg.Mode)
+	}
 	if cfg.Workers <= 0 {
 		return fmt.Errorf("%s must be > 0, got %d", sendStressWorkersEnv, cfg.Workers)
 	}
@@ -175,6 +205,12 @@ func validateSendStressConfig(cfg sendStressConfig) error {
 	if cfg.AckTimeout <= 0 {
 		return fmt.Errorf("%s must be > 0, got %s", sendStressAckTimeoutEnv, cfg.AckTimeout)
 	}
+	if cfg.Mode == sendStressModeThroughput && cfg.MaxInflightPerWorker <= 0 {
+		return fmt.Errorf("%s must be > 0, got %d", sendStressMaxInflightEnv, cfg.MaxInflightPerWorker)
+	}
+	if cfg.Mode != sendStressModeThroughput {
+		cfg.MaxInflightPerWorker = 1
+	}
 	return nil
 }
 
@@ -189,6 +225,20 @@ func parseSendStressEnabled(value string) (bool, bool, error) {
 		return false, true, nil
 	default:
 		return false, true, strconv.ErrSyntax
+	}
+}
+
+func parseSendStressMode(value string) (sendStressMode, bool, error) {
+	if strings.TrimSpace(value) == "" {
+		return "", false, nil
+	}
+	switch sendStressMode(strings.ToLower(strings.TrimSpace(value))) {
+	case sendStressModeLatency:
+		return sendStressModeLatency, true, nil
+	case sendStressModeThroughput:
+		return sendStressModeThroughput, true, nil
+	default:
+		return "", true, strconv.ErrSyntax
 	}
 }
 
@@ -241,28 +291,34 @@ func TestSendStressConfigDefaultsAndOverrides(t *testing.T) {
 	defaultCfg := loadSendStressConfig(t)
 	defaultWorkers := max(4, runtime.GOMAXPROCS(0))
 	require.False(t, defaultCfg.Enabled)
+	require.Equal(t, sendStressModeLatency, defaultCfg.Mode)
 	require.Equal(t, 5*time.Second, defaultCfg.Duration)
 	require.Equal(t, defaultWorkers, defaultCfg.Workers)
 	require.Equal(t, max(8, defaultWorkers), defaultCfg.Senders)
 	require.Equal(t, 50, defaultCfg.MessagesPerWorker)
+	require.Equal(t, 1, defaultCfg.MaxInflightPerWorker)
 	require.Equal(t, 3*time.Second, defaultCfg.DialTimeout)
 	require.Equal(t, 5*time.Second, defaultCfg.AckTimeout)
 
 	t.Setenv("WK_SEND_STRESS", "1")
+	t.Setenv("WK_SEND_STRESS_MODE", "throughput")
 	t.Setenv("WK_SEND_STRESS_DURATION", "1500ms")
 	t.Setenv("WK_SEND_STRESS_WORKERS", "7")
 	t.Setenv("WK_SEND_STRESS_SENDERS", "11")
 	t.Setenv("WK_SEND_STRESS_MESSAGES_PER_WORKER", "13")
+	t.Setenv("WK_SEND_STRESS_MAX_INFLIGHT_PER_WORKER", "9")
 	t.Setenv("WK_SEND_STRESS_DIAL_TIMEOUT", "2s")
 	t.Setenv("WK_SEND_STRESS_ACK_TIMEOUT", "1800ms")
 	t.Setenv("WK_SEND_STRESS_SEED", "42")
 
 	cfg := loadSendStressConfig(t)
 	require.True(t, cfg.Enabled)
+	require.Equal(t, sendStressModeThroughput, cfg.Mode)
 	require.Equal(t, 1500*time.Millisecond, cfg.Duration)
 	require.Equal(t, 7, cfg.Workers)
 	require.Equal(t, 11, cfg.Senders)
 	require.Equal(t, 13, cfg.MessagesPerWorker)
+	require.Equal(t, 9, cfg.MaxInflightPerWorker)
 	require.Equal(t, 2*time.Second, cfg.DialTimeout)
 	require.Equal(t, 1800*time.Millisecond, cfg.AckTimeout)
 	require.EqualValues(t, 42, cfg.Seed)
@@ -311,6 +367,42 @@ func TestSendStressConfigDefaultsAndOverrides(t *testing.T) {
 	require.Contains(t, err.Error(), sendStressMessagesPerWorkerEnv)
 
 	assertLoadSendStressConfigFailsOnInvalidEnv(t)
+}
+
+func TestSendStressConfigDefaultsToLatencyMode(t *testing.T) {
+	clearSendStressConfigEnv(t)
+
+	cfg := loadSendStressConfig(t)
+
+	require.Equal(t, sendStressModeLatency, cfg.Mode)
+	require.Equal(t, 1, cfg.MaxInflightPerWorker)
+}
+
+func TestSendStressConfigParsesThroughputModeAndInflightOverride(t *testing.T) {
+	clearSendStressConfigEnv(t)
+	t.Setenv(sendStressModeEnv, string(sendStressModeThroughput))
+	t.Setenv(sendStressMaxInflightEnv, "7")
+
+	cfg := loadSendStressConfig(t)
+
+	require.Equal(t, sendStressModeThroughput, cfg.Mode)
+	require.Equal(t, 7, cfg.MaxInflightPerWorker)
+}
+
+func TestValidateSendStressConfigRejectsInvalidThroughputInflight(t *testing.T) {
+	err := validateSendStressConfig(sendStressConfig{
+		Mode:                 sendStressModeThroughput,
+		MaxInflightPerWorker: 0,
+		Workers:              2,
+		Senders:              2,
+		MessagesPerWorker:    1,
+		Duration:             time.Second,
+		DialTimeout:          time.Second,
+		AckTimeout:           time.Second,
+	})
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), sendStressMaxInflightEnv)
 }
 
 func TestSendStressLatencySummaryPercentiles(t *testing.T) {
@@ -362,10 +454,12 @@ func clearSendStressConfigEnv(t *testing.T) {
 
 	for _, name := range []string{
 		sendStressEnv,
+		sendStressModeEnv,
 		sendStressDurationEnv,
 		sendStressWorkersEnv,
 		sendStressSendersEnv,
 		sendStressMessagesPerWorkerEnv,
+		sendStressMaxInflightEnv,
 		sendStressDialTimeoutEnv,
 		sendStressAckTimeoutEnv,
 		sendStressSeedEnv,
@@ -410,10 +504,12 @@ func filterSendStressEnv(env []string) []string {
 	filtered := make([]string, 0, len(env))
 	for _, entry := range env {
 		if strings.HasPrefix(entry, sendStressEnv+"=") ||
+			strings.HasPrefix(entry, sendStressModeEnv+"=") ||
 			strings.HasPrefix(entry, sendStressDurationEnv+"=") ||
 			strings.HasPrefix(entry, sendStressWorkersEnv+"=") ||
 			strings.HasPrefix(entry, sendStressSendersEnv+"=") ||
 			strings.HasPrefix(entry, sendStressMessagesPerWorkerEnv+"=") ||
+			strings.HasPrefix(entry, sendStressMaxInflightEnv+"=") ||
 			strings.HasPrefix(entry, sendStressDialTimeoutEnv+"=") ||
 			strings.HasPrefix(entry, sendStressAckTimeoutEnv+"=") ||
 			strings.HasPrefix(entry, sendStressSeedEnv+"=") {
