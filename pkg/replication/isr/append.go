@@ -144,9 +144,6 @@ func (r *replica) flushAppendBatch(batch []*appendRequest) {
 		return
 	}
 
-	r.appendMu.Lock()
-	defer r.appendMu.Unlock()
-
 	active, merged := r.buildActiveAppendBatch(batch)
 	if len(active) == 0 {
 		return

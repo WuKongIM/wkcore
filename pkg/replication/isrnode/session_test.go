@@ -351,6 +351,73 @@ func TestReplicationRetryIntervalUsesConfigOverride(t *testing.T) {
 	}
 }
 
+func TestScheduleFollowerReplicationCoalescesPendingDelayedRetry(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.FollowerReplicationRetryInterval = 15 * time.Millisecond
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(301, 4, 2, []isr.NodeID{1, 2}))
+
+	env.runtime.runScheduler()
+
+	groupKey := testGroupKey(301)
+	env.runtime.scheduleFollowerReplication(groupKey, 2)
+	env.runtime.scheduleFollowerReplication(groupKey, 2)
+	env.runtime.scheduleFollowerReplication(groupKey, 2)
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := queuedReplicationPeers(env.runtime.groups[groupKey]); got > 0 {
+			if got != 1 {
+				t.Fatalf("expected one delayed retry to be queued, got %d", got)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	t.Fatal("expected delayed retry to be queued")
+}
+
+func TestDelayedFollowerRetrySkipsStaleLeaderAfterMetaChange(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.AutoRunScheduler = true
+		cfg.FollowerReplicationRetryInterval = 15 * time.Millisecond
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(302, 4, 2, []isr.NodeID{1, 2, 3}))
+
+	oldLeader := env.sessions.session(2)
+	newLeader := env.sessions.session(3)
+
+	env.runtime.runScheduler()
+	if got := oldLeader.sendCount(); got != 1 {
+		t.Fatalf("expected initial fetch to old leader, got %d sends", got)
+	}
+
+	env.runtime.scheduleFollowerReplication(testGroupKey(302), 2)
+	if err := env.runtime.ApplyMeta(testMetaLocal(302, 5, 3, []isr.NodeID{1, 2, 3})); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := newLeader.sendCount(); got >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := newLeader.sendCount(); got != 1 {
+		t.Fatalf("expected immediate fetch to new leader, got %d sends", got)
+	}
+
+	time.Sleep(40 * time.Millisecond)
+	if got := oldLeader.sendCount(); got != 1 {
+		t.Fatalf("expected stale delayed retry to old leader to be skipped, got %d sends", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 0 {
+		t.Fatalf("expected stale delayed retry to avoid queueing old leader fetches, got %d queued", got)
+	}
+}
+
 func TestApplyMetaFailureLeavesCachedGroupMetaUnchanged(t *testing.T) {
 	env := newSessionTestEnv(t)
 	initial := testMetaLocal(31, 1, 2, []isr.NodeID{1, 2})
@@ -728,6 +795,16 @@ func testMetaLocal(groupID, epoch uint64, leader isr.NodeID, replicas []isr.Node
 		Replicas: append([]isr.NodeID(nil), replicas...),
 		ISR:      append([]isr.NodeID(nil), replicas...),
 		MinISR:   1,
+	}
+}
+
+func queuedReplicationPeers(g *group) int {
+	count := 0
+	for {
+		if _, ok := g.popReplicationPeer(); !ok {
+			return count
+		}
+		count++
 	}
 }
 

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -296,6 +297,39 @@ func TestAsyncCommittedDispatcherSubmitsToConversationProjector(t *testing.T) {
 	require.Equal(t, msg, conversation.calls[0])
 }
 
+func TestAsyncCommittedDispatcherPrefersLocalDeliveryWithoutOwnerLookup(t *testing.T) {
+	delivery := &recordingCommittedSubmitter{}
+	conversation := &recordingCommittedSubmitter{}
+	channelLog := &stubChannelLogCluster{
+		statusErr: errors.New("status should not be called in local-preferred mode"),
+	}
+	dispatcher := asyncCommittedDispatcher{
+		localNodeID:  1,
+		preferLocal:  true,
+		channelLog:   channelLog,
+		delivery:     delivery,
+		conversation: conversation,
+	}
+
+	msg := channellog.Message{
+		ChannelID:   "u1@u2",
+		ChannelType: wkframe.ChannelTypePerson,
+		MessageID:   100,
+		MessageSeq:  9,
+		ClientMsgNo: "c2",
+		FromUID:     "u1",
+		Payload:     []byte("hello local"),
+	}
+	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), msg))
+
+	require.Eventually(t, func() bool {
+		return len(delivery.calls) == 1 && len(conversation.calls) == 1
+	}, time.Second, 10*time.Millisecond)
+	require.Equal(t, 0, channelLog.StatusCalls())
+	require.Equal(t, msg, delivery.calls[0])
+	require.Equal(t, msg, conversation.calls[0])
+}
+
 func TestBuildRealtimeRecvPacketUsesDurableTimestampAndPersonChannelView(t *testing.T) {
 	packet := buildRealtimeRecvPacket(channellog.Message{
 		MessageID:   88,
@@ -478,8 +512,10 @@ func (r *recordingAuthoritative) EndpointsByUIDs(_ context.Context, uids []strin
 }
 
 type stubChannelLogCluster struct {
-	status    channellog.ChannelRuntimeStatus
-	statusErr error
+	mu          sync.Mutex
+	status      channellog.ChannelRuntimeStatus
+	statusErr   error
+	statusCalls int
 }
 
 func (s *stubChannelLogCluster) ApplyMeta(channellog.ChannelMeta) error {
@@ -495,5 +531,14 @@ func (s *stubChannelLogCluster) Fetch(context.Context, channellog.FetchRequest) 
 }
 
 func (s *stubChannelLogCluster) Status(channellog.ChannelKey) (channellog.ChannelRuntimeStatus, error) {
+	s.mu.Lock()
+	s.statusCalls++
+	s.mu.Unlock()
 	return s.status, s.statusErr
+}
+
+func (s *stubChannelLogCluster) StatusCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.statusCalls
 }

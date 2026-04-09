@@ -36,7 +36,7 @@ func TestChannelLogConversationFactsLoadLatestMessagesBatchesRemoteLoadsByOwner(
 	facts := channelLogConversationFacts{
 		cluster: staleConversationFactsCluster{},
 		metas:   metas,
-		remote: remote,
+		remote:  remote,
 	}
 
 	got, err := facts.LoadLatestMessages(context.Background(), []conversationusecase.ConversationKey{
@@ -84,7 +84,7 @@ func TestChannelLogConversationFactsSupportsBatchRecentLoadsByOwner(t *testing.T
 	facts := channelLogConversationFacts{
 		cluster: staleConversationFactsCluster{},
 		metas:   metas,
-		remote: remote,
+		remote:  remote,
 	}
 
 	loader, ok := any(facts).(interface {
@@ -112,6 +112,13 @@ func TestChannelLogConversationFactsSupportsBatchRecentLoadsByOwner(t *testing.T
 		{NodeID: 2, Keys: []channellog.ChannelKey{{ChannelID: "g1", ChannelType: 2}, {ChannelID: "g2", ChannelType: 2}}},
 	}, normalizeConversationFactsBatchCalls(remote.recentBatchCalls))
 	require.Equal(t, 1, metas.batchCalls)
+}
+
+func TestDeliveryShardCountForParallelismUsesBoundedFanout(t *testing.T) {
+	require.Equal(t, 4, deliveryShardCountForParallelism(1))
+	require.Equal(t, 4, deliveryShardCountForParallelism(4))
+	require.Equal(t, 8, deliveryShardCountForParallelism(8))
+	require.Equal(t, 16, deliveryShardCountForParallelism(64))
 }
 
 type staleConversationFactsCluster struct{}

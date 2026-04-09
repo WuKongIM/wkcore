@@ -149,9 +149,21 @@ func (g *group) drainSnapshotBytes() int64 {
 type nodeIDQueue struct {
 	items []isr.NodeID
 	head  int
+	set   map[isr.NodeID]struct{}
+	dirty map[isr.NodeID]struct{}
 }
 
 func (q *nodeIDQueue) enqueue(nodeID isr.NodeID) {
+	if q.set == nil {
+		q.set = make(map[isr.NodeID]struct{})
+	}
+	if _, ok := q.set[nodeID]; ok {
+		if q.dirty == nil {
+			q.dirty = make(map[isr.NodeID]struct{})
+		}
+		q.dirty[nodeID] = struct{}{}
+		return
+	}
 	if q.head == len(q.items) {
 		q.items = q.items[:0]
 		q.head = 0
@@ -159,6 +171,7 @@ func (q *nodeIDQueue) enqueue(nodeID isr.NodeID) {
 		q.compact()
 	}
 	q.items = append(q.items, nodeID)
+	q.set[nodeID] = struct{}{}
 }
 
 func (q *nodeIDQueue) pop() (isr.NodeID, bool) {
@@ -169,6 +182,18 @@ func (q *nodeIDQueue) pop() (isr.NodeID, bool) {
 	nodeID := q.items[q.head]
 	q.items[q.head] = 0
 	q.head++
+	if _, ok := q.dirty[nodeID]; ok {
+		delete(q.dirty, nodeID)
+		if q.head == len(q.items) {
+			q.items = q.items[:0]
+			q.head = 0
+		} else if q.head > 0 && len(q.items) == cap(q.items) {
+			q.compact()
+		}
+		q.items = append(q.items, nodeID)
+		return nodeID, true
+	}
+	delete(q.set, nodeID)
 	if q.head == len(q.items) {
 		q.items = q.items[:0]
 		q.head = 0

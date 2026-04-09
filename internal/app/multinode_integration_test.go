@@ -561,6 +561,10 @@ type appNodeSpec struct {
 }
 
 func newThreeNodeAppHarness(t *testing.T) *threeNodeAppHarness {
+	return newThreeNodeAppHarnessWithConfigMutator(t, nil)
+}
+
+func newThreeNodeAppHarnessWithConfigMutator(t *testing.T, mutate func(*Config)) *threeNodeAppHarness {
 	t.Helper()
 
 	clusterAddrs := reserveTestTCPAddrs(t, 3)
@@ -603,6 +607,9 @@ func newThreeNodeAppHarness(t *testing.T) *threeNodeAppHarness {
 		cfg.API.ListenAddr = apiAddrs[nodeID]
 		cfg.Gateway.Listeners = []gateway.ListenerOptions{
 			binding.TCPWKProto("tcp-wkproto", gatewayAddrs[nodeID]),
+		}
+		if mutate != nil {
+			mutate(&cfg)
 		}
 
 		specs[nodeID] = appNodeSpec{cfg: cfg}

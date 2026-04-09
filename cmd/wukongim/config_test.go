@@ -161,3 +161,19 @@ func TestLoadConfigParsesDataPlaneRPCTimeoutFromConf(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 250*time.Millisecond, cfg.Cluster.DataPlaneRPCTimeout)
 }
+
+func TestLoadConfigParsesGatewayAsyncSendDispatchFromConf(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_GATEWAY_DEFAULT_SESSION_ASYNC_SEND_DISPATCH=true",
+		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
+		`WK_CLUSTER_GROUPS=[{"id":1,"peers":[1]}]`,
+	)
+
+	cfg, err := loadConfig(configPath)
+	require.NoError(t, err)
+	require.True(t, cfg.Gateway.DefaultSession.AsyncSendDispatch)
+}

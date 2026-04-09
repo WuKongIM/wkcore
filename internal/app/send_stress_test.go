@@ -39,6 +39,7 @@ const (
 	sendStressAckTimeoutEnv        = "WK_SEND_STRESS_ACK_TIMEOUT"
 	sendStressSeedEnv              = "WK_SEND_STRESS_SEED"
 	sendStressWarmupAckTimeout     = 12 * time.Second
+	sendStressThroughputInflight   = 32
 )
 
 type sendStressMode string
@@ -223,7 +224,7 @@ func loadSendStressConfig(t *testing.T) sendStressConfig {
 		MaxInflightPerWorker: 1,
 	}
 	if cfg.Mode == sendStressModeThroughput {
-		cfg.MaxInflightPerWorker = envInt(t, sendStressMaxInflightEnv, 1)
+		cfg.MaxInflightPerWorker = envInt(t, sendStressMaxInflightEnv, sendStressThroughputInflight)
 	}
 
 	if cfg.Workers <= 0 {
@@ -484,6 +485,19 @@ func percentileSendStressDuration(sorted []time.Duration, pct float64) time.Dura
 	return sorted[index]
 }
 
+func sendStressActiveTargetCount(cfg sendStressConfig, totalTargets int) int {
+	if totalTargets <= 0 {
+		return 0
+	}
+	if cfg.Mode == sendStressModeThroughput {
+		return totalTargets
+	}
+	if cfg.Workers <= 0 {
+		return 0
+	}
+	return min(cfg.Workers, totalTargets)
+}
+
 func TestSendStressConfigDefaultsAndOverrides(t *testing.T) {
 	if os.Getenv("SEND_STRESS_FORCE_INVALID_LOAD") == "1" {
 		_ = loadSendStressConfig(t)
@@ -592,6 +606,16 @@ func TestSendStressConfigParsesThroughputModeAndInflightOverride(t *testing.T) {
 	require.Equal(t, 7, cfg.MaxInflightPerWorker)
 }
 
+func TestSendStressConfigDefaultsThroughputModeToMultiInflight(t *testing.T) {
+	clearSendStressConfigEnv(t)
+	t.Setenv(sendStressModeEnv, string(sendStressModeThroughput))
+
+	cfg := loadSendStressConfig(t)
+
+	require.Equal(t, sendStressModeThroughput, cfg.Mode)
+	require.Equal(t, sendStressThroughputInflight, cfg.MaxInflightPerWorker)
+}
+
 func TestValidateSendStressConfigRejectsInvalidThroughputInflight(t *testing.T) {
 	err := validateSendStressConfig(sendStressConfig{
 		Mode:                 sendStressModeThroughput,
@@ -622,6 +646,12 @@ func TestSendStressLatencySummaryPercentiles(t *testing.T) {
 	require.Equal(t, 90*time.Millisecond, summary.P95)
 	require.Equal(t, 90*time.Millisecond, summary.P99)
 	require.Equal(t, 90*time.Millisecond, summary.Max)
+}
+
+func TestSendStressActiveTargetCountUsesAllSendersInThroughputMode(t *testing.T) {
+	require.Equal(t, 128, sendStressActiveTargetCount(sendStressConfig{Mode: sendStressModeThroughput, Workers: 32}, 128))
+	require.Equal(t, 32, sendStressActiveTargetCount(sendStressConfig{Mode: sendStressModeLatency, Workers: 32}, 128))
+	require.Equal(t, 16, sendStressActiveTargetCount(sendStressConfig{Mode: sendStressModeLatency, Workers: 32}, 16))
 }
 
 func TestSendStressOutcomeErrorRate(t *testing.T) {
@@ -792,7 +822,11 @@ func TestSendStressThreeNode(t *testing.T) {
 	cfg := loadSendStressConfig(t)
 	requireSendStressEnabled(t, cfg)
 
-	harness := newThreeNodeAppHarness(t)
+	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(appCfg *Config) {
+		if cfg.Mode == sendStressModeThroughput {
+			appCfg.Gateway.DefaultSession.AsyncSendDispatch = true
+		}
+	})
 	leaderID := harness.waitForStableLeader(t, 1)
 	leader := harness.apps[leaderID]
 
@@ -936,10 +970,11 @@ func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []
 	require.NotEmpty(t, targets)
 	require.NotZero(t, cfg.Workers)
 
-	require.GreaterOrEqual(t, len(targets), cfg.Workers)
+	activeTargetCount := sendStressActiveTargetCount(cfg, len(targets))
+	require.Positive(t, activeTargetCount)
 
-	clients := make([]sendStressWorkerClient, 0, cfg.Workers)
-	for worker := 0; worker < cfg.Workers; worker++ {
+	clients := make([]sendStressWorkerClient, 0, activeTargetCount)
+	for worker := 0; worker < activeTargetCount; worker++ {
 		target := targets[worker]
 		app := harness.apps[target.ConnectNodeID]
 		require.NotNil(t, app, "connect node %d is not running", target.ConnectNodeID)
@@ -966,8 +1001,8 @@ func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []
 	var success atomic.Uint64
 	var failed atomic.Uint64
 	var mu sync.Mutex
-	records := make([]sendStressRecord, 0, cfg.Workers*cfg.MessagesPerWorker)
-	latencies := make([]time.Duration, 0, cfg.Workers*cfg.MessagesPerWorker)
+	records := make([]sendStressRecord, 0, activeTargetCount*cfg.MessagesPerWorker)
+	latencies := make([]time.Duration, 0, activeTargetCount*cfg.MessagesPerWorker)
 	failures := make([]string, 0, 8)
 	appendFailure := func(format string, args ...any) {
 		mu.Lock()

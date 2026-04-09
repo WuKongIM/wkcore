@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"time"
 
 	accessapi "github.com/WuKongIM/WuKongIM/internal/access/api"
@@ -165,6 +166,7 @@ func build(cfg Config) (_ *App, err error) {
 		Store: app.store,
 	})
 	app.deliveryRuntime = deliveryruntime.NewManager(deliveryruntime.Config{
+		ShardCount: deliveryShardCountForParallelism(runtime.GOMAXPROCS(0)),
 		Resolver: localDeliveryResolver{
 			subscribers: subscriberResolver,
 			authority:   authorityClient,
@@ -184,6 +186,7 @@ func build(cfg Config) (_ *App, err error) {
 	})
 	committedDispatcher := asyncCommittedDispatcher{
 		localNodeID:  cfg.Node.ID,
+		preferLocal:  true,
 		channelLog:   app.channelLog,
 		delivery:     app.deliveryApp,
 		conversation: app.conversationProjector,
@@ -254,6 +257,13 @@ func build(cfg Config) (_ *App, err error) {
 	}
 
 	return app, nil
+}
+
+func deliveryShardCountForParallelism(parallelism int) int {
+	if parallelism <= 0 {
+		parallelism = 1
+	}
+	return min(16, max(4, parallelism))
 }
 
 func dataPlaneMaxFetchInflightPeer(poolSize int) int {

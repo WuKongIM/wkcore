@@ -97,7 +97,7 @@ func (c *cluster) Append(ctx context.Context, req AppendRequest) (AppendResult, 
 		return AppendResult{}, err
 	}
 
-	messageSeq := commit.NextCommitHW
+	messageSeq := commit.BaseOffset + 1
 	if meta.Features.MessageSeqFormat == MessageSeqFormatLegacyU32 && messageSeq > maxLegacyMessageSeq {
 		return AppendResult{}, ErrMessageSeqExhausted
 	}

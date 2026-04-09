@@ -36,6 +36,28 @@ func TestAppendReturnsCommittedMessageSeqFromHW(t *testing.T) {
 	}
 }
 
+func TestAppendUsesBaseOffsetForSingleMessageSeqWhenCommitHWCoversBatch(t *testing.T) {
+	env := newAppendEnv(t)
+	env.group.appendFn = func(records []isr.Record) (isr.CommitResult, error) {
+		return isr.CommitResult{
+			BaseOffset:   7,
+			NextCommitHW: 9,
+			RecordCount:  len(records),
+		}, nil
+	}
+
+	result, err := env.cluster.Append(context.Background(), testAppendRequest())
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	if result.MessageSeq != 8 {
+		t.Fatalf("MessageSeq = %d, want 8", result.MessageSeq)
+	}
+	if result.Message.MessageSeq != 8 {
+		t.Fatalf("Message.MessageSeq = %d, want 8", result.Message.MessageSeq)
+	}
+}
+
 func TestAppendReturnsExistingEntryOnIdempotentRetry(t *testing.T) {
 	env := newAppendEnv(t)
 

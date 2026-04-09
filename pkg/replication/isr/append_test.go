@@ -195,6 +195,58 @@ func TestAppendDoesNotHoldReplicaLockAcrossLogSync(t *testing.T) {
 	}
 }
 
+func TestAppendAllowsNewRequestsToQueueWhileLogSyncIsInProgress(t *testing.T) {
+	env := newTestEnv(t)
+	env.replica = newReplicaFromEnv(t, env)
+	meta := activeMetaWithMinISR(7, 1, 1)
+	env.replica.mustApplyMeta(t, meta)
+	if err := env.replica.BecomeLeader(meta); err != nil {
+		t.Fatalf("BecomeLeader() error = %v", err)
+	}
+	env.log.syncStarted = make(chan struct{}, 1)
+	env.log.syncContinue = make(chan struct{})
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := env.replica.Append(context.Background(), []Record{{Payload: []byte("first"), SizeBytes: 5}})
+		firstDone <- err
+	}()
+
+	<-env.log.syncStarted
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := env.replica.Append(context.Background(), []Record{{Payload: []byte("second"), SizeBytes: 6}})
+		secondDone <- err
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+
+	pendingReady := make(chan int, 1)
+	go func() {
+		env.replica.appendMu.Lock()
+		pendingReady <- len(env.replica.appendPending)
+		env.replica.appendMu.Unlock()
+	}()
+
+	select {
+	case pending := <-pendingReady:
+		if pending == 0 {
+			t.Fatalf("appendPending = %d, want queued request while sync in progress", pending)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("appendPending inspection blocked while log.Sync was in progress")
+	}
+
+	close(env.log.syncContinue)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Append() error = %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second Append() error = %v", err)
+	}
+}
+
 func TestFetchSkipsUnsyncedLeaderRecordsWhileAppendSyncInProgress(t *testing.T) {
 	env := newFetchEnvWithHistory(t)
 	env.log.syncStarted = make(chan struct{}, 1)
