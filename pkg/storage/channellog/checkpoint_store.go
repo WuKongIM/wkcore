@@ -33,6 +33,13 @@ func (s *Store) storeCheckpoint(checkpoint isr.Checkpoint) error {
 	return nil
 }
 
+func (s *Store) writeCheckpoint(writeBatch *pebble.Batch, checkpoint isr.Checkpoint) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	return writeBatch.Set(encodeCheckpointKey(s.groupKey), encodeCheckpoint(checkpoint), pebble.NoSync)
+}
+
 func (s *Store) storeCheckpointAndMaybeDeleteSnapshot(checkpoint isr.Checkpoint, deleteSnapshot bool) error {
 	if err := s.validate(); err != nil {
 		return err

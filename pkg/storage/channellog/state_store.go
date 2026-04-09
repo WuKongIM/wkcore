@@ -18,6 +18,7 @@ type stateStore struct {
 var _ StateStoreFactory = (*stateStoreFactory)(nil)
 var _ ChannelStateStore = (*stateStore)(nil)
 var _ committingStateStore = (*stateStore)(nil)
+var _ batchCheckpointStateStore = (*stateStore)(nil)
 
 func (f *stateStoreFactory) ForChannel(key ChannelKey) (ChannelStateStore, error) {
 	if f == nil || f.db == nil {
@@ -186,6 +187,16 @@ func (s *stateStore) CommitCommittedWithCheckpoint(checkpoint isr.Checkpoint, ba
 	}
 	s.store.recordDurableCommit()
 	return nil
+}
+
+func (s *stateStore) BuildCommitCommittedWithCheckpoint(writeBatch *pebble.Batch, checkpoint isr.Checkpoint, batch []appliedMessage) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if err := s.writeCommitted(writeBatch, checkpoint, batch); err != nil {
+		return err
+	}
+	return s.store.writeCheckpoint(writeBatch, checkpoint)
 }
 
 func (s *stateStore) validate() error {

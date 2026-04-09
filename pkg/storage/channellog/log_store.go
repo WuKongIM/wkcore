@@ -42,6 +42,7 @@ func (s *Store) appendPayloadsWithCommit(payloads [][]byte, commitOpts *pebble.W
 		s.mu.Unlock()
 		return base, nil
 	}
+
 	s.writeInProgress.Store(true)
 	s.mu.Unlock()
 	defer s.writeInProgress.Store(false)
@@ -91,43 +92,68 @@ func (s *Store) applyFetchedRecords(records []isr.Record, committed []appliedMes
 	s.mu.Unlock()
 	defer s.writeInProgress.Store(false)
 
+	nextLEO := base + uint64(len(records))
+	if coordinator := s.commitCoordinator(); coordinator != nil {
+		err := coordinator.submit(commitRequest{
+			groupKey: s.groupKey,
+			build: func(writeBatch *pebble.Batch) error {
+				return s.writeApplyFetchedRecords(writeBatch, base, records, committed, checkpoint)
+			},
+			publish: func() error {
+				s.recordDurableCommit()
+				s.mu.Lock()
+				s.cachedLEO = nextLEO
+				s.leoLoaded = true
+				s.mu.Unlock()
+				return nil
+			},
+		})
+		if err != nil {
+			return 0, err
+		}
+		return nextLEO, nil
+	}
+
 	batch := s.db.db.NewBatch()
 	defer batch.Close()
 
-	for i, record := range records {
-		key := encodeLogRecordKey(s.groupKey, base+uint64(i))
-		value := append([]byte(nil), record.Payload...)
-		if err := batch.Set(key, value, pebble.NoSync); err != nil {
-			return 0, err
-		}
-	}
-	for _, msg := range committed {
-		if err := batch.Set(
-			encodeIdempotencyKey(s.groupKey, msg.key),
-			encodeIdempotencyEntry(msg.entry),
-			pebble.NoSync,
-		); err != nil {
-			return 0, err
-		}
-	}
-	if checkpoint != nil {
-		if err := batch.Set(
-			encodeCheckpointKey(s.groupKey),
-			encodeCheckpoint(*checkpoint),
-			pebble.NoSync,
-		); err != nil {
-			return 0, err
-		}
+	if err := s.writeApplyFetchedRecords(batch, base, records, committed, checkpoint); err != nil {
+		return 0, err
 	}
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return 0, err
 	}
 	s.recordDurableCommit()
 	s.mu.Lock()
-	s.cachedLEO = base + uint64(len(records))
+	s.cachedLEO = nextLEO
 	s.leoLoaded = true
 	s.mu.Unlock()
 	return s.cachedLEO, nil
+}
+
+func (s *Store) writeApplyFetchedRecords(writeBatch *pebble.Batch, base uint64, records []isr.Record, committed []appliedMessage, checkpoint *isr.Checkpoint) error {
+	for i, record := range records {
+		key := encodeLogRecordKey(s.groupKey, base+uint64(i))
+		value := append([]byte(nil), record.Payload...)
+		if err := writeBatch.Set(key, value, pebble.NoSync); err != nil {
+			return err
+		}
+	}
+	for _, msg := range committed {
+		if err := writeBatch.Set(
+			encodeIdempotencyKey(s.groupKey, msg.key),
+			encodeIdempotencyEntry(msg.entry),
+			pebble.NoSync,
+		); err != nil {
+			return err
+		}
+	}
+	if checkpoint != nil {
+		if err := s.writeCheckpoint(writeBatch, *checkpoint); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) readOffsets(fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
