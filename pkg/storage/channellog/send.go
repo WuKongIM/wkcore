@@ -115,24 +115,6 @@ func (c *cluster) Append(ctx context.Context, req AppendRequest) (AppendResult, 
 	committed := draft
 	committed.MessageSeq = messageSeq
 
-	if draft.ClientMsgNo != "" {
-		if entry, ok, err := store.GetIdempotency(idKey); err != nil {
-			return AppendResult{}, err
-		} else if ok {
-			if entry.MessageID != committed.MessageID || entry.MessageSeq != messageSeq || entry.Offset != messageSeq-1 {
-				return AppendResult{}, isr.ErrCorruptState
-			}
-			return AppendResult{MessageID: committed.MessageID, MessageSeq: messageSeq, Message: committed}, nil
-		}
-		if err := store.PutIdempotency(idKey, IdempotencyEntry{
-			MessageID:  committed.MessageID,
-			MessageSeq: messageSeq,
-			Offset:     messageSeq - 1,
-		}); err != nil {
-			return AppendResult{}, err
-		}
-	}
-
 	return AppendResult{MessageID: committed.MessageID, MessageSeq: messageSeq, Message: committed}, nil
 }
 

@@ -41,7 +41,7 @@ func (f *fakeRuntime) Group(groupKey isr.GroupKey) (GroupHandle, bool) {
 }
 
 type fakeMessageLog struct {
-	records []LogRecord
+	records   []LogRecord
 	readCalls int
 }
 
@@ -68,9 +68,12 @@ func (f *fakeMessageLog) Read(_ isr.GroupKey, fromOffset uint64, limit int, maxB
 type fakeStateStore struct {
 	idempotency   map[IdempotencyKey]IdempotencyEntry
 	restoreCalled bool
+	putCalls      int
+	getCalls      int
 }
 
 func (f *fakeStateStore) PutIdempotency(key IdempotencyKey, entry IdempotencyEntry) error {
+	f.putCalls++
 	if f.idempotency == nil {
 		f.idempotency = make(map[IdempotencyKey]IdempotencyEntry)
 	}
@@ -79,6 +82,7 @@ func (f *fakeStateStore) PutIdempotency(key IdempotencyKey, entry IdempotencyEnt
 }
 
 func (f *fakeStateStore) GetIdempotency(key IdempotencyKey) (IdempotencyEntry, bool, error) {
+	f.getCalls++
 	entry, ok := f.idempotency[key]
 	return entry, ok, nil
 }

@@ -64,6 +64,100 @@ func TestAppendReturnsExistingEntryOnIdempotentRetry(t *testing.T) {
 	}
 }
 
+func TestAppendReturnsCommittedResultWithoutPostCommitIdempotencyRewrite(t *testing.T) {
+	env := newAppendEnv(t)
+	env.group.appendFn = func(records []isr.Record) (isr.CommitResult, error) {
+		base := uint64(len(env.log.records))
+		for _, record := range records {
+			env.log.records = append(env.log.records, LogRecord{
+				Offset:  uint64(len(env.log.records)),
+				Payload: append([]byte(nil), record.Payload...),
+			})
+		}
+		env.group.state.HW = uint64(len(env.log.records))
+		env.state.idempotency = map[IdempotencyKey]IdempotencyEntry{
+			{
+				ChannelID:   "c1",
+				ChannelType: 1,
+				FromUID:     "u1",
+				ClientMsgNo: "m1",
+			}: {
+				MessageID:  1,
+				MessageSeq: 1,
+				Offset:     0,
+			},
+		}
+		return isr.CommitResult{
+			BaseOffset:   base,
+			NextCommitHW: env.group.state.HW,
+			RecordCount:  len(records),
+		}, nil
+	}
+
+	result, err := env.cluster.Append(context.Background(), testAppendRequest())
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	if result.MessageSeq != 1 {
+		t.Fatalf("MessageSeq = %d, want 1", result.MessageSeq)
+	}
+	if env.state.getCalls != 1 {
+		t.Fatalf("getCalls = %d, want 1", env.state.getCalls)
+	}
+	if env.state.putCalls != 0 {
+		t.Fatalf("putCalls = %d, want 0", env.state.putCalls)
+	}
+}
+
+func TestAppendDuplicateStillReturnsStoredMessageAfterCoordinatorCommit(t *testing.T) {
+	env := newAppendEnv(t)
+	env.group.appendFn = func(records []isr.Record) (isr.CommitResult, error) {
+		base := uint64(len(env.log.records))
+		for _, record := range records {
+			env.log.records = append(env.log.records, LogRecord{
+				Offset:  uint64(len(env.log.records)),
+				Payload: append([]byte(nil), record.Payload...),
+			})
+		}
+		env.group.state.HW = uint64(len(env.log.records))
+		env.state.idempotency = map[IdempotencyKey]IdempotencyEntry{
+			{
+				ChannelID:   "c1",
+				ChannelType: 1,
+				FromUID:     "u1",
+				ClientMsgNo: "m1",
+			}: {
+				MessageID:  1,
+				MessageSeq: 1,
+				Offset:     0,
+			},
+		}
+		return isr.CommitResult{
+			BaseOffset:   base,
+			NextCommitHW: env.group.state.HW,
+			RecordCount:  len(records),
+		}, nil
+	}
+
+	first, err := env.cluster.Append(context.Background(), testAppendRequest())
+	if err != nil {
+		t.Fatalf("first Append() error = %v", err)
+	}
+	second, err := env.cluster.Append(context.Background(), testAppendRequest())
+	if err != nil {
+		t.Fatalf("second Append() error = %v", err)
+	}
+	if first.MessageID != second.MessageID || first.MessageSeq != second.MessageSeq {
+		t.Fatalf("results differ: first=%+v second=%+v", first, second)
+	}
+	if env.group.appendCalls != 1 {
+		t.Fatalf("appendCalls = %d, want 1", env.group.appendCalls)
+	}
+	if env.state.putCalls != 0 {
+		t.Fatalf("putCalls = %d, want 0", env.state.putCalls)
+	}
+}
+
 func TestAppendReturnsErrNotLeaderWhenGroupRoleIsFollower(t *testing.T) {
 	env := newAppendEnv(t)
 	env.group.state.Role = isr.RoleFollower
@@ -145,6 +239,7 @@ type appendEnv struct {
 	cluster *cluster
 	group   *fakeGroupHandle
 	log     *fakeMessageLog
+	state   *fakeStateStore
 	meta    ChannelMeta
 }
 
@@ -152,6 +247,12 @@ func newAppendEnv(t *testing.T) *appendEnv {
 	t.Helper()
 
 	log := &fakeMessageLog{}
+	stores := &fakeStateStoreFactory{}
+	state, err := stores.ForChannel(ChannelKey{ChannelID: "c1", ChannelType: 1})
+	if err != nil {
+		t.Fatalf("stores.ForChannel() error = %v", err)
+	}
+	stateStore := state.(*fakeStateStore)
 	group := &fakeGroupHandle{
 		state: isr.ReplicaState{
 			GroupKey: channelGroupKey(ChannelKey{ChannelID: "c1", ChannelType: 1}),
@@ -168,6 +269,25 @@ func newAppendEnv(t *testing.T) *appendEnv {
 				Offset:  uint64(len(log.records)),
 				Payload: append([]byte(nil), record.Payload...),
 			})
+			view, err := decodeMessageView(record.Payload)
+			if err != nil {
+				return isr.CommitResult{}, err
+			}
+			if view.Message.ClientMsgNo == "" {
+				continue
+			}
+			if err := stateStore.PutIdempotency(IdempotencyKey{
+				ChannelID:   view.Message.ChannelID,
+				ChannelType: view.Message.ChannelType,
+				FromUID:     view.Message.FromUID,
+				ClientMsgNo: view.Message.ClientMsgNo,
+			}, IdempotencyEntry{
+				MessageID:  view.Message.MessageID,
+				MessageSeq: base + uint64(len(log.records)),
+				Offset:     uint64(len(log.records) - 1),
+			}); err != nil {
+				return isr.CommitResult{}, err
+			}
 		}
 		group.state.HW = uint64(len(log.records))
 		return isr.CommitResult{
@@ -182,7 +302,6 @@ func newAppendEnv(t *testing.T) *appendEnv {
 			channelGroupKey(ChannelKey{ChannelID: "c1", ChannelType: 1}): group,
 		},
 	}
-	stores := &fakeStateStoreFactory{}
 	got, err := New(Config{
 		Runtime:    runtime,
 		Log:        log,
@@ -201,6 +320,7 @@ func newAppendEnv(t *testing.T) *appendEnv {
 		cluster: c,
 		group:   group,
 		log:     log,
+		state:   stateStore,
 		meta:    meta,
 	}
 }
