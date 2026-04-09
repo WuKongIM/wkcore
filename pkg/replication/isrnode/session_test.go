@@ -402,6 +402,44 @@ func TestFetchResponseDecodesPayloadIntoApplyFetch(t *testing.T) {
 	}
 }
 
+func TestFetchResponseSendsProgressAckAfterApplyFetch(t *testing.T) {
+	env := newSessionTestEnv(t)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(250, 4, 2, []isr.NodeID{1, 2}))
+
+	env.factory.replicas[0].state.LEO = 9
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		GroupKey:   testGroupKey(250),
+		Generation: 1,
+		Epoch:      4,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 9,
+			Records:  []isr.Record{{Payload: []byte("ok"), SizeBytes: 2}},
+		},
+	})
+
+	session := env.sessions.session(2)
+	session.mu.Lock()
+	sent := append([]Envelope(nil), session.sent...)
+	session.mu.Unlock()
+	if len(sent) < 2 {
+		t.Fatalf("expected progress ack and follow-up fetch, got %d sends", len(sent))
+	}
+	if sent[0].Kind != MessageKindProgressAck {
+		t.Fatalf("first outbound kind = %v, want progress ack", sent[0].Kind)
+	}
+	if sent[0].ProgressAck == nil {
+		t.Fatal("expected progress ack payload")
+	}
+	if sent[0].ProgressAck.MatchOffset != 9 {
+		t.Fatalf("progress ack match offset = %d, want 9", sent[0].ProgressAck.MatchOffset)
+	}
+	if sent[1].Kind != MessageKindFetchRequest {
+		t.Fatalf("second outbound kind = %v, want fetch request", sent[1].Kind)
+	}
+}
+
 func TestNonEmptyFetchResponseQueuesImmediateFollowerRefetch(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.FollowerReplicationRetryInterval = time.Hour
@@ -426,14 +464,69 @@ func TestNonEmptyFetchResponseQueuesImmediateFollowerRefetch(t *testing.T) {
 		},
 	})
 
-	if got := session.sendCount(); got != 2 {
-		t.Fatalf("expected immediate follower re-fetch after apply, got %d sends", got)
+	if got := session.sendCount(); got != 3 {
+		t.Fatalf("expected progress ack plus immediate follower re-fetch after apply, got %d sends", got)
 	}
 	if session.last.Kind != MessageKindFetchRequest {
 		t.Fatalf("last kind = %v, want fetch request", session.last.Kind)
 	}
 	if session.last.GroupKey != testGroupKey(251) {
 		t.Fatalf("last group = %q, want %q", session.last.GroupKey, testGroupKey(251))
+	}
+}
+
+func TestProgressAckEnvelopeRequiresMatchingGeneration(t *testing.T) {
+	env := newSessionTestEnv(t)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(253, 4, 1, []isr.NodeID{1, 2}))
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		GroupKey:   testGroupKey(253),
+		Generation: 99,
+		Epoch:      4,
+		Kind:       MessageKindProgressAck,
+		ProgressAck: &ProgressAckEnvelope{
+			GroupKey:    testGroupKey(253),
+			Epoch:       4,
+			Generation:  99,
+			ReplicaID:   2,
+			MatchOffset: 7,
+		},
+	})
+
+	if env.factory.replicas[0].applyProgressAckCalls != 0 {
+		t.Fatalf("unexpected progress ack apply on generation mismatch")
+	}
+}
+
+func TestLeaderAppliesProgressAckWithoutWaitingForNextFetch(t *testing.T) {
+	env := newSessionTestEnv(t)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(254, 4, 1, []isr.NodeID{1, 2}))
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		GroupKey:   testGroupKey(254),
+		Generation: 1,
+		Epoch:      4,
+		Kind:       MessageKindProgressAck,
+		ProgressAck: &ProgressAckEnvelope{
+			GroupKey:    testGroupKey(254),
+			Epoch:       4,
+			Generation:  1,
+			ReplicaID:   2,
+			MatchOffset: 7,
+		},
+	})
+
+	replica := env.factory.replicas[0]
+	if replica.applyProgressAckCalls != 1 {
+		t.Fatalf("applyProgressAckCalls = %d, want 1", replica.applyProgressAckCalls)
+	}
+	if replica.lastProgressAck.MatchOffset != 7 {
+		t.Fatalf("lastProgressAck.MatchOffset = %d, want 7", replica.lastProgressAck.MatchOffset)
+	}
+	if replica.fetchCalls != 0 {
+		t.Fatalf("progress ack should not require follow-up fetch, got %d fetch calls", replica.fetchCalls)
 	}
 }
 
@@ -630,18 +723,21 @@ func (f *sessionReplicaFactory) New(cfg GroupConfig) (isr.Replica, error) {
 }
 
 type sessionReplica struct {
-	mu              sync.Mutex
-	state           isr.ReplicaState
-	applyFetchCalls int
-	lastApplyFetch  isr.ApplyFetchRequest
-	applyFetchErr   error
-	fetchCalls      int
-	lastFetch       isr.FetchRequest
-	fetchResult     isr.FetchResult
-	fetchErr        error
-	applyMetaErr    error
-	becomeLeaderErr error
-	becomeFollowErr error
+	mu                    sync.Mutex
+	state                 isr.ReplicaState
+	applyFetchCalls       int
+	lastApplyFetch        isr.ApplyFetchRequest
+	applyFetchErr         error
+	applyProgressAckCalls int
+	lastProgressAck       isr.ProgressAckRequest
+	applyProgressAckErr   error
+	fetchCalls            int
+	lastFetch             isr.FetchRequest
+	fetchResult           isr.FetchResult
+	fetchErr              error
+	applyMetaErr          error
+	becomeLeaderErr       error
+	becomeFollowErr       error
 }
 
 func (r *sessionReplica) ApplyMeta(meta isr.GroupMeta) error {
@@ -706,6 +802,13 @@ func (r *sessionReplica) ApplyFetch(ctx context.Context, req isr.ApplyFetchReque
 	r.applyFetchCalls++
 	r.lastApplyFetch = req
 	return r.applyFetchErr
+}
+func (r *sessionReplica) ApplyProgressAck(ctx context.Context, req isr.ProgressAckRequest) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.applyProgressAckCalls++
+	r.lastProgressAck = req
+	return r.applyProgressAckErr
 }
 func (r *sessionReplica) Status() isr.ReplicaState {
 	r.mu.Lock()

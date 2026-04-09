@@ -57,6 +57,15 @@ func (r *runtime) deliverEnvelope(g *group, env Envelope) bool {
 			return false
 		}
 		return r.applyFetchResponseEnvelope(g, env.Peer, *env.FetchResponse) == nil
+	case MessageKindProgressAck:
+		meta := g.metaSnapshot()
+		if env.Epoch != meta.Epoch {
+			return true
+		}
+		if env.ProgressAck == nil {
+			return false
+		}
+		return r.applyProgressAckEnvelope(g, *env.ProgressAck) == nil
 	}
 	return true
 }
@@ -75,6 +84,26 @@ func (r *runtime) applyFetchResponseEnvelope(g *group, peer isr.NodeID, env Fetc
 
 	meta := g.metaSnapshot()
 	if meta.Leader != r.cfg.LocalNode {
+		if len(env.Records) > 0 || env.TruncateTo != nil {
+			state := g.Status()
+			if err := r.sendEnvelope(Envelope{
+				Peer:       meta.Leader,
+				GroupKey:   g.id,
+				Epoch:      meta.Epoch,
+				Generation: g.generation,
+				RequestID:  r.requestID.Add(1),
+				Kind:       MessageKindProgressAck,
+				ProgressAck: &ProgressAckEnvelope{
+					GroupKey:    g.id,
+					Epoch:       meta.Epoch,
+					Generation:  g.generation,
+					ReplicaID:   r.cfg.LocalNode,
+					MatchOffset: state.LEO,
+				},
+			}); err != nil && !errors.Is(err, ErrBackpressured) {
+				r.retryReplication(g.id, meta.Leader, true)
+			}
+		}
 		if len(env.Records) == 0 && env.TruncateTo == nil {
 			r.scheduleFollowerReplication(g.id, meta.Leader)
 			return nil
@@ -102,4 +131,13 @@ func (r *runtime) applyFetchResponseEnvelope(g *group, peer isr.NodeID, env Fetc
 		}
 	}
 	return nil
+}
+
+func (r *runtime) applyProgressAckEnvelope(g *group, env ProgressAckEnvelope) error {
+	return g.replica.ApplyProgressAck(context.Background(), isr.ProgressAckRequest{
+		GroupKey:    env.GroupKey,
+		Epoch:       env.Epoch,
+		ReplicaID:   env.ReplicaID,
+		MatchOffset: env.MatchOffset,
+	})
 }

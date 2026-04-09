@@ -259,6 +259,10 @@ func (r *fakeReplica) ApplyFetch(ctx context.Context, req isr.ApplyFetchRequest)
 	return nil
 }
 
+func (r *fakeReplica) ApplyProgressAck(ctx context.Context, req isr.ProgressAckRequest) error {
+	return nil
+}
+
 func (r *fakeReplica) Status() isr.ReplicaState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
