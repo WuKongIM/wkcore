@@ -638,7 +638,7 @@ func loadRecentConversationMessages(ctx context.Context, cluster channellog.Clus
 
 func newStorageFactory(raftDB *raftstorage.DB) func(slotID multiraft.SlotID) (multiraft.Storage, error) {
 	return func(slotID multiraft.SlotID) (multiraft.Storage, error) {
-		return raftDB.ForGroup(uint64(slotID)), nil
+		return raftDB.ForSlot(uint64(slotID)), nil
 	}
 }
 

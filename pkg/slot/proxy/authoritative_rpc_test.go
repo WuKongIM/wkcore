@@ -23,7 +23,7 @@ func TestHandleRuntimeMetaRPCBeforeClusterStartReturnsNoLeader(t *testing.T) {
 		ControllerReplicaN: 1,
 		SlotReplicaN:       1,
 		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
-			return raftDB.ForGroup(uint64(slotID)), nil
+			return raftDB.ForSlot(uint64(slotID)), nil
 		},
 		NewStateMachine: metafsm.NewStateMachineFactory(db),
 		Nodes: []raftcluster.NodeConfig{{

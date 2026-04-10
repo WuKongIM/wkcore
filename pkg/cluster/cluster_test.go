@@ -118,7 +118,7 @@ func newStartedTestNode(
 		SlotReplicaN:       slotReplicaN,
 		ControllerReplicaN: controllerReplicaN,
 		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
-			return raftDB.ForGroup(uint64(slotID)), nil
+			return raftDB.ForSlot(uint64(slotID)), nil
 		},
 		NewStateMachine:    metafsm.NewStateMachineFactory(db),
 		Nodes:              append([]raftcluster.NodeConfig(nil), nodes...),
@@ -439,7 +439,7 @@ func startThreeOfFourNodesWithController(t testing.TB, slotCount int, replicaN i
 func startFourNodesWithInjectedRepairFailure(t testing.TB, slotCount int, replicaN int) []*testNode {
 	t.Helper()
 	nodes := startFourNodesWithController(t, slotCount, replicaN)
-	waitForStableLeader(t, assignedNodesForGroup(t, nodes, 1), 1)
+	waitForStableLeader(t, assignedNodesForSlot(t, nodes, 1), 1)
 	restore := raftcluster.SetManagedSlotExecutionTestHook(func(slotID uint32, task controllermeta.ReconcileTask) error {
 		if slotID == 1 && task.Kind == controllermeta.TaskKindRepair {
 			return errors.New("injected repair failure")
@@ -748,7 +748,7 @@ func requireControllerCommand(t testing.TB, nodes []*testNode, fn func(*raftclus
 	}, 15*time.Second, 200*time.Millisecond, "last controller command error: %v", lastErr)
 }
 
-func assignedNodesForGroup(t testing.TB, nodes []*testNode, slotID uint32) []*testNode {
+func assignedNodesForSlot(t testing.TB, nodes []*testNode, slotID uint32) []*testNode {
 	t.Helper()
 
 	for _, node := range nodes {

@@ -48,7 +48,7 @@ func (a *slotAgent) HeartbeatOnce(ctx context.Context) error {
 		if err != nil {
 			continue
 		}
-		view := buildRuntimeView(now, slotID, status, a.cluster.observationPeersForGroup(slotID))
+		view := buildRuntimeView(now, slotID, status, a.cluster.observationPeersForSlot(slotID))
 		err = a.client.Report(ctx, slotcontrollerReport(a.cluster, now, &view))
 		if err != nil && !isControllerRedirect(err) {
 			return err

@@ -32,9 +32,9 @@ func TestObservationPeersForGroupPreferRuntimeMembership(t *testing.T) {
 	})
 	cluster.setRuntimePeers(7, []multiraft.NodeID{4, 5, 6})
 
-	peers := cluster.observationPeersForGroup(7)
+	peers := cluster.observationPeersForSlot(7)
 	if len(peers) != 3 || peers[0] != 4 || peers[1] != 5 || peers[2] != 6 {
-		t.Fatalf("observationPeersForGroup() = %v", peers)
+		t.Fatalf("observationPeersForSlot() = %v", peers)
 	}
 }
 
@@ -738,7 +738,7 @@ func newStandaloneAgentTestCluster(t *testing.T) *standaloneAgentTestCluster {
 			{NodeID: 1, Addr: "127.0.0.1:0"},
 		},
 		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
-			return raftDB.ForGroup(uint64(slotID)), nil
+			return raftDB.ForSlot(uint64(slotID)), nil
 		},
 		NewStateMachine: metafsm.NewStateMachineFactory(metaDB),
 	})

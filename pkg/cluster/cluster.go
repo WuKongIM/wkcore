@@ -559,7 +559,7 @@ func (c *Cluster) PeersForSlot(slotID multiraft.SlotID) []multiraft.NodeID {
 	if peers, ok := c.assignments.PeersForSlot(slotID); ok {
 		return peers
 	}
-	peers, _ := c.legacyPeersForGroup(slotID)
+	peers, _ := c.legacyPeersForSlot(slotID)
 	return peers
 }
 
@@ -622,15 +622,15 @@ func (c *Cluster) ListCachedAssignments() []controllermeta.SlotAssignment {
 	return c.assignments.Snapshot()
 }
 
-func (c *Cluster) observationPeersForGroup(slotID multiraft.SlotID) []multiraft.NodeID {
+func (c *Cluster) observationPeersForSlot(slotID multiraft.SlotID) []multiraft.NodeID {
 	if peers, ok := c.getRuntimePeers(slotID); ok {
 		return peers
 	}
-	peers, _ := c.legacyPeersForGroup(slotID)
+	peers, _ := c.legacyPeersForSlot(slotID)
 	return peers
 }
 
-func (c *Cluster) legacyPeersForGroup(slotID multiraft.SlotID) ([]multiraft.NodeID, bool) {
+func (c *Cluster) legacyPeersForSlot(slotID multiraft.SlotID) ([]multiraft.NodeID, bool) {
 	for _, slot := range c.cfg.Slots {
 		if slot.SlotID != slotID {
 			continue

@@ -670,7 +670,7 @@ func TestFSMStressPebbleBackedRaftIntegration(t *testing.T) {
 		if err := rt.BootstrapSlot(context.Background(), multiraft.BootstrapSlotRequest{
 			Slot: multiraft.SlotOptions{
 				ID:           slotID,
-				Storage:      raftDB.ForGroup(uint64(slotID)),
+				Storage:      raftDB.ForSlot(uint64(slotID)),
 				StateMachine: mustNewStateMachine(t, bizDB, uint64(slotID)),
 			},
 			Voters: []multiraft.NodeID{1},

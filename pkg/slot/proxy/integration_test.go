@@ -205,7 +205,7 @@ func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 	if err := rt.BootstrapSlot(ctx, multiraft.BootstrapSlotRequest{
 		Slot: multiraft.SlotOptions{
 			ID:           slotID,
-			Storage:      raftDB.ForGroup(uint64(slotID)),
+			Storage:      raftDB.ForSlot(uint64(slotID)),
 			StateMachine: mustNewStateMachine(t, bizDB, uint64(slotID)),
 		},
 		Voters: []multiraft.NodeID{1},
@@ -244,7 +244,7 @@ func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 	reopenRT := newStartedRuntime(t)
 	if err := reopenRT.OpenSlot(ctx, multiraft.SlotOptions{
 		ID:           slotID,
-		Storage:      reopenedRaftDB.ForGroup(uint64(slotID)),
+		Storage:      reopenedRaftDB.ForSlot(uint64(slotID)),
 		StateMachine: mustNewStateMachine(t, reopenedBizDB, uint64(slotID)),
 	}); err != nil {
 		t.Fatalf("OpenSlot() error = %v", err)
@@ -288,7 +288,7 @@ func TestStoreUpsertAndGetChannelRuntimeMeta(t *testing.T) {
 		ControllerReplicaN: 1,
 		SlotReplicaN:       1,
 		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
-			return raftDB.ForGroup(uint64(slotID)), nil
+			return raftDB.ForSlot(uint64(slotID)), nil
 		},
 		NewStateMachine: metafsm.NewStateMachineFactory(bizDB),
 		Nodes:           []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
@@ -355,7 +355,7 @@ func TestStoreCreateUserAndUpsertDevice(t *testing.T) {
 		ControllerReplicaN: 1,
 		SlotReplicaN:       1,
 		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
-			return raftDB.ForGroup(uint64(slotID)), nil
+			return raftDB.ForSlot(uint64(slotID)), nil
 		},
 		NewStateMachine: metafsm.NewStateMachineFactory(bizDB),
 		Nodes:           []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
@@ -413,7 +413,7 @@ func TestStoreListChannelRuntimeMeta(t *testing.T) {
 		ControllerReplicaN: 1,
 		SlotReplicaN:       1,
 		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
-			return raftDB.ForGroup(uint64(slotID)), nil
+			return raftDB.ForSlot(uint64(slotID)), nil
 		},
 		NewStateMachine: metafsm.NewStateMachineFactory(bizDB),
 		Nodes:           []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
@@ -836,7 +836,7 @@ func TestPebbleBackedGroupDoesNotRecoverDeletedBusinessStateWithoutSnapshot(t *t
 	if err := rt.BootstrapSlot(ctx, multiraft.BootstrapSlotRequest{
 		Slot: multiraft.SlotOptions{
 			ID:           slotID,
-			Storage:      raftDB.ForGroup(uint64(slotID)),
+			Storage:      raftDB.ForSlot(uint64(slotID)),
 			StateMachine: mustNewStateMachine(t, bizDB, uint64(slotID)),
 		},
 		Voters: []multiraft.NodeID{1},
@@ -883,7 +883,7 @@ func TestPebbleBackedGroupDoesNotRecoverDeletedBusinessStateWithoutSnapshot(t *t
 	reopenRT := newStartedRuntime(t)
 	if err := reopenRT.OpenSlot(ctx, multiraft.SlotOptions{
 		ID:           slotID,
-		Storage:      reopenedRaftDB.ForGroup(uint64(slotID)),
+		Storage:      reopenedRaftDB.ForSlot(uint64(slotID)),
 		StateMachine: mustNewStateMachine(t, reopenedBizDB, uint64(slotID)),
 	}); err != nil {
 		t.Fatalf("OpenSlot() error = %v", err)
