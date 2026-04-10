@@ -18,7 +18,8 @@
 
 ## 常用命令
 
-- 全量测试：`go test ./...`
+- 单元测试：`go test ./...`
+- 集成测试：`go test -tags=integration ./...`
 - 运行主程序：`go run ./cmd/wukongim`
 - 显式指定配置文件：`go run ./cmd/wukongim -config ./wukongim.conf`
 - 定向测试：`go test ./internal/... ./pkg/...`

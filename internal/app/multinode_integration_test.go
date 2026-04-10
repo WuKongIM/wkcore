@@ -28,6 +28,7 @@ import (
 const multinodeAppReadTimeout = 20 * time.Second
 
 func TestAppThreeNodeClusterStartsWithoutStaticGroupPeers(t *testing.T) {
+
 	harness := newThreeNodeManagedAppHarness(t)
 
 	require.Eventually(t, func() bool {

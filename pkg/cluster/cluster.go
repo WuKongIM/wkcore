@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,6 +24,7 @@ type Cluster struct {
 	server            *transport.Server
 	rpcMux            *transport.RPCMux
 	raftPool          *transport.Pool
+	rpcPool           *transport.Pool
 	raftClient        *transport.Client
 	fwdClient         *transport.Client
 	runtime           *multiraft.Runtime
@@ -98,9 +98,22 @@ func (c *Cluster) startServer() error {
 }
 
 func (c *Cluster) startPools() {
-	c.raftPool = transport.NewPool(c.discovery, c.cfg.PoolSize, c.cfg.DialTimeout)
+	c.raftPool = transport.NewPool(transport.PoolConfig{
+		Discovery:   c.discovery,
+		Size:        c.cfg.PoolSize,
+		DialTimeout: c.cfg.DialTimeout,
+		QueueSizes:  [3]int{2048, 0, 0},
+		DefaultPri:  transport.PriorityRaft,
+	})
+	c.rpcPool = transport.NewPool(transport.PoolConfig{
+		Discovery:   c.discovery,
+		Size:        c.cfg.PoolSize,
+		DialTimeout: c.cfg.DialTimeout,
+		QueueSizes:  [3]int{0, 1024, 256},
+		DefaultPri:  transport.PriorityRPC,
+	})
 	c.raftClient = transport.NewClient(c.raftPool)
-	c.fwdClient = transport.NewClient(c.raftPool)
+	c.fwdClient = transport.NewClient(c.rpcPool)
 }
 
 func (c *Cluster) startControllerRaftIfLocalPeer() error {
@@ -300,6 +313,9 @@ func (c *Cluster) Stop() {
 	if c.raftPool != nil {
 		c.raftPool.Close()
 	}
+	if c.rpcPool != nil {
+		c.rpcPool.Close()
+	}
 	if c.controllerRaftDB != nil {
 		_ = c.controllerRaftDB.Close()
 	}
@@ -405,7 +421,7 @@ func (c *Cluster) snapshotPlannerState(ctx context.Context) (slotcontroller.Plan
 }
 
 // handleRaftMessage is the server handler for msgTypeRaft.
-func (c *Cluster) handleRaftMessage(_ net.Conn, body []byte) {
+func (c *Cluster) handleRaftMessage(body []byte) {
 	if c.runtime == nil {
 		return
 	}

@@ -1,9 +1,6 @@
 package transport
 
-import (
-	"context"
-	"net"
-)
+import "context"
 
 // NodeID identifies a cluster node. Type alias for uint64 — zero-cost
 // conversion with multiraft.NodeID (which is a named uint64 type, requiring
@@ -11,12 +8,13 @@ import (
 type NodeID = uint64
 
 // MessageHandler processes an inbound message of a specific type.
-// conn is provided so the handler can write back on the same connection if needed.
-type MessageHandler func(conn net.Conn, body []byte)
+// The body is valid only for the duration of the callback; copy it if it must
+// be retained asynchronously.
+type MessageHandler func(body []byte)
 
 // RPCHandler processes an inbound RPC request and returns a response body.
 // The ctx passed by the Server is context.Background(). The handler is responsible
-// for applying its own timeout (e.g., raftcluster wraps with forwardTimeout).
+// for applying its own timeout.
 type RPCHandler func(ctx context.Context, body []byte) ([]byte, error)
 
 // Discovery resolves a NodeID to a network address.

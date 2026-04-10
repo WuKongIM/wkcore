@@ -1,131 +1,131 @@
 package transport
 
 import (
+	"context"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const tcpKeepAlivePeriod = 30 * time.Second
 
+type PoolConfig struct {
+	Discovery   Discovery
+	Size        int
+	DialTimeout time.Duration
+	QueueSizes  [numPriorities]int
+	DefaultPri  Priority
+}
+
 // Pool manages outbound TCP connections to remote nodes.
-// Each Pool instance is fully independent — create separate instances
-// for raft and business traffic to keep connections physically isolated.
 type Pool struct {
-	discovery   Discovery
-	size        int
-	dialTimeout time.Duration
-	nodes       map[NodeID]*nodeConns
-	mu          sync.RWMutex
+	cfg    PoolConfig
+	size   int
+	nodes  sync.Map // NodeID -> *nodeConnSet
+	nextID atomic.Uint64
 }
 
-type nodeConns struct {
-	addr  string
-	conns []net.Conn
-	mu    []sync.Mutex
+type nodeConnSet struct {
+	addr   string
+	conns  []atomic.Pointer[MuxConn]
+	dialMu sync.Mutex
 }
 
-// NewPool creates a connection pool.
-// size is the number of connections per remote node.
-func NewPool(discovery Discovery, size int, dialTimeout time.Duration) *Pool {
-	return &Pool{
-		discovery:   discovery,
-		size:        size,
-		dialTimeout: dialTimeout,
-		nodes:       make(map[NodeID]*nodeConns),
+func NewPool(args ...any) *Pool {
+	var cfg PoolConfig
+	switch len(args) {
+	case 1:
+		cfg = args[0].(PoolConfig)
+	case 3:
+		cfg = PoolConfig{
+			Discovery:   args[0].(Discovery),
+			Size:        args[1].(int),
+			DialTimeout: args[2].(time.Duration),
+		}
+	default:
+		panic("nodetransport: invalid NewPool arguments")
 	}
+	if cfg.Size <= 0 {
+		cfg.Size = 1
+	}
+	return &Pool{cfg: cfg, size: cfg.Size}
 }
 
-// Get selects a connection by shardKey % size, creating one if needed.
-// On success, the connection slot lock is held — caller MUST call Release.
-// On error, the lock is NOT held — caller MUST NOT call Release.
-func (p *Pool) Get(nodeID NodeID, shardKey uint64) (net.Conn, int, error) {
-	nc, err := p.getOrCreateNodeConns(nodeID)
+func (p *Pool) Send(nodeID NodeID, shardKey uint64, msgType uint8, body []byte) error {
+	mc, err := p.acquire(nodeID, shardKey)
 	if err != nil {
-		return nil, 0, err
+		return err
 	}
-	idx := int(shardKey % uint64(p.size))
-	nc.mu[idx].Lock()
-	if nc.conns[idx] == nil {
-		conn, err := net.DialTimeout("tcp", nc.addr, p.dialTimeout)
-		if err != nil {
-			nc.mu[idx].Unlock()
-			return nil, 0, err
-		}
-		setTCPKeepAlive(conn)
-		nc.conns[idx] = conn
-	}
-	return nc.conns[idx], idx, nil
+	return mc.Send(p.cfg.DefaultPri, msgType, body)
 }
 
-// Release unlocks the connection slot. Must be called after a successful Get.
-func (p *Pool) Release(nodeID NodeID, idx int) {
-	p.mu.RLock()
-	nc, ok := p.nodes[nodeID]
-	p.mu.RUnlock()
-	if ok {
-		nc.mu[idx].Unlock()
+func (p *Pool) RPC(ctx context.Context, nodeID NodeID, shardKey uint64, payload []byte) ([]byte, error) {
+	mc, err := p.acquire(nodeID, shardKey)
+	if err != nil {
+		return nil, err
 	}
+	reqID := p.nextID.Add(1)
+	wire := encodeRPCRequest(reqID, payload)
+	return mc.RPC(ctx, p.cfg.DefaultPri, reqID, wire)
 }
 
-// Reset closes and clears a connection slot. Caller must hold the slot lock
-// (i.e., call Reset between Get and Release). Does not release the lock.
-func (p *Pool) Reset(nodeID NodeID, idx int) {
-	p.mu.RLock()
-	nc, ok := p.nodes[nodeID]
-	p.mu.RUnlock()
-	if ok && nc.conns[idx] != nil {
-		_ = nc.conns[idx].Close()
-		nc.conns[idx] = nil
-	}
-}
-
-// Close closes all connections in all pools.
 func (p *Pool) Close() {
-	p.mu.RLock()
-	nodes := make([]*nodeConns, 0, len(p.nodes))
-	for _, nc := range p.nodes {
-		nodes = append(nodes, nc)
-	}
-	p.mu.RUnlock()
-
-	for _, nc := range nodes {
-		for i := range nc.conns {
-			nc.mu[i].Lock()
-			if nc.conns[i] != nil {
-				_ = nc.conns[i].Close()
-				nc.conns[i] = nil
+	p.nodes.Range(func(_, value any) bool {
+		set := value.(*nodeConnSet)
+		for i := range set.conns {
+			if mc := set.conns[i].Load(); mc != nil {
+				mc.Close()
 			}
-			nc.mu[i].Unlock()
 		}
-	}
+		return true
+	})
 }
 
-func (p *Pool) getOrCreateNodeConns(nodeID NodeID) (*nodeConns, error) {
-	p.mu.RLock()
-	nc, ok := p.nodes[nodeID]
-	p.mu.RUnlock()
-	if ok {
-		return nc, nil
+func (p *Pool) acquire(nodeID NodeID, shardKey uint64) (*MuxConn, error) {
+	set, err := p.getOrCreateNodeSet(nodeID)
+	if err != nil {
+		return nil, err
+	}
+	idx := int(shardKey % uint64(len(set.conns)))
+
+	if mc := set.conns[idx].Load(); mc != nil && !mc.closed.Load() {
+		return mc, nil
 	}
 
-	addr, err := p.discovery.Resolve(nodeID)
+	set.dialMu.Lock()
+	defer set.dialMu.Unlock()
+
+	if mc := set.conns[idx].Load(); mc != nil && !mc.closed.Load() {
+		return mc, nil
+	}
+
+	raw, err := net.DialTimeout("tcp", set.addr, p.cfg.DialTimeout)
+	if err != nil {
+		return nil, err
+	}
+	setTCPKeepAlive(raw)
+	mc := newMuxConn(raw, nil, ConnConfig{QueueSizes: p.cfg.QueueSizes})
+	set.conns[idx].Store(mc)
+	return mc, nil
+}
+
+func (p *Pool) getOrCreateNodeSet(nodeID NodeID) (*nodeConnSet, error) {
+	if value, ok := p.nodes.Load(nodeID); ok {
+		return value.(*nodeConnSet), nil
+	}
+
+	addr, err := p.cfg.Discovery.Resolve(nodeID)
 	if err != nil {
 		return nil, err
 	}
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if nc, ok = p.nodes[nodeID]; ok {
-		return nc, nil
-	}
-	nc = &nodeConns{
+	created := &nodeConnSet{
 		addr:  addr,
-		conns: make([]net.Conn, p.size),
-		mu:    make([]sync.Mutex, p.size),
+		conns: make([]atomic.Pointer[MuxConn], p.cfg.Size),
 	}
-	p.nodes[nodeID] = nc
-	return nc, nil
+	actual, _ := p.nodes.LoadOrStore(nodeID, created)
+	return actual.(*nodeConnSet), nil
 }
 
 func setTCPKeepAlive(conn net.Conn) {

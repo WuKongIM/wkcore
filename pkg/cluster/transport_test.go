@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"context"
-	"net"
 	"testing"
 	"time"
 
@@ -16,7 +15,7 @@ func TestRaftTransport_Send(t *testing.T) {
 	srv := transport.NewServer()
 	var receivedBody []byte
 	done := make(chan struct{})
-	srv.Handle(msgTypeRaft, func(_ net.Conn, body []byte) {
+	srv.Handle(msgTypeRaft, func(body []byte) {
 		receivedBody = body
 		close(done)
 	})

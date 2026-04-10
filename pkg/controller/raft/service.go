@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -279,7 +278,7 @@ func (s *Service) currentError() error {
 	return ErrStopped
 }
 
-func (s *Service) handleMessage(_ net.Conn, body []byte) {
+func (s *Service) handleMessage(body []byte) {
 	var msg raftpb.Message
 	if err := msg.Unmarshal(body); err != nil {
 		return

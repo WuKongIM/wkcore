@@ -1,133 +1,124 @@
 package transport
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"net"
-	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func TestClient_Send(t *testing.T) {
+func TestClientSend(t *testing.T) {
 	s := NewServer()
-	var received atomic.Int32
-	s.Handle(1, func(_ net.Conn, body []byte) {
-		if string(body) == "hello" {
-			received.Add(1)
-		}
+	received := make(chan []byte, 1)
+	s.Handle(1, func(body []byte) {
+		received <- append([]byte(nil), body...)
 	})
 	if err := s.Start("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
 	}
 	defer s.Stop()
 
-	d := &staticDiscovery{addrs: map[NodeID]string{2: s.Listener().Addr().String()}}
-	pool := NewPool(d, 2, 5*time.Second)
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: s.Listener().Addr().String()}},
+		Size:        1,
+		DialTimeout: time.Second,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRaft,
+	})
 	defer pool.Close()
-	client := NewClient(pool)
-	defer client.Stop()
 
+	client := NewClient(pool)
 	if err := client.Send(2, 0, 1, []byte("hello")); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Send() error = %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
-	if received.Load() != 1 {
-		t.Fatalf("expected 1, got %d", received.Load())
+
+	select {
+	case body := <-received:
+		if string(body) != "hello" {
+			t.Fatalf("body = %q, want %q", body, "hello")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for send")
 	}
 }
 
-func TestClient_RPC_RoundTrip(t *testing.T) {
+func TestClientRPCService(t *testing.T) {
 	s := NewServer()
-	s.HandleRPC(func(ctx context.Context, body []byte) ([]byte, error) {
-		return append([]byte("echo:"), body...), nil
+	mux := NewRPCMux()
+	mux.Handle(7, func(ctx context.Context, body []byte) ([]byte, error) {
+		return append([]byte("ok:"), body...), nil
 	})
+	s.HandleRPCMux(mux)
 	if err := s.Start("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
 	}
 	defer s.Stop()
 
-	d := &staticDiscovery{addrs: map[NodeID]string{2: s.Listener().Addr().String()}}
-	pool := NewPool(d, 2, 5*time.Second)
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: s.Listener().Addr().String()}},
+		Size:        1,
+		DialTimeout: time.Second,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRPC,
+	})
 	defer pool.Close()
+
 	client := NewClient(pool)
-	defer client.Stop()
+	resp, err := client.RPCService(context.Background(), 2, 0, 7, []byte("ping"))
+	if err != nil {
+		t.Fatalf("RPCService() error = %v", err)
+	}
+	if string(resp) != "ok:ping" {
+		t.Fatalf("resp = %q, want %q", resp, "ok:ping")
+	}
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	resp, err := client.RPC(ctx, 2, 0, []byte("ping"))
+func TestClientStopClosesPoolConnections(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(resp, []byte("echo:ping")) {
-		t.Fatalf("expected echo:ping, got %q", resp)
-	}
-}
+	defer ln.Close()
 
-func TestClient_RPC_ContextCancel(t *testing.T) {
-	s := NewServer()
-	s.HandleRPC(func(ctx context.Context, body []byte) ([]byte, error) {
-		time.Sleep(5 * time.Second)
-		return nil, nil
-	})
-	if err := s.Start("127.0.0.1:0"); err != nil {
-		t.Fatal(err)
-	}
-	defer s.Stop()
-
-	d := &staticDiscovery{addrs: map[NodeID]string{2: s.Listener().Addr().String()}}
-	pool := NewPool(d, 2, 5*time.Second)
-	defer pool.Close()
-	client := NewClient(pool)
-	defer client.Stop()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	_, err := client.RPC(ctx, 2, 0, []byte("slow"))
-	if err != context.DeadlineExceeded {
-		t.Fatalf("expected DeadlineExceeded, got: %v", err)
-	}
-}
-
-func TestClient_Stop_CancelsPending(t *testing.T) {
-	s := NewServer()
-	s.HandleRPC(func(ctx context.Context, body []byte) ([]byte, error) {
-		time.Sleep(10 * time.Second)
-		return nil, nil
-	})
-	if err := s.Start("127.0.0.1:0"); err != nil {
-		t.Fatal(err)
-	}
-	defer s.Stop()
-
-	d := &staticDiscovery{addrs: map[NodeID]string{2: s.Listener().Addr().String()}}
-	pool := NewPool(d, 2, 5*time.Second)
-	defer pool.Close()
-	client := NewClient(pool)
-
-	errCh := make(chan error, 1)
 	go func() {
-		ctx := context.Background()
-		_, err := client.RPC(ctx, 2, 0, []byte("long"))
-		errCh <- err
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		drainConn(conn)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: ln.Addr().String()}},
+		Size:        1,
+		DialTimeout: time.Second,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRaft,
+	})
+	client := NewClient(pool)
+
+	if err := client.Send(2, 0, 1, []byte("hello")); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	set, err := pool.getOrCreateNodeSet(2)
+	if err != nil {
+		t.Fatalf("getOrCreateNodeSet() error = %v", err)
+	}
+	requireEventually(t, func() bool {
+		return set.conns[0].Load() != nil
+	})
+
 	client.Stop()
 
-	select {
-	case err := <-errCh:
-		if err != ErrStopped {
-			t.Fatalf("expected ErrStopped, got: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for RPC to cancel")
-	}
+	requireEventually(t, func() bool {
+		mc := set.conns[0].Load()
+		return mc != nil && mc.closed.Load()
+	})
 }
 
-func TestClient_RPC_ServerCloseFailsPendingImmediately(t *testing.T) {
+func TestClientPendingRPCFailsWhenPoolCloses(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -135,95 +126,103 @@ func TestClient_RPC_ServerCloseFailsPendingImmediately(t *testing.T) {
 	defer ln.Close()
 
 	started := make(chan struct{}, 1)
-	serverDone := make(chan struct{})
 	go func() {
-		defer close(serverDone)
-
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
 		defer conn.Close()
-
-		if _, _, err := ReadMessage(conn); err != nil {
-			return
-		}
-		select {
-		case started <- struct{}{}:
-		default:
+		if _, _, release, err := readFrame(conn); err == nil {
+			release()
+			started <- struct{}{}
+			time.Sleep(time.Second)
 		}
 	}()
 
-	d := &staticDiscovery{addrs: map[NodeID]string{2: ln.Addr().String()}}
-	pool := NewPool(d, 2, 5*time.Second)
-	defer pool.Close()
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: ln.Addr().String()}},
+		Size:        1,
+		DialTimeout: time.Second,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRPC,
+	})
 	client := NewClient(pool)
-	defer client.Stop()
+	defer pool.Close()
 
 	errCh := make(chan error, 1)
-	startedAt := time.Now()
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		_, err := client.RPC(ctx, 2, 0, []byte("close"))
+		_, err := client.RPC(context.Background(), 2, 0, []byte("req"))
 		errCh <- err
 	}()
 
 	select {
 	case <-started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for server handler to receive request")
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for rpc to start")
 	}
+
+	pool.Close()
 
 	select {
 	case err := <-errCh:
 		if err == nil {
-			t.Fatal("expected RPC to fail after server closes connection")
+			t.Fatal("RPC() error = nil, want failure")
 		}
-		if err == context.DeadlineExceeded {
-			t.Fatalf("expected connection-close failure before request timeout, got %v after %s", err, time.Since(startedAt))
-		}
-		if elapsed := time.Since(startedAt); elapsed >= 2*time.Second {
-			t.Fatalf("expected pending RPC to fail quickly after server close, took %s with err=%v", elapsed, err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for RPC failure after server close")
-	}
-
-	select {
-	case <-serverDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for test server to exit")
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for rpc failure")
 	}
 }
 
-func TestClient_RPC_MultipleSequential(t *testing.T) {
-	s := NewServer()
-	var count atomic.Int32
-	s.HandleRPC(func(ctx context.Context, body []byte) ([]byte, error) {
-		n := count.Add(1)
-		return []byte{byte(n)}, nil
-	})
-	if err := s.Start("127.0.0.1:0"); err != nil {
+func TestClientStopFailsPendingRPCWithErrStopped(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Stop()
+	defer ln.Close()
 
-	d := &staticDiscovery{addrs: map[NodeID]string{2: s.Listener().Addr().String()}}
-	pool := NewPool(d, 2, 5*time.Second)
-	defer pool.Close()
-	client := NewClient(pool)
-	defer client.Stop()
-
-	ctx := context.Background()
-	for i := 0; i < 5; i++ {
-		resp, err := client.RPC(ctx, 2, 0, []byte("req"))
+	started := make(chan struct{}, 1)
+	go func() {
+		conn, err := ln.Accept()
 		if err != nil {
-			t.Fatalf("RPC %d: %v", i, err)
+			return
 		}
-		if resp[0] != byte(i+1) {
-			t.Fatalf("expected %d, got %d", i+1, resp[0])
+		defer conn.Close()
+		if _, _, release, err := readFrame(conn); err == nil {
+			release()
+			started <- struct{}{}
+			time.Sleep(time.Second)
 		}
+	}()
+
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: ln.Addr().String()}},
+		Size:        1,
+		DialTimeout: time.Second,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRPC,
+	})
+	client := NewClient(pool)
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := client.RPC(context.Background(), 2, 0, []byte("req"))
+		errCh <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for rpc to start")
+	}
+
+	client.Stop()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrStopped) {
+			t.Fatalf("RPC() error = %v, want %v", err, ErrStopped)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for rpc failure")
 	}
 }

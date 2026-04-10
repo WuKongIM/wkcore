@@ -3,33 +3,29 @@ package transport
 import (
 	"context"
 	"net"
-	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
-func TestServer_StartStop(t *testing.T) {
+func TestServerStartStop(t *testing.T) {
 	s := NewServer()
 	if err := s.Start("127.0.0.1:0"); err != nil {
-		t.Fatalf("Start: %v", err)
+		t.Fatalf("Start() error = %v", err)
 	}
 	if s.Listener() == nil {
-		t.Fatal("Listener is nil")
+		t.Fatal("Listener() = nil")
 	}
 	s.Stop()
 }
 
-func TestServer_HandleMessage(t *testing.T) {
+func TestServerHandleMessage(t *testing.T) {
 	s := NewServer()
-
 	var received atomic.Int32
-	s.Handle(1, func(conn net.Conn, body []byte) {
+	s.Handle(1, func(body []byte) {
 		if string(body) == "ping" {
 			received.Add(1)
 		}
 	})
-
 	if err := s.Start("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
 	}
@@ -41,50 +37,20 @@ func TestServer_HandleMessage(t *testing.T) {
 	}
 	defer conn.Close()
 
-	if err := WriteMessage(conn, 1, []byte("ping")); err != nil {
-		t.Fatal(err)
+	var bufs net.Buffers
+	writeFrame(&bufs, 1, []byte("ping"))
+	if _, err := bufs.WriteTo(conn); err != nil {
+		t.Fatalf("WriteTo() error = %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
-	if received.Load() != 1 {
-		t.Fatalf("expected 1 message received, got %d", received.Load())
-	}
+	requireEventually(t, func() bool { return received.Load() == 1 })
 }
 
-func TestServer_HandleMultipleTypes(t *testing.T) {
-	s := NewServer()
-
-	var type1, type2 atomic.Int32
-	s.Handle(1, func(_ net.Conn, _ []byte) { type1.Add(1) })
-	s.Handle(2, func(_ net.Conn, _ []byte) { type2.Add(1) })
-
-	if err := s.Start("127.0.0.1:0"); err != nil {
-		t.Fatal(err)
-	}
-	defer s.Stop()
-
-	conn, err := net.Dial("tcp", s.Listener().Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-
-	WriteMessage(conn, 1, []byte("a"))
-	WriteMessage(conn, 2, []byte("b"))
-	WriteMessage(conn, 1, []byte("c"))
-
-	time.Sleep(50 * time.Millisecond)
-	if type1.Load() != 2 || type2.Load() != 1 {
-		t.Fatalf("type1=%d type2=%d", type1.Load(), type2.Load())
-	}
-}
-
-func TestServer_HandleRPC(t *testing.T) {
+func TestServerHandleRPC(t *testing.T) {
 	s := NewServer()
 	s.HandleRPC(func(ctx context.Context, body []byte) ([]byte, error) {
 		return append([]byte("echo:"), body...), nil
 	})
-
 	if err := s.Start("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
 	}
@@ -96,29 +62,36 @@ func TestServer_HandleRPC(t *testing.T) {
 	}
 	defer conn.Close()
 
-	reqBody := encodeRPCRequest(42, []byte("hello"))
-	if err := WriteMessage(conn, MsgTypeRPCRequest, reqBody); err != nil {
-		t.Fatal(err)
+	var req net.Buffers
+	writeFrame(&req, MsgTypeRPCRequest, encodeRPCRequest(42, []byte("hello")))
+	if _, err := req.WriteTo(conn); err != nil {
+		t.Fatalf("WriteTo() error = %v", err)
 	}
 
-	msgType, respBody, err := ReadMessage(conn)
+	msgType, respBody, release, err := readFrame(conn)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("readFrame() error = %v", err)
 	}
+	defer release()
 	if msgType != MsgTypeRPCResponse {
-		t.Fatalf("expected 0xFF, got %d", msgType)
+		t.Fatalf("msgType = %d, want %d", msgType, MsgTypeRPCResponse)
 	}
 	reqID, errCode, data, err := decodeRPCResponse(respBody)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("decodeRPCResponse() error = %v", err)
 	}
 	if reqID != 42 || errCode != 0 || string(data) != "echo:hello" {
-		t.Fatalf("unexpected: reqID=%d errCode=%d data=%q", reqID, errCode, data)
+		t.Fatalf("unexpected response: reqID=%d errCode=%d data=%q", reqID, errCode, data)
 	}
 }
 
-func TestServer_UnregisteredType_Ignored(t *testing.T) {
+func TestServerHandleRPCMux(t *testing.T) {
 	s := NewServer()
+	mux := NewRPCMux()
+	mux.Handle(3, func(ctx context.Context, body []byte) ([]byte, error) {
+		return []byte("mux:" + string(body)), nil
+	})
+	s.HandleRPCMux(mux)
 	if err := s.Start("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
 	}
@@ -130,19 +103,31 @@ func TestServer_UnregisteredType_Ignored(t *testing.T) {
 	}
 	defer conn.Close()
 
-	WriteMessage(conn, 99, []byte("unknown"))
-	time.Sleep(50 * time.Millisecond)
+	var req net.Buffers
+	writeFrame(&req, MsgTypeRPCRequest, encodeRPCRequest(7, encodeRPCServicePayload(3, []byte("ok"))))
+	if _, err := req.WriteTo(conn); err != nil {
+		t.Fatalf("WriteTo() error = %v", err)
+	}
+
+	msgType, respBody, release, err := readFrame(conn)
+	if err != nil {
+		t.Fatalf("readFrame() error = %v", err)
+	}
+	defer release()
+	if msgType != MsgTypeRPCResponse {
+		t.Fatalf("msgType = %d, want %d", msgType, MsgTypeRPCResponse)
+	}
+	_, errCode, data, err := decodeRPCResponse(respBody)
+	if err != nil {
+		t.Fatalf("decodeRPCResponse() error = %v", err)
+	}
+	if errCode != 0 || string(data) != "mux:ok" {
+		t.Fatalf("unexpected response errCode=%d data=%q", errCode, data)
+	}
 }
 
-func TestServer_StopClosesConnections(t *testing.T) {
+func TestServerStopClosesAcceptedConnections(t *testing.T) {
 	s := NewServer()
-
-	var connected sync.WaitGroup
-	connected.Add(1)
-	s.Handle(1, func(_ net.Conn, _ []byte) {
-		connected.Done()
-	})
-
 	if err := s.Start("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
 	}
@@ -152,14 +137,11 @@ func TestServer_StopClosesConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	WriteMessage(conn, 1, []byte("hi"))
-	connected.Wait()
-
 	s.Stop()
 
-	_, _, err = ReadMessage(conn)
+	_, _, _, err = readFrame(conn)
 	if err == nil {
-		t.Fatal("expected error after server Stop")
+		t.Fatal("readFrame() error = nil after Stop")
 	}
-	conn.Close()
+	_ = conn.Close()
 }

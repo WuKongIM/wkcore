@@ -6,46 +6,74 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 )
 
-// Server is a TCP server that accepts connections and dispatches messages
-// by msgType to registered handlers.
+type handlerTable struct {
+	handlers map[uint8]MessageHandler
+}
+
+func newHandlerTable() *handlerTable {
+	return &handlerTable{handlers: make(map[uint8]MessageHandler)}
+}
+
+func (t *handlerTable) clone() *handlerTable {
+	copied := make(map[uint8]MessageHandler, len(t.handlers))
+	for msgType, handler := range t.handlers {
+		copied[msgType] = handler
+	}
+	return &handlerTable{handlers: copied}
+}
+
+func (t *handlerTable) get(msgType uint8) MessageHandler {
+	if t == nil {
+		return nil
+	}
+	return t.handlers[msgType]
+}
+
+type rpcHandlerHolder struct {
+	handler RPCHandler
+}
+
+type ServerConfig struct {
+	ConnConfig ConnConfig
+}
+
+// Server accepts inbound connections and dispatches messages by msgType.
 type Server struct {
 	listener   net.Listener
-	handlers   map[uint8]MessageHandler
-	rpcHandler RPCHandler
-	mu         sync.RWMutex
-	accepted   map[net.Conn]struct{}
-	acceptedMu sync.Mutex
+	handlers   atomic.Pointer[handlerTable]
+	rpcHandler atomic.Pointer[rpcHandlerHolder]
+	conns      sync.Map
 	stopCh     chan struct{}
+	stopOnce   sync.Once
 	wg         sync.WaitGroup
+	cfg        ServerConfig
 }
 
-// NewServer creates a new Server. Register handlers before calling Start.
 func NewServer() *Server {
-	return &Server{
-		handlers: make(map[uint8]MessageHandler),
-		accepted: make(map[net.Conn]struct{}),
-		stopCh:   make(chan struct{}),
-	}
+	s := &Server{stopCh: make(chan struct{})}
+	s.handlers.Store(newHandlerTable())
+	return s
 }
 
-// Handle registers a handler for a message type.
-// Panics if msgType is 0, 0xFE, or 0xFF (reserved).
 func (s *Server) Handle(msgType uint8, h MessageHandler) {
 	if msgType == 0 || msgType == MsgTypeRPCRequest || msgType == MsgTypeRPCResponse {
 		panic("nodetransport: reserved message type")
 	}
-	s.mu.Lock()
-	s.handlers[msgType] = h
-	s.mu.Unlock()
+	for {
+		current := s.handlers.Load()
+		next := current.clone()
+		next.handlers[msgType] = h
+		if s.handlers.CompareAndSwap(current, next) {
+			return
+		}
+	}
 }
 
-// HandleRPC registers the RPC request handler for 0xFE messages.
 func (s *Server) HandleRPC(h RPCHandler) {
-	s.mu.Lock()
-	s.rpcHandler = h
-	s.mu.Unlock()
+	s.rpcHandler.Store(&rpcHandlerHolder{handler: h})
 }
 
 func (s *Server) HandleRPCMux(mux *RPCMux) {
@@ -55,7 +83,6 @@ func (s *Server) HandleRPCMux(mux *RPCMux) {
 	s.HandleRPC(mux.HandleRPC)
 }
 
-// Start begins listening on addr.
 func (s *Server) Start(addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -67,22 +94,20 @@ func (s *Server) Start(addr string) error {
 	return nil
 }
 
-// Stop closes the listener and all accepted connections, then waits for
-// all goroutines to exit.
 func (s *Server) Stop() {
-	close(s.stopCh)
-	if s.listener != nil {
-		_ = s.listener.Close()
-	}
-	s.acceptedMu.Lock()
-	for c := range s.accepted {
-		_ = c.Close()
-	}
-	s.acceptedMu.Unlock()
-	s.wg.Wait()
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+		if s.listener != nil {
+			_ = s.listener.Close()
+		}
+		s.conns.Range(func(key, _ any) bool {
+			key.(*MuxConn).Close()
+			return true
+		})
+		s.wg.Wait()
+	})
 }
 
-// Listener returns the underlying net.Listener.
 func (s *Server) Listener() net.Listener {
 	return s.listener
 }
@@ -90,7 +115,7 @@ func (s *Server) Listener() net.Listener {
 func (s *Server) acceptLoop() {
 	defer s.wg.Done()
 	for {
-		conn, err := s.listener.Accept()
+		raw, err := s.listener.Accept()
 		if err != nil {
 			select {
 			case <-s.stopCh:
@@ -99,86 +124,71 @@ func (s *Server) acceptLoop() {
 				continue
 			}
 		}
-		setTCPKeepAlive(conn)
+		setTCPKeepAlive(raw)
 		s.wg.Add(1)
-		go s.handleConn(conn)
+		go s.serveConn(raw)
 	}
 }
 
-func (s *Server) handleConn(conn net.Conn) {
+func (s *Server) serveConn(raw net.Conn) {
 	defer s.wg.Done()
 
-	s.acceptedMu.Lock()
-	s.accepted[conn] = struct{}{}
-	s.acceptedMu.Unlock()
-
+	var mc *MuxConn
+	dispatch := func(msgType uint8, body []byte, release func()) {
+		s.dispatch(mc, msgType, body, release)
+	}
+	mc = newMuxConn(raw, dispatch, s.cfg.ConnConfig)
+	s.conns.Store(mc, struct{}{})
 	defer func() {
-		conn.Close()
-		s.acceptedMu.Lock()
-		delete(s.accepted, conn)
-		s.acceptedMu.Unlock()
+		s.conns.Delete(mc)
+		mc.Close()
 	}()
 
-	var writeMu sync.Mutex
-
-	for {
-		select {
-		case <-s.stopCh:
-			return
-		default:
-		}
-
-		msgType, body, err := ReadMessage(conn)
-		if err != nil {
-			return
-		}
-
-		switch msgType {
-		case MsgTypeRPCRequest:
-			s.mu.RLock()
-			h := s.rpcHandler
-			s.mu.RUnlock()
-			if h != nil {
-				s.wg.Add(1)
-				go s.handleRPCRequest(conn, &writeMu, h, body)
-			}
-		case MsgTypeRPCResponse:
-			// Responses should not arrive on server-accepted connections
-		default:
-			s.mu.RLock()
-			h := s.handlers[msgType]
-			s.mu.RUnlock()
-			if h != nil {
-				h(conn, body)
-			}
-		}
+	select {
+	case <-mc.readerDone:
+	case <-s.stopCh:
 	}
 }
 
-func (s *Server) handleRPCRequest(conn net.Conn, writeMu *sync.Mutex, handler RPCHandler, body []byte) {
-	defer s.wg.Done()
+func (s *Server) dispatch(mc *MuxConn, msgType uint8, body []byte, release func()) {
+	switch msgType {
+	case MsgTypeRPCRequest:
+		holder := s.rpcHandler.Load()
+		if holder == nil || holder.handler == nil {
+			release()
+			return
+		}
+		copied := append([]byte(nil), body...)
+		release()
+		s.wg.Add(1)
+		go s.handleRPCRequest(mc, holder.handler, copied)
+	default:
+		h := s.handlers.Load().get(msgType)
+		if h != nil {
+			h(body)
+		}
+		release()
+	}
+}
 
+func (s *Server) handleRPCRequest(mc *MuxConn, handler RPCHandler, body []byte) {
+	defer s.wg.Done()
 	if len(body) < 8 {
 		return
 	}
 	requestID := binary.BigEndian.Uint64(body[0:8])
 	payload := body[8:]
 
-	ctx := context.Background()
-	respData, err := handler(ctx, payload)
+	respData, err := handler(context.Background(), payload)
 	var errCode uint8
 	if err != nil {
 		errCode = 1
 		respData = []byte(err.Error())
 	}
-
 	respBody := encodeRPCResponse(requestID, errCode, respData)
-	writeMu.Lock()
-	_ = WriteMessage(conn, MsgTypeRPCResponse, respBody)
-	writeMu.Unlock()
+	_ = mc.Send(PriorityRPC, MsgTypeRPCResponse, respBody)
 }
 
-// encodeRPCRequest encodes [requestID:8][payload:N].
 func encodeRPCRequest(requestID uint64, payload []byte) []byte {
 	buf := make([]byte, 8+len(payload))
 	binary.BigEndian.PutUint64(buf[0:8], requestID)
@@ -186,7 +196,6 @@ func encodeRPCRequest(requestID uint64, payload []byte) []byte {
 	return buf
 }
 
-// encodeRPCResponse encodes [requestID:8][errCode:1][data:N].
 func encodeRPCResponse(requestID uint64, errCode uint8, data []byte) []byte {
 	buf := make([]byte, 9+len(data))
 	binary.BigEndian.PutUint64(buf[0:8], requestID)
@@ -195,7 +204,6 @@ func encodeRPCResponse(requestID uint64, errCode uint8, data []byte) []byte {
 	return buf
 }
 
-// decodeRPCResponse decodes [requestID:8][errCode:1][data:N].
 func decodeRPCResponse(body []byte) (requestID uint64, errCode uint8, data []byte, err error) {
 	if len(body) < 9 {
 		return 0, 0, nil, fmt.Errorf("nodetransport: rpc response body too short: %d", len(body))

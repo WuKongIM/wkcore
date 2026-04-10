@@ -1,20 +1,19 @@
 package transport
 
 import (
+	"context"
+	"errors"
 	"net"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/require"
 )
 
-// staticDiscovery is a test helper implementing Discovery.
 type staticDiscovery struct {
 	addrs map[NodeID]string
 }
 
-func (d *staticDiscovery) Resolve(nodeID NodeID) (string, error) {
+func (d staticDiscovery) Resolve(nodeID NodeID) (string, error) {
 	addr, ok := d.addrs[nodeID]
 	if !ok {
 		return "", ErrNodeNotFound
@@ -22,217 +21,232 @@ func (d *staticDiscovery) Resolve(nodeID NodeID) (string, error) {
 	return addr, nil
 }
 
-func TestPool_GetRelease(t *testing.T) {
+func TestPoolSendDeliversMessage(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ln.Close()
+
+	received := make(chan []byte, 1)
+	go acceptFrames(t, ln, func(msgType uint8, body []byte) {
+		if msgType == 9 {
+			received <- append([]byte(nil), body...)
+		}
+	})
+
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: ln.Addr().String()}},
+		Size:        2,
+		DialTimeout: time.Second,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRaft,
+	})
+	defer pool.Close()
+
+	if err := pool.Send(2, 0, 9, []byte("hello")); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	select {
+	case body := <-received:
+		if string(body) != "hello" {
+			t.Fatalf("body = %q, want %q", body, "hello")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for send")
+	}
+}
+
+func TestPoolRPCRoundTrip(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		msgType, body, release, err := readFrame(conn)
+		if err != nil {
+			return
+		}
+		release()
+		if msgType != MsgTypeRPCRequest {
+			return
+		}
+		reqID := decodeRequestID(body)
+		var bufs net.Buffers
+		writeFrame(&bufs, MsgTypeRPCResponse, encodeRPCResponse(reqID, 0, []byte("pong")))
+		_, _ = bufs.WriteTo(conn)
+	}()
+
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: ln.Addr().String()}},
+		Size:        1,
+		DialTimeout: time.Second,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRPC,
+	})
+	defer pool.Close()
+
+	resp, err := pool.RPC(context.Background(), 2, 0, []byte("ping"))
+	if err != nil {
+		t.Fatalf("RPC() error = %v", err)
+	}
+	if string(resp) != "pong" {
+		t.Fatalf("resp = %q, want %q", resp, "pong")
+	}
+}
+
+func TestPoolNodeNotFound(t *testing.T) {
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{}},
+		Size:        1,
+		DialTimeout: time.Second,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRPC,
+	})
+	defer pool.Close()
+
+	err := pool.Send(99, 0, 1, []byte("x"))
+	if !errors.Is(err, ErrNodeNotFound) {
+		t.Fatalf("Send() error = %v, want %v", err, ErrNodeNotFound)
+	}
+}
+
+func TestPoolReusesConnectionForSameShard(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	var accepted atomic.Int32
 	go func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			defer conn.Close()
+			accepted.Add(1)
+			go drainConn(conn)
 		}
 	}()
 
-	d := &staticDiscovery{addrs: map[NodeID]string{2: ln.Addr().String()}}
-	pool := NewPool(d, 2, 5*time.Second)
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: ln.Addr().String()}},
+		Size:        2,
+		DialTimeout: time.Second,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRaft,
+	})
 	defer pool.Close()
 
-	conn, idx, err := pool.Get(2, 0)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	if err := pool.Send(2, 0, 1, []byte("a")); err != nil {
+		t.Fatalf("first Send() error = %v", err)
 	}
-	if conn == nil {
-		t.Fatal("conn is nil")
+	if err := pool.Send(2, 2, 1, []byte("b")); err != nil {
+		t.Fatalf("second Send() error = %v", err)
 	}
-	pool.Release(2, idx)
+
+	requireEventually(t, func() bool { return accepted.Load() == 1 })
 }
 
-func TestPool_GetError_NoRelease(t *testing.T) {
-	d := &staticDiscovery{addrs: map[NodeID]string{2: "127.0.0.1:1"}}
-	pool := NewPool(d, 2, 100*time.Millisecond)
-	defer pool.Close()
-
-	_, _, err := pool.Get(2, 0)
-	if err == nil {
-		t.Fatal("expected error for bad address")
-	}
-	_, _, err = pool.Get(2, 0)
-	if err == nil {
-		t.Fatal("expected error again")
-	}
-}
-
-func TestPool_NodeNotFound(t *testing.T) {
-	d := &staticDiscovery{addrs: map[NodeID]string{}}
-	pool := NewPool(d, 2, 5*time.Second)
-	defer pool.Close()
-
-	_, _, err := pool.Get(99, 0)
-	if err != ErrNodeNotFound {
-		t.Fatalf("expected ErrNodeNotFound, got: %v", err)
-	}
-}
-
-func TestPool_Reset_Reconnects(t *testing.T) {
+func TestPoolCloseFailsPendingRPC(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ln.Close()
+
+	started := make(chan struct{}, 1)
 	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			_ = conn
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, release, err := readFrame(conn); err == nil {
+			release()
+			started <- struct{}{}
+			time.Sleep(time.Second)
 		}
 	}()
 
-	d := &staticDiscovery{addrs: map[NodeID]string{2: ln.Addr().String()}}
-	pool := NewPool(d, 2, 5*time.Second)
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: ln.Addr().String()}},
+		Size:        1,
+		DialTimeout: time.Second,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRPC,
+	})
 	defer pool.Close()
 
-	conn1, idx, err := pool.Get(2, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pool.Reset(2, idx)
-	pool.Release(2, idx)
-
-	conn2, idx2, err := pool.Get(2, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if conn1 == conn2 {
-		t.Fatal("expected new connection after Reset")
-	}
-	pool.Release(2, idx2)
-}
-
-func TestPool_ShardKey(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
+	errCh := make(chan error, 1)
 	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			_ = conn
-		}
+		_, err := pool.RPC(context.Background(), 2, 0, []byte("req"))
+		errCh <- err
 	}()
 
-	d := &staticDiscovery{addrs: map[NodeID]string{2: ln.Addr().String()}}
-	pool := NewPool(d, 4, 5*time.Second)
-	defer pool.Close()
-
-	_, idx0, err := pool.Get(2, 0)
-	if err != nil {
-		t.Fatal(err)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for rpc to start")
 	}
-	pool.Release(2, idx0)
 
-	_, idx4, err := pool.Get(2, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pool.Release(2, idx4)
+	pool.Close()
 
-	if idx0 != idx4 {
-		t.Fatalf("expected same index for shardKey 0 and 4, got %d and %d", idx0, idx4)
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("RPC() error = nil, want failure after Close")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for pending rpc failure")
 	}
 }
 
-func TestPool_Concurrent(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+func acceptFrames(t *testing.T, ln net.Listener, fn func(uint8, []byte)) {
+	t.Helper()
+	conn, err := ln.Accept()
 	if err != nil {
-		t.Fatal(err)
+		return
 	}
-	defer ln.Close()
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			_ = conn
+	defer conn.Close()
+	for {
+		msgType, body, release, err := readFrame(conn)
+		if err != nil {
+			return
 		}
-	}()
-
-	d := &staticDiscovery{addrs: map[NodeID]string{2: ln.Addr().String()}}
-	pool := NewPool(d, 4, 5*time.Second)
-	defer pool.Close()
-
-	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func(key uint64) {
-			defer wg.Done()
-			conn, idx, err := pool.Get(2, key)
-			if err != nil {
-				t.Errorf("Get(%d): %v", key, err)
-				return
-			}
-			if conn == nil {
-				t.Errorf("Get(%d): nil conn", key)
-			}
-			pool.Release(2, idx)
-		}(uint64(i))
+		fn(msgType, body)
+		release()
 	}
-	wg.Wait()
 }
 
-func TestPool_CloseDoesNotDeadlockWithConcurrentRelease(t *testing.T) {
-	serverConn, peerConn := net.Pipe()
-	t.Cleanup(func() { _ = peerConn.Close() })
-
-	pool := NewPool(&staticDiscovery{}, 1, time.Second)
-	nc := &nodeConns{
-		conns: []net.Conn{serverConn},
-		mu:    []sync.Mutex{{}},
+func drainConn(conn net.Conn) {
+	defer conn.Close()
+	for {
+		_, _, release, err := readFrame(conn)
+		if err != nil {
+			return
+		}
+		release()
 	}
-	pool.nodes[2] = nc
+}
 
-	nc.mu[0].Lock()
-
-	closeDone := make(chan struct{})
-	go func() {
-		pool.Close()
-		close(closeDone)
-	}()
-
-	time.Sleep(10 * time.Millisecond)
-
-	releaseDone := make(chan struct{})
-	go func() {
-		pool.Release(2, 0)
-		close(releaseDone)
-	}()
-
-	require.Eventually(t, func() bool {
-		select {
-		case <-releaseDone:
-			return true
-		default:
-			return false
+func requireEventually(t *testing.T, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
 		}
-	}, time.Second, 10*time.Millisecond)
-
-	require.Eventually(t, func() bool {
-		select {
-		case <-closeDone:
-			return true
-		default:
-			return false
-		}
-	}, time.Second, 10*time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition not satisfied before timeout")
 }

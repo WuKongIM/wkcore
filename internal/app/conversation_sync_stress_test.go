@@ -9,10 +9,8 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
-	"os"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -671,61 +669,4 @@ func validateConversationSyncStressResponse(items []conversationSyncStressRespon
 		}
 	}
 	return nil
-}
-
-func envBool(name string, fallback bool) bool {
-	value, ok := os.LookupEnv(name)
-	if !ok {
-		return fallback
-	}
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return fallback
-	}
-}
-
-func envDuration(t *testing.T, name string, fallback time.Duration) time.Duration {
-	t.Helper()
-
-	value, ok := os.LookupEnv(name)
-	if !ok || strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	parsed, err := time.ParseDuration(strings.TrimSpace(value))
-	if err != nil {
-		t.Fatalf("parse %s: %v", name, err)
-	}
-	return parsed
-}
-
-func envInt(t *testing.T, name string, fallback int) int {
-	t.Helper()
-
-	value, ok := os.LookupEnv(name)
-	if !ok || strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	parsed, err := strconv.Atoi(strings.TrimSpace(value))
-	if err != nil {
-		t.Fatalf("parse %s: %v", name, err)
-	}
-	return parsed
-}
-
-func envInt64(t *testing.T, name string, fallback int64) int64 {
-	t.Helper()
-
-	value, ok := os.LookupEnv(name)
-	if !ok || strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
-	if err != nil {
-		t.Fatalf("parse %s: %v", name, err)
-	}
-	return parsed
 }
