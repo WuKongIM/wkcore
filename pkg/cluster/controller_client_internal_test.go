@@ -86,7 +86,7 @@ func TestClusterGetReconcileTaskFallsThroughSlowStaleLeaderToCurrentLeader(t *te
 	controllerClient.setLeader(1)
 	cluster.controllerClient = controllerClient
 
-	ctx, cancel := context.WithTimeout(context.Background(), controllerLeaderWaitTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultControllerLeaderWaitTimeout)
 	defer cancel()
 
 	task, err := cluster.GetReconcileTask(ctx, 9)

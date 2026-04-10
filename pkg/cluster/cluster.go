@@ -20,29 +20,30 @@ import (
 )
 
 type Cluster struct {
-	cfg               Config
-	server            *transport.Server
-	rpcMux            *transport.RPCMux
-	raftPool          *transport.Pool
-	rpcPool           *transport.Pool
-	raftClient        *transport.Client
-	fwdClient         *transport.Client
-	runtime           *multiraft.Runtime
-	router            *Router
-	discovery         *StaticDiscovery
-	controllerMeta    *controllermeta.Store
-	controllerRaftDB  *raftstorage.DB
-	controllerSM      *slotcontroller.StateMachine
-	controller        *controllerraft.Service
-	controllerClient  controllerAPI
-	agent             *slotAgent
-	assignments       *assignmentCache
-	runtimePeersMu    sync.RWMutex
-	runtimePeers      map[multiraft.SlotID][]multiraft.NodeID
-	observationStop   chan struct{}
-	observationDone   chan struct{}
-	observationCancel context.CancelFunc
-	stopped           atomic.Bool
+	cfg                         Config
+	server                      *transport.Server
+	rpcMux                      *transport.RPCMux
+	raftPool                    *transport.Pool
+	rpcPool                     *transport.Pool
+	raftClient                  *transport.Client
+	fwdClient                   *transport.Client
+	runtime                     *multiraft.Runtime
+	router                      *Router
+	discovery                   *StaticDiscovery
+	controllerMeta              *controllermeta.Store
+	controllerRaftDB            *raftstorage.DB
+	controllerSM                *slotcontroller.StateMachine
+	controller                  *controllerraft.Service
+	controllerClient            controllerAPI
+	controllerLeaderWaitTimeout time.Duration
+	agent                       *slotAgent
+	assignments                 *assignmentCache
+	runtimePeersMu              sync.RWMutex
+	runtimePeers                map[multiraft.SlotID][]multiraft.NodeID
+	observationStop             chan struct{}
+	observationDone             chan struct{}
+	observationCancel           context.CancelFunc
+	stopped                     atomic.Bool
 }
 
 func NewCluster(cfg Config) (*Cluster, error) {

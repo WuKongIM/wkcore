@@ -1,8 +1,11 @@
 package app
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -11,8 +14,16 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/stretchr/testify/require"
 )
+
+const multinodeAppReadTimeout = 20 * time.Second
+const appReadTimeout = 2 * time.Second
 
 func envBool(name string, fallback bool) bool {
 	value, ok := os.LookupEnv(name)
@@ -137,4 +148,366 @@ func newThreeNodeConversationSyncHarness(t *testing.T) *threeNodeAppHarness {
 		}
 	})
 	return &threeNodeAppHarness{apps: apps}
+}
+
+type threeNodeAppHarness struct {
+	apps  map[uint64]*App
+	specs map[uint64]appNodeSpec
+}
+
+type appNodeSpec struct {
+	cfg Config
+}
+
+func newThreeNodeAppHarness(t *testing.T) *threeNodeAppHarness {
+	return newThreeNodeAppHarnessWithOptions(t, 1, 3, nil)
+}
+
+func newThreeNodeManagedAppHarness(t *testing.T) *threeNodeAppHarness {
+	return newThreeNodeManagedAppHarnessWithLayout(t, 1, 3)
+}
+
+func newThreeNodeManagedAppHarnessWithLayout(t *testing.T, slotCount uint32, slotReplicaN int) *threeNodeAppHarness {
+	return newThreeNodeAppHarnessWithOptions(t, slotCount, slotReplicaN, nil)
+}
+
+func newThreeNodeAppHarnessWithConfigMutator(t *testing.T, mutate func(*Config)) *threeNodeAppHarness {
+	return newThreeNodeAppHarnessWithOptions(t, 1, 3, mutate)
+}
+
+func newThreeNodeAppHarnessWithOptions(t *testing.T, slotCount uint32, slotReplicaN int, mutate func(*Config)) *threeNodeAppHarness {
+	t.Helper()
+
+	clusterAddrs := reserveTestTCPAddrs(t, 3)
+	gatewayAddrs := reserveTestTCPAddrs(t, 3)
+	apiAddrs := reserveTestTCPAddrs(t, 3)
+	clusterNodes := make([]NodeConfigRef, 0, 3)
+	for i := 0; i < 3; i++ {
+		clusterNodes = append(clusterNodes, NodeConfigRef{
+			ID:   uint64(i + 1),
+			Addr: clusterAddrs[uint64(i+1)],
+		})
+	}
+
+	root := t.TempDir()
+	apps := make(map[uint64]*App, 3)
+	specs := make(map[uint64]appNodeSpec, 3)
+	for i := 0; i < 3; i++ {
+		nodeID := uint64(i + 1)
+		cfg := validConfig()
+		cfg.Node.ID = nodeID
+		cfg.Node.Name = fmt.Sprintf("node-%d", nodeID)
+		cfg.Node.DataDir = filepath.Join(root, fmt.Sprintf("node-%d", nodeID))
+		cfg.Storage = StorageConfig{}
+		cfg.Cluster.ListenAddr = clusterAddrs[nodeID]
+		cfg.Cluster.Nodes = append([]NodeConfigRef(nil), clusterNodes...)
+		cfg.Cluster.SlotCount = slotCount
+		cfg.Cluster.ControllerReplicaN = 3
+		cfg.Cluster.SlotReplicaN = slotReplicaN
+		cfg.Cluster.Slots = nil
+		cfg.Cluster.TickInterval = 10 * time.Millisecond
+		cfg.Cluster.ElectionTick = 10
+		cfg.Cluster.HeartbeatTick = 1
+		cfg.Cluster.ForwardTimeout = 2 * time.Second
+		cfg.Cluster.DialTimeout = 2 * time.Second
+		cfg.Cluster.PoolSize = 1
+		cfg.Cluster.DataPlanePoolSize = 8
+		cfg.Cluster.DataPlaneMaxFetchInflight = 16
+		cfg.Cluster.DataPlaneMaxPendingFetch = 16
+		cfg.API.ListenAddr = apiAddrs[nodeID]
+		cfg.Gateway.Listeners = []gateway.ListenerOptions{
+			binding.TCPWKProto("tcp-wkproto", gatewayAddrs[nodeID]),
+		}
+		if mutate != nil {
+			mutate(&cfg)
+		}
+
+		specs[nodeID] = appNodeSpec{cfg: cfg}
+
+		app, err := New(cfg)
+		require.NoError(t, err)
+		apps[nodeID] = app
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(apps))
+	for _, app := range apps {
+		wg.Add(1)
+		go func(app *App) {
+			defer wg.Done()
+			errCh <- app.Start()
+		}(app)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+
+	harness := &threeNodeAppHarness{apps: apps, specs: specs}
+	t.Cleanup(func() {
+		for i := 3; i >= 1; i-- {
+			if app := apps[uint64(i)]; app != nil {
+				require.NoError(t, app.Stop())
+			}
+		}
+	})
+	return harness
+}
+
+func (h *threeNodeAppHarness) runningApps() []*App {
+	apps := make([]*App, 0, len(h.apps))
+	for _, nodeID := range []uint64{1, 2, 3} {
+		if app := h.apps[nodeID]; app != nil {
+			apps = append(apps, app)
+		}
+	}
+	return apps
+}
+
+func (h *threeNodeAppHarness) orderedApps() []*App {
+	return h.runningApps()
+}
+
+func (h *threeNodeAppHarness) appsWithLeaderFirst(leaderID uint64) []*App {
+	apps := make([]*App, 0, len(h.apps))
+	if leader := h.apps[leaderID]; leader != nil {
+		apps = append(apps, leader)
+	}
+	for _, app := range h.runningApps() {
+		if app.cfg.Node.ID == leaderID {
+			continue
+		}
+		apps = append(apps, app)
+	}
+	return apps
+}
+
+func (h *threeNodeAppHarness) stopNode(t *testing.T, nodeID uint64) {
+	t.Helper()
+
+	app := h.apps[nodeID]
+	require.NotNil(t, app, "node %d is not running", nodeID)
+	require.NoError(t, app.Stop())
+	h.apps[nodeID] = nil
+}
+
+func (h *threeNodeAppHarness) restartNode(t *testing.T, nodeID uint64) *App {
+	t.Helper()
+
+	require.Nil(t, h.apps[nodeID], "node %d is already running", nodeID)
+
+	spec, ok := h.specs[nodeID]
+	require.True(t, ok, "missing spec for node %d", nodeID)
+
+	app, err := New(spec.cfg)
+	require.NoError(t, err)
+	require.NoError(t, app.Start())
+	h.apps[nodeID] = app
+	return app
+}
+
+func (h *threeNodeAppHarness) waitForLeaderChange(t *testing.T, slotID uint64, oldLeader uint64) uint64 {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		leader, ok := h.consensusLeader(multiraft.SlotID(slotID))
+		return ok && leader != 0 && uint64(leader) != oldLeader
+	}, 10*time.Second, 50*time.Millisecond)
+	return h.waitForStableLeader(t, slotID)
+}
+
+func (h *threeNodeAppHarness) waitForStableLeader(t *testing.T, slotID uint64) uint64 {
+	t.Helper()
+
+	deadline := time.Now().Add(10 * time.Second)
+	var stable multiraft.NodeID
+	stableCount := 0
+	for time.Now().Before(deadline) {
+		leader, ok := h.consensusLeader(multiraft.SlotID(slotID))
+		if ok && leader != 0 {
+			if leader == stable {
+				stableCount++
+			} else {
+				stable = leader
+				stableCount = 1
+			}
+			if stableCount >= 5 {
+				return uint64(stable)
+			}
+		} else {
+			stable = 0
+			stableCount = 0
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for stable leader for slot %d", slotID)
+	return 0
+}
+
+func (h *threeNodeAppHarness) consensusLeader(slotID multiraft.SlotID) (multiraft.NodeID, bool) {
+	var leader multiraft.NodeID
+	for _, app := range h.runningApps() {
+		current, err := app.Cluster().LeaderOf(slotID)
+		if err != nil {
+			return 0, false
+		}
+		if leader == 0 {
+			leader = current
+			continue
+		}
+		if current != leader {
+			return 0, false
+		}
+	}
+	return leader, true
+}
+
+func reserveTestTCPAddrs(t *testing.T, count int) map[uint64]string {
+	t.Helper()
+
+	addrs := make(map[uint64]string, count)
+	for i := 0; i < count; i++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		addrs[uint64(i+1)] = ln.Addr().String()
+		require.NoError(t, ln.Close())
+	}
+	return addrs
+}
+
+func connectMultinodeWKProtoClient(t *testing.T, app *App, uid, deviceID string) net.Conn {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", app.Gateway().ListenerAddr("tcp-wkproto"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	sendAppWKProtoFrame(t, conn, &frame.ConnectPacket{
+		Version:         frame.LatestVersion,
+		UID:             uid,
+		DeviceID:        deviceID,
+		DeviceFlag:      frame.APP,
+		ClientTimestamp: time.Now().UnixMilli(),
+	})
+	connack, ok := readAppWKProtoFrameWithin(t, conn, multinodeAppReadTimeout).(*frame.ConnackPacket)
+	require.True(t, ok)
+	require.Equal(t, frame.ReasonSuccess, connack.ReasonCode)
+	return conn
+}
+
+func readAppWKProtoFrameWithin(t *testing.T, conn net.Conn, timeout time.Duration) frame.Frame {
+	t.Helper()
+
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(timeout)))
+	defer func() {
+		_ = conn.SetReadDeadline(time.Time{})
+	}()
+
+	f, err := codec.New().DecodePacketWithConn(conn, frame.LatestVersion)
+	require.NoError(t, err)
+	return f
+}
+
+func waitForAppCommittedMessage(t *testing.T, store *channellog.Store, seq uint64, timeout time.Duration) channellog.Message {
+	t.Helper()
+
+	var msg channellog.Message
+	require.Eventually(t, func() bool {
+		loaded, err := store.LoadMsg(seq)
+		if err != nil {
+			return false
+		}
+		msg = loaded
+		return true
+	}, timeout, 10*time.Millisecond)
+	return msg
+}
+
+func sendAppWKProtoFrame(t *testing.T, conn net.Conn, f frame.Frame) {
+	t.Helper()
+
+	payload, err := codec.New().EncodeFrame(f, frame.LatestVersion)
+	require.NoError(t, err)
+
+	_, err = conn.Write(payload)
+	require.NoError(t, err)
+}
+
+func readAppWKProtoFrame(t *testing.T, conn net.Conn) frame.Frame {
+	t.Helper()
+
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(appReadTimeout)))
+	defer func() {
+		_ = conn.SetReadDeadline(time.Time{})
+	}()
+
+	f, err := codec.New().DecodePacketWithConn(conn, frame.LatestVersion)
+	require.NoError(t, err)
+	return f
+}
+
+func connectAppWKProtoClient(t *testing.T, app *App, uid string) net.Conn {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", app.Gateway().ListenerAddr("tcp-wkproto"))
+	require.NoError(t, err)
+
+	sendAppWKProtoFrame(t, conn, &frame.ConnectPacket{
+		Version:         frame.LatestVersion,
+		UID:             uid,
+		DeviceID:        uid + "-device",
+		DeviceFlag:      frame.APP,
+		ClientTimestamp: time.Now().UnixMilli(),
+	})
+
+	pkt := readAppWKProtoFrame(t, conn)
+	connack, ok := pkt.(*frame.ConnackPacket)
+	require.True(t, ok, "expected *frame.ConnackPacket, got %T", pkt)
+	require.Equal(t, frame.ReasonSuccess, connack.ReasonCode)
+
+	return conn
+}
+
+func readAppRecvPacket(t *testing.T, conn net.Conn) *frame.RecvPacket {
+	t.Helper()
+
+	pkt := readAppWKProtoFrame(t, conn)
+	recv, ok := pkt.(*frame.RecvPacket)
+	require.True(t, ok, "expected *frame.RecvPacket, got %T", pkt)
+	return recv
+}
+
+func waitForPresenceSessionID(t *testing.T, app *App, uid string) uint64 {
+	t.Helper()
+
+	var sessionID uint64
+	require.Eventually(t, func() bool {
+		routes, err := app.presenceApp.EndpointsByUID(context.Background(), uid)
+		if err != nil || len(routes) == 0 {
+			return false
+		}
+		sessionID = routes[0].SessionID
+		return sessionID != 0
+	}, time.Second, 10*time.Millisecond)
+	return sessionID
+}
+
+func seedChannelRuntimeMeta(t *testing.T, app *App, channelID string, channelType uint8) {
+	t.Helper()
+
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    channelID,
+		ChannelType:  int64(channelType),
+		ChannelEpoch: 1,
+		LeaderEpoch:  1,
+		Replicas:     []uint64{app.cfg.Node.ID},
+		ISR:          []uint64{app.cfg.Node.ID},
+		Leader:       app.cfg.Node.ID,
+		MinISR:       1,
+		Status:       uint8(channellog.ChannelStatusActive),
+		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
+	}
+	require.NoError(t, app.DB().ForSlot(1).UpsertChannelRuntimeMeta(context.Background(), meta))
 }

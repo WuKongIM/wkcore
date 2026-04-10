@@ -1,3 +1,6 @@
+//go:build integration
+// +build integration
+
 package app
 
 import (
@@ -12,13 +15,10 @@ import (
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
-	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/stretchr/testify/require"
 )
-
-const appReadTimeout = 2 * time.Second
 
 func TestAppStartAcceptsWKProtoConnectionAndStopsCleanly(t *testing.T) {
 	cfg := testConfig(t)
@@ -317,92 +317,4 @@ func TestAppStartServesLegacyUserTokenEndpoint(t *testing.T) {
 		Token:       "token-1",
 		DeviceLevel: 1,
 	}, gotDevice)
-}
-
-func sendAppWKProtoFrame(t *testing.T, conn net.Conn, f frame.Frame) {
-	t.Helper()
-
-	payload, err := codec.New().EncodeFrame(f, frame.LatestVersion)
-	require.NoError(t, err)
-
-	_, err = conn.Write(payload)
-	require.NoError(t, err)
-}
-
-func readAppWKProtoFrame(t *testing.T, conn net.Conn) frame.Frame {
-	t.Helper()
-
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(appReadTimeout)))
-	defer func() {
-		_ = conn.SetReadDeadline(time.Time{})
-	}()
-
-	f, err := codec.New().DecodePacketWithConn(conn, frame.LatestVersion)
-	require.NoError(t, err)
-	return f
-}
-
-func connectAppWKProtoClient(t *testing.T, app *App, uid string) net.Conn {
-	t.Helper()
-
-	conn, err := net.Dial("tcp", app.Gateway().ListenerAddr("tcp-wkproto"))
-	require.NoError(t, err)
-
-	sendAppWKProtoFrame(t, conn, &frame.ConnectPacket{
-		Version:         frame.LatestVersion,
-		UID:             uid,
-		DeviceID:        uid + "-device",
-		DeviceFlag:      frame.APP,
-		ClientTimestamp: time.Now().UnixMilli(),
-	})
-
-	pkt := readAppWKProtoFrame(t, conn)
-	connack, ok := pkt.(*frame.ConnackPacket)
-	require.True(t, ok, "expected *frame.ConnackPacket, got %T", pkt)
-	require.Equal(t, frame.ReasonSuccess, connack.ReasonCode)
-
-	return conn
-}
-
-func readAppRecvPacket(t *testing.T, conn net.Conn) *frame.RecvPacket {
-	t.Helper()
-
-	pkt := readAppWKProtoFrame(t, conn)
-	recv, ok := pkt.(*frame.RecvPacket)
-	require.True(t, ok, "expected *frame.RecvPacket, got %T", pkt)
-	return recv
-}
-
-func waitForPresenceSessionID(t *testing.T, app *App, uid string) uint64 {
-	t.Helper()
-
-	var sessionID uint64
-	require.Eventually(t, func() bool {
-		routes, err := app.presenceApp.EndpointsByUID(context.Background(), uid)
-		if err != nil || len(routes) == 0 {
-			return false
-		}
-		sessionID = routes[0].SessionID
-		return sessionID != 0
-	}, time.Second, 10*time.Millisecond)
-	return sessionID
-}
-
-func seedChannelRuntimeMeta(t *testing.T, app *App, channelID string, channelType uint8) {
-	t.Helper()
-
-	meta := metadb.ChannelRuntimeMeta{
-		ChannelID:    channelID,
-		ChannelType:  int64(channelType),
-		ChannelEpoch: 1,
-		LeaderEpoch:  1,
-		Replicas:     []uint64{app.cfg.Node.ID},
-		ISR:          []uint64{app.cfg.Node.ID},
-		Leader:       app.cfg.Node.ID,
-		MinISR:       1,
-		Status:       uint8(channellog.ChannelStatusActive),
-		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
-		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
-	}
-	require.NoError(t, app.DB().ForSlot(1).UpsertChannelRuntimeMeta(context.Background(), meta))
 }

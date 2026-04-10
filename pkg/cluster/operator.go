@@ -23,9 +23,16 @@ const (
 type RecoverStrategy uint8
 
 const (
-	RecoverStrategyLatestLiveReplica RecoverStrategy = iota + 1
-	controllerLeaderWaitTimeout                      = 10 * time.Second
+	RecoverStrategyLatestLiveReplica   RecoverStrategy = iota + 1
+	defaultControllerLeaderWaitTimeout                 = 10 * time.Second
 )
+
+func (c *Cluster) controllerLeaderWaitDuration() time.Duration {
+	if c != nil && c.controllerLeaderWaitTimeout > 0 {
+		return c.controllerLeaderWaitTimeout
+	}
+	return defaultControllerLeaderWaitTimeout
+}
 
 func (c *Cluster) MarkNodeDraining(ctx context.Context, nodeID uint64) error {
 	if c.controllerClient == nil {
@@ -214,7 +221,7 @@ func (c *Cluster) retryControllerCommand(ctx context.Context, fn func(context.Co
 	retryCtx := ctx
 	var cancel context.CancelFunc
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		retryCtx, cancel = context.WithTimeout(ctx, controllerLeaderWaitTimeout)
+		retryCtx, cancel = context.WithTimeout(ctx, c.controllerLeaderWaitDuration())
 		defer cancel()
 	}
 
