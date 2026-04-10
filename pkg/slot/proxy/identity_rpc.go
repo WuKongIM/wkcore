@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
-	"github.com/WuKongIM/WuKongIM/pkg/group/multiraft"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
 
 const identityRPCServiceID uint8 = 4

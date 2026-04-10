@@ -3,7 +3,7 @@ package cluster
 import (
 	"hash/crc32"
 
-	"github.com/WuKongIM/WuKongIM/pkg/group/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
 
 type Router struct {

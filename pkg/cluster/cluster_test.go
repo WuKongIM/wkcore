@@ -13,11 +13,11 @@ import (
 
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
-	metafsm "github.com/WuKongIM/WuKongIM/pkg/group/fsm"
-	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
-	"github.com/WuKongIM/WuKongIM/pkg/group/multiraft"
-	metastore "github.com/WuKongIM/WuKongIM/pkg/group/proxy"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
+	metafsm "github.com/WuKongIM/WuKongIM/pkg/slot/fsm"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
+	metastore "github.com/WuKongIM/WuKongIM/pkg/slot/proxy"
 	"github.com/stretchr/testify/require"
 )
 

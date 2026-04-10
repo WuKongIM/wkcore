@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
-	"github.com/WuKongIM/WuKongIM/pkg/group/multiraft"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
 
 func TestStateMachineEncodeUpsertCommands(t *testing.T) {

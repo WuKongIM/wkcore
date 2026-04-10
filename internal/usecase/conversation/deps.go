@@ -4,7 +4,7 @@ import (
 	"context"
 
 	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
-	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 )
 
 type ConversationStateStore interface {

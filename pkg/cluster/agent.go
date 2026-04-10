@@ -8,7 +8,7 @@ import (
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	groupcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
-	"github.com/WuKongIM/WuKongIM/pkg/group/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
 
 type assignmentTaskState struct {

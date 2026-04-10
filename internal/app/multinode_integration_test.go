@@ -18,10 +18,10 @@ import (
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	messageusecase "github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
-	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
-	"github.com/WuKongIM/WuKongIM/pkg/group/multiraft"
 	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/stretchr/testify/require"
 )
 

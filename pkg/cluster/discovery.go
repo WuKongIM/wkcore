@@ -1,6 +1,6 @@
 package cluster
 
-import "github.com/WuKongIM/WuKongIM/pkg/group/multiraft"
+import "github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 
 type NodeInfo struct {
 	NodeID multiraft.NodeID

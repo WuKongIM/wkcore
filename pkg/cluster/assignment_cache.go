@@ -4,7 +4,7 @@ import (
 	"sync"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
-	"github.com/WuKongIM/WuKongIM/pkg/group/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
 
 type assignmentCache struct {

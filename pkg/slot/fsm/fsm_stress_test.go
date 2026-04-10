@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
-	"github.com/WuKongIM/WuKongIM/pkg/group/multiraft"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
 
 const (

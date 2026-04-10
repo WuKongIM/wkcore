@@ -8,7 +8,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
 	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	isrnode "github.com/WuKongIM/WuKongIM/pkg/channel/node"
-	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/stretchr/testify/require"
 )
 

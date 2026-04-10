@@ -13,7 +13,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
-	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )

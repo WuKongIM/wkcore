@@ -12,7 +12,7 @@ import (
 	isrnode "github.com/WuKongIM/WuKongIM/pkg/channel/node"
 	isrnodetransport "github.com/WuKongIM/WuKongIM/pkg/channel/transport"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
-	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 )
 
 var errChannelDataPlaneNotReady = fmt.Errorf("app: channel data plane not ready")

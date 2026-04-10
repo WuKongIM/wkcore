@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 )
 
 var (

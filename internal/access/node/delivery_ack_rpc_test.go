@@ -20,11 +20,11 @@ func TestAckNotifyRPCRoutesAckToOwnerActor(t *testing.T) {
 
 	recorder := &recordingDeliveryAck{}
 	New(Options{
-		Cluster:      node2,
-		Presence:     presence.New(presence.Options{}),
-		Online:       online.NewRegistry(),
+		Cluster:       node2,
+		Presence:      presence.New(presence.Options{}),
+		Online:        online.NewRegistry(),
 		GatewayBootID: 22,
-		DeliveryAck:  recorder,
+		DeliveryAck:   recorder,
 	})
 
 	client := NewClient(node1)

@@ -9,7 +9,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
-	"github.com/WuKongIM/WuKongIM/pkg/group/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
 
 type authoritativeRPCResponse interface {

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 

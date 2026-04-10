@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
-	metafsm "github.com/WuKongIM/WuKongIM/pkg/group/fsm"
-	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	metafsm "github.com/WuKongIM/WuKongIM/pkg/slot/fsm"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 )
 
 // Store provides business-level distributed storage APIs

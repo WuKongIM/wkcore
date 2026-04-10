@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
-	metafsm "github.com/WuKongIM/WuKongIM/pkg/group/fsm"
-	"github.com/WuKongIM/WuKongIM/pkg/group/multiraft"
+	metafsm "github.com/WuKongIM/WuKongIM/pkg/slot/fsm"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/stretchr/testify/require"
 )
 

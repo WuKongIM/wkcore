@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	metafsm "github.com/WuKongIM/WuKongIM/pkg/group/fsm"
-	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
-	"github.com/WuKongIM/WuKongIM/pkg/group/multiraft"
+	metafsm "github.com/WuKongIM/WuKongIM/pkg/slot/fsm"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
 
 const channelUpdateLogRPCServiceID uint8 = 12

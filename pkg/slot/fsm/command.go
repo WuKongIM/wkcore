@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 )
 
 // Wire format (version 1):

@@ -12,8 +12,8 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
-	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/stretchr/testify/require"
 )
 

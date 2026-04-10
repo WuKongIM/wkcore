@@ -16,9 +16,9 @@ import (
 	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	isrnode "github.com/WuKongIM/WuKongIM/pkg/channel/node"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
-	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
-	metastore "github.com/WuKongIM/WuKongIM/pkg/group/proxy"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	metastore "github.com/WuKongIM/WuKongIM/pkg/slot/proxy"
 	"github.com/WuKongIM/WuKongIM/pkg/transport"
 )
 
