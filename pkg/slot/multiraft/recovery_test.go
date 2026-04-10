@@ -8,7 +8,7 @@ import (
 	"go.etcd.io/raft/v3/raftpb"
 )
 
-func TestOpenGroupRestoresAppliedIndexFromStorage(t *testing.T) {
+func TestOpenSlotRestoresAppliedIndexFromStorage(t *testing.T) {
 	store := &internalFakeStorage{
 		state: BootstrapState{
 			HardState: raftpb.HardState{
@@ -24,12 +24,12 @@ func TestOpenGroupRestoresAppliedIndexFromStorage(t *testing.T) {
 		},
 	}
 	rt := newStartedRuntime(t)
-	if err := rt.OpenGroup(context.Background(), GroupOptions{
+	if err := rt.OpenSlot(context.Background(), SlotOptions{
 		ID:           40,
 		Storage:      store,
 		StateMachine: &internalFakeStateMachine{},
 	}); err != nil {
-		t.Fatalf("OpenGroup() error = %v", err)
+		t.Fatalf("OpenSlot() error = %v", err)
 	}
 	st, err := rt.Status(40)
 	if err != nil {
@@ -40,7 +40,7 @@ func TestOpenGroupRestoresAppliedIndexFromStorage(t *testing.T) {
 	}
 }
 
-func TestOpenGroupRestoresSnapshotIntoStateMachine(t *testing.T) {
+func TestOpenSlotRestoresSnapshotIntoStateMachine(t *testing.T) {
 	fsm := &internalFakeStateMachine{}
 	store := &internalFakeStorage{
 		state: BootstrapState{
@@ -58,12 +58,12 @@ func TestOpenGroupRestoresSnapshotIntoStateMachine(t *testing.T) {
 		},
 	}
 	rt := newStartedRuntime(t)
-	if err := rt.OpenGroup(context.Background(), GroupOptions{
+	if err := rt.OpenSlot(context.Background(), SlotOptions{
 		ID:           41,
 		Storage:      store,
 		StateMachine: fsm,
 	}); err != nil {
-		t.Fatalf("OpenGroup() error = %v", err)
+		t.Fatalf("OpenSlot() error = %v", err)
 	}
 
 	fsm.mu.Lock()
@@ -76,22 +76,22 @@ func TestOpenGroupRestoresSnapshotIntoStateMachine(t *testing.T) {
 	}
 }
 
-func TestRestoreFatalStopsGroup(t *testing.T) {
+func TestRestoreFatalStopsSlot(t *testing.T) {
 	rt := newStartedRuntime(t)
 	fatalErr := errors.New("fatal restore")
 	store := &internalFakeStorage{}
 	fsm := &internalFakeStateMachine{restoreErr: fatalErr}
 
-	if err := rt.OpenGroup(context.Background(), GroupOptions{
+	if err := rt.OpenSlot(context.Background(), SlotOptions{
 		ID:           42,
 		Storage:      store,
 		StateMachine: fsm,
 	}); err != nil {
-		t.Fatalf("OpenGroup() error = %v", err)
+		t.Fatalf("OpenSlot() error = %v", err)
 	}
 
 	err := rt.Step(context.Background(), Envelope{
-		GroupID: 42,
+		SlotID: 42,
 		Message: raftpb.Message{
 			Type: raftpb.MsgSnap,
 			From: 2,

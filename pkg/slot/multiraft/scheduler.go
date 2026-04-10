@@ -3,69 +3,69 @@ package multiraft
 import "sync"
 
 type scheduler struct {
-	ch chan GroupID
+	ch chan SlotID
 
 	mu         sync.Mutex
-	pending    []GroupID
-	queued     map[GroupID]struct{}
-	processing map[GroupID]struct{}
-	dirty      map[GroupID]struct{}
+	pending    []SlotID
+	queued     map[SlotID]struct{}
+	processing map[SlotID]struct{}
+	dirty      map[SlotID]struct{}
 }
 
 func newScheduler() *scheduler {
 	return &scheduler{
-		ch:         make(chan GroupID, 1024),
-		queued:     make(map[GroupID]struct{}),
-		processing: make(map[GroupID]struct{}),
-		dirty:      make(map[GroupID]struct{}),
+		ch:         make(chan SlotID, 1024),
+		queued:     make(map[SlotID]struct{}),
+		processing: make(map[SlotID]struct{}),
+		dirty:      make(map[SlotID]struct{}),
 	}
 }
 
-func (s *scheduler) enqueue(groupID GroupID) {
+func (s *scheduler) enqueue(slotID SlotID) {
 	s.mu.Lock()
-	if _, ok := s.queued[groupID]; ok {
+	if _, ok := s.queued[slotID]; ok {
 		s.mu.Unlock()
 		return
 	}
-	if _, ok := s.processing[groupID]; ok {
-		s.dirty[groupID] = struct{}{}
+	if _, ok := s.processing[slotID]; ok {
+		s.dirty[slotID] = struct{}{}
 		s.mu.Unlock()
 		return
 	}
-	s.queued[groupID] = struct{}{}
-	s.pending = append(s.pending, groupID)
+	s.queued[slotID] = struct{}{}
+	s.pending = append(s.pending, slotID)
 	s.dispatchLocked()
 	s.mu.Unlock()
 }
 
-func (s *scheduler) begin(groupID GroupID) {
+func (s *scheduler) begin(slotID SlotID) {
 	s.mu.Lock()
-	delete(s.queued, groupID)
-	s.processing[groupID] = struct{}{}
+	delete(s.queued, slotID)
+	s.processing[slotID] = struct{}{}
 	s.dispatchLocked()
 	s.mu.Unlock()
 }
 
-func (s *scheduler) done(groupID GroupID) bool {
+func (s *scheduler) done(slotID SlotID) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	delete(s.processing, groupID)
-	if _, ok := s.dirty[groupID]; !ok {
+	delete(s.processing, slotID)
+	if _, ok := s.dirty[slotID]; !ok {
 		return false
 	}
-	delete(s.dirty, groupID)
+	delete(s.dirty, slotID)
 	return true
 }
 
-func (s *scheduler) requeue(groupID GroupID) {
+func (s *scheduler) requeue(slotID SlotID) {
 	s.mu.Lock()
-	if _, ok := s.queued[groupID]; ok {
+	if _, ok := s.queued[slotID]; ok {
 		s.mu.Unlock()
 		return
 	}
-	s.queued[groupID] = struct{}{}
-	s.pending = append(s.pending, groupID)
+	s.queued[slotID] = struct{}{}
+	s.pending = append(s.pending, slotID)
 	s.dispatchLocked()
 	s.mu.Unlock()
 }

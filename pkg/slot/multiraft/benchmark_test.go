@@ -75,24 +75,24 @@ func TestBenchmarkAppliedTrackerWaitForAll(t *testing.T) {
 }
 
 func BenchmarkRuntimeTickFanout(b *testing.B) {
-	for _, groupCount := range []int{64, 2048} {
-		b.Run("groups="+strconv.Itoa(groupCount), func(b *testing.B) {
+	for _, slotCount := range []int{64, 2048} {
+		b.Run("slots="+strconv.Itoa(slotCount), func(b *testing.B) {
 			rt := &Runtime{
-				groups:    make(map[GroupID]*group, groupCount),
+				slots:     make(map[SlotID]*slot, slotCount),
 				scheduler: newScheduler(),
 			}
-			groupIDs := make([]GroupID, 0, groupCount)
-			for i := 0; i < groupCount; i++ {
-				id := GroupID(i + 1)
-				rt.groups[id] = &group{id: id}
-				groupIDs = append(groupIDs, id)
+			slotIDs := make([]SlotID, 0, slotCount)
+			for i := 0; i < slotCount; i++ {
+				id := SlotID(i + 1)
+				rt.slots[id] = &slot{id: id}
+				slotIDs = append(slotIDs, id)
 			}
 
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				benchmarkTickFanout(rt)
-				benchmarkDrainScheduler(rt.scheduler, len(groupIDs))
+				benchmarkDrainScheduler(rt.scheduler, len(slotIDs))
 			}
 		})
 	}
@@ -100,94 +100,94 @@ func BenchmarkRuntimeTickFanout(b *testing.B) {
 
 func benchmarkTickFanout(rt *Runtime) {
 	rt.mu.RLock()
-	groups := make([]*group, 0, len(rt.groups))
-	for _, g := range rt.groups {
-		groups = append(groups, g)
+	slots := make([]*slot, 0, len(rt.slots))
+	for _, g := range rt.slots {
+		slots = append(slots, g)
 	}
 	rt.mu.RUnlock()
 
-	for _, g := range groups {
+	for _, g := range slots {
 		g.markTickPending()
 		rt.scheduler.enqueue(g.id)
 	}
 }
 
-func benchmarkDrainScheduler(s *scheduler, groupCount int) {
-	for i := 0; i < groupCount; i++ {
-		groupID := <-s.ch
-		s.begin(groupID)
-		_ = s.done(groupID)
+func benchmarkDrainScheduler(s *scheduler, slotCount int) {
+	for i := 0; i < slotCount; i++ {
+		slotID := <-s.ch
+		s.begin(slotID)
+		_ = s.done(slotID)
 	}
 }
 
-func BenchmarkThreeNodeMultiGroupProposalRoundTrip(b *testing.B) {
-	for _, groupCount := range []int{8, 32} {
-		b.Run("groups="+strconv.Itoa(groupCount), func(b *testing.B) {
+func BenchmarkThreeNodeMultiSlotProposalRoundTrip(b *testing.B) {
+	for _, slotCount := range []int{8, 32} {
+		b.Run("slots="+strconv.Itoa(slotCount), func(b *testing.B) {
 			cluster := newAsyncTestCluster(b, []NodeID{1, 2, 3}, asyncNetworkConfig{
 				MaxDelay: 2 * time.Millisecond,
-				Seed:     int64(groupCount),
+				Seed:     int64(slotCount),
 			})
 
-			groupIDs := make([]GroupID, 0, groupCount)
-			leaders := make(map[GroupID]NodeID, groupCount)
-			for i := 0; i < groupCount; i++ {
-				groupID := GroupID(10_000 + i)
-				groupIDs = append(groupIDs, groupID)
-				cluster.bootstrapGroup(b, groupID, []NodeID{1, 2, 3})
-				cluster.waitForBootstrapApplied(b, groupID, 3)
+			slotIDs := make([]SlotID, 0, slotCount)
+			leaders := make(map[SlotID]NodeID, slotCount)
+			for i := 0; i < slotCount; i++ {
+				slotID := SlotID(10_000 + i)
+				slotIDs = append(slotIDs, slotID)
+				cluster.bootstrapSlot(b, slotID, []NodeID{1, 2, 3})
+				cluster.waitForBootstrapApplied(b, slotID, 3)
 
 				targetLeader := NodeID((i % 3) + 1)
-				leaderID := cluster.waitForLeader(b, groupID)
+				leaderID := cluster.waitForLeader(b, slotID)
 				if leaderID != targetLeader {
-					if err := cluster.runtime(leaderID).TransferLeadership(context.Background(), groupID, targetLeader); err != nil {
-						b.Fatalf("TransferLeadership(group=%d) error = %v", groupID, err)
+					if err := cluster.runtime(leaderID).TransferLeadership(context.Background(), slotID, targetLeader); err != nil {
+						b.Fatalf("TransferLeadership(slot=%d) error = %v", slotID, err)
 					}
-					cluster.waitForSpecificLeader(b, groupID, targetLeader)
+					cluster.waitForSpecificLeader(b, slotID, targetLeader)
 					leaderID = targetLeader
 				}
-				leaders[groupID] = leaderID
+				leaders[slotID] = leaderID
 			}
 
-			payloads := make([][]byte, len(groupIDs))
-			for i, groupID := range groupIDs {
-				payloads[i] = []byte("bench-group-" + strconv.FormatUint(uint64(groupID), 10))
+			payloads := make([][]byte, len(slotIDs))
+			for i, slotID := range slotIDs {
+				payloads[i] = []byte("bench-slot-" + strconv.FormatUint(uint64(slotID), 10))
 			}
 
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				groupIndex := i % len(groupIDs)
-				groupID := groupIDs[groupIndex]
-				leaderID := leaders[groupID]
+				slotIndex := i % len(slotIDs)
+				slotID := slotIDs[slotIndex]
+				leaderID := leaders[slotID]
 
-				fut, err := cluster.runtime(leaderID).Propose(context.Background(), groupID, payloads[groupIndex])
+				fut, err := cluster.runtime(leaderID).Propose(context.Background(), slotID, payloads[slotIndex])
 				if err != nil {
-					b.Fatalf("Propose(group=%d leader=%d) error = %v", groupID, leaderID, err)
+					b.Fatalf("Propose(slot=%d leader=%d) error = %v", slotID, leaderID, err)
 				}
 
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				res, err := fut.Wait(ctx)
 				cancel()
 				if err != nil {
-					b.Fatalf("Wait(group=%d) error = %v", groupID, err)
+					b.Fatalf("Wait(slot=%d) error = %v", slotID, err)
 				}
 
-				cluster.waitForAllNodesAppliedIndex(b, groupID, res.Index)
+				cluster.waitForAllNodesAppliedIndex(b, slotID, res.Index)
 			}
 		})
 	}
 }
 
-func BenchmarkThreeNodeMultiGroupProposalRoundTripNotified(b *testing.B) {
-	for _, groupCount := range []int{8, 32} {
-		b.Run("groups="+strconv.Itoa(groupCount), func(b *testing.B) {
-			harness := newBenchmarkClusterHarness(b, groupCount, newBenchmarkAppliedTracker())
+func BenchmarkThreeNodeMultiSlotProposalRoundTripNotified(b *testing.B) {
+	for _, slotCount := range []int{8, 32} {
+		b.Run("slots="+strconv.Itoa(slotCount), func(b *testing.B) {
+			harness := newBenchmarkClusterHarness(b, slotCount, newBenchmarkAppliedTracker())
 
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				groupIndex := i % len(harness.groupIDs)
-				if err := benchmarkProposeRoundTripNotified(harness, groupIndex); err != nil {
+				slotIndex := i % len(harness.slotIDs)
+				if err := benchmarkProposeRoundTripNotified(harness, slotIndex); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -195,11 +195,11 @@ func BenchmarkThreeNodeMultiGroupProposalRoundTripNotified(b *testing.B) {
 	}
 }
 
-func BenchmarkThreeNodeMultiGroupConcurrentProposalThroughput(b *testing.B) {
-	for _, groupCount := range []int{8, 32} {
-		b.Run("groups="+strconv.Itoa(groupCount), func(b *testing.B) {
-			harness := newBenchmarkClusterHarness(b, groupCount, newBenchmarkAppliedTracker())
-			workerCount := groupCount
+func BenchmarkThreeNodeMultiSlotConcurrentProposalThroughput(b *testing.B) {
+	for _, slotCount := range []int{8, 32} {
+		b.Run("slots="+strconv.Itoa(slotCount), func(b *testing.B) {
+			harness := newBenchmarkClusterHarness(b, slotCount, newBenchmarkAppliedTracker())
+			workerCount := slotCount
 			if workerCount > 12 {
 				workerCount = 12
 			}
@@ -228,8 +228,8 @@ func BenchmarkThreeNodeMultiGroupConcurrentProposalThroughput(b *testing.B) {
 							return
 						}
 
-						groupIndex := op % len(harness.groupIDs)
-						if err := benchmarkProposeRoundTripNotified(harness, groupIndex); err != nil {
+						slotIndex := op % len(harness.slotIDs)
+						if err := benchmarkProposeRoundTripNotified(harness, slotIndex); err != nil {
 							if failed.CompareAndSwap(false, true) {
 								errCh <- err
 							}
@@ -253,84 +253,84 @@ func BenchmarkThreeNodeMultiGroupConcurrentProposalThroughput(b *testing.B) {
 type benchmarkClusterHarness struct {
 	cluster  *testCluster
 	nodeIDs  []NodeID
-	groupIDs []GroupID
+	slotIDs  []SlotID
 	leaders  []NodeID
 	payloads [][]byte
 	tracker  *benchmarkAppliedTracker
 }
 
-func newBenchmarkClusterHarness(b testing.TB, groupCount int, tracker *benchmarkAppliedTracker) *benchmarkClusterHarness {
+func newBenchmarkClusterHarness(b testing.TB, slotCount int, tracker *benchmarkAppliedTracker) *benchmarkClusterHarness {
 	b.Helper()
 
 	nodeIDs := []NodeID{1, 2, 3}
 	cluster := newAsyncTestCluster(b, nodeIDs, asyncNetworkConfig{
 		MaxDelay: 2 * time.Millisecond,
-		Seed:     int64(groupCount),
+		Seed:     int64(slotCount),
 	})
 
-	groupIDs := make([]GroupID, 0, groupCount)
-	leaders := make([]NodeID, 0, groupCount)
-	payloads := make([][]byte, 0, groupCount)
+	slotIDs := make([]SlotID, 0, slotCount)
+	leaders := make([]NodeID, 0, slotCount)
+	payloads := make([][]byte, 0, slotCount)
 
-	for i := 0; i < groupCount; i++ {
-		groupID := GroupID(10_000 + i)
-		groupIDs = append(groupIDs, groupID)
+	for i := 0; i < slotCount; i++ {
+		slotID := SlotID(10_000 + i)
+		slotIDs = append(slotIDs, slotID)
 
 		if tracker != nil {
-			cluster.bootstrapGroupWithAppliedTracker(b, tracker, groupID, nodeIDs)
+			cluster.bootstrapSlotWithAppliedTracker(b, tracker, slotID, nodeIDs)
 		} else {
-			cluster.bootstrapGroup(b, groupID, nodeIDs)
+			cluster.bootstrapSlot(b, slotID, nodeIDs)
 		}
-		cluster.waitForBootstrapApplied(b, groupID, 3)
+		cluster.waitForBootstrapApplied(b, slotID, 3)
 
 		targetLeader := nodeIDs[i%len(nodeIDs)]
-		leaderID := cluster.waitForLeader(b, groupID)
+		leaderID := cluster.waitForLeader(b, slotID)
 		if leaderID != targetLeader {
-			if err := cluster.runtime(leaderID).TransferLeadership(context.Background(), groupID, targetLeader); err != nil {
-				b.Fatalf("TransferLeadership(group=%d) error = %v", groupID, err)
+			if err := cluster.runtime(leaderID).TransferLeadership(context.Background(), slotID, targetLeader); err != nil {
+				b.Fatalf("TransferLeadership(slot=%d) error = %v", slotID, err)
 			}
-			cluster.waitForSpecificLeader(b, groupID, targetLeader)
+			cluster.waitForSpecificLeader(b, slotID, targetLeader)
 			leaderID = targetLeader
 		}
 
 		leaders = append(leaders, leaderID)
-		payloads = append(payloads, []byte("bench-group-"+strconv.FormatUint(uint64(groupID), 10)))
+		payloads = append(payloads, []byte("bench-slot-"+strconv.FormatUint(uint64(slotID), 10)))
 	}
 
 	return &benchmarkClusterHarness{
 		cluster:  cluster,
 		nodeIDs:  append([]NodeID(nil), nodeIDs...),
-		groupIDs: groupIDs,
+		slotIDs:  slotIDs,
 		leaders:  leaders,
 		payloads: payloads,
 		tracker:  tracker,
 	}
 }
 
-func benchmarkProposeRoundTripNotified(harness *benchmarkClusterHarness, groupIndex int) error {
-	groupID := harness.groupIDs[groupIndex]
-	leaderID := harness.leaders[groupIndex]
+func benchmarkProposeRoundTripNotified(harness *benchmarkClusterHarness, slotIndex int) error {
+	slotID := harness.slotIDs[slotIndex]
+	leaderID := harness.leaders[slotIndex]
 
-	fut, err := harness.cluster.runtime(leaderID).Propose(context.Background(), groupID, harness.payloads[groupIndex])
+	fut, err := harness.cluster.runtime(leaderID).Propose(context.Background(), slotID, harness.payloads[slotIndex])
 	if err != nil {
-		return fmt.Errorf("Propose(group=%d leader=%d): %w", groupID, leaderID, err)
+		return fmt.Errorf("Propose(slot=%d leader=%d): %w", slotID, leaderID, err)
 	}
 
 	res, err := fut.Wait(context.Background())
 	if err != nil {
-		return fmt.Errorf("Wait(group=%d): %w", groupID, err)
+		return fmt.Errorf("Wait(slot=%d): %w", slotID, err)
 	}
 
-	if err := harness.tracker.waitForAll(context.Background(), harness.nodeIDs, groupID, res.Index); err != nil {
-		return fmt.Errorf("waitForAll(group=%d index=%d): %w", groupID, res.Index, err)
+	if err := harness.tracker.waitForAll(context.Background(), harness.nodeIDs, slotID, res.Index); err != nil {
+		return fmt.Errorf("waitForAll(slot=%d index=%d): %w", slotID, res.Index, err)
 	}
 
 	return nil
 }
 
 type benchmarkAppliedKey struct {
-	nodeID  NodeID
-	groupID GroupID
+	nodeID NodeID
+	slotID SlotID
 }
 
 type benchmarkAppliedWaiter struct {
@@ -351,8 +351,8 @@ func newBenchmarkAppliedTracker() *benchmarkAppliedTracker {
 	}
 }
 
-func (t *benchmarkAppliedTracker) markApplied(nodeID NodeID, groupID GroupID, index uint64) {
-	key := benchmarkAppliedKey{nodeID: nodeID, groupID: groupID}
+func (t *benchmarkAppliedTracker) markApplied(nodeID NodeID, slotID SlotID, index uint64) {
+	key := benchmarkAppliedKey{nodeID: nodeID, slotID: slotID}
 
 	t.mu.Lock()
 	if t.applied[key] >= index {
@@ -378,8 +378,8 @@ func (t *benchmarkAppliedTracker) markApplied(nodeID NodeID, groupID GroupID, in
 	t.mu.Unlock()
 }
 
-func (t *benchmarkAppliedTracker) waitForNode(ctx context.Context, nodeID NodeID, groupID GroupID, index uint64) error {
-	key := benchmarkAppliedKey{nodeID: nodeID, groupID: groupID}
+func (t *benchmarkAppliedTracker) waitForNode(ctx context.Context, nodeID NodeID, slotID SlotID, index uint64) error {
+	key := benchmarkAppliedKey{nodeID: nodeID, slotID: slotID}
 	waiter := benchmarkAppliedWaiter{
 		index: index,
 		ch:    make(chan struct{}),
@@ -421,9 +421,9 @@ func (t *benchmarkAppliedTracker) waitForNode(ctx context.Context, nodeID NodeID
 	}
 }
 
-func (t *benchmarkAppliedTracker) waitForAll(ctx context.Context, nodeIDs []NodeID, groupID GroupID, index uint64) error {
+func (t *benchmarkAppliedTracker) waitForAll(ctx context.Context, nodeIDs []NodeID, slotID SlotID, index uint64) error {
 	for _, nodeID := range nodeIDs {
-		if err := t.waitForNode(ctx, nodeID, groupID, index); err != nil {
+		if err := t.waitForNode(ctx, nodeID, slotID, index); err != nil {
 			return err
 		}
 	}
@@ -434,15 +434,15 @@ type benchmarkNotifyingStorage struct {
 	*internalFakeStorage
 	tracker *benchmarkAppliedTracker
 	nodeID  NodeID
-	groupID GroupID
+	slotID  SlotID
 }
 
-func newBenchmarkNotifyingStorage(tracker *benchmarkAppliedTracker, nodeID NodeID, groupID GroupID) *benchmarkNotifyingStorage {
+func newBenchmarkNotifyingStorage(tracker *benchmarkAppliedTracker, nodeID NodeID, slotID SlotID) *benchmarkNotifyingStorage {
 	return &benchmarkNotifyingStorage{
 		internalFakeStorage: &internalFakeStorage{},
 		tracker:             tracker,
 		nodeID:              nodeID,
-		groupID:             groupID,
+		slotID:              slotID,
 	}
 }
 
@@ -450,29 +450,29 @@ func (s *benchmarkNotifyingStorage) MarkApplied(ctx context.Context, index uint6
 	if err := s.internalFakeStorage.MarkApplied(ctx, index); err != nil {
 		return err
 	}
-	s.tracker.markApplied(s.nodeID, s.groupID, index)
+	s.tracker.markApplied(s.nodeID, s.slotID, index)
 	return nil
 }
 
-func (c *testCluster) bootstrapGroupWithAppliedTracker(t testing.TB, tracker *benchmarkAppliedTracker, groupID GroupID, voters []NodeID) {
+func (c *testCluster) bootstrapSlotWithAppliedTracker(t testing.TB, tracker *benchmarkAppliedTracker, slotID SlotID, voters []NodeID) {
 	t.Helper()
 
 	for _, nodeID := range voters {
-		store := newBenchmarkNotifyingStorage(tracker, nodeID, groupID)
+		store := newBenchmarkNotifyingStorage(tracker, nodeID, slotID)
 		fsm := &internalFakeStateMachine{}
-		c.stores[nodeID][groupID] = store.internalFakeStorage
-		c.fsms[nodeID][groupID] = fsm
+		c.stores[nodeID][slotID] = store.internalFakeStorage
+		c.fsms[nodeID][slotID] = fsm
 
-		err := c.runtime(nodeID).BootstrapGroup(context.Background(), BootstrapGroupRequest{
-			Group: GroupOptions{
-				ID:           groupID,
+		err := c.runtime(nodeID).BootstrapSlot(context.Background(), BootstrapSlotRequest{
+			Slot: SlotOptions{
+				ID:           slotID,
 				Storage:      store,
 				StateMachine: fsm,
 			},
 			Voters: voters,
 		})
 		if err != nil {
-			t.Fatalf("BootstrapGroup(node=%d) error = %v", nodeID, err)
+			t.Fatalf("BootstrapSlot(node=%d) error = %v", nodeID, err)
 		}
 	}
 }

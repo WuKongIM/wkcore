@@ -107,8 +107,8 @@ func newTestRuntime(t *testing.T) *multiraft.Runtime {
 	return rt
 }
 
-func newGroupOptions(id multiraft.GroupID) multiraft.GroupOptions {
-	return multiraft.GroupOptions{
+func newSlotOptions(id multiraft.SlotID) multiraft.SlotOptions {
+	return multiraft.SlotOptions{
 		ID:           id,
 		Storage:      newFakeStorage(),
 		StateMachine: newFakeStateMachine(),

@@ -9,9 +9,9 @@ import (
 	"go.etcd.io/raft/v3/raftpb"
 )
 
-type group struct {
+type slot struct {
 	mu                 sync.Mutex
-	id                 GroupID
+	id                 SlotID
 	storage            Storage
 	stateMachine       StateMachine
 	status             Status
@@ -68,7 +68,7 @@ type controlAction struct {
 	change ConfigChange
 }
 
-func newGroup(ctx context.Context, nodeID NodeID, raftOpts RaftOptions, opts GroupOptions) (*group, error) {
+func newSlot(ctx context.Context, nodeID NodeID, raftOpts RaftOptions, opts SlotOptions) (*slot, error) {
 	state, snapshot, memory, err := newStorageAdapter(opts.Storage).load(ctx)
 	if err != nil {
 		return nil, err
@@ -89,12 +89,12 @@ func newGroup(ctx context.Context, nodeID NodeID, raftOpts RaftOptions, opts Gro
 		return nil, err
 	}
 
-	g := &group{
+	g := &slot{
 		id:           opts.ID,
 		storage:      opts.Storage,
 		stateMachine: opts.StateMachine,
 		status: Status{
-			GroupID:      opts.ID,
+			SlotID:       opts.ID,
 			NodeID:       nodeID,
 			LeaderID:     NodeID(state.HardState.Vote),
 			CommitIndex:  state.HardState.Commit,
@@ -118,7 +118,7 @@ func newGroup(ctx context.Context, nodeID NodeID, raftOpts RaftOptions, opts Gro
 	return g, nil
 }
 
-func (g *group) enqueueRequest(msg raftpb.Message) error {
+func (g *slot) enqueueRequest(msg raftpb.Message) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if err := g.admissionErrLocked(); err != nil {
@@ -129,7 +129,7 @@ func (g *group) enqueueRequest(msg raftpb.Message) error {
 	return nil
 }
 
-func (g *group) processRequests() {
+func (g *slot) processRequests() {
 	requests := g.takeRequestBatch()
 	defer g.releaseRequestBatch(requests)
 
@@ -138,7 +138,7 @@ func (g *group) processRequests() {
 	}
 }
 
-func (g *group) enqueueControl(action controlAction) error {
+func (g *slot) enqueueControl(action controlAction) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if err := g.admissionErrLocked(); err != nil {
@@ -157,7 +157,7 @@ func (g *group) enqueueControl(action controlAction) error {
 	return nil
 }
 
-func (g *group) processControls() {
+func (g *slot) processControls() {
 	controls := g.takeControlBatch()
 	defer g.releaseControlBatch(controls)
 
@@ -192,7 +192,7 @@ func (g *group) processControls() {
 	}
 }
 
-func (g *group) takeRequestBatch() []raftpb.Message {
+func (g *slot) takeRequestBatch() []raftpb.Message {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -203,13 +203,13 @@ func (g *group) takeRequestBatch() []raftpb.Message {
 	return batch
 }
 
-func (g *group) releaseRequestBatch(batch []raftpb.Message) {
+func (g *slot) releaseRequestBatch(batch []raftpb.Message) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.requestWorkBuf = batch[:0]
 }
 
-func (g *group) takeControlBatch() []controlAction {
+func (g *slot) takeControlBatch() []controlAction {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -219,13 +219,13 @@ func (g *group) takeControlBatch() []controlAction {
 	return batch
 }
 
-func (g *group) releaseControlBatch(batch []controlAction) {
+func (g *slot) releaseControlBatch(batch []controlAction) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.controlWorkBuf = batch[:0]
 }
 
-func (g *group) hasPendingConfigChangeLocked() bool {
+func (g *slot) hasPendingConfigChangeLocked() bool {
 	if len(g.submittedConfigs) > 0 || len(g.pendingConfigs) > 0 {
 		return true
 	}
@@ -237,7 +237,7 @@ func (g *group) hasPendingConfigChangeLocked() bool {
 	return false
 }
 
-func (g *group) takeResolutionBuffer() []futureResolution {
+func (g *slot) takeResolutionBuffer() []futureResolution {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -246,19 +246,19 @@ func (g *group) takeResolutionBuffer() []futureResolution {
 	return buf
 }
 
-func (g *group) releaseResolutionBuffer(buf []futureResolution) {
+func (g *slot) releaseResolutionBuffer(buf []futureResolution) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.resolutionBuf = buf[:0]
 }
 
-func (g *group) markTickPending() {
+func (g *slot) markTickPending() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.tickPending = true
 }
 
-func (g *group) processTick() {
+func (g *slot) processTick() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -270,7 +270,7 @@ func (g *group) processTick() {
 	g.rawNode.Tick()
 }
 
-func (g *group) processReady(ctx context.Context, transport Transport) bool {
+func (g *slot) processReady(ctx context.Context, transport Transport) bool {
 	if !g.rawNode.HasReady() {
 		return false
 	}
@@ -326,7 +326,7 @@ func (g *group) processReady(ctx context.Context, transport Transport) bool {
 	return g.rawNode.HasReady()
 }
 
-func (g *group) applyCommittedEntries(
+func (g *slot) applyCommittedEntries(
 	ctx context.Context,
 	entries []raftpb.Entry,
 	lastApplied *uint64,
@@ -347,10 +347,10 @@ func (g *group) applyCommittedEntries(
 			// Fall back to one-by-one Apply.
 			for _, entry := range batchEntries {
 				result, err := g.stateMachine.Apply(ctx, Command{
-					GroupID: g.id,
-					Index:   entry.Index,
-					Term:    entry.Term,
-					Data:    append([]byte(nil), entry.Data...),
+					SlotID: g.id,
+					Index:  entry.Index,
+					Term:   entry.Term,
+					Data:   append([]byte(nil), entry.Data...),
 				})
 				if err != nil {
 					g.resolveProposal(entry.Index, entry.Term, Result{
@@ -379,15 +379,15 @@ func (g *group) applyCommittedEntries(
 		cmds := make([]Command, len(batchEntries))
 		for i, entry := range batchEntries {
 			cmds[i] = Command{
-				GroupID: g.id,
-				Index:   entry.Index,
-				Term:    entry.Term,
-				Data:    append([]byte(nil), entry.Data...),
+				SlotID: g.id,
+				Index:  entry.Index,
+				Term:   entry.Term,
+				Data:   append([]byte(nil), entry.Data...),
 			}
 		}
 		results, err := batchSM.ApplyBatch(ctx, cmds)
 		if err != nil {
-			// Resolve the last entry and fail the group.
+			// Resolve the last entry and fail the slot.
 			last := batchEntries[len(batchEntries)-1]
 			g.resolveProposal(last.Index, last.Term, Result{
 				Index: last.Index,
@@ -456,7 +456,7 @@ func (g *group) applyCommittedEntries(
 	return resolutions
 }
 
-func (g *group) completeResolutions(resolutions []futureResolution) {
+func (g *slot) completeResolutions(resolutions []futureResolution) {
 	for _, resolution := range resolutions {
 		switch resolution.kind {
 		case controlPropose:
@@ -467,7 +467,7 @@ func (g *group) completeResolutions(resolutions []futureResolution) {
 	}
 }
 
-func (g *group) refreshStatus() {
+func (g *slot) refreshStatus() {
 	st := g.rawNode.Status()
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -482,17 +482,17 @@ func (g *group) refreshStatus() {
 	}
 }
 
-func (g *group) appliedIndex() uint64 {
+func (g *slot) appliedIndex() uint64 {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.status.AppliedIndex
 }
 
-func (g *group) statusSnapshot() (Status, error) {
+func (g *slot) statusSnapshot() (Status, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.closed {
-		return Status{}, ErrGroupClosed
+		return Status{}, ErrSlotClosed
 	}
 	if g.fatalErr != nil {
 		return Status{}, g.fatalErr
@@ -500,9 +500,9 @@ func (g *group) statusSnapshot() (Status, error) {
 	return g.status, nil
 }
 
-func (g *group) admissionErrLocked() error {
+func (g *slot) admissionErrLocked() error {
 	if g.closed {
-		return ErrGroupClosed
+		return ErrSlotClosed
 	}
 	if g.fatalErr != nil {
 		return g.fatalErr
@@ -510,7 +510,7 @@ func (g *group) admissionErrLocked() error {
 	return nil
 }
 
-func (g *group) observeQueuedMessageLocked(msg raftpb.Message) {
+func (g *slot) observeQueuedMessageLocked(msg raftpb.Message) {
 	if msg.Term <= g.status.Term {
 		return
 	}
@@ -526,13 +526,13 @@ func (g *group) observeQueuedMessageLocked(msg raftpb.Message) {
 	}
 }
 
-func (g *group) shouldProcess() bool {
+func (g *slot) shouldProcess() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.admissionErrLocked() == nil
 }
 
-func (g *group) beginProcessing() bool {
+func (g *slot) beginProcessing() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.admissionErrLocked() != nil {
@@ -545,7 +545,7 @@ func (g *group) beginProcessing() bool {
 	return true
 }
 
-func (g *group) finishProcessing() {
+func (g *slot) finishProcessing() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.processing = false
@@ -554,7 +554,7 @@ func (g *group) finishProcessing() {
 	}
 }
 
-func (g *group) fail(err error) {
+func (g *slot) fail(err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if err == nil || g.closed || g.fatalErr != nil {
@@ -578,7 +578,7 @@ func countTrackedReadyEntries(entries []raftpb.Entry) (proposalCount, configCoun
 	return proposalCount, configCount
 }
 
-func (g *group) ensurePendingProposalCapacity(additional int) {
+func (g *slot) ensurePendingProposalCapacity(additional int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.pendingProposals, g.pendingProposalCap = ensureTrackedFutureMapCapacity(
@@ -588,7 +588,7 @@ func (g *group) ensurePendingProposalCapacity(additional int) {
 	)
 }
 
-func (g *group) ensurePendingConfigCapacity(additional int) {
+func (g *slot) ensurePendingConfigCapacity(additional int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.pendingConfigs, g.pendingConfigCap = ensureTrackedFutureMapCapacity(
@@ -632,7 +632,7 @@ func ensureTrackedFutureMapCapacity(
 	return resized, nextCap
 }
 
-func (g *group) trackReadyEntries(entries []raftpb.Entry) {
+func (g *slot) trackReadyEntries(entries []raftpb.Entry) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -666,7 +666,7 @@ func (g *group) trackReadyEntries(entries []raftpb.Entry) {
 	}
 }
 
-func (g *group) resolveProposal(index, term uint64, result Result, err error) {
+func (g *slot) resolveProposal(index, term uint64, result Result, err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -678,13 +678,13 @@ func (g *group) resolveProposal(index, term uint64, result Result, err error) {
 	pending.future.resolve(result, err)
 }
 
-func (g *group) failPending(err error) {
+func (g *slot) failPending(err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.failPendingLocked(err)
 }
 
-func (g *group) failPendingLocked(err error) {
+func (g *slot) failPendingLocked(err error) {
 	for _, fut := range g.submittedProposals {
 		fut.resolve(Result{}, err)
 	}
@@ -703,7 +703,7 @@ func (g *group) failPendingLocked(err error) {
 	g.submittedConfigs = nil
 }
 
-func (g *group) failLeadershipDependentLocked(err error) {
+func (g *slot) failLeadershipDependentLocked(err error) {
 	if err == nil {
 		return
 	}
@@ -725,7 +725,7 @@ func (g *group) failLeadershipDependentLocked(err error) {
 	g.submittedConfigs = nil
 }
 
-func (g *group) resolveConfig(index, term uint64, result Result, err error) {
+func (g *slot) resolveConfig(index, term uint64, result Result, err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -737,15 +737,15 @@ func (g *group) resolveConfig(index, term uint64, result Result, err error) {
 	pending.future.resolve(result, err)
 }
 
-func wrapMessages(groupID GroupID, messages []raftpb.Message) []Envelope {
-	return wrapMessagesInto(nil, groupID, messages)
+func wrapMessages(slotID SlotID, messages []raftpb.Message) []Envelope {
+	return wrapMessagesInto(nil, slotID, messages)
 }
 
-func wrapMessagesInto(dst []Envelope, groupID GroupID, messages []raftpb.Message) []Envelope {
+func wrapMessagesInto(dst []Envelope, slotID SlotID, messages []raftpb.Message) []Envelope {
 	out := dst[:0]
 	for _, msg := range messages {
 		out = append(out, Envelope{
-			GroupID: groupID,
+			SlotID:  slotID,
 			Message: cloneMessage(msg),
 		})
 	}

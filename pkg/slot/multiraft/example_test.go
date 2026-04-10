@@ -26,7 +26,7 @@ func ExampleRuntime() {
 	}
 	defer rt.Close()
 
-	_ = rt.OpenGroup(context.Background(), multiraft.GroupOptions{
+	_ = rt.OpenSlot(context.Background(), multiraft.SlotOptions{
 		ID:           1,
 		Storage:      noopStorage{},
 		StateMachine: noopStateMachine{},

@@ -15,13 +15,13 @@ func TestThreeNodeClusterReplicatesProposalEndToEnd(t *testing.T) {
 		MaxDelay: 5 * time.Millisecond,
 		Seed:     1,
 	})
-	groupID := GroupID(100)
+	slotID := SlotID(100)
 
-	cluster.bootstrapGroup(t, groupID, []NodeID{1, 2, 3})
-	cluster.waitForBootstrapApplied(t, groupID, 3)
+	cluster.bootstrapSlot(t, slotID, []NodeID{1, 2, 3})
+	cluster.waitForBootstrapApplied(t, slotID, 3)
 
-	leaderID := cluster.waitForLeader(t, groupID)
-	fut, err := cluster.runtime(leaderID).Propose(context.Background(), groupID, []byte("set a=1"))
+	leaderID := cluster.waitForLeader(t, slotID)
+	fut, err := cluster.runtime(leaderID).Propose(context.Background(), slotID, []byte("set a=1"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -31,7 +31,7 @@ func TestThreeNodeClusterReplicatesProposalEndToEnd(t *testing.T) {
 		t.Fatalf("Wait().Data = %q", res.Data)
 	}
 
-	cluster.waitForAllApplied(t, groupID, []byte("set a=1"))
+	cluster.waitForAllApplied(t, slotID, []byte("set a=1"))
 }
 
 func TestThreeNodeClusterReplicatesMultipleProposalsInOrder(t *testing.T) {
@@ -39,12 +39,12 @@ func TestThreeNodeClusterReplicatesMultipleProposalsInOrder(t *testing.T) {
 		MaxDelay: 5 * time.Millisecond,
 		Seed:     2,
 	})
-	groupID := GroupID(101)
+	slotID := SlotID(101)
 
-	cluster.bootstrapGroup(t, groupID, []NodeID{1, 2, 3})
-	cluster.waitForBootstrapApplied(t, groupID, 3)
+	cluster.bootstrapSlot(t, slotID, []NodeID{1, 2, 3})
+	cluster.waitForBootstrapApplied(t, slotID, 3)
 
-	leaderID := cluster.waitForLeader(t, groupID)
+	leaderID := cluster.waitForLeader(t, slotID)
 	commands := [][]byte{
 		[]byte("set a=1"),
 		[]byte("set b=2"),
@@ -52,7 +52,7 @@ func TestThreeNodeClusterReplicatesMultipleProposalsInOrder(t *testing.T) {
 	}
 
 	for _, command := range commands {
-		fut, err := cluster.runtime(leaderID).Propose(context.Background(), groupID, command)
+		fut, err := cluster.runtime(leaderID).Propose(context.Background(), slotID, command)
 		if err != nil {
 			t.Fatalf("Propose(%q) error = %v", command, err)
 		}
@@ -63,7 +63,7 @@ func TestThreeNodeClusterReplicatesMultipleProposalsInOrder(t *testing.T) {
 		}
 	}
 
-	cluster.waitForAllAppliedSequence(t, groupID, commands)
+	cluster.waitForAllAppliedSequence(t, slotID, commands)
 }
 
 func TestThreeNodeClusterTransfersLeadershipAndReplicatesAgain(t *testing.T) {
@@ -71,28 +71,28 @@ func TestThreeNodeClusterTransfersLeadershipAndReplicatesAgain(t *testing.T) {
 		MaxDelay: 5 * time.Millisecond,
 		Seed:     3,
 	})
-	groupID := GroupID(102)
+	slotID := SlotID(102)
 
-	cluster.bootstrapGroup(t, groupID, []NodeID{1, 2, 3})
-	cluster.waitForBootstrapApplied(t, groupID, 3)
+	cluster.bootstrapSlot(t, slotID, []NodeID{1, 2, 3})
+	cluster.waitForBootstrapApplied(t, slotID, 3)
 
-	leaderID := cluster.waitForLeader(t, groupID)
-	warmup, err := cluster.runtime(leaderID).Propose(context.Background(), groupID, []byte("warmup"))
+	leaderID := cluster.waitForLeader(t, slotID)
+	warmup, err := cluster.runtime(leaderID).Propose(context.Background(), slotID, []byte("warmup"))
 	if err != nil {
 		t.Fatalf("Propose(warmup) error = %v", err)
 	}
 	waitForFutureResult(t, warmup)
-	cluster.waitForAllApplied(t, groupID, []byte("warmup"))
+	cluster.waitForAllApplied(t, slotID, []byte("warmup"))
 
 	targetLeader := cluster.pickFollower(leaderID)
 
-	if err := cluster.runtime(leaderID).TransferLeadership(context.Background(), groupID, targetLeader); err != nil {
+	if err := cluster.runtime(leaderID).TransferLeadership(context.Background(), slotID, targetLeader); err != nil {
 		t.Fatalf("TransferLeadership() error = %v", err)
 	}
 
-	cluster.waitForSpecificLeader(t, groupID, targetLeader)
+	cluster.waitForSpecificLeader(t, slotID, targetLeader)
 
-	fut, err := cluster.runtime(targetLeader).Propose(context.Background(), groupID, []byte("set c=3"))
+	fut, err := cluster.runtime(targetLeader).Propose(context.Background(), slotID, []byte("set c=3"))
 	if err != nil {
 		t.Fatalf("Propose(newLeader=%d) error = %v", targetLeader, err)
 	}
@@ -102,7 +102,7 @@ func TestThreeNodeClusterTransfersLeadershipAndReplicatesAgain(t *testing.T) {
 		t.Fatalf("Wait().Data = %q", res.Data)
 	}
 
-	cluster.waitForAllApplied(t, groupID, []byte("set c=3"))
+	cluster.waitForAllApplied(t, slotID, []byte("set c=3"))
 }
 
 type testCluster struct {
@@ -110,8 +110,8 @@ type testCluster struct {
 	network    *asyncTestNetwork
 	runtimes   map[NodeID]*Runtime
 	transports map[NodeID]*clusterTransport
-	stores     map[NodeID]map[GroupID]*internalFakeStorage
-	fsms       map[NodeID]map[GroupID]*internalFakeStateMachine
+	stores     map[NodeID]map[SlotID]*internalFakeStorage
+	fsms       map[NodeID]map[SlotID]*internalFakeStateMachine
 }
 
 type asyncNetworkConfig struct {
@@ -147,8 +147,8 @@ func newAsyncTestCluster(t testing.TB, nodeIDs []NodeID, cfg asyncNetworkConfig)
 		network:    network,
 		runtimes:   make(map[NodeID]*Runtime),
 		transports: make(map[NodeID]*clusterTransport),
-		stores:     make(map[NodeID]map[GroupID]*internalFakeStorage),
-		fsms:       make(map[NodeID]map[GroupID]*internalFakeStateMachine),
+		stores:     make(map[NodeID]map[SlotID]*internalFakeStorage),
+		fsms:       make(map[NodeID]map[SlotID]*internalFakeStateMachine),
 	}
 	network.cluster = cluster
 
@@ -170,8 +170,8 @@ func newAsyncTestCluster(t testing.TB, nodeIDs []NodeID, cfg asyncNetworkConfig)
 
 		cluster.runtimes[nodeID] = rt
 		cluster.transports[nodeID] = transport
-		cluster.stores[nodeID] = make(map[GroupID]*internalFakeStorage)
-		cluster.fsms[nodeID] = make(map[GroupID]*internalFakeStateMachine)
+		cluster.stores[nodeID] = make(map[SlotID]*internalFakeStorage)
+		cluster.fsms[nodeID] = make(map[SlotID]*internalFakeStateMachine)
 	}
 
 	t.Cleanup(func() {
@@ -217,25 +217,25 @@ func (c *testCluster) otherNodes(nodeID NodeID) []NodeID {
 	return out
 }
 
-func (c *testCluster) bootstrapGroup(t testing.TB, groupID GroupID, voters []NodeID) {
+func (c *testCluster) bootstrapSlot(t testing.TB, slotID SlotID, voters []NodeID) {
 	t.Helper()
 
 	for _, nodeID := range voters {
 		store := &internalFakeStorage{}
 		fsm := &internalFakeStateMachine{}
-		c.stores[nodeID][groupID] = store
-		c.fsms[nodeID][groupID] = fsm
+		c.stores[nodeID][slotID] = store
+		c.fsms[nodeID][slotID] = fsm
 
-		err := c.runtime(nodeID).BootstrapGroup(context.Background(), BootstrapGroupRequest{
-			Group: GroupOptions{
-				ID:           groupID,
+		err := c.runtime(nodeID).BootstrapSlot(context.Background(), BootstrapSlotRequest{
+			Slot: SlotOptions{
+				ID:           slotID,
 				Storage:      store,
 				StateMachine: fsm,
 			},
 			Voters: voters,
 		})
 		if err != nil {
-			t.Fatalf("BootstrapGroup(node=%d) error = %v", nodeID, err)
+			t.Fatalf("BootstrapSlot(node=%d) error = %v", nodeID, err)
 		}
 	}
 }
@@ -253,26 +253,26 @@ func waitForFutureResult(t testing.TB, fut Future) Result {
 	return res
 }
 
-func (c *testCluster) waitForLeader(t testing.TB, groupID GroupID) NodeID {
+func (c *testCluster) waitForLeader(t testing.TB, slotID SlotID) NodeID {
 	t.Helper()
 
-	return c.waitForStableLeader(t, groupID, 0)
+	return c.waitForStableLeader(t, slotID, 0)
 }
 
-func (c *testCluster) waitForSpecificLeader(t testing.TB, groupID GroupID, leaderID NodeID) {
+func (c *testCluster) waitForSpecificLeader(t testing.TB, slotID SlotID, leaderID NodeID) {
 	t.Helper()
 
-	if got := c.waitForStableLeader(t, groupID, leaderID); got != leaderID {
+	if got := c.waitForStableLeader(t, slotID, leaderID); got != leaderID {
 		t.Fatalf("waitForStableLeader() = %d, want %d", got, leaderID)
 	}
 }
 
-func (c *testCluster) waitForBootstrapApplied(t testing.TB, groupID GroupID, appliedIndex uint64) {
+func (c *testCluster) waitForBootstrapApplied(t testing.TB, slotID SlotID, appliedIndex uint64) {
 	t.Helper()
 
 	c.waitForCondition(t, func() bool {
 		for _, rt := range c.runtimes {
-			st, err := rt.Status(groupID)
+			st, err := rt.Status(slotID)
 			if err != nil {
 				return false
 			}
@@ -310,12 +310,12 @@ func (c *testCluster) healNode(nodeID NodeID) {
 	}
 }
 
-func (c *testCluster) waitForAllApplied(t testing.TB, groupID GroupID, data []byte) {
+func (c *testCluster) waitForAllApplied(t testing.TB, slotID SlotID, data []byte) {
 	t.Helper()
 
 	c.waitForCondition(t, func() bool {
 		for nodeID := range c.runtimes {
-			fsm := c.fsms[nodeID][groupID]
+			fsm := c.fsms[nodeID][slotID]
 			if fsm == nil {
 				return false
 			}
@@ -330,12 +330,12 @@ func (c *testCluster) waitForAllApplied(t testing.TB, groupID GroupID, data []by
 	})
 }
 
-func (c *testCluster) waitForAllAppliedSequence(t testing.TB, groupID GroupID, commands [][]byte) {
+func (c *testCluster) waitForAllAppliedSequence(t testing.TB, slotID SlotID, commands [][]byte) {
 	t.Helper()
 
 	c.waitForCondition(t, func() bool {
 		for nodeID := range c.runtimes {
-			fsm := c.fsms[nodeID][groupID]
+			fsm := c.fsms[nodeID][slotID]
 			if fsm == nil {
 				return false
 			}
@@ -356,7 +356,7 @@ func (c *testCluster) waitForAllAppliedSequence(t testing.TB, groupID GroupID, c
 	})
 }
 
-func (c *testCluster) waitForLeaderAmong(t testing.TB, groupID GroupID, candidates []NodeID) NodeID {
+func (c *testCluster) waitForLeaderAmong(t testing.TB, slotID SlotID, candidates []NodeID) NodeID {
 	t.Helper()
 
 	const stableWindow = 100 * time.Millisecond
@@ -369,7 +369,7 @@ func (c *testCluster) waitForLeaderAmong(t testing.TB, groupID GroupID, candidat
 	for time.Now().Before(deadline) {
 		c.requireHealthyNetwork(t)
 
-		leaderID, ok := c.currentLeaderAmong(groupID, candidates)
+		leaderID, ok := c.currentLeaderAmong(slotID, candidates)
 		if ok {
 			if leaderID != lastLeader {
 				lastLeader = leaderID
@@ -390,21 +390,21 @@ func (c *testCluster) waitForLeaderAmong(t testing.TB, groupID GroupID, candidat
 	return 0
 }
 
-func (c *testCluster) waitForNodeCommitIndex(t testing.TB, nodeID NodeID, groupID GroupID, index uint64) {
+func (c *testCluster) waitForNodeCommitIndex(t testing.TB, nodeID NodeID, slotID SlotID, index uint64) {
 	t.Helper()
 
 	c.waitForCondition(t, func() bool {
-		st, err := c.runtime(nodeID).Status(groupID)
+		st, err := c.runtime(nodeID).Status(slotID)
 		return err == nil && st.CommitIndex >= index
 	})
 }
 
-func (c *testCluster) waitForAllNodesAppliedIndex(t testing.TB, groupID GroupID, index uint64) {
+func (c *testCluster) waitForAllNodesAppliedIndex(t testing.TB, slotID SlotID, index uint64) {
 	t.Helper()
 
 	c.waitForCondition(t, func() bool {
 		for nodeID := range c.runtimes {
-			st, err := c.runtime(nodeID).Status(groupID)
+			st, err := c.runtime(nodeID).Status(slotID)
 			if err != nil {
 				return false
 			}
@@ -416,7 +416,7 @@ func (c *testCluster) waitForAllNodesAppliedIndex(t testing.TB, groupID GroupID,
 	})
 }
 
-func (c *testCluster) waitForStableLeader(t testing.TB, groupID GroupID, want NodeID) NodeID {
+func (c *testCluster) waitForStableLeader(t testing.TB, slotID SlotID, want NodeID) NodeID {
 	t.Helper()
 
 	const stableWindow = 100 * time.Millisecond
@@ -429,7 +429,7 @@ func (c *testCluster) waitForStableLeader(t testing.TB, groupID GroupID, want No
 	for time.Now().Before(deadline) {
 		c.requireHealthyNetwork(t)
 
-		leaderID, ok := c.currentLeader(groupID)
+		leaderID, ok := c.currentLeader(slotID)
 		if ok && (want == 0 || leaderID == want) {
 			if leaderID != lastLeader {
 				lastLeader = leaderID
@@ -450,13 +450,13 @@ func (c *testCluster) waitForStableLeader(t testing.TB, groupID GroupID, want No
 	return 0
 }
 
-func (c *testCluster) currentLeader(groupID GroupID) (NodeID, bool) {
+func (c *testCluster) currentLeader(slotID SlotID) (NodeID, bool) {
 	var (
 		leaderID    NodeID
 		leaderCount int
 	)
 	for _, rt := range c.runtimes {
-		st, err := rt.Status(groupID)
+		st, err := rt.Status(slotID)
 		if err != nil {
 			return 0, false
 		}
@@ -484,7 +484,7 @@ func (c *testCluster) currentLeader(groupID GroupID) (NodeID, bool) {
 	return leaderID, leaderCount == 1 && leaderID != 0
 }
 
-func (c *testCluster) currentLeaderAmong(groupID GroupID, candidates []NodeID) (NodeID, bool) {
+func (c *testCluster) currentLeaderAmong(slotID SlotID, candidates []NodeID) (NodeID, bool) {
 	var (
 		leaderID    NodeID
 		leaderCount int
@@ -494,7 +494,7 @@ func (c *testCluster) currentLeaderAmong(groupID GroupID, candidates []NodeID) (
 		if rt == nil {
 			return 0, false
 		}
-		st, err := rt.Status(groupID)
+		st, err := rt.Status(slotID)
 		if err != nil {
 			return 0, false
 		}
@@ -615,7 +615,7 @@ func (t *clusterTransport) Send(ctx context.Context, batch []Envelope) error {
 			return nil
 		}
 		env := Envelope{
-			GroupID: env.GroupID,
+			SlotID:  env.SlotID,
 			Message: cloneMessage(env.Message),
 		}
 		go func(env Envelope) {
@@ -648,9 +648,9 @@ func (t *clusterTransport) Send(ctx context.Context, batch []Envelope) error {
 			}
 			if err := rt.Step(context.Background(), env); err != nil &&
 				!errors.Is(err, ErrRuntimeClosed) &&
-				!errors.Is(err, ErrGroupClosed) &&
-				!errors.Is(err, ErrGroupNotFound) {
-				t.network.recordError(fmt.Errorf("deliver from=%d to=%d group=%d: %w", t.from, target, env.GroupID, err))
+				!errors.Is(err, ErrSlotClosed) &&
+				!errors.Is(err, ErrSlotNotFound) {
+				t.network.recordError(fmt.Errorf("deliver from=%d to=%d slot=%d: %w", t.from, target, env.SlotID, err))
 			}
 		}(env)
 	}

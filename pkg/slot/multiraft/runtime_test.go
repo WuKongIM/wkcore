@@ -34,9 +34,9 @@ func TestPublicTypesExposeApprovedFields(t *testing.T) {
 }
 
 func TestPublicAPIReflectsLearnerSupport(t *testing.T) {
-	reqType := reflect.TypeOf(multiraft.BootstrapGroupRequest{})
+	reqType := reflect.TypeOf(multiraft.BootstrapSlotRequest{})
 	if _, ok := reqType.FieldByName("Learners"); ok {
-		t.Fatal("BootstrapGroupRequest unexpectedly exposes Learners without end-to-end support")
+		t.Fatal("BootstrapSlotRequest unexpectedly exposes Learners without end-to-end support")
 	}
 
 	_, file, _, ok := runtime.Caller(0)
@@ -65,60 +65,60 @@ func TestPublicAPIReflectsLearnerSupport(t *testing.T) {
 	})
 }
 
-func TestOpenGroupRegistersGroup(t *testing.T) {
+func TestOpenSlotRegistersSlot(t *testing.T) {
 	rt := newTestRuntime(t)
-	err := rt.OpenGroup(context.Background(), multiraft.GroupOptions{
+	err := rt.OpenSlot(context.Background(), multiraft.SlotOptions{
 		ID:           10,
 		Storage:      newFakeStorage(),
 		StateMachine: newFakeStateMachine(),
 	})
 	if err != nil {
-		t.Fatalf("OpenGroup() error = %v", err)
+		t.Fatalf("OpenSlot() error = %v", err)
 	}
-	if got := rt.Groups(); !reflect.DeepEqual(got, []multiraft.GroupID{10}) {
-		t.Fatalf("Groups() = %v", got)
-	}
-}
-
-func TestOpenGroupRejectsDuplicateID(t *testing.T) {
-	rt := newTestRuntime(t)
-	if err := rt.OpenGroup(context.Background(), newGroupOptions(10)); err != nil {
-		t.Fatalf("first OpenGroup() error = %v", err)
-	}
-	err := rt.OpenGroup(context.Background(), newGroupOptions(10))
-	if !errors.Is(err, multiraft.ErrGroupExists) {
-		t.Fatalf("expected ErrGroupExists, got %v", err)
+	if got := rt.Slots(); !reflect.DeepEqual(got, []multiraft.SlotID{10}) {
+		t.Fatalf("Slots() = %v", got)
 	}
 }
 
-func TestBootstrapGroupCreatesInitialMembership(t *testing.T) {
+func TestOpenSlotRejectsDuplicateID(t *testing.T) {
 	rt := newTestRuntime(t)
-	err := rt.BootstrapGroup(context.Background(), multiraft.BootstrapGroupRequest{
-		Group:  newGroupOptions(20),
+	if err := rt.OpenSlot(context.Background(), newSlotOptions(10)); err != nil {
+		t.Fatalf("first OpenSlot() error = %v", err)
+	}
+	err := rt.OpenSlot(context.Background(), newSlotOptions(10))
+	if !errors.Is(err, multiraft.ErrSlotExists) {
+		t.Fatalf("expected ErrSlotExists, got %v", err)
+	}
+}
+
+func TestBootstrapSlotCreatesInitialMembership(t *testing.T) {
+	rt := newTestRuntime(t)
+	err := rt.BootstrapSlot(context.Background(), multiraft.BootstrapSlotRequest{
+		Slot:   newSlotOptions(20),
 		Voters: []multiraft.NodeID{1, 2, 3},
 	})
 	if err != nil {
-		t.Fatalf("BootstrapGroup() error = %v", err)
+		t.Fatalf("BootstrapSlot() error = %v", err)
 	}
 	st, err := rt.Status(20)
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
-	if st.GroupID != multiraft.GroupID(20) {
-		t.Fatalf("Status().GroupID = %d", st.GroupID)
+	if st.SlotID != multiraft.SlotID(20) {
+		t.Fatalf("Status().SlotID = %d", st.SlotID)
 	}
 }
 
-func TestCloseGroupMakesFutureOperationsFail(t *testing.T) {
+func TestCloseSlotMakesFutureOperationsFail(t *testing.T) {
 	rt := newTestRuntime(t)
-	if err := rt.OpenGroup(context.Background(), newGroupOptions(10)); err != nil {
-		t.Fatalf("OpenGroup() error = %v", err)
+	if err := rt.OpenSlot(context.Background(), newSlotOptions(10)); err != nil {
+		t.Fatalf("OpenSlot() error = %v", err)
 	}
-	if err := rt.CloseGroup(context.Background(), 10); err != nil {
-		t.Fatalf("CloseGroup() error = %v", err)
+	if err := rt.CloseSlot(context.Background(), 10); err != nil {
+		t.Fatalf("CloseSlot() error = %v", err)
 	}
 	_, err := rt.Status(10)
-	if !errors.Is(err, multiraft.ErrGroupNotFound) {
-		t.Fatalf("expected ErrGroupNotFound, got %v", err)
+	if !errors.Is(err, multiraft.ErrSlotNotFound) {
+		t.Fatalf("expected ErrSlotNotFound, got %v", err)
 	}
 }

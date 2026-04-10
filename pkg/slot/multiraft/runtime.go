@@ -11,7 +11,7 @@ type Runtime struct {
 
 	mu        sync.RWMutex
 	closed    bool
-	groups    map[GroupID]*group
+	slots     map[SlotID]*slot
 	scheduler *scheduler
 	stopCh    chan struct{}
 	wg        sync.WaitGroup
@@ -30,7 +30,7 @@ func New(opts Options) (*Runtime, error) {
 
 	rt := &Runtime{
 		opts:      opts,
-		groups:    make(map[GroupID]*group),
+		slots:     make(map[SlotID]*slot),
 		scheduler: newScheduler(),
 		stopCh:    make(chan struct{}),
 	}
@@ -55,11 +55,11 @@ func (r *Runtime) runWorker() {
 		select {
 		case <-r.stopCh:
 			return
-		case groupID := <-r.scheduler.ch:
-			r.scheduler.begin(groupID)
-			requeue := r.processGroup(groupID)
-			if r.scheduler.done(groupID) || requeue {
-				r.scheduler.requeue(groupID)
+		case slotID := <-r.scheduler.ch:
+			r.scheduler.begin(slotID)
+			requeue := r.processSlot(slotID)
+			if r.scheduler.done(slotID) || requeue {
+				r.scheduler.requeue(slotID)
 			}
 		}
 	}
@@ -77,12 +77,12 @@ func (r *Runtime) runTicker() {
 			return
 		case <-ticker.C:
 			r.mu.RLock()
-			groups := make([]*group, 0, len(r.groups))
-			for _, g := range r.groups {
-				groups = append(groups, g)
+			slots := make([]*slot, 0, len(r.slots))
+			for _, g := range r.slots {
+				slots = append(slots, g)
 			}
 			r.mu.RUnlock()
-			for _, g := range groups {
+			for _, g := range slots {
 				g.markTickPending()
 				r.scheduler.enqueue(g.id)
 			}
@@ -90,9 +90,9 @@ func (r *Runtime) runTicker() {
 	}
 }
 
-func (r *Runtime) processGroup(groupID GroupID) bool {
+func (r *Runtime) processSlot(slotID SlotID) bool {
 	r.mu.RLock()
-	g := r.groups[groupID]
+	g := r.slots[slotID]
 	r.mu.RUnlock()
 	if g == nil {
 		return false

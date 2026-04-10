@@ -9,7 +9,7 @@ import (
 
 func TestEnsurePendingConfigCapacityPreservesTrackedFuture(t *testing.T) {
 	fut := newFuture()
-	g := &group{
+	g := &slot{
 		pendingConfigs: map[uint64]trackedFuture{
 			9: {future: fut, term: 4},
 		},
@@ -25,9 +25,9 @@ func TestEnsurePendingConfigCapacityPreservesTrackedFuture(t *testing.T) {
 
 func TestChangeConfigAppliesAddLearner(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := openSingleNodeLeader(t, rt, 30)
+	slotID := openSingleNodeLeader(t, rt, 30)
 
-	fut, err := rt.ChangeConfig(context.Background(), groupID, ConfigChange{
+	fut, err := rt.ChangeConfig(context.Background(), slotID, ConfigChange{
 		Type:   AddLearner,
 		NodeID: 2,
 	})
@@ -39,19 +39,19 @@ func TestChangeConfigAppliesAddLearner(t *testing.T) {
 	}
 }
 
-func TestTransferLeadershipRejectsUnknownGroup(t *testing.T) {
+func TestTransferLeadershipRejectsUnknownSlot(t *testing.T) {
 	rt := newStartedRuntime(t)
 	err := rt.TransferLeadership(context.Background(), 999, 2)
-	if !errors.Is(err, ErrGroupNotFound) {
-		t.Fatalf("expected ErrGroupNotFound, got %v", err)
+	if !errors.Is(err, ErrSlotNotFound) {
+		t.Fatalf("expected ErrSlotNotFound, got %v", err)
 	}
 }
 
 func TestChangeConfigCorrelatesFutureByCommittedIndex(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := openSingleNodeLeader(t, rt, 31)
+	slotID := openSingleNodeLeader(t, rt, 31)
 
-	fut, err := rt.ChangeConfig(context.Background(), groupID, ConfigChange{
+	fut, err := rt.ChangeConfig(context.Background(), slotID, ConfigChange{
 		Type:   AddLearner,
 		NodeID: 2,
 	})
@@ -67,7 +67,7 @@ func TestChangeConfigCorrelatesFutureByCommittedIndex(t *testing.T) {
 		t.Fatalf("Wait().Index = 0")
 	}
 
-	st, err := rt.Status(groupID)
+	st, err := rt.Status(slotID)
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
@@ -78,23 +78,23 @@ func TestChangeConfigCorrelatesFutureByCommittedIndex(t *testing.T) {
 
 func TestChangeConfigRejectsWhileAnotherConfigChangeIsPending(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := GroupID(34)
+	slotID := SlotID(34)
 	store := newBlockingMarkAppliedStorage()
 
-	err := rt.BootstrapGroup(context.Background(), BootstrapGroupRequest{
-		Group: GroupOptions{
-			ID:           groupID,
+	err := rt.BootstrapSlot(context.Background(), BootstrapSlotRequest{
+		Slot: SlotOptions{
+			ID:           slotID,
 			Storage:      store,
 			StateMachine: &internalFakeStateMachine{},
 		},
 		Voters: []NodeID{1},
 	})
 	if err != nil {
-		t.Fatalf("BootstrapGroup() error = %v", err)
+		t.Fatalf("BootstrapSlot() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
-		st, err := rt.Status(groupID)
+		st, err := rt.Status(slotID)
 		return err == nil && st.Role == RoleLeader
 	})
 
@@ -103,7 +103,7 @@ func TestChangeConfigRejectsWhileAnotherConfigChangeIsPending(t *testing.T) {
 	store.internalFakeStorage.mu.Unlock()
 	store.armAfter(baselineApplied + 1)
 
-	first := mustChangeConfig(t, rt, groupID, 2)
+	first := mustChangeConfig(t, rt, slotID, 2)
 
 	select {
 	case <-store.started:
@@ -117,7 +117,7 @@ func TestChangeConfigRejectsWhileAnotherConfigChangeIsPending(t *testing.T) {
 		t.Fatalf("first Wait() error = %v, want %v", err, context.DeadlineExceeded)
 	}
 
-	second, err := rt.ChangeConfig(context.Background(), groupID, ConfigChange{
+	second, err := rt.ChangeConfig(context.Background(), slotID, ConfigChange{
 		Type:   AddLearner,
 		NodeID: 3,
 	})
@@ -134,10 +134,10 @@ func TestChangeConfigRejectsWhileAnotherConfigChangeIsPending(t *testing.T) {
 
 func TestChangeConfigAllowsNextConfigChangeAfterPreviousApplied(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := openSingleNodeLeader(t, rt, 35)
+	slotID := openSingleNodeLeader(t, rt, 35)
 
-	first := waitForFutureResult(t, mustChangeConfig(t, rt, groupID, 2))
-	second := waitForFutureResult(t, mustChangeConfig(t, rt, groupID, 3))
+	first := waitForFutureResult(t, mustChangeConfig(t, rt, slotID, 2))
+	second := waitForFutureResult(t, mustChangeConfig(t, rt, slotID, 3))
 
 	if second.Index <= first.Index {
 		t.Fatalf("second.Index = %d, want > first.Index %d", second.Index, first.Index)
@@ -149,15 +149,15 @@ func TestRemoteConfigChangeDoesNotResolveLocalFuture(t *testing.T) {
 		MaxDelay: 5 * time.Millisecond,
 		Seed:     14,
 	})
-	groupID := GroupID(32)
+	slotID := SlotID(32)
 
-	cluster.bootstrapGroup(t, groupID, []NodeID{1, 2, 3})
-	cluster.waitForBootstrapApplied(t, groupID, 3)
+	cluster.bootstrapSlot(t, slotID, []NodeID{1, 2, 3})
+	cluster.waitForBootstrapApplied(t, slotID, 3)
 
-	oldLeader := cluster.waitForLeader(t, groupID)
+	oldLeader := cluster.waitForLeader(t, slotID)
 	cluster.partitionNode(oldLeader)
 
-	stale, err := cluster.runtime(oldLeader).ChangeConfig(context.Background(), groupID, ConfigChange{
+	stale, err := cluster.runtime(oldLeader).ChangeConfig(context.Background(), slotID, ConfigChange{
 		Type:   AddLearner,
 		NodeID: 4,
 	})
@@ -165,8 +165,8 @@ func TestRemoteConfigChangeDoesNotResolveLocalFuture(t *testing.T) {
 		t.Fatalf("ChangeConfig(stale) error = %v", err)
 	}
 
-	newLeader := cluster.waitForLeaderAmong(t, groupID, cluster.otherNodes(oldLeader))
-	fresh, err := cluster.runtime(newLeader).ChangeConfig(context.Background(), groupID, ConfigChange{
+	newLeader := cluster.waitForLeaderAmong(t, slotID, cluster.otherNodes(oldLeader))
+	fresh, err := cluster.runtime(newLeader).ChangeConfig(context.Background(), slotID, ConfigChange{
 		Type:   AddLearner,
 		NodeID: 5,
 	})
@@ -180,7 +180,7 @@ func TestRemoteConfigChangeDoesNotResolveLocalFuture(t *testing.T) {
 	}
 
 	cluster.healNode(oldLeader)
-	cluster.waitForNodeCommitIndex(t, oldLeader, groupID, freshRes.Index)
+	cluster.waitForNodeCommitIndex(t, oldLeader, slotID, freshRes.Index)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -195,23 +195,23 @@ func TestRemoteConfigChangeDoesNotResolveLocalFuture(t *testing.T) {
 
 func TestChangeConfigWaitBlocksUntilReadyBatchFullyCompletes(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := GroupID(33)
+	slotID := SlotID(33)
 	store := newBlockingMarkAppliedStorage()
 
-	err := rt.BootstrapGroup(context.Background(), BootstrapGroupRequest{
-		Group: GroupOptions{
-			ID:           groupID,
+	err := rt.BootstrapSlot(context.Background(), BootstrapSlotRequest{
+		Slot: SlotOptions{
+			ID:           slotID,
 			Storage:      store,
 			StateMachine: &internalFakeStateMachine{},
 		},
 		Voters: []NodeID{1},
 	})
 	if err != nil {
-		t.Fatalf("BootstrapGroup() error = %v", err)
+		t.Fatalf("BootstrapSlot() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
-		st, err := rt.Status(groupID)
+		st, err := rt.Status(slotID)
 		return err == nil && st.Role == RoleLeader
 	})
 	store.internalFakeStorage.mu.Lock()
@@ -219,7 +219,7 @@ func TestChangeConfigWaitBlocksUntilReadyBatchFullyCompletes(t *testing.T) {
 	store.internalFakeStorage.mu.Unlock()
 	store.armAfter(baselineApplied + 1)
 
-	fut, err := rt.ChangeConfig(context.Background(), groupID, ConfigChange{
+	fut, err := rt.ChangeConfig(context.Background(), slotID, ConfigChange{
 		Type:   AddLearner,
 		NodeID: 2,
 	})
@@ -246,10 +246,10 @@ func TestChangeConfigWaitBlocksUntilReadyBatchFullyCompletes(t *testing.T) {
 	}
 }
 
-func mustChangeConfig(t *testing.T, rt *Runtime, groupID GroupID, nodeID NodeID) Future {
+func mustChangeConfig(t *testing.T, rt *Runtime, slotID SlotID, nodeID NodeID) Future {
 	t.Helper()
 
-	fut, err := rt.ChangeConfig(context.Background(), groupID, ConfigChange{
+	fut, err := rt.ChangeConfig(context.Background(), slotID, ConfigChange{
 		Type:   AddLearner,
 		NodeID: nodeID,
 	})

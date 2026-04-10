@@ -7,7 +7,7 @@ import (
 	"go.etcd.io/raft/v3/raftpb"
 )
 
-type GroupID uint64
+type SlotID uint64
 type NodeID uint64
 
 type Options struct {
@@ -27,19 +27,19 @@ type RaftOptions struct {
 	MaxInflight   int
 }
 
-type GroupOptions struct {
-	ID           GroupID
+type SlotOptions struct {
+	ID           SlotID
 	Storage      Storage
 	StateMachine StateMachine
 }
 
-type BootstrapGroupRequest struct {
-	Group  GroupOptions
+type BootstrapSlotRequest struct {
+	Slot   SlotOptions
 	Voters []NodeID
 }
 
 type Envelope struct {
-	GroupID GroupID
+	SlotID  SlotID
 	Message raftpb.Message
 }
 
@@ -54,7 +54,7 @@ type Result struct {
 }
 
 type Status struct {
-	GroupID      GroupID
+	SlotID       SlotID
 	NodeID       NodeID
 	LeaderID     NodeID
 	Term         uint64
@@ -106,10 +106,10 @@ type BatchStateMachine interface {
 }
 
 type Command struct {
-	GroupID GroupID
-	Index   uint64
-	Term    uint64
-	Data    []byte
+	SlotID SlotID
+	Index  uint64
+	Term   uint64
+	Data   []byte
 }
 
 type Snapshot struct {

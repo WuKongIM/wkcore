@@ -10,41 +10,41 @@ import (
 	"go.etcd.io/raft/v3/raftpb"
 )
 
-func TestStepRoutesMessageToCorrectGroup(t *testing.T) {
+func TestStepRoutesMessageToCorrectSlot(t *testing.T) {
 	rt := newStartedRuntime(t)
-	if err := rt.OpenGroup(context.Background(), newInternalGroupOptions(100)); err != nil {
-		t.Fatalf("OpenGroup() error = %v", err)
+	if err := rt.OpenSlot(context.Background(), newInternalSlotOptions(100)); err != nil {
+		t.Fatalf("OpenSlot() error = %v", err)
 	}
 	if err := rt.Step(context.Background(), Envelope{
-		GroupID: 100,
+		SlotID:  100,
 		Message: raftpb.Message{Type: raftpb.MsgHeartbeat, From: 2, To: 1},
 	}); err != nil {
 		t.Fatalf("Step() error = %v", err)
 	}
 
-	waitForCondition(t, func() bool { return groupRequestCount(rt, 100) == 1 })
+	waitForCondition(t, func() bool { return slotRequestCount(rt, 100) == 1 })
 }
 
-func TestStepUnknownGroupReturnsErrGroupNotFound(t *testing.T) {
+func TestStepUnknownSlotReturnsErrSlotNotFound(t *testing.T) {
 	rt := newStartedRuntime(t)
-	err := rt.Step(context.Background(), Envelope{GroupID: 404})
-	if !errors.Is(err, ErrGroupNotFound) {
-		t.Fatalf("expected ErrGroupNotFound, got %v", err)
+	err := rt.Step(context.Background(), Envelope{SlotID: 404})
+	if !errors.Is(err, ErrSlotNotFound) {
+		t.Fatalf("expected ErrSlotNotFound, got %v", err)
 	}
 }
 
-func TestRuntimeTickLoopEnqueuesOpenGroups(t *testing.T) {
+func TestRuntimeTickLoopEnqueuesOpenSlots(t *testing.T) {
 	rt := newStartedRuntime(t)
-	if err := rt.OpenGroup(context.Background(), newInternalGroupOptions(101)); err != nil {
-		t.Fatalf("OpenGroup() error = %v", err)
+	if err := rt.OpenSlot(context.Background(), newInternalSlotOptions(101)); err != nil {
+		t.Fatalf("OpenSlot() error = %v", err)
 	}
 
-	waitForCondition(t, func() bool { return groupTickCount(rt, 101) > 0 })
+	waitForCondition(t, func() bool { return slotTickCount(rt, 101) > 0 })
 }
 
 func TestStatusIsRaceFree(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := openSingleNodeLeader(t, rt, 102)
+	slotID := openSingleNodeLeader(t, rt, 102)
 
 	done := make(chan struct{})
 	defer close(done)
@@ -55,13 +55,13 @@ func TestStatusIsRaceFree(t *testing.T) {
 			case <-done:
 				return
 			default:
-				_, _ = rt.Status(groupID)
+				_, _ = rt.Status(slotID)
 			}
 		}
 	}()
 
 	for i := 0; i < 5; i++ {
-		fut, err := rt.Propose(context.Background(), groupID, []byte("status"))
+		fut, err := rt.Propose(context.Background(), slotID, []byte("status"))
 		if err != nil {
 			t.Fatalf("Propose() error = %v", err)
 		}
@@ -71,32 +71,32 @@ func TestStatusIsRaceFree(t *testing.T) {
 	}
 }
 
-func TestCloseGroupStopsFurtherProcessing(t *testing.T) {
+func TestCloseSlotStopsFurtherProcessing(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := GroupID(103)
+	slotID := SlotID(103)
 	fsm := newBlockingStateMachine()
 	t.Cleanup(func() {
 		fsm.unblock()
 	})
 
-	err := rt.BootstrapGroup(context.Background(), BootstrapGroupRequest{
-		Group: GroupOptions{
-			ID:           groupID,
+	err := rt.BootstrapSlot(context.Background(), BootstrapSlotRequest{
+		Slot: SlotOptions{
+			ID:           slotID,
 			Storage:      &internalFakeStorage{},
 			StateMachine: fsm,
 		},
 		Voters: []NodeID{1},
 	})
 	if err != nil {
-		t.Fatalf("BootstrapGroup() error = %v", err)
+		t.Fatalf("BootstrapSlot() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
-		st, err := rt.Status(groupID)
+		st, err := rt.Status(slotID)
 		return err == nil && st.Role == RoleLeader
 	})
 
-	fut, err := rt.Propose(context.Background(), groupID, []byte("slow"))
+	fut, err := rt.Propose(context.Background(), slotID, []byte("slow"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -109,12 +109,12 @@ func TestCloseGroupStopsFurtherProcessing(t *testing.T) {
 
 	closeDone := make(chan error, 1)
 	go func() {
-		closeDone <- rt.CloseGroup(context.Background(), groupID)
+		closeDone <- rt.CloseSlot(context.Background(), slotID)
 	}()
 
 	select {
 	case err := <-closeDone:
-		t.Fatalf("CloseGroup() returned before in-flight apply finished: %v", err)
+		t.Fatalf("CloseSlot() returned before in-flight apply finished: %v", err)
 	case <-time.After(100 * time.Millisecond):
 	}
 
@@ -122,67 +122,67 @@ func TestCloseGroupStopsFurtherProcessing(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if _, err := fut.Wait(ctx); !errors.Is(err, ErrGroupClosed) {
-		t.Fatalf("Wait() error = %v, want %v", err, ErrGroupClosed)
+	if _, err := fut.Wait(ctx); !errors.Is(err, ErrSlotClosed) {
+		t.Fatalf("Wait() error = %v, want %v", err, ErrSlotClosed)
 	}
 
 	select {
 	case err := <-closeDone:
 		if err != nil {
-			t.Fatalf("CloseGroup() error = %v", err)
+			t.Fatalf("CloseSlot() error = %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("CloseGroup() did not return after apply completed")
+		t.Fatal("CloseSlot() did not return after apply completed")
 	}
 }
 
-func TestCloseGroupBlocksNewAdmissions(t *testing.T) {
+func TestCloseSlotBlocksNewAdmissions(t *testing.T) {
 	rt := newStartedRuntime(t)
-	if err := rt.OpenGroup(context.Background(), newInternalGroupOptions(104)); err != nil {
-		t.Fatalf("OpenGroup() error = %v", err)
+	if err := rt.OpenSlot(context.Background(), newInternalSlotOptions(104)); err != nil {
+		t.Fatalf("OpenSlot() error = %v", err)
 	}
 
-	g := groupFor(rt, 104)
+	g := slotFor(rt, 104)
 	if g == nil {
-		t.Fatal("groupFor() = nil")
+		t.Fatal("slotFor() = nil")
 	}
-	if err := rt.CloseGroup(context.Background(), 104); err != nil {
-		t.Fatalf("CloseGroup() error = %v", err)
+	if err := rt.CloseSlot(context.Background(), 104); err != nil {
+		t.Fatalf("CloseSlot() error = %v", err)
 	}
 
-	if err := g.enqueueRequest(raftpb.Message{Type: raftpb.MsgHeartbeat}); !errors.Is(err, ErrGroupClosed) {
-		t.Fatalf("enqueueRequest() error = %v, want %v", err, ErrGroupClosed)
+	if err := g.enqueueRequest(raftpb.Message{Type: raftpb.MsgHeartbeat}); !errors.Is(err, ErrSlotClosed) {
+		t.Fatalf("enqueueRequest() error = %v, want %v", err, ErrSlotClosed)
 	}
-	if err := g.enqueueControl(controlAction{kind: controlTransferLeader, target: 2}); !errors.Is(err, ErrGroupClosed) {
-		t.Fatalf("enqueueControl() error = %v, want %v", err, ErrGroupClosed)
+	if err := g.enqueueControl(controlAction{kind: controlTransferLeader, target: 2}); !errors.Is(err, ErrSlotClosed) {
+		t.Fatalf("enqueueControl() error = %v, want %v", err, ErrSlotClosed)
 	}
 }
 
 func TestRuntimeTickLoopDoesNotHoldLockAcrossEnqueue(t *testing.T) {
 	rt := newStartedRuntimeWithTick(t, time.Millisecond)
-	blockedGroupID := GroupID(105)
+	blockedSlotID := SlotID(105)
 	fsm := newBlockingStateMachine()
 	t.Cleanup(func() {
 		fsm.unblock()
 	})
 
-	if err := rt.BootstrapGroup(context.Background(), BootstrapGroupRequest{
-		Group: GroupOptions{
-			ID:           blockedGroupID,
+	if err := rt.BootstrapSlot(context.Background(), BootstrapSlotRequest{
+		Slot: SlotOptions{
+			ID:           blockedSlotID,
 			Storage:      &internalFakeStorage{},
 			StateMachine: fsm,
 		},
 		Voters: []NodeID{1},
 	}); err != nil {
-		t.Fatalf("BootstrapGroup() error = %v", err)
+		t.Fatalf("BootstrapSlot() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
-		st, err := rt.Status(blockedGroupID)
+		st, err := rt.Status(blockedSlotID)
 		return err == nil && st.Role == RoleLeader
 	})
 
-	fut, err := rt.Propose(context.Background(), blockedGroupID, []byte("slow"))
+	fut, err := rt.Propose(context.Background(), blockedSlotID, []byte("slow"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -194,8 +194,8 @@ func TestRuntimeTickLoopDoesNotHoldLockAcrossEnqueue(t *testing.T) {
 	}
 
 	for i := 0; i < cap(rt.scheduler.ch)+1; i++ {
-		if err := rt.OpenGroup(context.Background(), newInternalGroupOptions(GroupID(2000+i))); err != nil {
-			t.Fatalf("OpenGroup(%d) error = %v", 2000+i, err)
+		if err := rt.OpenSlot(context.Background(), newInternalSlotOptions(SlotID(2000+i))); err != nil {
+			t.Fatalf("OpenSlot(%d) error = %v", 2000+i, err)
 		}
 	}
 
@@ -204,16 +204,16 @@ func TestRuntimeTickLoopDoesNotHoldLockAcrossEnqueue(t *testing.T) {
 
 	openDone := make(chan error, 1)
 	go func() {
-		openDone <- rt.OpenGroup(context.Background(), newInternalGroupOptions(5000))
+		openDone <- rt.OpenSlot(context.Background(), newInternalSlotOptions(5000))
 	}()
 
 	select {
 	case err := <-openDone:
 		if err != nil {
-			t.Fatalf("OpenGroup() error = %v", err)
+			t.Fatalf("OpenSlot() error = %v", err)
 		}
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("OpenGroup() blocked behind scheduler enqueue while ticker was running")
+		t.Fatal("OpenSlot() blocked behind scheduler enqueue while ticker was running")
 	}
 
 	fsm.unblock()
@@ -226,29 +226,29 @@ func TestRuntimeTickLoopDoesNotHoldLockAcrossEnqueue(t *testing.T) {
 
 func TestSchedulerBackpressureDoesNotBlockRuntime(t *testing.T) {
 	rt := newStartedRuntimeWithTick(t, time.Millisecond)
-	blockedGroupID := GroupID(106)
+	blockedSlotID := SlotID(106)
 	fsm := newBlockingStateMachine()
 	t.Cleanup(func() {
 		fsm.unblock()
 	})
 
-	if err := rt.BootstrapGroup(context.Background(), BootstrapGroupRequest{
-		Group: GroupOptions{
-			ID:           blockedGroupID,
+	if err := rt.BootstrapSlot(context.Background(), BootstrapSlotRequest{
+		Slot: SlotOptions{
+			ID:           blockedSlotID,
 			Storage:      &internalFakeStorage{},
 			StateMachine: fsm,
 		},
 		Voters: []NodeID{1},
 	}); err != nil {
-		t.Fatalf("BootstrapGroup() error = %v", err)
+		t.Fatalf("BootstrapSlot() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
-		st, err := rt.Status(blockedGroupID)
+		st, err := rt.Status(blockedSlotID)
 		return err == nil && st.Role == RoleLeader
 	})
 
-	fut, err := rt.Propose(context.Background(), blockedGroupID, []byte("slow"))
+	fut, err := rt.Propose(context.Background(), blockedSlotID, []byte("slow"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -259,11 +259,11 @@ func TestSchedulerBackpressureDoesNotBlockRuntime(t *testing.T) {
 		t.Fatal("Apply() did not start")
 	}
 
-	targetGroupID := GroupID(3000)
+	targetSlotID := SlotID(3000)
 	for i := 0; i < cap(rt.scheduler.ch)+1; i++ {
-		id := GroupID(3000 + i)
-		if err := rt.OpenGroup(context.Background(), newInternalGroupOptions(id)); err != nil {
-			t.Fatalf("OpenGroup(%d) error = %v", id, err)
+		id := SlotID(3000 + i)
+		if err := rt.OpenSlot(context.Background(), newInternalSlotOptions(id)); err != nil {
+			t.Fatalf("OpenSlot(%d) error = %v", id, err)
 		}
 	}
 
@@ -272,16 +272,16 @@ func TestSchedulerBackpressureDoesNotBlockRuntime(t *testing.T) {
 
 	closeDone := make(chan error, 1)
 	go func() {
-		closeDone <- rt.CloseGroup(context.Background(), targetGroupID)
+		closeDone <- rt.CloseSlot(context.Background(), targetSlotID)
 	}()
 
 	select {
 	case err := <-closeDone:
 		if err != nil {
-			t.Fatalf("CloseGroup() error = %v", err)
+			t.Fatalf("CloseSlot() error = %v", err)
 		}
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("CloseGroup() blocked behind scheduler enqueue while ticker was running")
+		t.Fatal("CloseSlot() blocked behind scheduler enqueue while ticker was running")
 	}
 
 	fsm.unblock()
@@ -360,7 +360,7 @@ func TestWrapMessagesIntoStillClonesRaftMessagePayloads(t *testing.T) {
 }
 
 func TestRequestDrainHelperMovesQueuedMessagesIntoReusableWorkSlice(t *testing.T) {
-	g := newTestGroupForDrain()
+	g := newTestSlotForDrain()
 	if err := g.enqueueRequest(raftpb.Message{Type: raftpb.MsgHeartbeat, From: 2, To: 1}); err != nil {
 		t.Fatalf("enqueueRequest() error = %v", err)
 	}
@@ -378,7 +378,7 @@ func TestRequestDrainHelperMovesQueuedMessagesIntoReusableWorkSlice(t *testing.T
 }
 
 func TestControlDrainHelperMovesQueuedActionsIntoReusableWorkSlice(t *testing.T) {
-	g := newLeaderTestGroupForDrain()
+	g := newLeaderTestSlotForDrain()
 	if err := g.enqueueControl(controlAction{kind: controlTransferLeader, target: 2}); err != nil {
 		t.Fatalf("enqueueControl() error = %v", err)
 	}
@@ -396,7 +396,7 @@ func TestControlDrainHelperMovesQueuedActionsIntoReusableWorkSlice(t *testing.T)
 }
 
 func TestResolutionBufferHelpersReuseBackingSlice(t *testing.T) {
-	g := newTestGroupForDrain()
+	g := newTestSlotForDrain()
 
 	buf := g.takeResolutionBuffer()
 	buf = append(buf, futureResolution{index: 1})
@@ -439,22 +439,22 @@ func newStartedRuntimeWithTick(t *testing.T, tickInterval time.Duration) *Runtim
 	return rt
 }
 
-func newInternalGroupOptions(id GroupID) GroupOptions {
-	return GroupOptions{
+func newInternalSlotOptions(id SlotID) SlotOptions {
+	return SlotOptions{
 		ID:           id,
 		Storage:      &internalFakeStorage{},
 		StateMachine: &internalFakeStateMachine{},
 	}
 }
 
-func newTestGroupForDrain() *group {
-	g := &group{}
+func newTestSlotForDrain() *slot {
+	g := &slot{}
 	g.cond = sync.NewCond(&g.mu)
 	return g
 }
 
-func newLeaderTestGroupForDrain() *group {
-	g := newTestGroupForDrain()
+func newLeaderTestSlotForDrain() *slot {
+	g := newTestSlotForDrain()
 	g.status.Role = RoleLeader
 	return g
 }
@@ -472,10 +472,10 @@ func waitForCondition(t *testing.T, fn func() bool) {
 	t.Fatal("condition not satisfied before timeout")
 }
 
-func groupRequestCount(rt *Runtime, id GroupID) int {
+func slotRequestCount(rt *Runtime, id SlotID) int {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
-	g := rt.groups[id]
+	g := rt.slots[id]
 	if g == nil {
 		return 0
 	}
@@ -484,10 +484,10 @@ func groupRequestCount(rt *Runtime, id GroupID) int {
 	return g.requestCount
 }
 
-func groupTickCount(rt *Runtime, id GroupID) int {
+func slotTickCount(rt *Runtime, id SlotID) int {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
-	g := rt.groups[id]
+	g := rt.slots[id]
 	if g == nil {
 		return 0
 	}

@@ -4,9 +4,9 @@ import "errors"
 
 var (
 	ErrInvalidOptions      = errors.New("multiraft: invalid options")
-	ErrGroupExists         = errors.New("multiraft: group already exists")
-	ErrGroupNotFound       = errors.New("multiraft: group not found")
-	ErrGroupClosed         = errors.New("multiraft: group closed")
+	ErrSlotExists          = errors.New("multiraft: slot already exists")
+	ErrSlotNotFound        = errors.New("multiraft: slot not found")
+	ErrSlotClosed          = errors.New("multiraft: slot closed")
 	ErrRuntimeClosed       = errors.New("multiraft: runtime closed")
 	ErrNotLeader           = errors.New("multiraft: not leader")
 	ErrConfigChangePending = errors.New("multiraft: config change pending")

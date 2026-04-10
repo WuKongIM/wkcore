@@ -24,7 +24,7 @@ func TestCountTrackedReadyEntriesIgnoresEmptyNormalEntries(t *testing.T) {
 
 func TestEnsurePendingProposalCapacityPreservesTrackedFuture(t *testing.T) {
 	fut := newFuture()
-	g := &group{
+	g := &slot{
 		pendingProposals: map[uint64]trackedFuture{
 			7: {future: fut, term: 3},
 		},
@@ -40,9 +40,9 @@ func TestEnsurePendingProposalCapacityPreservesTrackedFuture(t *testing.T) {
 
 func TestProposeWaitReturnsAfterLocalApply(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := openSingleNodeLeader(t, rt, 10)
+	slotID := openSingleNodeLeader(t, rt, 10)
 
-	fut, err := rt.Propose(context.Background(), groupID, []byte("set a=1"))
+	fut, err := rt.Propose(context.Background(), slotID, []byte("set a=1"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -58,15 +58,15 @@ func TestProposeWaitReturnsAfterLocalApply(t *testing.T) {
 
 func TestReadyPipelinePersistsBeforeApply(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := openSingleNodeLeader(t, rt, 11)
+	slotID := openSingleNodeLeader(t, rt, 11)
 
-	_, err := rt.Propose(context.Background(), groupID, []byte("cmd"))
+	_, err := rt.Propose(context.Background(), slotID, []byte("cmd"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
-		store := fakeStorageFor(rt, groupID)
+		store := fakeStorageFor(rt, slotID)
 		store.mu.Lock()
 		defer store.mu.Unlock()
 		return store.saveCount > 0 && store.lastApplied >= store.lastSavedIndex
@@ -78,15 +78,15 @@ func TestProposeRejectsFollower(t *testing.T) {
 		MaxDelay: 5 * time.Millisecond,
 		Seed:     11,
 	})
-	groupID := GroupID(12)
+	slotID := SlotID(12)
 
-	cluster.bootstrapGroup(t, groupID, []NodeID{1, 2, 3})
-	cluster.waitForBootstrapApplied(t, groupID, 3)
+	cluster.bootstrapSlot(t, slotID, []NodeID{1, 2, 3})
+	cluster.waitForBootstrapApplied(t, slotID, 3)
 
-	leaderID := cluster.waitForLeader(t, groupID)
+	leaderID := cluster.waitForLeader(t, slotID)
 	followerID := cluster.pickFollower(leaderID)
 
-	fut, err := cluster.runtime(followerID).Propose(context.Background(), groupID, []byte("set follower=1"))
+	fut, err := cluster.runtime(followerID).Propose(context.Background(), slotID, []byte("set follower=1"))
 	if !errors.Is(err, ErrNotLeader) {
 		t.Fatalf("expected ErrNotLeader, got future=%v err=%v", fut, err)
 	}
@@ -97,15 +97,15 @@ func TestChangeConfigRejectsFollower(t *testing.T) {
 		MaxDelay: 5 * time.Millisecond,
 		Seed:     12,
 	})
-	groupID := GroupID(13)
+	slotID := SlotID(13)
 
-	cluster.bootstrapGroup(t, groupID, []NodeID{1, 2, 3})
-	cluster.waitForBootstrapApplied(t, groupID, 3)
+	cluster.bootstrapSlot(t, slotID, []NodeID{1, 2, 3})
+	cluster.waitForBootstrapApplied(t, slotID, 3)
 
-	leaderID := cluster.waitForLeader(t, groupID)
+	leaderID := cluster.waitForLeader(t, slotID)
 	followerID := cluster.pickFollower(leaderID)
 
-	fut, err := cluster.runtime(followerID).ChangeConfig(context.Background(), groupID, ConfigChange{
+	fut, err := cluster.runtime(followerID).ChangeConfig(context.Background(), slotID, ConfigChange{
 		Type:   AddLearner,
 		NodeID: 4,
 	})
@@ -116,16 +116,16 @@ func TestChangeConfigRejectsFollower(t *testing.T) {
 
 func TestProposeRejectsStaleLeaderAfterHigherTermMessageQueued(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := openSingleNodeLeader(t, rt, 131)
+	slotID := openSingleNodeLeader(t, rt, 131)
 
-	st, err := rt.Status(groupID)
+	st, err := rt.Status(slotID)
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
 
-	g := groupFor(rt, groupID)
+	g := slotFor(rt, slotID)
 	if g == nil {
-		t.Fatal("groupFor() = nil")
+		t.Fatal("slotFor() = nil")
 	}
 	if err := g.enqueueRequest(raftpb.Message{
 		Type: raftpb.MsgHeartbeat,
@@ -136,7 +136,7 @@ func TestProposeRejectsStaleLeaderAfterHigherTermMessageQueued(t *testing.T) {
 		t.Fatalf("enqueueRequest() error = %v", err)
 	}
 
-	fut, err := rt.Propose(context.Background(), groupID, []byte("stale"))
+	fut, err := rt.Propose(context.Background(), slotID, []byte("stale"))
 	if !errors.Is(err, ErrNotLeader) {
 		t.Fatalf("expected ErrNotLeader, got future=%v err=%v", fut, err)
 	}
@@ -144,16 +144,16 @@ func TestProposeRejectsStaleLeaderAfterHigherTermMessageQueued(t *testing.T) {
 
 func TestChangeConfigRejectsStaleLeaderAfterHigherTermMessageQueued(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := openSingleNodeLeader(t, rt, 132)
+	slotID := openSingleNodeLeader(t, rt, 132)
 
-	st, err := rt.Status(groupID)
+	st, err := rt.Status(slotID)
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
 
-	g := groupFor(rt, groupID)
+	g := slotFor(rt, slotID)
 	if g == nil {
-		t.Fatal("groupFor() = nil")
+		t.Fatal("slotFor() = nil")
 	}
 	if err := g.enqueueRequest(raftpb.Message{
 		Type: raftpb.MsgHeartbeat,
@@ -164,7 +164,7 @@ func TestChangeConfigRejectsStaleLeaderAfterHigherTermMessageQueued(t *testing.T
 		t.Fatalf("enqueueRequest() error = %v", err)
 	}
 
-	fut, err := rt.ChangeConfig(context.Background(), groupID, ConfigChange{
+	fut, err := rt.ChangeConfig(context.Background(), slotID, ConfigChange{
 		Type:   AddLearner,
 		NodeID: 4,
 	})
@@ -173,30 +173,30 @@ func TestChangeConfigRejectsStaleLeaderAfterHigherTermMessageQueued(t *testing.T
 	}
 }
 
-func TestFatalGroupRejectsFutureOperations(t *testing.T) {
+func TestFatalSlotRejectsFutureOperations(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := GroupID(14)
+	slotID := SlotID(14)
 	fatalErr := errors.New("fatal apply")
 	fsm := &internalFakeStateMachine{applyErr: fatalErr}
 
-	err := rt.BootstrapGroup(context.Background(), BootstrapGroupRequest{
-		Group: GroupOptions{
-			ID:           groupID,
+	err := rt.BootstrapSlot(context.Background(), BootstrapSlotRequest{
+		Slot: SlotOptions{
+			ID:           slotID,
 			Storage:      &internalFakeStorage{},
 			StateMachine: fsm,
 		},
 		Voters: []NodeID{1},
 	})
 	if err != nil {
-		t.Fatalf("BootstrapGroup() error = %v", err)
+		t.Fatalf("BootstrapSlot() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
-		st, err := rt.Status(groupID)
+		st, err := rt.Status(slotID)
 		return err == nil && st.Role == RoleLeader
 	})
 
-	fut, err := rt.Propose(context.Background(), groupID, []byte("boom"))
+	fut, err := rt.Propose(context.Background(), slotID, []byte("boom"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -208,37 +208,37 @@ func TestFatalGroupRejectsFutureOperations(t *testing.T) {
 	}
 
 	if err := rt.Step(context.Background(), Envelope{
-		GroupID: groupID,
+		SlotID:  slotID,
 		Message: raftpb.Message{Type: raftpb.MsgHeartbeat, From: 2, To: 1},
 	}); !errors.Is(err, fatalErr) {
 		t.Fatalf("Step() error = %v, want %v", err, fatalErr)
 	}
 
-	if fut, err := rt.Propose(context.Background(), groupID, []byte("again")); !errors.Is(err, fatalErr) {
+	if fut, err := rt.Propose(context.Background(), slotID, []byte("again")); !errors.Is(err, fatalErr) {
 		t.Fatalf("Propose() after fatal = future=%v err=%v, want %v", fut, err, fatalErr)
 	}
 
-	if fut, err := rt.ChangeConfig(context.Background(), groupID, ConfigChange{
+	if fut, err := rt.ChangeConfig(context.Background(), slotID, ConfigChange{
 		Type:   AddLearner,
 		NodeID: 2,
 	}); !errors.Is(err, fatalErr) {
 		t.Fatalf("ChangeConfig() after fatal = future=%v err=%v, want %v", fut, err, fatalErr)
 	}
 
-	if err := rt.TransferLeadership(context.Background(), groupID, 2); !errors.Is(err, fatalErr) {
+	if err := rt.TransferLeadership(context.Background(), slotID, 2); !errors.Is(err, fatalErr) {
 		t.Fatalf("TransferLeadership() error = %v, want %v", err, fatalErr)
 	}
 
-	if _, err := rt.Status(groupID); !errors.Is(err, fatalErr) {
+	if _, err := rt.Status(slotID); !errors.Is(err, fatalErr) {
 		t.Fatalf("Status() error = %v, want %v", err, fatalErr)
 	}
 }
 
 func TestProposeCorrelatesFutureByCommittedIndex(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := openSingleNodeLeader(t, rt, 15)
+	slotID := openSingleNodeLeader(t, rt, 15)
 
-	fut, err := rt.Propose(context.Background(), groupID, []byte("set idx=1"))
+	fut, err := rt.Propose(context.Background(), slotID, []byte("set idx=1"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -248,7 +248,7 @@ func TestProposeCorrelatesFutureByCommittedIndex(t *testing.T) {
 		t.Fatalf("Wait().Index = 0")
 	}
 
-	st, err := rt.Status(groupID)
+	st, err := rt.Status(slotID)
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
@@ -259,12 +259,12 @@ func TestProposeCorrelatesFutureByCommittedIndex(t *testing.T) {
 
 func TestProposeCorrelatesBurstOfInflightFutures(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := openSingleNodeLeader(t, rt, 183)
+	slotID := openSingleNodeLeader(t, rt, 183)
 
 	futures := []Future{
-		mustPropose(t, rt, groupID, "p1"),
-		mustPropose(t, rt, groupID, "p2"),
-		mustPropose(t, rt, groupID, "p3"),
+		mustPropose(t, rt, slotID, "p1"),
+		mustPropose(t, rt, slotID, "p2"),
+		mustPropose(t, rt, slotID, "p3"),
 	}
 
 	results := waitForFutureResults(t, futures...)
@@ -283,21 +283,21 @@ func TestRemoteCommitDoesNotResolveLocalFuture(t *testing.T) {
 		MaxDelay: 5 * time.Millisecond,
 		Seed:     13,
 	})
-	groupID := GroupID(16)
+	slotID := SlotID(16)
 
-	cluster.bootstrapGroup(t, groupID, []NodeID{1, 2, 3})
-	cluster.waitForBootstrapApplied(t, groupID, 3)
+	cluster.bootstrapSlot(t, slotID, []NodeID{1, 2, 3})
+	cluster.waitForBootstrapApplied(t, slotID, 3)
 
-	oldLeader := cluster.waitForLeader(t, groupID)
+	oldLeader := cluster.waitForLeader(t, slotID)
 	cluster.partitionNode(oldLeader)
 
-	stale, err := cluster.runtime(oldLeader).Propose(context.Background(), groupID, []byte("stale"))
+	stale, err := cluster.runtime(oldLeader).Propose(context.Background(), slotID, []byte("stale"))
 	if err != nil {
 		t.Fatalf("Propose(stale) error = %v", err)
 	}
 
-	newLeader := cluster.waitForLeaderAmong(t, groupID, cluster.otherNodes(oldLeader))
-	fresh, err := cluster.runtime(newLeader).Propose(context.Background(), groupID, []byte("fresh"))
+	newLeader := cluster.waitForLeaderAmong(t, slotID, cluster.otherNodes(oldLeader))
+	fresh, err := cluster.runtime(newLeader).Propose(context.Background(), slotID, []byte("fresh"))
 	if err != nil {
 		t.Fatalf("Propose(fresh) error = %v", err)
 	}
@@ -308,7 +308,7 @@ func TestRemoteCommitDoesNotResolveLocalFuture(t *testing.T) {
 	}
 
 	cluster.healNode(oldLeader)
-	cluster.waitForNodeCommitIndex(t, oldLeader, groupID, freshRes.Index)
+	cluster.waitForNodeCommitIndex(t, oldLeader, slotID, freshRes.Index)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -326,29 +326,29 @@ func TestRemoteCommitDoesNotApplyStaleCommandAfterHeal(t *testing.T) {
 		MaxDelay: 5 * time.Millisecond,
 		Seed:     18,
 	})
-	groupID := GroupID(161)
+	slotID := SlotID(161)
 
-	cluster.bootstrapGroup(t, groupID, []NodeID{1, 2, 3})
-	cluster.waitForBootstrapApplied(t, groupID, 3)
+	cluster.bootstrapSlot(t, slotID, []NodeID{1, 2, 3})
+	cluster.waitForBootstrapApplied(t, slotID, 3)
 
-	oldLeader := cluster.waitForLeader(t, groupID)
+	oldLeader := cluster.waitForLeader(t, slotID)
 	cluster.partitionNode(oldLeader)
 
-	stale, err := cluster.runtime(oldLeader).Propose(context.Background(), groupID, []byte("stale"))
+	stale, err := cluster.runtime(oldLeader).Propose(context.Background(), slotID, []byte("stale"))
 	if err != nil {
 		t.Fatalf("Propose(stale) error = %v", err)
 	}
 
-	newLeader := cluster.waitForLeaderAmong(t, groupID, cluster.otherNodes(oldLeader))
-	fresh, err := cluster.runtime(newLeader).Propose(context.Background(), groupID, []byte("fresh"))
+	newLeader := cluster.waitForLeaderAmong(t, slotID, cluster.otherNodes(oldLeader))
+	fresh, err := cluster.runtime(newLeader).Propose(context.Background(), slotID, []byte("fresh"))
 	if err != nil {
 		t.Fatalf("Propose(fresh) error = %v", err)
 	}
 	freshRes := waitForFutureResult(t, fresh)
 
 	cluster.healNode(oldLeader)
-	cluster.waitForNodeCommitIndex(t, oldLeader, groupID, freshRes.Index)
-	cluster.waitForAllApplied(t, groupID, []byte("fresh"))
+	cluster.waitForNodeCommitIndex(t, oldLeader, slotID, freshRes.Index)
+	cluster.waitForAllApplied(t, slotID, []byte("fresh"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -357,7 +357,7 @@ func TestRemoteCommitDoesNotApplyStaleCommandAfterHeal(t *testing.T) {
 	}
 
 	for nodeID := range cluster.fsms {
-		fsm := cluster.fsms[nodeID][groupID]
+		fsm := cluster.fsms[nodeID][slotID]
 		fsm.mu.Lock()
 		for _, applied := range fsm.applied {
 			if string(applied) == "stale" {
@@ -371,12 +371,12 @@ func TestRemoteCommitDoesNotApplyStaleCommandAfterHeal(t *testing.T) {
 
 func TestReadyPersistenceFailureDoesNotAdvance(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := openSingleNodeLeader(t, rt, 17)
-	store := fakeStorageFor(rt, groupID)
+	slotID := openSingleNodeLeader(t, rt, 17)
+	store := fakeStorageFor(rt, slotID)
 	if store == nil {
 		t.Fatal("fakeStorageFor() = nil")
 	}
-	fsm := fakeStateMachineFor(rt, groupID)
+	fsm := fakeStateMachineFor(rt, slotID)
 	if fsm == nil {
 		t.Fatal("fakeStateMachineFor() = nil")
 	}
@@ -388,7 +388,7 @@ func TestReadyPersistenceFailureDoesNotAdvance(t *testing.T) {
 	store.saveErr = saveErr
 	store.mu.Unlock()
 
-	fut, err := rt.Propose(context.Background(), groupID, []byte("persist-fail"))
+	fut, err := rt.Propose(context.Background(), slotID, []byte("persist-fail"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -419,23 +419,23 @@ func TestReadyPersistenceFailureDoesNotAdvance(t *testing.T) {
 
 func TestProposeWaitBlocksUntilReadyBatchFullyCompletes(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := GroupID(181)
+	slotID := SlotID(181)
 	store := newBlockingMarkAppliedStorage()
 
-	err := rt.BootstrapGroup(context.Background(), BootstrapGroupRequest{
-		Group: GroupOptions{
-			ID:           groupID,
+	err := rt.BootstrapSlot(context.Background(), BootstrapSlotRequest{
+		Slot: SlotOptions{
+			ID:           slotID,
 			Storage:      store,
 			StateMachine: &internalFakeStateMachine{},
 		},
 		Voters: []NodeID{1},
 	})
 	if err != nil {
-		t.Fatalf("BootstrapGroup() error = %v", err)
+		t.Fatalf("BootstrapSlot() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
-		st, err := rt.Status(groupID)
+		st, err := rt.Status(slotID)
 		return err == nil && st.Role == RoleLeader
 	})
 	store.internalFakeStorage.mu.Lock()
@@ -443,7 +443,7 @@ func TestProposeWaitBlocksUntilReadyBatchFullyCompletes(t *testing.T) {
 	store.internalFakeStorage.mu.Unlock()
 	store.armAfter(baselineApplied + 1)
 
-	fut, err := rt.Propose(context.Background(), groupID, []byte("slow-mark-applied"))
+	fut, err := rt.Propose(context.Background(), slotID, []byte("slow-mark-applied"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -469,8 +469,8 @@ func TestProposeWaitBlocksUntilReadyBatchFullyCompletes(t *testing.T) {
 
 func TestMarkAppliedFailureFailsFutureAndStopsAdvance(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := openSingleNodeLeader(t, rt, 182)
-	store := fakeStorageFor(rt, groupID)
+	slotID := openSingleNodeLeader(t, rt, 182)
+	store := fakeStorageFor(rt, slotID)
 	if store == nil {
 		t.Fatal("fakeStorageFor() = nil")
 	}
@@ -481,7 +481,7 @@ func TestMarkAppliedFailureFailsFutureAndStopsAdvance(t *testing.T) {
 	store.markAppliedErr = markAppliedErr
 	store.mu.Unlock()
 
-	fut, err := rt.Propose(context.Background(), groupID, []byte("mark-applied-fail"))
+	fut, err := rt.Propose(context.Background(), slotID, []byte("mark-applied-fail"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -499,27 +499,27 @@ func TestMarkAppliedFailureFailsFutureAndStopsAdvance(t *testing.T) {
 	}
 }
 
-func TestApplyFatalStopsGroup(t *testing.T) {
+func TestApplyFatalStopsSlot(t *testing.T) {
 	rt := newStartedRuntime(t)
-	groupID := GroupID(18)
+	slotID := SlotID(18)
 	fatalErr := errors.New("fatal apply")
 	store := &internalFakeStorage{}
 	fsm := &internalFakeStateMachine{applyErr: fatalErr}
 
-	err := rt.BootstrapGroup(context.Background(), BootstrapGroupRequest{
-		Group: GroupOptions{
-			ID:           groupID,
+	err := rt.BootstrapSlot(context.Background(), BootstrapSlotRequest{
+		Slot: SlotOptions{
+			ID:           slotID,
 			Storage:      store,
 			StateMachine: fsm,
 		},
 		Voters: []NodeID{1},
 	})
 	if err != nil {
-		t.Fatalf("BootstrapGroup() error = %v", err)
+		t.Fatalf("BootstrapSlot() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
-		st, err := rt.Status(groupID)
+		st, err := rt.Status(slotID)
 		return err == nil && st.Role == RoleLeader
 	})
 
@@ -527,7 +527,7 @@ func TestApplyFatalStopsGroup(t *testing.T) {
 	baselineApplied := store.lastApplied
 	store.mu.Unlock()
 
-	fut, err := rt.Propose(context.Background(), groupID, []byte("boom"))
+	fut, err := rt.Propose(context.Background(), slotID, []byte("boom"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -545,11 +545,11 @@ func TestApplyFatalStopsGroup(t *testing.T) {
 	}
 }
 
-func openSingleNodeLeader(t *testing.T, rt *Runtime, id GroupID) GroupID {
+func openSingleNodeLeader(t *testing.T, rt *Runtime, id SlotID) SlotID {
 	t.Helper()
 
-	err := rt.BootstrapGroup(context.Background(), BootstrapGroupRequest{
-		Group: GroupOptions{
+	err := rt.BootstrapSlot(context.Background(), BootstrapSlotRequest{
+		Slot: SlotOptions{
 			ID:           id,
 			Storage:      &internalFakeStorage{},
 			StateMachine: &internalFakeStateMachine{},
@@ -557,7 +557,7 @@ func openSingleNodeLeader(t *testing.T, rt *Runtime, id GroupID) GroupID {
 		Voters: []NodeID{1},
 	})
 	if err != nil {
-		t.Fatalf("BootstrapGroup() error = %v", err)
+		t.Fatalf("BootstrapSlot() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
@@ -567,8 +567,8 @@ func openSingleNodeLeader(t *testing.T, rt *Runtime, id GroupID) GroupID {
 	return id
 }
 
-func fakeStorageFor(rt *Runtime, id GroupID) *internalFakeStorage {
-	g := groupFor(rt, id)
+func fakeStorageFor(rt *Runtime, id SlotID) *internalFakeStorage {
+	g := slotFor(rt, id)
 	if g == nil {
 		return nil
 	}
@@ -576,8 +576,8 @@ func fakeStorageFor(rt *Runtime, id GroupID) *internalFakeStorage {
 	return store
 }
 
-func fakeStateMachineFor(rt *Runtime, id GroupID) *internalFakeStateMachine {
-	g := groupFor(rt, id)
+func fakeStateMachineFor(rt *Runtime, id SlotID) *internalFakeStateMachine {
+	g := slotFor(rt, id)
 	if g == nil {
 		return nil
 	}
@@ -585,11 +585,11 @@ func fakeStateMachineFor(rt *Runtime, id GroupID) *internalFakeStateMachine {
 	return fsm
 }
 
-func groupFor(rt *Runtime, id GroupID) *group {
+func slotFor(rt *Runtime, id SlotID) *slot {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 
-	g := rt.groups[id]
+	g := rt.slots[id]
 	return g
 }
 
@@ -647,10 +647,10 @@ func (f *blockingMarkAppliedStorage) unblock() {
 	})
 }
 
-func mustPropose(t *testing.T, rt *Runtime, groupID GroupID, data string) Future {
+func mustPropose(t *testing.T, rt *Runtime, slotID SlotID, data string) Future {
 	t.Helper()
 
-	fut, err := rt.Propose(context.Background(), groupID, []byte(data))
+	fut, err := rt.Propose(context.Background(), slotID, []byte(data))
 	if err != nil {
 		t.Fatalf("Propose(%q) error = %v", data, err)
 	}

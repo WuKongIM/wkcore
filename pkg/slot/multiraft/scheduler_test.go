@@ -5,41 +5,41 @@ import (
 	"time"
 )
 
-func TestSchedulerRequeueAfterDirtyDoneDeliversGroup(t *testing.T) {
+func TestSchedulerRequeueAfterDirtyDoneDeliversSlot(t *testing.T) {
 	s := newScheduler()
-	groupID := GroupID(42)
+	slotID := SlotID(42)
 
-	s.enqueue(groupID)
+	s.enqueue(slotID)
 	select {
 	case got := <-s.ch:
-		if got != groupID {
+		if got != slotID {
 			t.Fatalf("first dequeue = %d", got)
 		}
 	default:
-		t.Fatal("group was not enqueued")
+		t.Fatal("slot was not enqueued")
 	}
 
-	s.begin(groupID)
-	s.enqueue(groupID)
-	if !s.done(groupID) {
+	s.begin(slotID)
+	s.enqueue(slotID)
+	if !s.done(slotID) {
 		t.Fatal("done() = false, want true after dirty enqueue")
 	}
 
-	s.requeue(groupID)
+	s.requeue(slotID)
 
 	select {
 	case got := <-s.ch:
-		if got != groupID {
-			t.Fatalf("requeued group = %d", got)
+		if got != slotID {
+			t.Fatalf("requeued slot = %d", got)
 		}
 	default:
-		t.Fatal("dirty group was not delivered after requeue")
+		t.Fatal("dirty slot was not delivered after requeue")
 	}
 }
 
 func TestSchedulerEnqueueBuffersWhenChannelIsFull(t *testing.T) {
 	s := newScheduler()
-	s.ch = make(chan GroupID, 1)
+	s.ch = make(chan SlotID, 1)
 
 	s.enqueue(1)
 
@@ -68,6 +68,6 @@ func TestSchedulerEnqueueBuffersWhenChannelIsFull(t *testing.T) {
 			t.Fatalf("second dequeue = %d", got)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("buffered group was not dispatched after begin() freed capacity")
+		t.Fatal("buffered slot was not dispatched after begin() freed capacity")
 	}
 }

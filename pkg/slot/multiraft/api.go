@@ -15,7 +15,7 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	r.closed = true
-	for _, g := range r.groups {
+	for _, g := range r.slots {
 		g.mu.Lock()
 		g.closed = true
 		g.failPendingLocked(ErrRuntimeClosed)
@@ -27,17 +27,17 @@ func (r *Runtime) Close() error {
 	r.wg.Wait()
 
 	r.mu.Lock()
-	r.groups = make(map[GroupID]*group)
+	r.slots = make(map[SlotID]*slot)
 	r.mu.Unlock()
 	return nil
 }
 
-func (r *Runtime) OpenGroup(ctx context.Context, opts GroupOptions) error {
-	if err := validateGroupOptions(opts); err != nil {
+func (r *Runtime) OpenSlot(ctx context.Context, opts SlotOptions) error {
+	if err := validateSlotOptions(opts); err != nil {
 		return err
 	}
 
-	g, err := newGroup(ctx, r.opts.NodeID, r.opts.Raft, opts)
+	g, err := newSlot(ctx, r.opts.NodeID, r.opts.Raft, opts)
 	if err != nil {
 		return err
 	}
@@ -48,19 +48,19 @@ func (r *Runtime) OpenGroup(ctx context.Context, opts GroupOptions) error {
 	if r.closed {
 		return ErrRuntimeClosed
 	}
-	if _, exists := r.groups[opts.ID]; exists {
-		return ErrGroupExists
+	if _, exists := r.slots[opts.ID]; exists {
+		return ErrSlotExists
 	}
-	r.groups[opts.ID] = g
+	r.slots[opts.ID] = g
 	return nil
 }
 
-func (r *Runtime) BootstrapGroup(ctx context.Context, req BootstrapGroupRequest) error {
-	if err := validateGroupOptions(req.Group); err != nil {
+func (r *Runtime) BootstrapSlot(ctx context.Context, req BootstrapSlotRequest) error {
+	if err := validateSlotOptions(req.Slot); err != nil {
 		return err
 	}
 
-	g, err := newGroup(ctx, r.opts.NodeID, r.opts.Raft, req.Group)
+	g, err := newSlot(ctx, r.opts.NodeID, r.opts.Raft, req.Slot)
 	if err != nil {
 		return err
 	}
@@ -70,24 +70,24 @@ func (r *Runtime) BootstrapGroup(ctx context.Context, req BootstrapGroupRequest)
 		r.mu.Unlock()
 		return ErrRuntimeClosed
 	}
-	if _, exists := r.groups[req.Group.ID]; exists {
+	if _, exists := r.slots[req.Slot.ID]; exists {
 		r.mu.Unlock()
-		return ErrGroupExists
+		return ErrSlotExists
 	}
-	r.groups[req.Group.ID] = g
+	r.slots[req.Slot.ID] = g
 	if len(req.Voters) > 0 {
 		peers := make([]raft.Peer, 0, len(req.Voters))
 		for _, id := range req.Voters {
 			peers = append(peers, raft.Peer{ID: uint64(id)})
 		}
 		if err := g.rawNode.Bootstrap(peers); err != nil {
-			delete(r.groups, req.Group.ID)
+			delete(r.slots, req.Slot.ID)
 			r.mu.Unlock()
 			return err
 		}
 		if len(req.Voters) == 1 && req.Voters[0] == r.opts.NodeID {
 			if err := g.enqueueControl(controlAction{kind: controlCampaign}); err != nil {
-				delete(r.groups, req.Group.ID)
+				delete(r.slots, req.Slot.ID)
 				r.mu.Unlock()
 				return err
 			}
@@ -95,25 +95,25 @@ func (r *Runtime) BootstrapGroup(ctx context.Context, req BootstrapGroupRequest)
 	}
 	r.mu.Unlock()
 
-	r.scheduler.enqueue(req.Group.ID)
+	r.scheduler.enqueue(req.Slot.ID)
 	return nil
 }
 
-func (r *Runtime) CloseGroup(ctx context.Context, groupID GroupID) error {
+func (r *Runtime) CloseSlot(ctx context.Context, slotID SlotID) error {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
 		return ErrRuntimeClosed
 	}
-	g, ok := r.groups[groupID]
+	g, ok := r.slots[slotID]
 	if !ok {
 		r.mu.Unlock()
-		return ErrGroupNotFound
+		return ErrSlotNotFound
 	}
 	g.mu.Lock()
 	g.closed = true
-	g.failPendingLocked(ErrGroupClosed)
-	delete(r.groups, groupID)
+	g.failPendingLocked(ErrSlotClosed)
+	delete(r.slots, slotID)
 	r.mu.Unlock()
 	for g.processing {
 		g.cond.Wait()
@@ -128,29 +128,29 @@ func (r *Runtime) Step(ctx context.Context, msg Envelope) error {
 		r.mu.RUnlock()
 		return ErrRuntimeClosed
 	}
-	g, ok := r.groups[msg.GroupID]
+	g, ok := r.slots[msg.SlotID]
 	r.mu.RUnlock()
 	if !ok {
-		return ErrGroupNotFound
+		return ErrSlotNotFound
 	}
 
 	if err := g.enqueueRequest(msg.Message); err != nil {
 		return err
 	}
-	r.scheduler.enqueue(msg.GroupID)
+	r.scheduler.enqueue(msg.SlotID)
 	return nil
 }
 
-func (r *Runtime) Propose(ctx context.Context, groupID GroupID, data []byte) (Future, error) {
+func (r *Runtime) Propose(ctx context.Context, slotID SlotID, data []byte) (Future, error) {
 	r.mu.RLock()
 	if r.closed {
 		r.mu.RUnlock()
 		return nil, ErrRuntimeClosed
 	}
-	g, ok := r.groups[groupID]
+	g, ok := r.slots[slotID]
 	r.mu.RUnlock()
 	if !ok {
-		return nil, ErrGroupNotFound
+		return nil, ErrSlotNotFound
 	}
 
 	fut := newFuture()
@@ -161,20 +161,20 @@ func (r *Runtime) Propose(ctx context.Context, groupID GroupID, data []byte) (Fu
 	}); err != nil {
 		return nil, err
 	}
-	r.scheduler.enqueue(groupID)
+	r.scheduler.enqueue(slotID)
 	return fut, nil
 }
 
-func (r *Runtime) ChangeConfig(ctx context.Context, groupID GroupID, change ConfigChange) (Future, error) {
+func (r *Runtime) ChangeConfig(ctx context.Context, slotID SlotID, change ConfigChange) (Future, error) {
 	r.mu.RLock()
 	if r.closed {
 		r.mu.RUnlock()
 		return nil, ErrRuntimeClosed
 	}
-	g, ok := r.groups[groupID]
+	g, ok := r.slots[slotID]
 	r.mu.RUnlock()
 	if !ok {
-		return nil, ErrGroupNotFound
+		return nil, ErrSlotNotFound
 	}
 
 	fut := newFuture()
@@ -185,20 +185,20 @@ func (r *Runtime) ChangeConfig(ctx context.Context, groupID GroupID, change Conf
 	}); err != nil {
 		return nil, err
 	}
-	r.scheduler.enqueue(groupID)
+	r.scheduler.enqueue(slotID)
 	return fut, nil
 }
 
-func (r *Runtime) TransferLeadership(ctx context.Context, groupID GroupID, target NodeID) error {
+func (r *Runtime) TransferLeadership(ctx context.Context, slotID SlotID, target NodeID) error {
 	r.mu.RLock()
 	if r.closed {
 		r.mu.RUnlock()
 		return ErrRuntimeClosed
 	}
-	g, ok := r.groups[groupID]
+	g, ok := r.slots[slotID]
 	r.mu.RUnlock()
 	if !ok {
-		return ErrGroupNotFound
+		return ErrSlotNotFound
 	}
 
 	if err := g.enqueueControl(controlAction{
@@ -207,41 +207,41 @@ func (r *Runtime) TransferLeadership(ctx context.Context, groupID GroupID, targe
 	}); err != nil {
 		return err
 	}
-	r.scheduler.enqueue(groupID)
+	r.scheduler.enqueue(slotID)
 	return nil
 }
 
-func (r *Runtime) Status(groupID GroupID) (Status, error) {
+func (r *Runtime) Status(slotID SlotID) (Status, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	if r.closed {
 		return Status{}, ErrRuntimeClosed
 	}
-	g, ok := r.groups[groupID]
+	g, ok := r.slots[slotID]
 	if !ok {
-		return Status{}, ErrGroupNotFound
+		return Status{}, ErrSlotNotFound
 	}
 	st, err := g.statusSnapshot()
-	if errors.Is(err, ErrGroupClosed) {
-		return Status{}, ErrGroupNotFound
+	if errors.Is(err, ErrSlotClosed) {
+		return Status{}, ErrSlotNotFound
 	}
 	return st, err
 }
 
-func (r *Runtime) Groups() []GroupID {
+func (r *Runtime) Slots() []SlotID {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	ids := make([]GroupID, 0, len(r.groups))
-	for id := range r.groups {
+	ids := make([]SlotID, 0, len(r.slots))
+	for id := range r.slots {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	return ids
 }
 
-func validateGroupOptions(opts GroupOptions) error {
+func validateSlotOptions(opts SlotOptions) error {
 	if opts.ID == 0 || opts.Storage == nil || opts.StateMachine == nil {
 		return ErrInvalidOptions
 	}

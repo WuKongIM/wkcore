@@ -11,13 +11,13 @@ func TestThreeNodeClusterElectsLeaderAndReplicatesOverAsyncNetwork(t *testing.T)
 		MaxDelay: 5 * time.Millisecond,
 		Seed:     1,
 	})
-	groupID := GroupID(200)
+	slotID := SlotID(200)
 
-	cluster.bootstrapGroup(t, groupID, []NodeID{1, 2, 3})
-	cluster.waitForBootstrapApplied(t, groupID, 3)
+	cluster.bootstrapSlot(t, slotID, []NodeID{1, 2, 3})
+	cluster.waitForBootstrapApplied(t, slotID, 3)
 
-	leaderID := cluster.waitForLeader(t, groupID)
-	fut, err := cluster.runtime(leaderID).Propose(context.Background(), groupID, []byte("set e2e=1"))
+	leaderID := cluster.waitForLeader(t, slotID)
+	fut, err := cluster.runtime(leaderID).Propose(context.Background(), slotID, []byte("set e2e=1"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -27,5 +27,5 @@ func TestThreeNodeClusterElectsLeaderAndReplicatesOverAsyncNetwork(t *testing.T)
 		t.Fatalf("Wait().Data = %q", res.Data)
 	}
 
-	cluster.waitForAllApplied(t, groupID, []byte("set e2e=1"))
+	cluster.waitForAllApplied(t, slotID, []byte("set e2e=1"))
 }
