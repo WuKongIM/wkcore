@@ -284,7 +284,7 @@ func mustInitialState(tb testing.TB, store multiraft.Storage) multiraft.Bootstra
 	return state
 }
 
-func mustWriteLegacyPebbleState(tb testing.TB, path string, group uint64, state legacyPebbleState) {
+func mustWriteLegacyPebbleState(tb testing.TB, path string, scope Scope, state legacyPebbleState) {
 	tb.Helper()
 
 	db, err := pebble.Open(path, &pebble.Options{})
@@ -305,14 +305,14 @@ func mustWriteLegacyPebbleState(tb testing.TB, path string, group uint64, state 
 		if err != nil {
 			tb.Fatalf("HardState.Marshal() error = %v", err)
 		}
-		if err := batch.Set(encodeHardStateKey(group), data, nil); err != nil {
+		if err := batch.Set(encodeHardStateKey(scope), data, nil); err != nil {
 			tb.Fatalf("batch.Set(hardState) error = %v", err)
 		}
 	}
 	if state.applied > 0 {
 		value := make([]byte, 8)
 		binary.BigEndian.PutUint64(value, state.applied)
-		if err := batch.Set(encodeAppliedIndexKey(group), value, nil); err != nil {
+		if err := batch.Set(encodeAppliedIndexKey(scope), value, nil); err != nil {
 			tb.Fatalf("batch.Set(appliedIndex) error = %v", err)
 		}
 	}
@@ -321,7 +321,7 @@ func mustWriteLegacyPebbleState(tb testing.TB, path string, group uint64, state 
 		if err != nil {
 			tb.Fatalf("Snapshot.Marshal() error = %v", err)
 		}
-		if err := batch.Set(encodeSnapshotKey(group), data, nil); err != nil {
+		if err := batch.Set(encodeSnapshotKey(scope), data, nil); err != nil {
 			tb.Fatalf("batch.Set(snapshot) error = %v", err)
 		}
 	}
@@ -330,7 +330,7 @@ func mustWriteLegacyPebbleState(tb testing.TB, path string, group uint64, state 
 		if err != nil {
 			tb.Fatalf("Entry.Marshal() error = %v", err)
 		}
-		if err := batch.Set(encodeEntryKey(group, entry.Index), data, nil); err != nil {
+		if err := batch.Set(encodeEntryKey(scope, entry.Index), data, nil); err != nil {
 			tb.Fatalf("batch.Set(entry %d) error = %v", entry.Index, err)
 		}
 	}
@@ -340,10 +340,10 @@ func mustWriteLegacyPebbleState(tb testing.TB, path string, group uint64, state 
 	}
 }
 
-func hasGroupMetadata(tb testing.TB, db *DB, group uint64) bool {
+func hasScopeMetadata(tb testing.TB, db *DB, scope Scope) bool {
 	tb.Helper()
 
-	_, closer, err := db.db.Get(encodeGroupStateKey(group))
+	_, closer, err := db.db.Get(encodeMetaKey(scope, recordTypeMeta))
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {
 			return false

@@ -163,7 +163,7 @@ func TestPebbleStressAckedWritesSurvivePeriodicReopen(t *testing.T) {
 func stressStoresForGroups(db *DB, groupCount int) []multiraft.Storage {
 	stores := make([]multiraft.Storage, groupCount)
 	for i := range stores {
-		stores[i] = db.ForGroup(uint64(i + 1))
+		stores[i] = db.ForSlot(uint64(i + 1))
 	}
 	return stores
 }

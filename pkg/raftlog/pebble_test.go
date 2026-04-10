@@ -12,7 +12,7 @@ import (
 	"go.etcd.io/raft/v3/raftpb"
 )
 
-func TestPebbleOpenForGroupReturnsStorage(t *testing.T) {
+func TestPebbleOpenForSlotReturnsStorage(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "raft"))
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
@@ -23,21 +23,113 @@ func TestPebbleOpenForGroupReturnsStorage(t *testing.T) {
 		}
 	})
 
-	if db.ForGroup(7) == nil {
-		t.Fatal("ForGroup(7) returned nil storage")
+	if db.ForSlot(7) == nil {
+		t.Fatal("ForSlot(7) returned nil storage")
 	}
 }
 
-func TestPebbleEntryKeysSortByGroupAndIndex(t *testing.T) {
-	a := encodeEntryKey(7, 5)
-	b := encodeEntryKey(7, 6)
-	c := encodeEntryKey(8, 1)
+func TestPebbleForControllerReturnsStorage(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "raft"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	if db.ForController() == nil {
+		t.Fatal("ForController() returned nil storage")
+	}
+}
+
+func TestPebbleOpenInitializesManifest(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "raft"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	_, closer, err := db.db.Get(encodeManifestKey())
+	if err != nil {
+		t.Fatalf("manifest key missing: %v", err)
+	}
+	defer closer.Close()
+}
+
+func TestScopeEntryKeysSortByVersionScopeAndIndex(t *testing.T) {
+	a := encodeEntryKey(SlotScope(7), 5)
+	b := encodeEntryKey(SlotScope(7), 6)
+	c := encodeEntryKey(SlotScope(8), 1)
+	d := encodeEntryKey(ControllerScope(), 1)
 
 	if bytes.Compare(a, b) >= 0 {
-		t.Fatalf("entry keys for one group did not sort by index")
+		t.Fatalf("entry keys for one scope did not sort by index")
 	}
 	if bytes.Compare(b, c) >= 0 {
-		t.Fatalf("entry keys did not sort by group before index")
+		t.Fatalf("entry keys did not sort by scope before index")
+	}
+	if bytes.Equal(a, d) {
+		t.Fatal("slot and controller entry keys collided")
+	}
+}
+
+func TestPebbleControllerStateRoundTripAcrossReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "raft")
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	store := db.ForController()
+
+	hs := raftpb.HardState{Term: 2, Vote: 1, Commit: 3}
+	if err := store.Save(context.Background(), multiraft.PersistentState{
+		HardState: &hs,
+		Entries:   benchEntries(1, 3, 2, 16),
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if err := store.MarkApplied(context.Background(), 3); err != nil {
+		t.Fatalf("MarkApplied() error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	state, err := reopened.ForController().InitialState(context.Background())
+	if err != nil {
+		t.Fatalf("InitialState() error = %v", err)
+	}
+	if state.HardState.Commit != 3 {
+		t.Fatalf("HardState.Commit = %d, want 3", state.HardState.Commit)
+	}
+	if state.AppliedIndex != 3 {
+		t.Fatalf("AppliedIndex = %d, want 3", state.AppliedIndex)
+	}
+}
+
+func TestScopeString(t *testing.T) {
+	if got := SlotScope(7).String(); got != "slot/7" {
+		t.Fatalf("SlotScope(7).String() = %q, want slot/7", got)
+	}
+	if got := ControllerScope().String(); got != "controller/1" {
+		t.Fatalf("ControllerScope().String() = %q, want controller/1", got)
 	}
 }
 
@@ -48,7 +140,7 @@ func TestPebbleStateRoundTripAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	store := db.ForGroup(9)
+	store := db.ForSlot(9)
 
 	hs := raftpb.HardState{Term: 2, Vote: 1, Commit: 7}
 	snap := raftpb.Snapshot{
@@ -84,7 +176,7 @@ func TestPebbleStateRoundTripAcrossReopen(t *testing.T) {
 		}
 	})
 
-	state, err := reopened.ForGroup(9).InitialState(context.Background())
+	state, err := reopened.ForSlot(9).InitialState(context.Background())
 	if err != nil {
 		t.Fatalf("InitialState() error = %v", err)
 	}
@@ -110,7 +202,7 @@ func TestPebbleSnapshotRoundTrip(t *testing.T) {
 		}
 	})
 
-	store := db.ForGroup(9)
+	store := db.ForSlot(9)
 	snap := raftpb.Snapshot{
 		Data: []byte("snap"),
 		Metadata: raftpb.SnapshotMetadata{
@@ -147,8 +239,8 @@ func TestPebbleGroupsAreIndependent(t *testing.T) {
 		}
 	})
 
-	left := db.ForGroup(9)
-	right := db.ForGroup(10)
+	left := db.ForSlot(9)
+	right := db.ForSlot(10)
 
 	hs := raftpb.HardState{Term: 2, Vote: 1, Commit: 7}
 	if err := left.Save(context.Background(), multiraft.PersistentState{
@@ -180,6 +272,39 @@ func TestPebbleGroupsAreIndependent(t *testing.T) {
 	}
 	if rightState.AppliedIndex != 0 {
 		t.Fatalf("right AppliedIndex = %d, want 0", rightState.AppliedIndex)
+	}
+}
+
+func TestPebbleSlotAndControllerAreIndependent(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "raft"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	mustSave(t, db.ForSlot(9), benchPersistentState(1, 2, 1, 8))
+	mustMarkApplied(t, db.ForSlot(9), 2)
+	mustSave(t, db.ForController(), benchPersistentState(1, 3, 2, 8))
+	mustMarkApplied(t, db.ForController(), 3)
+
+	slotState := mustInitialState(t, db.ForSlot(9))
+	if slotState.HardState.Commit != 2 {
+		t.Fatalf("slot commit = %d, want 2", slotState.HardState.Commit)
+	}
+	if slotState.AppliedIndex != 2 {
+		t.Fatalf("slot applied = %d, want 2", slotState.AppliedIndex)
+	}
+
+	controllerState := mustInitialState(t, db.ForController())
+	if controllerState.HardState.Commit != 3 {
+		t.Fatalf("controller commit = %d, want 3", controllerState.HardState.Commit)
+	}
+	if controllerState.AppliedIndex != 3 {
+		t.Fatalf("controller applied = %d, want 3", controllerState.AppliedIndex)
 	}
 }
 
@@ -337,7 +462,7 @@ func TestPebbleEntriesRoundTripAcrossReopen(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 
-	store := db.ForGroup(16)
+	store := db.ForSlot(16)
 	entries := []raftpb.Entry{
 		{Index: 5, Term: 1, Data: []byte("a")},
 		{Index: 6, Term: 2, Data: []byte("b")},
@@ -359,7 +484,7 @@ func TestPebbleEntriesRoundTripAcrossReopen(t *testing.T) {
 		}
 	})
 
-	got, err := reopened.ForGroup(16).Entries(ctx, 5, 7, 0)
+	got, err := reopened.ForSlot(16).Entries(ctx, 5, 7, 0)
 	if err != nil {
 		t.Fatalf("Entries() error = %v", err)
 	}
@@ -465,7 +590,7 @@ func TestPebbleInitialStateReopenUsesPersistedMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	store := db.ForGroup(21)
+	store := db.ForSlot(21)
 
 	hs := raftpb.HardState{Term: 2, Commit: 3}
 	entries := []raftpb.Entry{
@@ -494,7 +619,7 @@ func TestPebbleInitialStateReopenUsesPersistedMetadata(t *testing.T) {
 	if err := store.MarkApplied(ctx, 3); err != nil {
 		t.Fatalf("MarkApplied() error = %v", err)
 	}
-	if _, err := store.(*pebbleStore).getValue(encodeGroupStateKey(21)); err != nil {
+	if _, err := store.(*pebbleStore).getValue(encodeGroupStateKey(SlotScope(21))); err != nil {
 		t.Fatalf("group metadata missing before reopen: %v", err)
 	}
 	if err := db.Close(); err != nil {
@@ -511,7 +636,7 @@ func TestPebbleInitialStateReopenUsesPersistedMetadata(t *testing.T) {
 		}
 	})
 
-	state, err := reopened.ForGroup(21).InitialState(ctx)
+	state, err := reopened.ForSlot(21).InitialState(ctx)
 	if err != nil {
 		t.Fatalf("InitialState() error = %v", err)
 	}
@@ -519,7 +644,7 @@ func TestPebbleInitialStateReopenUsesPersistedMetadata(t *testing.T) {
 	if !reflect.DeepEqual(state.ConfState, want) {
 		t.Fatalf("ConfState = %#v, want %#v", state.ConfState, want)
 	}
-	if _, err := reopened.ForGroup(21).(*pebbleStore).getValue(encodeGroupStateKey(21)); err != nil {
+	if _, err := reopened.ForSlot(21).(*pebbleStore).getValue(encodeGroupStateKey(SlotScope(21))); err != nil {
 		t.Fatalf("group metadata missing after reopen: %v", err)
 	}
 }
@@ -545,7 +670,7 @@ func TestPebbleFirstAndLastIndexUsePersistedMetadataAfterSnapshotTrim(t *testing
 	if err := store.Save(ctx, multiraft.PersistentState{Snapshot: &snap}); err != nil {
 		t.Fatalf("Save(snapshot) error = %v", err)
 	}
-	if _, err := store.(*pebbleStore).getValue(encodeGroupStateKey(22)); err != nil {
+	if _, err := store.(*pebbleStore).getValue(encodeGroupStateKey(SlotScope(22))); err != nil {
 		t.Fatalf("group metadata missing after snapshot trim: %v", err)
 	}
 
@@ -564,7 +689,7 @@ func TestPebbleFirstAndLastIndexUsePersistedMetadataAfterSnapshotTrim(t *testing
 
 func TestPebbleInitialStateReopenBackfillsLegacyStoreMetadata(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "raft")
-	mustWriteLegacyPebbleState(t, path, 31, legacyPebbleState{
+	mustWriteLegacyPebbleState(t, path, SlotScope(31), legacyPebbleState{
 		hardState: raftpb.HardState{Term: 2, Commit: 3},
 		applied:   3,
 		entries: []raftpb.Entry{
@@ -599,7 +724,7 @@ func TestPebbleInitialStateReopenBackfillsLegacyStoreMetadata(t *testing.T) {
 		}
 	})
 
-	state, err := db.ForGroup(31).InitialState(context.Background())
+	state, err := db.ForSlot(31).InitialState(context.Background())
 	if err != nil {
 		t.Fatalf("InitialState() error = %v", err)
 	}
@@ -607,7 +732,7 @@ func TestPebbleInitialStateReopenBackfillsLegacyStoreMetadata(t *testing.T) {
 	if !reflect.DeepEqual(state.ConfState, want) {
 		t.Fatalf("ConfState = %#v, want %#v", state.ConfState, want)
 	}
-	if !hasGroupMetadata(t, db, 31) {
+	if !hasScopeMetadata(t, db, SlotScope(31)) {
 		t.Fatal("metadata was not backfilled after legacy reopen")
 	}
 }
@@ -624,11 +749,11 @@ func TestPebbleCloseDrainsConcurrentWritesBeforeClosingDB(t *testing.T) {
 	for i := 0; i < writers; i++ {
 		hs := raftpb.HardState{Term: 1, Commit: 16}
 		req := &writeRequest{
-			group: uint64(i + 1),
-			state: &multiraft.PersistentState{
+			scope: SlotScope(uint64(i + 1)),
+			op: saveOp{state: multiraft.PersistentState{
 				HardState: &hs,
 				Entries:   benchEntries(1, 16, 1, 1024),
-			},
+			}},
 			done: make(chan error, 1),
 		}
 		db.writeCh <- req
@@ -656,7 +781,7 @@ func TestPebbleCloseDrainsConcurrentWritesBeforeClosingDB(t *testing.T) {
 	})
 
 	for group := uint64(1); group <= writers; group++ {
-		last, err := reopened.ForGroup(group).LastIndex(context.Background())
+		last, err := reopened.ForSlot(group).LastIndex(context.Background())
 		if err != nil {
 			t.Fatalf("group %d LastIndex() error = %v", group, err)
 		}
@@ -677,7 +802,7 @@ func TestPebbleConcurrentSaveAndMarkAppliedAreDurableAcrossReopen(t *testing.T) 
 	errCh := make(chan error, writers)
 	for i := 0; i < writers; i++ {
 		go func(group uint64) {
-			store := db.ForGroup(group)
+			store := db.ForSlot(group)
 			hs := raftpb.HardState{Term: 1, Commit: 4}
 			if err := store.Save(context.Background(), multiraft.PersistentState{
 				HardState: &hs,
@@ -710,7 +835,7 @@ func TestPebbleConcurrentSaveAndMarkAppliedAreDurableAcrossReopen(t *testing.T) 
 	})
 
 	for group := uint64(1); group <= writers; group++ {
-		state, err := reopened.ForGroup(group).InitialState(context.Background())
+		state, err := reopened.ForSlot(group).InitialState(context.Background())
 		if err != nil {
 			t.Fatalf("group %d InitialState() error = %v", group, err)
 		}
@@ -727,7 +852,7 @@ func TestPebbleSameGroupSaveThenMarkAppliedPreservesOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	store := db.ForGroup(51)
+	store := db.ForSlot(51)
 
 	hs := raftpb.HardState{Term: 2, Commit: 3}
 	if err := store.Save(ctx, multiraft.PersistentState{
@@ -753,7 +878,7 @@ func TestPebbleSameGroupSaveThenMarkAppliedPreservesOrder(t *testing.T) {
 		}
 	})
 
-	state, err := reopened.ForGroup(51).InitialState(ctx)
+	state, err := reopened.ForSlot(51).InitialState(ctx)
 	if err != nil {
 		t.Fatalf("InitialState() error = %v", err)
 	}
@@ -902,10 +1027,10 @@ func TestLoadAppliedIndexRejectsInvalidEncoding(t *testing.T) {
 		}
 	})
 
-	store := db.ForGroup(99).(*pebbleStore)
+	store := db.ForSlot(99).(*pebbleStore)
 
 	// Write a 3-byte value to the applied index key (should be 8).
-	if err := db.db.Set(encodeAppliedIndexKey(99), []byte{0x01, 0x02, 0x03}, pebble.Sync); err != nil {
+	if err := db.db.Set(encodeAppliedIndexKey(SlotScope(99)), []byte{0x01, 0x02, 0x03}, pebble.Sync); err != nil {
 		t.Fatalf("Set() error = %v", err)
 	}
 
@@ -927,5 +1052,5 @@ func openTestPebbleStore(t *testing.T, group uint64) multiraft.Storage {
 			t.Fatalf("Close() error = %v", err)
 		}
 	})
-	return db.ForGroup(group)
+	return db.ForSlot(group)
 }

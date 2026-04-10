@@ -113,7 +113,6 @@ func deriveConfState(snapshot raftpb.Snapshot, entries []raftpb.Entry, committed
 			}
 			progress.Config = nextCfg
 			progress.Progress = nextProgress
-
 		case raftpb.EntryConfChangeV2:
 			var cc raftpb.ConfChangeV2
 			if err := cc.Unmarshal(entry.Data); err != nil {
@@ -156,4 +155,33 @@ func isZeroConfState(state raftpb.ConfState) bool {
 		len(state.VotersOutgoing) == 0 &&
 		len(state.LearnersNext) == 0 &&
 		!state.AutoLeave
+}
+
+func updateLogMeta(meta *logMeta, snapshot raftpb.Snapshot, entries []raftpb.Entry, committed uint64) error {
+	if meta == nil {
+		return nil
+	}
+
+	meta.SnapshotIndex = snapshot.Metadata.Index
+	meta.SnapshotTerm = snapshot.Metadata.Term
+
+	confState, err := deriveConfState(snapshot, entries, committed)
+	if err != nil {
+		return err
+	}
+	meta.ConfState = cloneConfState(confState)
+
+	switch {
+	case len(entries) > 0:
+		meta.FirstIndex = entries[0].Index
+		meta.LastIndex = entries[len(entries)-1].Index
+	case !raft.IsEmptySnap(snapshot):
+		meta.FirstIndex = snapshot.Metadata.Index + 1
+		meta.LastIndex = snapshot.Metadata.Index
+	default:
+		meta.FirstIndex = 1
+		meta.LastIndex = 0
+	}
+
+	return nil
 }

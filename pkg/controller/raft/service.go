@@ -18,10 +18,9 @@ import (
 )
 
 const (
-	controllerGroupStorageID uint64        = 1
-	tickInterval             time.Duration = 100 * time.Millisecond
-	electionTick             int           = 10
-	heartbeatTick            int           = 1
+	tickInterval  time.Duration = 100 * time.Millisecond
+	electionTick  int           = 10
+	heartbeatTick int           = 1
 )
 
 var (
@@ -123,7 +122,7 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 
-	store := s.cfg.LogDB.ForGroup(controllerGroupStorageID)
+	store := s.cfg.LogDB.ForController()
 	storageView := newStorageAdapter(store)
 	state, snapshot, _, err := storageView.load(ctx)
 	if err != nil {

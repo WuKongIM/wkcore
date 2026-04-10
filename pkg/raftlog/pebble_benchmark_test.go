@@ -23,7 +23,7 @@ func BenchmarkPebbleSaveEntries(b *testing.B) {
 		b.Cleanup(func() {
 			closeBenchDB(b, db, path)
 		})
-		store := db.ForGroup(1)
+		store := db.ForSlot(1)
 		nextIndex := uint64(1)
 		const batchSize = 8
 
@@ -51,7 +51,7 @@ func BenchmarkPebbleSaveEntries(b *testing.B) {
 		b.Cleanup(func() {
 			closeBenchDB(b, db, path)
 		})
-		store := db.ForGroup(2)
+		store := db.ForSlot(2)
 
 		const (
 			initialCount = 128
@@ -90,7 +90,7 @@ func BenchmarkPebbleSaveEntries(b *testing.B) {
 		stores := make([]multiraft.Storage, groupCount)
 		nextIndex := make([]uint64, groupCount)
 		for i := range stores {
-			stores[i] = db.ForGroup(uint64(i + 1))
+			stores[i] = db.ForSlot(uint64(i + 1))
 			nextIndex[i] = 1
 		}
 
@@ -122,7 +122,7 @@ func BenchmarkPebbleEntries(b *testing.B) {
 		b.Cleanup(func() {
 			closeBenchDB(b, db, path)
 		})
-		store := db.ForGroup(1)
+		store := db.ForSlot(1)
 		total := cfg.entries * 4
 		mustSave(b, store, benchPersistentState(1, total, 1, cfg.payload))
 
@@ -146,7 +146,7 @@ func BenchmarkPebbleEntries(b *testing.B) {
 		b.Cleanup(func() {
 			closeBenchDB(b, db, path)
 		})
-		store := db.ForGroup(2)
+		store := db.ForSlot(2)
 		total := cfg.entries * 8
 		mustSave(b, store, benchPersistentState(1, total, 1, cfg.payload/2))
 
@@ -167,7 +167,7 @@ func BenchmarkPebbleEntries(b *testing.B) {
 		b.Cleanup(func() {
 			closeBenchDB(b, db, path)
 		})
-		store := db.ForGroup(3)
+		store := db.ForSlot(3)
 		state := benchPersistentState(1, 3, 1, cfg.payload)
 		mustSave(b, store, state)
 
@@ -190,11 +190,11 @@ func BenchmarkPebbleEntries(b *testing.B) {
 		b.Cleanup(func() {
 			closeBenchDB(b, db, path)
 		})
-		store := db.ForGroup(4)
+		store := db.ForSlot(4)
 		total := cfg.entries * 2
 		mustSave(b, store, benchPersistentState(1, total, 1, cfg.payload/2))
 		db = reopenPebbleDB(b, db, path)
-		store = db.ForGroup(4)
+		store = db.ForSlot(4)
 
 		b.ReportAllocs()
 		b.ResetTimer()
@@ -202,7 +202,7 @@ func BenchmarkPebbleEntries(b *testing.B) {
 			closeBenchDB(b, db, path)
 			db = nil
 			db = mustOpenPebbleDB(b, path)
-			store = db.ForGroup(4)
+			store = db.ForSlot(4)
 			benchEntriesSink = mustEntries(b, store, 1, uint64(total+1), 0)
 		}
 		b.StopTimer()
@@ -223,7 +223,7 @@ func BenchmarkPebbleMarkApplied(b *testing.B) {
 		b.Cleanup(func() {
 			closeBenchDB(b, db, path)
 		})
-		store := db.ForGroup(1)
+		store := db.ForSlot(1)
 
 		b.ReportAllocs()
 		b.ResetTimer()
@@ -233,7 +233,7 @@ func BenchmarkPebbleMarkApplied(b *testing.B) {
 		b.StopTimer()
 
 		db = reopenPebbleDB(b, db, path)
-		state := mustInitialState(b, db.ForGroup(1))
+		state := mustInitialState(b, db.ForSlot(1))
 		if state.AppliedIndex != uint64(b.N) {
 			b.Fatalf("AppliedIndex = %d, want %d", state.AppliedIndex, uint64(b.N))
 		}
@@ -252,7 +252,7 @@ func BenchmarkPebbleMarkApplied(b *testing.B) {
 		stores := make([]multiraft.Storage, groupCount)
 		progress := make([]atomic.Uint64, groupCount)
 		for i := range stores {
-			stores[i] = db.ForGroup(uint64(i + 1))
+			stores[i] = db.ForSlot(uint64(i + 1))
 		}
 
 		var (
@@ -304,7 +304,7 @@ func BenchmarkPebbleMarkApplied(b *testing.B) {
 
 		db = reopenPebbleDB(b, db, path)
 		for i := range stores {
-			state := mustInitialState(b, db.ForGroup(uint64(i+1)))
+			state := mustInitialState(b, db.ForSlot(uint64(i+1)))
 			if state.AppliedIndex != progress[i].Load() {
 				b.Fatalf("group %d AppliedIndex = %d, want %d", i+1, state.AppliedIndex, progress[i].Load())
 			}
@@ -320,7 +320,7 @@ func BenchmarkPebbleInitialStateAndReopen(b *testing.B) {
 		b.Cleanup(func() {
 			closeBenchDB(b, db, path)
 		})
-		store := db.ForGroup(1)
+		store := db.ForSlot(1)
 		mustSave(b, store, benchPersistentState(1, cfg.entries, 3, cfg.payload/2))
 		mustMarkApplied(b, store, uint64(cfg.entries))
 		db = reopenPebbleDB(b, db, path)
@@ -331,7 +331,7 @@ func BenchmarkPebbleInitialStateAndReopen(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			db = mustOpenPebbleDB(b, path)
-			benchStateSink = mustInitialState(b, db.ForGroup(1))
+			benchStateSink = mustInitialState(b, db.ForSlot(1))
 			closeBenchDB(b, db, path)
 			db = nil
 		}
@@ -357,7 +357,7 @@ func BenchmarkPebbleInitialStateAndReopen(b *testing.B) {
 
 		for i := 0; i < groupCount; i++ {
 			groupID := uint64(i + 1)
-			store := db.ForGroup(groupID)
+			store := db.ForSlot(groupID)
 			snap := raftpb.Snapshot{
 				Data: []byte{byte(groupID)},
 				Metadata: raftpb.SnapshotMetadata{
@@ -385,7 +385,7 @@ func BenchmarkPebbleInitialStateAndReopen(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			db = mustOpenPebbleDB(b, path)
 			for groupID := 1; groupID <= groupCount; groupID++ {
-				benchStateSink = mustInitialState(b, db.ForGroup(uint64(groupID)))
+				benchStateSink = mustInitialState(b, db.ForSlot(uint64(groupID)))
 			}
 			closeBenchDB(b, db, path)
 			db = nil

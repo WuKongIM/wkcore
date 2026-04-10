@@ -326,6 +326,26 @@ func TestMemoryMarkAppliedUpdatesBootstrapState(t *testing.T) {
 	}
 }
 
+func TestUpdateLogMetaUsesSnapshotWhenEntriesAreTrimmed(t *testing.T) {
+	meta := logMeta{AppliedIndex: 8}
+	snap := raftpb.Snapshot{
+		Metadata: raftpb.SnapshotMetadata{
+			Index: 8,
+			Term:  2,
+		},
+	}
+
+	if err := updateLogMeta(&meta, snap, nil, 8); err != nil {
+		t.Fatalf("updateLogMeta() error = %v", err)
+	}
+	if meta.FirstIndex != 9 {
+		t.Fatalf("FirstIndex = %d, want 9", meta.FirstIndex)
+	}
+	if meta.LastIndex != 8 {
+		t.Fatalf("LastIndex = %d, want 8", meta.LastIndex)
+	}
+}
+
 func TestMemoryReturnsClonedEntriesAndSnapshot(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemory()

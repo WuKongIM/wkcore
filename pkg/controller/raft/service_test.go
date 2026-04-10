@@ -366,7 +366,7 @@ func (e *testEnv) mustInitialState(t *testing.T, nodeID uint64) multiraft.Bootst
 	require.NotNil(t, node)
 	require.NotNil(t, node.logDB)
 
-	state, err := node.logDB.ForGroup(controllerGroupStorageID).InitialState(context.Background())
+	state, err := node.logDB.ForController().InitialState(context.Background())
 	require.NoError(t, err)
 	return state
 }
