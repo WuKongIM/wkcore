@@ -6,7 +6,7 @@ import (
 
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/gin-gonic/gin"
 )
 
@@ -50,7 +50,7 @@ func (s *Server) handleSendMessage(c *gin.Context) {
 	}
 
 	channelID := req.ChannelID
-	if req.ChannelType == wkframe.ChannelTypePerson {
+	if req.ChannelType == frame.ChannelTypePerson {
 		channelID, err = runtimechannelid.NormalizePersonChannel(req.FromUID, req.ChannelID)
 		if err != nil {
 			writeJSONError(c, http.StatusBadRequest, "invalid channel id")
@@ -63,7 +63,7 @@ func (s *Server) handleSendMessage(c *gin.Context) {
 		ChannelID:       channelID,
 		ChannelType:     req.ChannelType,
 		Payload:         payload,
-		ProtocolVersion: wkframe.LatestVersion,
+		ProtocolVersion: frame.LatestVersion,
 	})
 	if err != nil {
 		if status, msg, ok := mapSendError(err); ok {

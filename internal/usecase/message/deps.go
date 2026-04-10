@@ -5,8 +5,8 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/sequence"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 type OnlineRegistry = online.Registry
@@ -29,7 +29,7 @@ type RemoteDeliveryCommand struct {
 	UID        string
 	BootID     uint64
 	SessionIDs []uint64
-	Frame      wkframe.Frame
+	Frame      frame.Frame
 }
 
 type RemoteDelivery interface {

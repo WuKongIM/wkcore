@@ -1,14 +1,14 @@
 package types
 
-import "github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+import "github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 
 type Authenticator interface {
-	Authenticate(ctx *Context, connect *wkframe.ConnectPacket) (*AuthResult, error)
+	Authenticate(ctx *Context, connect *frame.ConnectPacket) (*AuthResult, error)
 }
 
-type AuthenticatorFunc func(ctx *Context, connect *wkframe.ConnectPacket) (*AuthResult, error)
+type AuthenticatorFunc func(ctx *Context, connect *frame.ConnectPacket) (*AuthResult, error)
 
-func (f AuthenticatorFunc) Authenticate(ctx *Context, connect *wkframe.ConnectPacket) (*AuthResult, error) {
+func (f AuthenticatorFunc) Authenticate(ctx *Context, connect *frame.ConnectPacket) (*AuthResult, error) {
 	if f == nil {
 		return nil, nil
 	}
@@ -16,6 +16,6 @@ func (f AuthenticatorFunc) Authenticate(ctx *Context, connect *wkframe.ConnectPa
 }
 
 type AuthResult struct {
-	Connack       *wkframe.ConnackPacket
+	Connack       *frame.ConnackPacket
 	SessionValues map[string]any
 }

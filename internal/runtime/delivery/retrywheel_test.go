@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,7 +15,7 @@ func TestRetryWheelPopsDueEntriesInTimeOrder(t *testing.T) {
 	wheel.Schedule(RetryEntry{
 		When:        base.Add(2 * time.Second),
 		ChannelID:   "u1@u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageID:   102,
 		Route:       testRoute("u2", 1, 11, 2),
 		Attempt:     2,
@@ -23,7 +23,7 @@ func TestRetryWheelPopsDueEntriesInTimeOrder(t *testing.T) {
 	wheel.Schedule(RetryEntry{
 		When:        base.Add(time.Second),
 		ChannelID:   "u1@u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageID:   101,
 		Route:       testRoute("u2", 1, 11, 2),
 		Attempt:     1,

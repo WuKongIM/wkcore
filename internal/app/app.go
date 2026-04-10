@@ -13,13 +13,13 @@ import (
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
-	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/replication/isrnode"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metastore"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
-	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	isrnode "github.com/WuKongIM/WuKongIM/pkg/channel/node"
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	metastore "github.com/WuKongIM/WuKongIM/pkg/group/proxy"
+	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
+	"github.com/WuKongIM/WuKongIM/pkg/transport"
 )
 
 type App struct {
@@ -50,8 +50,8 @@ type App struct {
 
 	isrTransport    *isrTransportBridge
 	replicaFactory  *channelReplicaFactory
-	dataPlanePool   *nodetransport.Pool
-	dataPlaneClient *nodetransport.Client
+	dataPlanePool   *transport.Pool
+	dataPlaneClient *transport.Client
 
 	stopOnce       sync.Once
 	lifecycle      sync.Mutex

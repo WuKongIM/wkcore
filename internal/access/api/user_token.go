@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"github.com/WuKongIM/WuKongIM/internal/usecase/user"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/gin-gonic/gin"
 )
 
@@ -28,8 +28,8 @@ func (s *Server) handleUpdateToken(c *gin.Context) {
 	err := s.users.UpdateToken(c.Request.Context(), user.UpdateTokenCommand{
 		UID:         req.UID,
 		Token:       req.Token,
-		DeviceFlag:  wkframe.DeviceFlag(req.DeviceFlag),
-		DeviceLevel: wkframe.DeviceLevel(req.DeviceLevel),
+		DeviceFlag:  frame.DeviceFlag(req.DeviceFlag),
+		DeviceLevel: frame.DeviceLevel(req.DeviceLevel),
 	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"msg": err.Error(), "status": http.StatusBadRequest})

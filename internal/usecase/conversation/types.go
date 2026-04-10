@@ -1,6 +1,6 @@
 package conversation
 
-import "github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+import channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 
 type ConversationKey struct {
 	ChannelID   string

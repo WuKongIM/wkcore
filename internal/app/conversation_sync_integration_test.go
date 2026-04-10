@@ -15,9 +15,9 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,7 +29,7 @@ func TestAppConversationSyncReturnsLegacyConversationAfterSend(t *testing.T) {
 	app, err := New(cfg)
 	require.NoError(t, err)
 	channelID := deliveryusecase.EncodePersonChannel("u1", "u2")
-	seedChannelRuntimeMeta(t, app, channelID, wkframe.ChannelTypePerson)
+	seedChannelRuntimeMeta(t, app, channelID, frame.ChannelTypePerson)
 
 	require.NoError(t, app.Start())
 	t.Cleanup(func() {
@@ -39,7 +39,7 @@ func TestAppConversationSyncReturnsLegacyConversationAfterSend(t *testing.T) {
 	_, err = app.Message().Send(context.Background(), message.SendCommand{
 		FromUID:     "u1",
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		ClientMsgNo: "conversation-sync-1",
 		Payload:     []byte("hello sync"),
 	})
@@ -80,7 +80,7 @@ func TestConversationSyncLoadsFactsFromRemoteOwnerWhenAPINodeIsNotReplica(t *tes
 	channelID := deliveryusecase.EncodePersonChannel(senderUID, recipientUID)
 	key := channellog.ChannelKey{
 		ChannelID:   channelID,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 	}
 
 	meta := metadb.ChannelRuntimeMeta{
@@ -105,7 +105,7 @@ func TestConversationSyncLoadsFactsFromRemoteOwnerWhenAPINodeIsNotReplica(t *tes
 	_, err := harness.apps[2].Message().Send(context.Background(), message.SendCommand{
 		FromUID:     senderUID,
 		ChannelID:   recipientUID,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		ClientMsgNo: "conversation-sync-remote-1",
 		Payload:     []byte("hello remote sync"),
 	})

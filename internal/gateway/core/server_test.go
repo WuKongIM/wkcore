@@ -12,7 +12,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/transport"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 func TestServer(t *testing.T) {
@@ -20,13 +20,13 @@ func TestServer(t *testing.T) {
 		handler := newTestHandler()
 		proto := newScriptedProtocol("wkproto")
 		proto.pushDecode(decodeResult{
-			frames:   []wkframe.Frame{&wkframe.PingPacket{}},
+			frames:   []frame.Frame{&frame.PingPacket{}},
 			consumed: 1,
 		})
 
-		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(*gateway.Context, *wkframe.ConnectPacket) (*gateway.AuthResult, error) {
+		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(*gateway.Context, *frame.ConnectPacket) (*gateway.AuthResult, error) {
 			return &gateway.AuthResult{
-				Connack: &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonSuccess},
+				Connack: &frame.ConnackPacket{ReasonCode: frame.ReasonSuccess},
 			}, nil
 		}))
 		if err := srv.Start(); err != nil {
@@ -57,16 +57,16 @@ func TestServer(t *testing.T) {
 		proto := newScriptedProtocol("wkproto")
 		proto.encodedBytes = []byte("connack-auth-fail")
 		proto.pushDecode(decodeResult{
-			frames: []wkframe.Frame{&wkframe.ConnectPacket{
+			frames: []frame.Frame{&frame.ConnectPacket{
 				UID:   "u1",
 				Token: "bad-token",
 			}},
 			consumed: 1,
 		})
 
-		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(*gateway.Context, *wkframe.ConnectPacket) (*gateway.AuthResult, error) {
+		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(*gateway.Context, *frame.ConnectPacket) (*gateway.AuthResult, error) {
 			return &gateway.AuthResult{
-				Connack: &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonAuthFail},
+				Connack: &frame.ConnackPacket{ReasonCode: frame.ReasonAuthFail},
 			}, nil
 		}))
 		if err := srv.Start(); err != nil {
@@ -91,7 +91,7 @@ func TestServer(t *testing.T) {
 
 	t.Run("successful wkproto activation runs before success connack", func(t *testing.T) {
 		handler := newTestHandler()
-		handler.onActivate = func(ctx *gateway.Context) (*wkframe.ConnackPacket, error) {
+		handler.onActivate = func(ctx *gateway.Context) (*frame.ConnackPacket, error) {
 			if got := ctx.Session.Value(gateway.SessionValueDeviceID); got != "d-1" {
 				t.Fatalf("expected device id before activation, got %#v", got)
 			}
@@ -101,10 +101,10 @@ func TestServer(t *testing.T) {
 		proto := newScriptedProtocol("wkproto")
 		proto.encodedBytes = []byte("connack-success")
 		proto.pushDecode(decodeResult{
-			frames: []wkframe.Frame{&wkframe.ConnectPacket{
+			frames: []frame.Frame{&frame.ConnectPacket{
 				UID:        "u1",
 				DeviceID:   "d-1",
-				DeviceFlag: wkframe.APP,
+				DeviceFlag: frame.APP,
 			}},
 			consumed: 1,
 		})
@@ -129,7 +129,7 @@ func TestServer(t *testing.T) {
 
 	t.Run("successful wkproto activation sees device id from generic auth result", func(t *testing.T) {
 		handler := newTestHandler()
-		handler.onActivate = func(ctx *gateway.Context) (*wkframe.ConnackPacket, error) {
+		handler.onActivate = func(ctx *gateway.Context) (*frame.ConnackPacket, error) {
 			if got := ctx.Session.Value(gateway.SessionValueDeviceID); got != "d-1" {
 				t.Fatalf("expected device id before activation, got %#v", got)
 			}
@@ -139,17 +139,17 @@ func TestServer(t *testing.T) {
 		proto := newScriptedProtocol("wkproto")
 		proto.encodedBytes = []byte("connack-success")
 		proto.pushDecode(decodeResult{
-			frames: []wkframe.Frame{&wkframe.ConnectPacket{
+			frames: []frame.Frame{&frame.ConnectPacket{
 				UID:        "u1",
 				DeviceID:   "d-1",
-				DeviceFlag: wkframe.APP,
+				DeviceFlag: frame.APP,
 			}},
 			consumed: 1,
 		})
 
-		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(*gateway.Context, *wkframe.ConnectPacket) (*gateway.AuthResult, error) {
+		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(*gateway.Context, *frame.ConnectPacket) (*gateway.AuthResult, error) {
 			return &gateway.AuthResult{
-				Connack: &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonSuccess},
+				Connack: &frame.ConnackPacket{ReasonCode: frame.ReasonSuccess},
 			}, nil
 		}))
 		if err := srv.Start(); err != nil {
@@ -168,26 +168,26 @@ func TestServer(t *testing.T) {
 
 	t.Run("wkproto activation failure writes retryable connack and closes", func(t *testing.T) {
 		handler := newTestHandler()
-		handler.onActivate = func(*gateway.Context) (*wkframe.ConnackPacket, error) {
+		handler.onActivate = func(*gateway.Context) (*frame.ConnackPacket, error) {
 			return nil, errors.New("activate boom")
 		}
 
 		proto := newScriptedProtocol("wkproto")
-		proto.encodeFn = func(_ session.Session, frame wkframe.Frame, _ session.OutboundMeta) ([]byte, error) {
-			connack, ok := frame.(*wkframe.ConnackPacket)
+		proto.encodeFn = func(_ session.Session, f frame.Frame, _ session.OutboundMeta) ([]byte, error) {
+			connack, ok := f.(*frame.ConnackPacket)
 			if !ok {
-				t.Fatalf("expected connack frame, got %T", frame)
+				t.Fatalf("expected connack frame, got %T", f)
 			}
-			if connack.ReasonCode != wkframe.ReasonSystemError {
+			if connack.ReasonCode != frame.ReasonSystemError {
 				t.Fatalf("expected retryable connack, got %v", connack.ReasonCode)
 			}
 			return []byte("connack-system"), nil
 		}
 		proto.pushDecode(decodeResult{
-			frames: []wkframe.Frame{&wkframe.ConnectPacket{
+			frames: []frame.Frame{&frame.ConnectPacket{
 				UID:        "u1",
 				DeviceID:   "d-1",
-				DeviceFlag: wkframe.APP,
+				DeviceFlag: frame.APP,
 			}},
 			consumed: 1,
 		})
@@ -212,33 +212,33 @@ func TestServer(t *testing.T) {
 
 	t.Run("wkproto activation normalizes zero reason override to success", func(t *testing.T) {
 		handler := newTestHandler()
-		handler.onActivate = func(*gateway.Context) (*wkframe.ConnackPacket, error) {
-			return &wkframe.ConnackPacket{}, nil
+		handler.onActivate = func(*gateway.Context) (*frame.ConnackPacket, error) {
+			return &frame.ConnackPacket{}, nil
 		}
 
 		proto := newScriptedProtocol("wkproto")
-		proto.encodeFn = func(_ session.Session, frame wkframe.Frame, _ session.OutboundMeta) ([]byte, error) {
-			connack, ok := frame.(*wkframe.ConnackPacket)
+		proto.encodeFn = func(_ session.Session, f frame.Frame, _ session.OutboundMeta) ([]byte, error) {
+			connack, ok := f.(*frame.ConnackPacket)
 			if !ok {
-				t.Fatalf("expected connack frame, got %T", frame)
+				t.Fatalf("expected connack frame, got %T", f)
 			}
-			if connack.ReasonCode != wkframe.ReasonSuccess {
+			if connack.ReasonCode != frame.ReasonSuccess {
 				t.Fatalf("expected normalized success connack, got %v", connack.ReasonCode)
 			}
 			return []byte("connack-success"), nil
 		}
 		proto.pushDecode(decodeResult{
-			frames: []wkframe.Frame{&wkframe.ConnectPacket{
+			frames: []frame.Frame{&frame.ConnectPacket{
 				UID:        "u1",
 				DeviceID:   "d-1",
-				DeviceFlag: wkframe.APP,
+				DeviceFlag: frame.APP,
 			}},
 			consumed: 1,
 		})
 
-		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(*gateway.Context, *wkframe.ConnectPacket) (*gateway.AuthResult, error) {
+		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(*gateway.Context, *frame.ConnectPacket) (*gateway.AuthResult, error) {
 			return &gateway.AuthResult{
-				Connack: &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonSuccess},
+				Connack: &frame.ConnackPacket{ReasonCode: frame.ReasonSuccess},
 			}, nil
 		}))
 		if err := srv.Start(); err != nil {
@@ -263,19 +263,19 @@ func TestServer(t *testing.T) {
 		proto := newScriptedProtocol("wkproto")
 		proto.encodedBytes = []byte("connack-success")
 		proto.pushDecode(decodeResult{
-			frames: []wkframe.Frame{&wkframe.ConnectPacket{
+			frames: []frame.Frame{&frame.ConnectPacket{
 				UID:   "u1",
 				Token: "good-token",
 			}},
 			consumed: 1,
 		})
 
-		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(ctx *gateway.Context, connect *wkframe.ConnectPacket) (*gateway.AuthResult, error) {
+		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.AuthenticatorFunc(func(ctx *gateway.Context, connect *frame.ConnectPacket) (*gateway.AuthResult, error) {
 			if connect.UID != "u1" {
 				t.Fatalf("unexpected uid: %q", connect.UID)
 			}
 			return &gateway.AuthResult{
-				Connack: &wkframe.ConnackPacket{ReasonCode: wkframe.ReasonSuccess},
+				Connack: &frame.ConnackPacket{ReasonCode: frame.ReasonSuccess},
 				SessionValues: map[string]any{
 					"uid": connect.UID,
 				},
@@ -291,7 +291,7 @@ func TestServer(t *testing.T) {
 		waitFor(t, func() bool { return len(conn.Writes()) == 1 })
 
 		proto.pushDecode(decodeResult{
-			frames:   []wkframe.Frame{&wkframe.PingPacket{}},
+			frames:   []frame.Frame{&frame.PingPacket{}},
 			consumed: 1,
 		})
 		transportFactory.MustData("listener-a", 1, []byte("p"))
@@ -309,7 +309,7 @@ func TestServer(t *testing.T) {
 		handler := newTestHandler()
 		proto := newScriptedProtocol("fake-proto")
 		proto.pushDecode(decodeResult{
-			frames:     []wkframe.Frame{&wkframe.PingPacket{}},
+			frames:     []frame.Frame{&frame.PingPacket{}},
 			consumed:   1,
 			tokenBatch: []string{""},
 		})
@@ -324,7 +324,7 @@ func TestServer(t *testing.T) {
 		transportFactory.MustData("listener-a", 1, []byte("x"))
 
 		waitFor(t, func() bool { return handler.frameCount() == 1 })
-		if _, ok := handler.frames()[0].(*wkframe.PingPacket); !ok {
+		if _, ok := handler.frames()[0].(*frame.PingPacket); !ok {
 			t.Fatalf("expected ping packet, got %T", handler.frames()[0])
 		}
 	})
@@ -334,12 +334,12 @@ func TestServer(t *testing.T) {
 		sendStarted := make(chan struct{})
 		releaseSend := make(chan struct{})
 		pingSeen := make(chan struct{})
-		handler.onFrame = func(_ *gateway.Context, frame wkframe.Frame) error {
-			switch frame.(type) {
-			case *wkframe.SendPacket:
+		handler.onFrame = func(_ *gateway.Context, f frame.Frame) error {
+			switch f.(type) {
+			case *frame.SendPacket:
 				close(sendStarted)
 				<-releaseSend
-			case *wkframe.PingPacket:
+			case *frame.PingPacket:
 				close(pingSeen)
 			}
 			return nil
@@ -347,9 +347,9 @@ func TestServer(t *testing.T) {
 
 		proto := newScriptedProtocol("fake-proto")
 		proto.pushDecode(decodeResult{
-			frames: []wkframe.Frame{&wkframe.SendPacket{
+			frames: []frame.Frame{&frame.SendPacket{
 				ChannelID:   "u2",
-				ChannelType: wkframe.ChannelTypePerson,
+				ChannelType: frame.ChannelTypePerson,
 				ClientSeq:   1,
 				ClientMsgNo: "m1",
 			}},
@@ -357,7 +357,7 @@ func TestServer(t *testing.T) {
 		})
 		proto.pushDecode(decodeResult{})
 		proto.pushDecode(decodeResult{
-			frames:   []wkframe.Frame{&wkframe.PingPacket{}},
+			frames:   []frame.Frame{&frame.PingPacket{}},
 			consumed: 1,
 		})
 
@@ -423,7 +423,7 @@ func TestServer(t *testing.T) {
 		proto := newScriptedProtocol("fake-proto")
 		proto.pushDecode(decodeResult{})
 		proto.pushDecode(decodeResult{
-			frames:   []wkframe.Frame{&wkframe.PingPacket{}},
+			frames:   []frame.Frame{&frame.PingPacket{}},
 			consumed: 2,
 		})
 
@@ -472,11 +472,11 @@ func TestServer(t *testing.T) {
 	t.Run("handler error closes when CloseOnHandlerError is true", func(t *testing.T) {
 		handlerErr := errors.New("handler boom")
 		handler := newTestHandler()
-		handler.onFrame = func(*gateway.Context, wkframe.Frame) error { return handlerErr }
+		handler.onFrame = func(*gateway.Context, frame.Frame) error { return handlerErr }
 
 		proto := newScriptedProtocol("fake-proto")
 		proto.pushDecode(decodeResult{
-			frames:   []wkframe.Frame{&wkframe.PingPacket{}},
+			frames:   []frame.Frame{&frame.PingPacket{}},
 			consumed: 1,
 		})
 
@@ -504,11 +504,11 @@ func TestServer(t *testing.T) {
 	t.Run("handler error stays open when CloseOnHandlerError is explicitly false", func(t *testing.T) {
 		handlerErr := errors.New("handler boom")
 		handler := newTestHandler()
-		handler.onFrame = func(*gateway.Context, wkframe.Frame) error { return handlerErr }
+		handler.onFrame = func(*gateway.Context, frame.Frame) error { return handlerErr }
 
 		proto := newScriptedProtocol("fake-proto")
 		proto.pushDecode(decodeResult{
-			frames:   []wkframe.Frame{&wkframe.PingPacket{}},
+			frames:   []frame.Frame{&frame.PingPacket{}},
 			consumed: 1,
 		})
 
@@ -539,7 +539,7 @@ func TestServer(t *testing.T) {
 		handler := newTestHandler()
 		proto := newScriptedProtocol("fake-proto")
 		proto.pushDecode(decodeResult{
-			frames:     []wkframe.Frame{&wkframe.PingPacket{}},
+			frames:     []frame.Frame{&frame.PingPacket{}},
 			consumed:   1,
 			tokenBatch: []string{"reply-1"},
 		})
@@ -604,10 +604,10 @@ func TestServer(t *testing.T) {
 		t.Run("queue full", func(t *testing.T) {
 			handler := newTestHandler()
 			handler.onOpen = func(ctx *gateway.Context) error {
-				if err := ctx.WriteFrame(&wkframe.PingPacket{}); err != nil {
+				if err := ctx.WriteFrame(&frame.PingPacket{}); err != nil {
 					return err
 				}
-				return ctx.WriteFrame(&wkframe.PingPacket{})
+				return ctx.WriteFrame(&frame.PingPacket{})
 			}
 
 			proto := newScriptedProtocol("fake-proto")
@@ -639,7 +639,7 @@ func TestServer(t *testing.T) {
 		t.Run("outbound overflow", func(t *testing.T) {
 			handler := newTestHandler()
 			handler.onOpen = func(ctx *gateway.Context) error {
-				return ctx.WriteFrame(&wkframe.PingPacket{})
+				return ctx.WriteFrame(&frame.PingPacket{})
 			}
 
 			proto := newScriptedProtocol("fake-proto")
@@ -907,7 +907,7 @@ func TestServerStop(t *testing.T) {
 		handler := newTestHandler()
 		proto := newScriptedProtocol("fake-proto")
 		proto.pushDecode(decodeResult{
-			frames:   []wkframe.Frame{&wkframe.PingPacket{}},
+			frames:   []frame.Frame{&frame.PingPacket{}},
 			consumed: 1,
 		})
 
@@ -964,14 +964,14 @@ func TestIdleTimeout(t *testing.T) {
 
 func TestWriteTimeout(t *testing.T) {
 	handler := newTestHandler()
-	handler.onFrame = func(ctx *gateway.Context, frame wkframe.Frame) error {
-		return ctx.WriteFrame(&wkframe.PingPacket{})
+	handler.onFrame = func(ctx *gateway.Context, f frame.Frame) error {
+		return ctx.WriteFrame(&frame.PingPacket{})
 	}
 
 	proto := newScriptedProtocol("fake-proto")
 	proto.encodedBytes = []byte("x")
 	proto.pushDecode(decodeResult{
-		frames:   []wkframe.Frame{&wkframe.PingPacket{}},
+		frames:   []frame.Frame{&frame.PingPacket{}},
 		consumed: 1,
 	})
 
@@ -1045,7 +1045,7 @@ func newServerWithListeners(t *testing.T, handler *testHandler, proto *scriptedP
 }
 
 type decodeResult struct {
-	frames     []wkframe.Frame
+	frames     []frame.Frame
 	consumed   int
 	err        error
 	tokenBatch []string
@@ -1058,7 +1058,7 @@ type scriptedProtocol struct {
 	decodeQueue  []decodeResult
 	tokenQueue   [][]string
 	encodedBytes []byte
-	encodeFn     func(session.Session, wkframe.Frame, session.OutboundMeta) ([]byte, error)
+	encodeFn     func(session.Session, frame.Frame, session.OutboundMeta) ([]byte, error)
 	encodeErr    error
 	openErr      error
 	closeErr     error
@@ -1071,7 +1071,7 @@ func newScriptedProtocol(name string) *scriptedProtocol {
 
 func (p *scriptedProtocol) Name() string { return p.name }
 
-func (p *scriptedProtocol) Decode(_ session.Session, _ []byte) ([]wkframe.Frame, int, error) {
+func (p *scriptedProtocol) Decode(_ session.Session, _ []byte) ([]frame.Frame, int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -1083,14 +1083,14 @@ func (p *scriptedProtocol) Decode(_ session.Session, _ []byte) ([]wkframe.Frame,
 	if len(step.tokenBatch) > 0 {
 		p.tokenQueue = append(p.tokenQueue, append([]string(nil), step.tokenBatch...))
 	}
-	return append([]wkframe.Frame(nil), step.frames...), step.consumed, step.err
+	return append([]frame.Frame(nil), step.frames...), step.consumed, step.err
 }
 
-func (p *scriptedProtocol) Encode(sess session.Session, frame wkframe.Frame, meta session.OutboundMeta) ([]byte, error) {
+func (p *scriptedProtocol) Encode(sess session.Session, f frame.Frame, meta session.OutboundMeta) ([]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.encodeFn != nil {
-		return p.encodeFn(sess, frame, meta)
+		return p.encodeFn(sess, f, meta)
 	}
 	if p.encodeErr != nil {
 		return nil, p.encodeErr
@@ -1137,12 +1137,12 @@ type testHandler struct {
 	listenerErrs   []testkit.ListenerError
 	sessionErrs    []error
 	closeReasonLog []gateway.CloseReason
-	framesSeen     []wkframe.Frame
+	framesSeen     []frame.Frame
 	contextCopies  []gateway.Context
 
 	onOpen     func(*gateway.Context) error
-	onActivate func(*gateway.Context) (*wkframe.ConnackPacket, error)
-	onFrame    func(*gateway.Context, wkframe.Frame) error
+	onActivate func(*gateway.Context) (*frame.ConnackPacket, error)
+	onFrame    func(*gateway.Context, frame.Frame) error
 	onClose    func(*gateway.Context) error
 }
 
@@ -1169,7 +1169,7 @@ func (h *testHandler) OnSessionOpen(ctx *gateway.Context) error {
 	return nil
 }
 
-func (h *testHandler) OnSessionActivate(ctx *gateway.Context) (*wkframe.ConnackPacket, error) {
+func (h *testHandler) OnSessionActivate(ctx *gateway.Context) (*frame.ConnackPacket, error) {
 	fn := h.onActivate
 	if fn == nil {
 		return nil, nil
@@ -1184,18 +1184,18 @@ func (h *testHandler) OnSessionActivate(ctx *gateway.Context) (*wkframe.ConnackP
 	return fn(ctx)
 }
 
-func (h *testHandler) OnFrame(ctx *gateway.Context, frame wkframe.Frame) error {
+func (h *testHandler) OnFrame(ctx *gateway.Context, f frame.Frame) error {
 	h.mu.Lock()
 	h.order = append(h.order, "frame")
 	if ctx != nil {
 		h.contextCopies = append(h.contextCopies, *ctx)
 		h.closeReasonLog = append(h.closeReasonLog, ctx.CloseReason)
 	}
-	h.framesSeen = append(h.framesSeen, frame)
+	h.framesSeen = append(h.framesSeen, f)
 	fn := h.onFrame
 	h.mu.Unlock()
 	if fn != nil {
-		return fn(ctx, frame)
+		return fn(ctx, f)
 	}
 	return nil
 }
@@ -1244,10 +1244,10 @@ func (h *testHandler) closeCount() int {
 	return count
 }
 
-func (h *testHandler) frames() []wkframe.Frame {
+func (h *testHandler) frames() []frame.Frame {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]wkframe.Frame(nil), h.framesSeen...)
+	return append([]frame.Frame(nil), h.framesSeen...)
 }
 
 func (h *testHandler) closeReasons() []gateway.CloseReason {

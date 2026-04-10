@@ -5,7 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 var (
@@ -20,7 +20,7 @@ type Session interface {
 	RemoteAddr() string
 	LocalAddr() string
 
-	WriteFrame(frame wkframe.Frame, opts ...WriteOption) error
+	WriteFrame(f frame.Frame, opts ...WriteOption) error
 	Close() error
 
 	SetValue(key string, value any)
@@ -36,7 +36,7 @@ type WriteOption interface {
 	apply(*OutboundMeta)
 }
 
-type WriteFrameFn func(frame wkframe.Frame, meta OutboundMeta) error
+type WriteFrameFn func(f frame.Frame, meta OutboundMeta) error
 
 type OutboundMeta struct {
 	ReplyToken string
@@ -138,7 +138,7 @@ func (s *session) LocalAddr() string {
 	return s.localAddr
 }
 
-func (s *session) WriteFrame(frame wkframe.Frame, opts ...WriteOption) error {
+func (s *session) WriteFrame(f frame.Frame, opts ...WriteOption) error {
 	if s == nil {
 		return ErrSessionClosed
 	}
@@ -160,7 +160,7 @@ func (s *session) WriteFrame(frame wkframe.Frame, opts ...WriteOption) error {
 	if s.writeFrameFn == nil {
 		return nil
 	}
-	return s.writeFrameFn(frame, meta)
+	return s.writeFrameFn(f, meta)
 }
 
 func (s *session) Close() error {

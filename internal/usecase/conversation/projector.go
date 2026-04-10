@@ -8,9 +8,9 @@ import (
 	"time"
 
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 type Projector interface {
@@ -41,14 +41,14 @@ type projector struct {
 	async              func(func())
 	wakeupFlushMu      sync.Mutex
 
-	mu      sync.RWMutex
-	hot     map[metadb.ConversationKey]metadb.ChannelUpdateLog
-	dirty   map[metadb.ConversationKey]struct{}
-	wakeups map[metadb.ConversationKey]channellog.Message
+	mu            sync.RWMutex
+	hot           map[metadb.ConversationKey]metadb.ChannelUpdateLog
+	dirty         map[metadb.ConversationKey]struct{}
+	wakeups       map[metadb.ConversationKey]channellog.Message
 	wakeupRunning bool
-	running bool
-	stopCh  chan struct{}
-	doneCh  chan struct{}
+	running       bool
+	stopCh        chan struct{}
+	doneCh        chan struct{}
 }
 
 func NewProjector(opts ProjectorOptions) Projector {
@@ -310,7 +310,7 @@ func (p *projector) touchConversationActive(ctx context.Context, msg channellog.
 		return nil
 	}
 
-	if msg.ChannelType == wkframe.ChannelTypePerson {
+	if msg.ChannelType == frame.ChannelTypePerson {
 		patches, ok := personConversationActivePatches(msg)
 		if !ok {
 			return nil
@@ -369,7 +369,7 @@ func (p *projector) flushWakeups(ctx context.Context) error {
 	personPatches := make([]metadb.UserConversationActivePatch, 0, len(pending)*2)
 	personKeys := make([]metadb.ConversationKey, 0, len(pending))
 	for key, msg := range pending {
-		if msg.ChannelType == wkframe.ChannelTypePerson {
+		if msg.ChannelType == frame.ChannelTypePerson {
 			patches, ok := personConversationActivePatches(msg)
 			if !ok {
 				p.clearWakeupIfNotNewer(key, msg)

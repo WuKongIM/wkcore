@@ -7,9 +7,9 @@ import (
 	"time"
 
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 type syncCandidate struct {
@@ -547,7 +547,7 @@ func (h *retainedIncrementalViewHeap) Pop() any {
 }
 
 func displayChannelID(uid string, key ConversationKey) string {
-	if key.ChannelType != wkframe.ChannelTypePerson {
+	if key.ChannelType != frame.ChannelTypePerson {
 		return key.ChannelID
 	}
 	left, right, err := runtimechannelid.DecodePersonChannel(key.ChannelID)

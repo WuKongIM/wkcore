@@ -8,7 +8,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -26,8 +26,8 @@ func TestActivateRegistersLocalRouteAndRollsBackWhenAuthorityRegisterFails(t *te
 	err := app.Activate(context.Background(), ActivateCommand{
 		UID:         "u1",
 		DeviceID:    "d1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Listener:    "tcp",
 		ConnectedAt: time.Unix(200, 0),
 		Session:     session.New(session.Config{ID: 11, Listener: "tcp"}),
@@ -66,8 +66,8 @@ func TestActivateRollsBackNewRouteWhenRouteActionAckFails(t *testing.T) {
 	err := app.Activate(context.Background(), ActivateCommand{
 		UID:         "u1",
 		DeviceID:    "d1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Listener:    "tcp",
 		ConnectedAt: time.Unix(200, 0),
 		Session:     session.New(session.Config{ID: 11, Listener: "tcp"}),
@@ -87,8 +87,8 @@ func TestDeactivateRemovesLocalRouteAndBestEffortUnregistersAuthority(t *testing
 		SessionID:   11,
 		UID:         "u1",
 		DeviceID:    "d1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		GroupID:     1,
 		State:       online.LocalRouteStateActive,
 		Listener:    "tcp",
@@ -123,8 +123,8 @@ func TestApplyRouteActionMarksRouteClosingBeforeAck(t *testing.T) {
 		SessionID:   11,
 		UID:         "u1",
 		DeviceID:    "d1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		GroupID:     1,
 		State:       online.LocalRouteStateActive,
 		Listener:    "tcp",
@@ -160,8 +160,8 @@ func TestApplyRouteActionRejectsMismatchedActiveRoute(t *testing.T) {
 		SessionID:   11,
 		UID:         "u1",
 		DeviceID:    "d1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		GroupID:     1,
 		State:       online.LocalRouteStateActive,
 		Listener:    "tcp",

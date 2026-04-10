@@ -3,7 +3,7 @@ package gateway
 import (
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,5 +16,5 @@ func TestHandlerOnFrameReturnsUnsupportedFrameError(t *testing.T) {
 }
 
 type unsupportedFrame struct {
-	wkframe.Framer
+	frame.Framer
 }

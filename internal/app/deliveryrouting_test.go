@@ -11,8 +11,8 @@ import (
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -281,7 +281,7 @@ func TestAsyncCommittedDispatcherSubmitsToConversationProjector(t *testing.T) {
 
 	msg := channellog.Message{
 		ChannelID:   "u1@u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageID:   99,
 		MessageSeq:  8,
 		ClientMsgNo: "c1",
@@ -313,7 +313,7 @@ func TestAsyncCommittedDispatcherPrefersLocalDeliveryWithoutOwnerLookup(t *testi
 
 	msg := channellog.Message{
 		ChannelID:   "u1@u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageID:   100,
 		MessageSeq:  9,
 		ClientMsgNo: "c2",
@@ -341,7 +341,7 @@ func TestBuildRealtimeRecvPacketUsesDurableTimestampAndPersonChannelView(t *test
 		ClientMsgNo: "m1",
 		Timestamp:   123,
 		ChannelID:   "u1@u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		Topic:       "chat",
 		FromUID:     "u1",
 		Payload:     []byte("hello"),
@@ -349,7 +349,7 @@ func TestBuildRealtimeRecvPacketUsesDurableTimestampAndPersonChannelView(t *test
 
 	require.Equal(t, int32(123), packet.Timestamp)
 	require.Equal(t, "u1", packet.ChannelID)
-	require.Equal(t, wkframe.ChannelTypePerson, packet.ChannelType)
+	require.Equal(t, frame.ChannelTypePerson, packet.ChannelType)
 	require.Equal(t, "u1", packet.FromUID)
 	require.Equal(t, []byte("hello"), packet.Payload)
 }

@@ -4,7 +4,7 @@ import (
 	"sync"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 type ListenerError struct {
@@ -20,7 +20,7 @@ type RecordingHandler struct {
 	SessionErrors  []error
 	CloseReasons   []gateway.CloseReason
 	ReplyTokens    []string
-	Frames         []wkframe.Frame
+	Frames         []frame.Frame
 	Contexts       []gateway.Context
 
 	OnSessionOpenErr  error
@@ -59,7 +59,7 @@ func (h *RecordingHandler) OnSessionOpen(ctx *gateway.Context) error {
 	return h.OnSessionOpenErr
 }
 
-func (h *RecordingHandler) OnFrame(ctx *gateway.Context, frame wkframe.Frame) error {
+func (h *RecordingHandler) OnFrame(ctx *gateway.Context, f frame.Frame) error {
 	if h == nil {
 		return nil
 	}
@@ -73,7 +73,7 @@ func (h *RecordingHandler) OnFrame(ctx *gateway.Context, frame wkframe.Frame) er
 		h.ReplyTokens = append(h.ReplyTokens, ctx.ReplyToken)
 		h.CloseReasons = append(h.CloseReasons, ctx.CloseReason)
 	}
-	h.Frames = append(h.Frames, frame)
+	h.Frames = append(h.Frames, f)
 	return h.OnFrameErr
 }
 

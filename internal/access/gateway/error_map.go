@@ -5,28 +5,28 @@ import (
 	"errors"
 
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
-func mapSendErrorReason(err error) (wkframe.ReasonCode, bool) {
+func mapSendErrorReason(err error) (frame.ReasonCode, bool) {
 	switch {
 	case errors.Is(err, channellog.ErrChannelNotFound):
-		return wkframe.ReasonChannelNotExist, true
+		return frame.ReasonChannelNotExist, true
 	case errors.Is(err, channellog.ErrChannelDeleting):
-		return wkframe.ReasonChannelDeleting, true
+		return frame.ReasonChannelDeleting, true
 	case errors.Is(err, channellog.ErrProtocolUpgradeRequired):
-		return wkframe.ReasonProtocolUpgradeRequired, true
+		return frame.ReasonProtocolUpgradeRequired, true
 	case errors.Is(err, channellog.ErrIdempotencyConflict):
-		return wkframe.ReasonIdempotencyConflict, true
+		return frame.ReasonIdempotencyConflict, true
 	case errors.Is(err, channellog.ErrMessageSeqExhausted):
-		return wkframe.ReasonMessageSeqExhausted, true
+		return frame.ReasonMessageSeqExhausted, true
 	case errors.Is(err, channellog.ErrStaleMeta), errors.Is(err, channellog.ErrNotLeader):
-		return wkframe.ReasonNodeNotMatch, true
+		return frame.ReasonNodeNotMatch, true
 	case errors.Is(err, runtimechannelid.ErrInvalidPersonChannel):
-		return wkframe.ReasonChannelIDError, true
+		return frame.ReasonChannelIDError, true
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return wkframe.ReasonSystemError, true
+		return frame.ReasonSystemError, true
 	default:
 		return 0, false
 	}

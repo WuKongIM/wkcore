@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	conversationusecase "github.com/WuKongIM/WuKongIM/internal/usecase/conversation"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
 	"github.com/stretchr/testify/require"
 )
 

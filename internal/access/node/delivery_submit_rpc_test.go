@@ -6,8 +6,8 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,7 +31,7 @@ func TestSubmitCommittedMessageRPCRoutesToOwnerRuntime(t *testing.T) {
 	client := NewClient(node1)
 	err := client.SubmitCommitted(context.Background(), 2, channellog.Message{
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageID:   88,
 		MessageSeq:  9,
 		FromUID:     "u1",
@@ -42,7 +42,7 @@ func TestSubmitCommittedMessageRPCRoutesToOwnerRuntime(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []channellog.Message{{
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageID:   88,
 		MessageSeq:  9,
 		FromUID:     "u1",

@@ -9,8 +9,8 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/protocol"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	pkgjsonrpc "github.com/WuKongIM/WuKongIM/pkg/protocol/wkjsonrpc"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+	pkgjsonrpc "github.com/WuKongIM/WuKongIM/pkg/protocol/jsonrpc"
 )
 
 const Name = "jsonrpc"
@@ -35,7 +35,7 @@ func (a *Adapter) Name() string {
 	return Name
 }
 
-func (a *Adapter) Decode(sess session.Session, in []byte) ([]wkframe.Frame, int, error) {
+func (a *Adapter) Decode(sess session.Session, in []byte) ([]frame.Frame, int, error) {
 	if a == nil || len(in) == 0 {
 		return nil, 0, nil
 	}
@@ -50,22 +50,22 @@ func (a *Adapter) Decode(sess session.Session, in []byte) ([]wkframe.Frame, int,
 		return nil, 0, err
 	}
 
-	frame, replyToken, err := pkgjsonrpc.ToFrame(msg)
+	f, replyToken, err := pkgjsonrpc.ToFrame(msg)
 	if err != nil {
 		return nil, 0, err
 	}
 	if replyToken != "" {
 		a.pushReplyToken(sess, replyToken)
 	}
-	return []wkframe.Frame{frame}, int(decoder.InputOffset()), nil
+	return []frame.Frame{f}, int(decoder.InputOffset()), nil
 }
 
-func (a *Adapter) Encode(_ session.Session, frame wkframe.Frame, meta session.OutboundMeta) ([]byte, error) {
+func (a *Adapter) Encode(_ session.Session, f frame.Frame, meta session.OutboundMeta) ([]byte, error) {
 	if a == nil {
 		return nil, nil
 	}
 
-	msg, err := pkgjsonrpc.FromFrame(meta.ReplyToken, frame)
+	msg, err := pkgjsonrpc.FromFrame(meta.ReplyToken, f)
 	if err != nil {
 		return nil, err
 	}

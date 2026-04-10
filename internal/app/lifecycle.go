@@ -5,10 +5,10 @@ import (
 	"errors"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
-	"github.com/WuKongIM/WuKongIM/pkg/replication/isrnodetransport"
-	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
+	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
+	isrnodetransport "github.com/WuKongIM/WuKongIM/pkg/channel/transport"
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
+	"github.com/WuKongIM/WuKongIM/pkg/transport"
 )
 
 const (
@@ -152,8 +152,8 @@ func (a *App) startChannelMetaSync() error {
 		if dialTimeout <= 0 {
 			dialTimeout = defaultDataPlaneDialTimeout
 		}
-		a.dataPlanePool = nodetransport.NewPool(discovery, poolSize, dialTimeout)
-		a.dataPlaneClient = nodetransport.NewClient(a.dataPlanePool)
+		a.dataPlanePool = transport.NewPool(discovery, poolSize, dialTimeout)
+		a.dataPlaneClient = transport.NewClient(a.dataPlanePool)
 		adapter, err := isrnodetransport.New(isrnodetransport.Options{
 			LocalNode:          isr.NodeID(a.cfg.Node.ID),
 			Client:             a.dataPlaneClient,

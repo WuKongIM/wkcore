@@ -13,9 +13,9 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,7 +29,7 @@ func TestHandlerOnSessionActivateCallsPresenceActivate(t *testing.T) {
 	ctx.Session.SetValue(coregateway.SessionValueDeviceID, "dev-1")
 
 	activator, ok := any(handler).(interface {
-		OnSessionActivate(*coregateway.Context) (*wkframe.ConnackPacket, error)
+		OnSessionActivate(*coregateway.Context) (*frame.ConnackPacket, error)
 	})
 	require.True(t, ok, "handler must implement session activation hook")
 
@@ -40,8 +40,8 @@ func TestHandlerOnSessionActivateCallsPresenceActivate(t *testing.T) {
 	require.Equal(t, presence.ActivateCommand{
 		UID:         "u1",
 		DeviceID:    "dev-1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Listener:    "tcp",
 		ConnectedAt: fixedNow,
 		Session:     ctx.Session,
@@ -80,7 +80,7 @@ func TestHandlerOnSessionActivateRejectsUnauthenticatedContext(t *testing.T) {
 	handler := newHandlerWithPresence(t, &fakePresenceUsecase{}, Options{})
 
 	activator, ok := any(handler).(interface {
-		OnSessionActivate(*coregateway.Context) (*wkframe.ConnackPacket, error)
+		OnSessionActivate(*coregateway.Context) (*frame.ConnackPacket, error)
 	})
 	require.True(t, ok, "handler must implement session activation hook")
 
@@ -115,7 +115,7 @@ func TestHandlerOnFrameSendMapsCommandAndWritesSendack(t *testing.T) {
 			sendResult: message.SendResult{
 				MessageID:  99,
 				MessageSeq: uint64(^uint32(0)) + 7,
-				Reason:     wkframe.ReasonSuccess,
+				Reason:     frame.ReasonSuccess,
 			},
 		},
 	})
@@ -126,13 +126,13 @@ func TestHandlerOnFrameSendMapsCommandAndWritesSendack(t *testing.T) {
 		ReplyToken:     "reply-1",
 		RequestContext: context.Background(),
 	}
-	pkt := &wkframe.SendPacket{
-		Framer:      wkframe.Framer{RedDot: true},
+	pkt := &frame.SendPacket{
+		Framer:      frame.Framer{RedDot: true},
 		Setting:     1,
 		MsgKey:      "key-1",
 		Expire:      10,
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		Topic:       "chat",
 		Payload:     []byte("hi"),
 		ClientSeq:   13,
@@ -147,7 +147,7 @@ func TestHandlerOnFrameSendMapsCommandAndWritesSendack(t *testing.T) {
 	require.Len(t, msgs.sendCommands, 1)
 	require.Equal(t, "u1", msgs.sendCommands[0].FromUID)
 	require.Equal(t, "u2@u1", msgs.sendCommands[0].ChannelID)
-	require.Equal(t, wkframe.ChannelTypePerson, msgs.sendCommands[0].ChannelType)
+	require.Equal(t, frame.ChannelTypePerson, msgs.sendCommands[0].ChannelType)
 	require.Equal(t, uint64(13), msgs.sendCommands[0].ClientSeq)
 	require.Equal(t, "m4", msgs.sendCommands[0].ClientMsgNo)
 	require.Equal(t, "stream-1", msgs.sendCommands[0].StreamNo)
@@ -156,8 +156,8 @@ func TestHandlerOnFrameSendMapsCommandAndWritesSendack(t *testing.T) {
 	require.True(t, msgs.sendCommands[0].Framer.RedDot)
 
 	write := sender.Writes()[0]
-	ack := requireSendackPacket(t, write.frame)
-	require.Equal(t, wkframe.ReasonSuccess, ack.ReasonCode)
+	ack := requireSendackPacket(t, write.f)
+	require.Equal(t, frame.ReasonSuccess, ack.ReasonCode)
 	require.Equal(t, int64(99), ack.MessageID)
 	require.Equal(t, uint64(^uint32(0))+7, ack.MessageSeq)
 	require.Equal(t, uint64(13), ack.ClientSeq)
@@ -172,7 +172,7 @@ func TestHandlerOnFrameSendRecanonicalizesPrecomposedPersonChannel(t *testing.T)
 		sendResult: message.SendResult{
 			MessageID:  77,
 			MessageSeq: 9,
-			Reason:     wkframe.ReasonSuccess,
+			Reason:     frame.ReasonSuccess,
 		},
 	}
 	handler := New(Options{Messages: msgs})
@@ -184,9 +184,9 @@ func TestHandlerOnFrameSendRecanonicalizesPrecomposedPersonChannel(t *testing.T)
 		RequestContext: context.Background(),
 	}
 
-	require.NoError(t, handler.OnFrame(ctx, &wkframe.SendPacket{
+	require.NoError(t, handler.OnFrame(ctx, &frame.SendPacket{
 		ChannelID:   "u1@u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		ClientSeq:   1,
 		ClientMsgNo: "m-pre",
 	}))
@@ -208,17 +208,17 @@ func TestHandlerOnFrameSendRejectsInvalidPersonChannelID(t *testing.T) {
 		RequestContext: context.Background(),
 	}
 
-	require.NoError(t, handler.OnFrame(ctx, &wkframe.SendPacket{
+	require.NoError(t, handler.OnFrame(ctx, &frame.SendPacket{
 		ChannelID:   "u3@u4",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		ClientSeq:   2,
 		ClientMsgNo: "m-invalid",
 	}))
 
 	require.Empty(t, msgs.sendCommands)
 	require.Len(t, sender.Writes(), 1)
-	ack := requireSendackPacket(t, sender.Writes()[0].frame)
-	require.Equal(t, wkframe.ReasonChannelIDError, ack.ReasonCode)
+	ack := requireSendackPacket(t, sender.Writes()[0].f)
+	require.Equal(t, frame.ReasonChannelIDError, ack.ReasonCode)
 	require.Equal(t, uint64(2), ack.ClientSeq)
 	require.Equal(t, "m-invalid", ack.ClientMsgNo)
 }
@@ -238,9 +238,9 @@ func TestHandlerOnFrameSendPropagatesRequestContext(t *testing.T) {
 		ReplyToken:     "reply-ctx",
 		RequestContext: reqCtx,
 	}
-	pkt := &wkframe.SendPacket{
+	pkt := &frame.SendPacket{
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		ClientSeq:   33,
 		ClientMsgNo: "ctx-1",
 	}
@@ -271,17 +271,17 @@ func TestHandlerOnFrameSendMapsCanceledRequestContextToSendack(t *testing.T) {
 		RequestContext: reqCtx,
 	}
 
-	err := handler.OnFrame(ctx, &wkframe.SendPacket{
+	err := handler.OnFrame(ctx, &frame.SendPacket{
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		ClientSeq:   34,
 		ClientMsgNo: "ctx-canceled",
 	})
 
 	require.NoError(t, err)
 	require.Len(t, sender.Writes(), 1)
-	ack := requireSendackPacket(t, sender.Writes()[0].frame)
-	require.Equal(t, wkframe.ReasonSystemError, ack.ReasonCode)
+	ack := requireSendackPacket(t, sender.Writes()[0].f)
+	require.Equal(t, frame.ReasonSystemError, ack.ReasonCode)
 	require.Equal(t, uint64(34), ack.ClientSeq)
 	require.Equal(t, "ctx-canceled", ack.ClientMsgNo)
 	require.Len(t, msgs.sendContexts, 1)
@@ -292,37 +292,37 @@ func TestHandlerOnFrameSendMapsChannelclusterErrorsToSendack(t *testing.T) {
 	tests := []struct {
 		name   string
 		err    error
-		reason wkframe.ReasonCode
+		reason frame.ReasonCode
 	}{
 		{
 			name:   "channel deleting",
 			err:    channellog.ErrChannelDeleting,
-			reason: wkframe.ReasonChannelDeleting,
+			reason: frame.ReasonChannelDeleting,
 		},
 		{
 			name:   "protocol upgrade required",
 			err:    channellog.ErrProtocolUpgradeRequired,
-			reason: wkframe.ReasonProtocolUpgradeRequired,
+			reason: frame.ReasonProtocolUpgradeRequired,
 		},
 		{
 			name:   "idempotency conflict",
 			err:    channellog.ErrIdempotencyConflict,
-			reason: wkframe.ReasonIdempotencyConflict,
+			reason: frame.ReasonIdempotencyConflict,
 		},
 		{
 			name:   "message seq exhausted",
 			err:    channellog.ErrMessageSeqExhausted,
-			reason: wkframe.ReasonMessageSeqExhausted,
+			reason: frame.ReasonMessageSeqExhausted,
 		},
 		{
 			name:   "stale meta",
 			err:    channellog.ErrStaleMeta,
-			reason: wkframe.ReasonNodeNotMatch,
+			reason: frame.ReasonNodeNotMatch,
 		},
 		{
 			name:   "not leader",
 			err:    channellog.ErrNotLeader,
-			reason: wkframe.ReasonNodeNotMatch,
+			reason: frame.ReasonNodeNotMatch,
 		},
 	}
 
@@ -340,9 +340,9 @@ func TestHandlerOnFrameSendMapsChannelclusterErrorsToSendack(t *testing.T) {
 				ReplyToken:     "reply-2",
 				RequestContext: context.Background(),
 			}
-			pkt := &wkframe.SendPacket{
+			pkt := &frame.SendPacket{
 				ChannelID:   "u2",
-				ChannelType: wkframe.ChannelTypePerson,
+				ChannelType: frame.ChannelTypePerson,
 				ClientSeq:   13,
 				ClientMsgNo: "m4",
 			}
@@ -350,7 +350,7 @@ func TestHandlerOnFrameSendMapsChannelclusterErrorsToSendack(t *testing.T) {
 			require.NoError(t, handler.OnFrame(ctx, pkt))
 			require.Len(t, sender.Writes(), 1)
 
-			ack := requireSendackPacket(t, sender.Writes()[0].frame)
+			ack := requireSendackPacket(t, sender.Writes()[0].f)
 			require.Equal(t, tt.reason, ack.ReasonCode)
 			require.Zero(t, ack.MessageID)
 			require.Zero(t, ack.MessageSeq)
@@ -364,8 +364,8 @@ func TestHandlerOnFrameRecvackRoutesToMessageUsecase(t *testing.T) {
 	msgs := &fakeMessageUsecase{}
 	handler := New(Options{Messages: msgs})
 
-	err := handler.OnFrame(newAuthedContext(t, 1, "u1"), &wkframe.RecvackPacket{
-		Framer:     wkframe.Framer{RedDot: true},
+	err := handler.OnFrame(newAuthedContext(t, 1, "u1"), &frame.RecvackPacket{
+		Framer:     frame.Framer{RedDot: true},
 		MessageID:  88,
 		MessageSeq: 9,
 	})
@@ -383,7 +383,7 @@ func TestHandlerOnFrameRecvackRoutesToMessageUsecase(t *testing.T) {
 func TestHandlerOnFramePingIsNoop(t *testing.T) {
 	handler := New(Options{Messages: &fakeMessageUsecase{}})
 
-	err := handler.OnFrame(newAuthedContext(t, 1, "u1"), &wkframe.PingPacket{})
+	err := handler.OnFrame(newAuthedContext(t, 1, "u1"), &frame.PingPacket{})
 
 	require.NoError(t, err)
 }
@@ -400,19 +400,19 @@ func TestNewSharesOnlineRegistryWithInjectedMessageApp(t *testing.T) {
 
 	sender := newOptionRecordingSession(1, "tcp")
 	sender.SetValue(coregateway.SessionValueUID, "u1")
-	sender.SetValue(coregateway.SessionValueDeviceFlag, wkframe.APP)
-	sender.SetValue(coregateway.SessionValueDeviceLevel, wkframe.DeviceLevelMaster)
+	sender.SetValue(coregateway.SessionValueDeviceFlag, frame.APP)
+	sender.SetValue(coregateway.SessionValueDeviceLevel, frame.DeviceLevelMaster)
 
 	recipient := newOptionRecordingSession(2, "tcp")
 	recipient.SetValue(coregateway.SessionValueUID, "u2")
-	recipient.SetValue(coregateway.SessionValueDeviceFlag, wkframe.APP)
-	recipient.SetValue(coregateway.SessionValueDeviceLevel, wkframe.DeviceLevelMaster)
+	recipient.SetValue(coregateway.SessionValueDeviceFlag, frame.APP)
+	recipient.SetValue(coregateway.SessionValueDeviceLevel, frame.DeviceLevelMaster)
 
 	require.NoError(t, msgApp.OnlineRegistry().Register(online.OnlineConn{
 		SessionID:   sender.ID(),
 		UID:         "u1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Listener:    "tcp",
 		ConnectedAt: fixedGatewayNow,
 		Session:     sender,
@@ -420,8 +420,8 @@ func TestNewSharesOnlineRegistryWithInjectedMessageApp(t *testing.T) {
 	require.NoError(t, msgApp.OnlineRegistry().Register(online.OnlineConn{
 		SessionID:   recipient.ID(),
 		UID:         "u2",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Listener:    "tcp",
 		ConnectedAt: fixedGatewayNow,
 		Session:     recipient,
@@ -433,9 +433,9 @@ func TestNewSharesOnlineRegistryWithInjectedMessageApp(t *testing.T) {
 		Session:        sender,
 		Listener:       "tcp",
 		RequestContext: context.Background(),
-	}, &wkframe.SendPacket{
+	}, &frame.SendPacket{
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		Payload:     []byte("hi"),
 		ClientSeq:   1,
 		ClientMsgNo: "m1",
@@ -443,8 +443,8 @@ func TestNewSharesOnlineRegistryWithInjectedMessageApp(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, sender.Writes(), 1)
-	ack := requireSendackPacket(t, sender.Writes()[0].frame)
-	require.Equal(t, wkframe.ReasonSuccess, ack.ReasonCode)
+	ack := requireSendackPacket(t, sender.Writes()[0].f)
+	require.Equal(t, frame.ReasonSuccess, ack.ReasonCode)
 	require.Empty(t, recipient.Writes())
 }
 
@@ -456,8 +456,8 @@ func newAuthedContext(t *testing.T, sessionID uint64, uid string) *coregateway.C
 		Listener: "tcp",
 	})
 	sess.SetValue(coregateway.SessionValueUID, uid)
-	sess.SetValue(coregateway.SessionValueDeviceFlag, wkframe.APP)
-	sess.SetValue(coregateway.SessionValueDeviceLevel, wkframe.DeviceLevelMaster)
+	sess.SetValue(coregateway.SessionValueDeviceFlag, frame.APP)
+	sess.SetValue(coregateway.SessionValueDeviceLevel, frame.DeviceLevelMaster)
 
 	return &coregateway.Context{
 		Session:        sess,
@@ -479,19 +479,19 @@ func newHandlerWithPresence(t *testing.T, presenceUsecase *fakePresenceUsecase, 
 	return New(opts)
 }
 
-func requireSendackPacket(t *testing.T, frame wkframe.Frame) *wkframe.SendackPacket {
+func requireSendackPacket(t *testing.T, f frame.Frame) *frame.SendackPacket {
 	t.Helper()
 
-	ack, ok := frame.(*wkframe.SendackPacket)
-	require.True(t, ok, "expected *wkframe.SendackPacket, got %T", frame)
+	ack, ok := f.(*frame.SendackPacket)
+	require.True(t, ok, "expected *frame.SendackPacket, got %T", f)
 	return ack
 }
 
-func requireRecvPacket(t *testing.T, frame wkframe.Frame) *wkframe.RecvPacket {
+func requireRecvPacket(t *testing.T, f frame.Frame) *frame.RecvPacket {
 	t.Helper()
 
-	recv, ok := frame.(*wkframe.RecvPacket)
-	require.True(t, ok, "expected *wkframe.RecvPacket, got %T", frame)
+	recv, ok := f.(*frame.RecvPacket)
+	require.True(t, ok, "expected *frame.RecvPacket, got %T", f)
 	return recv
 }
 
@@ -546,8 +546,8 @@ func (f *fakePresenceUsecase) Deactivate(_ context.Context, cmd presence.Deactiv
 }
 
 type outboundWrite struct {
-	frame wkframe.Frame
-	meta  gatewaysession.OutboundMeta
+	f    frame.Frame
+	meta gatewaysession.OutboundMeta
 }
 
 type optionRecordingSession struct {
@@ -561,10 +561,10 @@ func newOptionRecordingSession(id uint64, listener string) *optionRecordingSessi
 	recorder.Session = gatewaysession.New(gatewaysession.Config{
 		ID:       id,
 		Listener: listener,
-		WriteFrameFn: func(frame wkframe.Frame, meta gatewaysession.OutboundMeta) error {
+		WriteFrameFn: func(f frame.Frame, meta gatewaysession.OutboundMeta) error {
 			recorder.mu.Lock()
 			defer recorder.mu.Unlock()
-			recorder.writes = append(recorder.writes, outboundWrite{frame: frame, meta: meta})
+			recorder.writes = append(recorder.writes, outboundWrite{f: f, meta: meta})
 			return nil
 		},
 	})

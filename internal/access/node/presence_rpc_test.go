@@ -8,10 +8,10 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
-	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
-	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
+	"github.com/WuKongIM/WuKongIM/pkg/group/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+	"github.com/WuKongIM/WuKongIM/pkg/transport"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,8 +38,8 @@ func TestPresenceRPCClientFollowsNotLeaderRedirect(t *testing.T) {
 			BootID:      22,
 			SessionID:   100,
 			DeviceID:    "d1",
-			DeviceFlag:  uint8(wkframe.APP),
-			DeviceLevel: uint8(wkframe.DeviceLevelMaster),
+			DeviceFlag:  uint8(frame.APP),
+			DeviceLevel: uint8(frame.DeviceLevelMaster),
 			Listener:    "tcp",
 		},
 	})
@@ -71,8 +71,8 @@ func TestPresenceRPCRegisterRoundTrip(t *testing.T) {
 			BootID:      11,
 			SessionID:   100,
 			DeviceID:    "d1",
-			DeviceFlag:  uint8(wkframe.APP),
-			DeviceLevel: uint8(wkframe.DeviceLevelMaster),
+			DeviceFlag:  uint8(frame.APP),
+			DeviceLevel: uint8(frame.DeviceLevelMaster),
 			Listener:    "tcp",
 		},
 	})
@@ -102,8 +102,8 @@ func TestPresenceRPCUnregisterRoundTrip(t *testing.T) {
 		BootID:      11,
 		SessionID:   100,
 		DeviceID:    "d1",
-		DeviceFlag:  uint8(wkframe.APP),
-		DeviceLevel: uint8(wkframe.DeviceLevelMaster),
+		DeviceFlag:  uint8(frame.APP),
+		DeviceLevel: uint8(frame.DeviceLevelMaster),
 		Listener:    "tcp",
 	}
 	_, err := client.RegisterAuthoritative(context.Background(), presence.RegisterAuthoritativeCommand{
@@ -147,8 +147,8 @@ func TestPresenceRPCReplayRoundTrip(t *testing.T) {
 			BootID:      11,
 			SessionID:   100,
 			DeviceID:    "d1",
-			DeviceFlag:  uint8(wkframe.APP),
-			DeviceLevel: uint8(wkframe.DeviceLevelMaster),
+			DeviceFlag:  uint8(frame.APP),
+			DeviceLevel: uint8(frame.DeviceLevelMaster),
 			Listener:    "tcp",
 		}},
 	})
@@ -209,8 +209,8 @@ func TestPresenceRPCEndpointsByUIDsRoundTrip(t *testing.T) {
 			BootID:      11,
 			SessionID:   100,
 			DeviceID:    "d1",
-			DeviceFlag:  uint8(wkframe.APP),
-			DeviceLevel: uint8(wkframe.DeviceLevelMaster),
+			DeviceFlag:  uint8(frame.APP),
+			DeviceLevel: uint8(frame.DeviceLevelMaster),
 			Listener:    "tcp",
 		},
 	})
@@ -223,8 +223,8 @@ func TestPresenceRPCEndpointsByUIDsRoundTrip(t *testing.T) {
 			BootID:      11,
 			SessionID:   200,
 			DeviceID:    "d2",
-			DeviceFlag:  uint8(wkframe.WEB),
-			DeviceLevel: uint8(wkframe.DeviceLevelMaster),
+			DeviceFlag:  uint8(frame.WEB),
+			DeviceLevel: uint8(frame.DeviceLevelMaster),
 			Listener:    "tcp",
 		},
 	})
@@ -242,14 +242,14 @@ type fakeClusterNetwork struct {
 	mu        sync.Mutex
 	peers     map[uint64][]uint64
 	leaders   map[uint64]uint64
-	muxByNode map[uint64]*nodetransport.RPCMux
+	muxByNode map[uint64]*transport.RPCMux
 }
 
 func newFakeClusterNetwork(peers map[uint64][]uint64, leaders map[uint64]uint64) *fakeClusterNetwork {
 	return &fakeClusterNetwork{
 		peers:     peers,
 		leaders:   leaders,
-		muxByNode: make(map[uint64]*nodetransport.RPCMux),
+		muxByNode: make(map[uint64]*transport.RPCMux),
 	}
 }
 
@@ -257,14 +257,14 @@ func (n *fakeClusterNetwork) cluster(localNodeID uint64) *fakeCluster {
 	return &fakeCluster{localNodeID: localNodeID, network: n}
 }
 
-func (n *fakeClusterNetwork) mux(nodeID uint64) *nodetransport.RPCMux {
+func (n *fakeClusterNetwork) mux(nodeID uint64) *transport.RPCMux {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
 	if mux := n.muxByNode[nodeID]; mux != nil {
 		return mux
 	}
-	mux := nodetransport.NewRPCMux()
+	mux := transport.NewRPCMux()
 	n.muxByNode[nodeID] = mux
 	return mux
 }
@@ -274,7 +274,7 @@ type fakeCluster struct {
 	network     *fakeClusterNetwork
 }
 
-func (c *fakeCluster) RPCMux() *nodetransport.RPCMux {
+func (c *fakeCluster) RPCMux() *transport.RPCMux {
 	return c.network.mux(c.localNodeID)
 }
 

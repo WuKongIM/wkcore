@@ -6,7 +6,7 @@ import (
 
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 func activateCommandFromContext(ctx *coregateway.Context, now time.Time) (presence.ActivateCommand, error) {
@@ -62,35 +62,35 @@ func deviceIDFromValue(value any) string {
 	}
 }
 
-func deviceFlagFromValue(value any) wkframe.DeviceFlag {
+func deviceFlagFromValue(value any) frame.DeviceFlag {
 	switch v := value.(type) {
-	case wkframe.DeviceFlag:
+	case frame.DeviceFlag:
 		return v
 	case uint8:
-		return wkframe.DeviceFlag(v)
+		return frame.DeviceFlag(v)
 	case int:
-		return wkframe.DeviceFlag(v)
+		return frame.DeviceFlag(v)
 	case int32:
-		return wkframe.DeviceFlag(v)
+		return frame.DeviceFlag(v)
 	case int64:
-		return wkframe.DeviceFlag(v)
+		return frame.DeviceFlag(v)
 	default:
 		return 0
 	}
 }
 
-func deviceLevelFromValue(value any) wkframe.DeviceLevel {
+func deviceLevelFromValue(value any) frame.DeviceLevel {
 	switch v := value.(type) {
-	case wkframe.DeviceLevel:
+	case frame.DeviceLevel:
 		return v
 	case uint8:
-		return wkframe.DeviceLevel(v)
+		return frame.DeviceLevel(v)
 	case int:
-		return wkframe.DeviceLevel(v)
+		return frame.DeviceLevel(v)
 	case int32:
-		return wkframe.DeviceLevel(v)
+		return frame.DeviceLevel(v)
 	case int64:
-		return wkframe.DeviceLevel(v)
+		return frame.DeviceLevel(v)
 	default:
 		return 0
 	}

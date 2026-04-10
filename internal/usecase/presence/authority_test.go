@@ -7,7 +7,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,13 +16,13 @@ func TestAuthorityRegisterMasterDifferentDeviceReturnsKickThenCloseActions(t *te
 
 	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
-		Route:   testRoute("u1", 1, 10, 100, "old-device", uint8(wkframe.DeviceLevelMaster)),
+		Route:   testRoute("u1", 1, 10, 100, "old-device", uint8(frame.DeviceLevelMaster)),
 	})
 	require.NoError(t, err)
 
 	result, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
-		Route:   testRoute("u1", 2, 20, 200, "new-device", uint8(wkframe.DeviceLevelMaster)),
+		Route:   testRoute("u1", 2, 20, 200, "new-device", uint8(frame.DeviceLevelMaster)),
 	})
 	require.NoError(t, err)
 	require.Len(t, result.Actions, 1)
@@ -37,7 +37,7 @@ func TestAuthorityRegisterMasterDifferentDeviceReturnsKickThenCloseActions(t *te
 func TestAuthorityRegisterDuplicateSameRouteIsIdempotent(t *testing.T) {
 	app := New(Options{})
 
-	route := testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster))
+	route := testRoute("u1", 1, 10, 100, "device-a", uint8(frame.DeviceLevelMaster))
 	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
 		Route:   route,
@@ -61,13 +61,13 @@ func TestAuthorityRegisterMasterSameDeviceReturnsCloseActions(t *testing.T) {
 
 	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
-		Route:   testRoute("u1", 1, 10, 100, "same-device", uint8(wkframe.DeviceLevelMaster)),
+		Route:   testRoute("u1", 1, 10, 100, "same-device", uint8(frame.DeviceLevelMaster)),
 	})
 	require.NoError(t, err)
 
 	result, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
-		Route:   testRoute("u1", 1, 11, 101, "same-device", uint8(wkframe.DeviceLevelMaster)),
+		Route:   testRoute("u1", 1, 11, 101, "same-device", uint8(frame.DeviceLevelMaster)),
 	})
 	require.NoError(t, err)
 	require.Len(t, result.Actions, 1)
@@ -84,18 +84,18 @@ func TestAuthorityRegisterSlaveOnlyReplacesSameDeviceID(t *testing.T) {
 
 	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
-		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelSlave)),
+		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(frame.DeviceLevelSlave)),
 	})
 	require.NoError(t, err)
 	_, err = app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
-		Route:   testRoute("u1", 1, 10, 101, "device-b", uint8(wkframe.DeviceLevelSlave)),
+		Route:   testRoute("u1", 1, 10, 101, "device-b", uint8(frame.DeviceLevelSlave)),
 	})
 	require.NoError(t, err)
 
 	result, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
-		Route:   testRoute("u1", 2, 20, 200, "device-a", uint8(wkframe.DeviceLevelSlave)),
+		Route:   testRoute("u1", 2, 20, 200, "device-a", uint8(frame.DeviceLevelSlave)),
 	})
 	require.NoError(t, err)
 	require.Len(t, result.Actions, 1)
@@ -110,7 +110,7 @@ func TestAuthorityRegisterSlaveOnlyReplacesSameDeviceID(t *testing.T) {
 func TestAuthorityHeartbeatDetectsDigestMismatchWhenCountMatches(t *testing.T) {
 	app := New(Options{})
 
-	route := testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster))
+	route := testRoute("u1", 1, 10, 100, "device-a", uint8(frame.DeviceLevelMaster))
 	route.Listener = "tcp"
 	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
@@ -141,8 +141,8 @@ func TestAuthorityHeartbeatMatchesGatewayGroupDigest(t *testing.T) {
 		SessionID:   100,
 		UID:         "u1",
 		DeviceID:    "device-a",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		GroupID:     1,
 		State:       online.LocalRouteStateActive,
 		Listener:    "tcp",
@@ -152,7 +152,7 @@ func TestAuthorityHeartbeatMatchesGatewayGroupDigest(t *testing.T) {
 	groups := reg.ActiveGroups()
 	require.Len(t, groups, 1)
 
-	route := testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster))
+	route := testRoute("u1", 1, 10, 100, "device-a", uint8(frame.DeviceLevelMaster))
 	route.Listener = "tcp"
 	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
@@ -189,8 +189,8 @@ func TestAuthorityReplayReplacesOwnerSetWithActiveRoutesOnly(t *testing.T) {
 			LeaseUntilUnix: now.Add(30 * time.Second).Unix(),
 		},
 		Routes: []Route{
-			testRoute("u1", 9, 99, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
-			testRoute("u2", 9, 99, 200, "device-b", uint8(wkframe.DeviceLevelMaster)),
+			testRoute("u1", 9, 99, 100, "device-a", uint8(frame.DeviceLevelMaster)),
+			testRoute("u2", 9, 99, 200, "device-b", uint8(frame.DeviceLevelMaster)),
 		},
 	})
 	require.NoError(t, err)
@@ -203,7 +203,7 @@ func TestAuthorityReplayReplacesOwnerSetWithActiveRoutesOnly(t *testing.T) {
 			LeaseUntilUnix: now.Add(30 * time.Second).Unix(),
 		},
 		Routes: []Route{
-			testRoute("u1", 9, 99, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+			testRoute("u1", 9, 99, 100, "device-a", uint8(frame.DeviceLevelMaster)),
 		},
 	})
 	require.NoError(t, err)
@@ -224,13 +224,13 @@ func TestAuthorityReplayDoesNotResurrectSupersededMasterRoute(t *testing.T) {
 
 	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
-		Route:   testRoute("u1", 1, 10, 100, "old-device", uint8(wkframe.DeviceLevelMaster)),
+		Route:   testRoute("u1", 1, 10, 100, "old-device", uint8(frame.DeviceLevelMaster)),
 	})
 	require.NoError(t, err)
 
 	_, err = app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
-		Route:   testRoute("u1", 2, 20, 200, "new-device", uint8(wkframe.DeviceLevelMaster)),
+		Route:   testRoute("u1", 2, 20, 200, "new-device", uint8(frame.DeviceLevelMaster)),
 	})
 	require.NoError(t, err)
 
@@ -242,7 +242,7 @@ func TestAuthorityReplayDoesNotResurrectSupersededMasterRoute(t *testing.T) {
 			LeaseUntilUnix: now.Add(30 * time.Second).Unix(),
 		},
 		Routes: []Route{
-			testRoute("u1", 1, 10, 100, "old-device", uint8(wkframe.DeviceLevelMaster)),
+			testRoute("u1", 1, 10, 100, "old-device", uint8(frame.DeviceLevelMaster)),
 		},
 	})
 	require.NoError(t, err)
@@ -257,7 +257,7 @@ func TestAuthorityEndpointsByUIDReturnsCurrentRoutes(t *testing.T) {
 
 	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
-		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(frame.DeviceLevelMaster)),
 	})
 	require.NoError(t, err)
 	_, err = app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
@@ -268,8 +268,8 @@ func TestAuthorityEndpointsByUIDReturnsCurrentRoutes(t *testing.T) {
 			BootID:      20,
 			SessionID:   200,
 			DeviceID:    "device-b",
-			DeviceFlag:  uint8(wkframe.WEB),
-			DeviceLevel: uint8(wkframe.DeviceLevelMaster),
+			DeviceFlag:  uint8(frame.WEB),
+			DeviceLevel: uint8(frame.DeviceLevelMaster),
 		},
 	})
 	require.NoError(t, err)
@@ -284,12 +284,12 @@ func TestPresenceAuthorityEndpointsByUIDsReturnsBatchRoutes(t *testing.T) {
 
 	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
-		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(frame.DeviceLevelMaster)),
 	})
 	require.NoError(t, err)
 	_, err = app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
-		Route:   testRoute("u2", 2, 20, 200, "device-b", uint8(wkframe.DeviceLevelMaster)),
+		Route:   testRoute("u2", 2, 20, 200, "device-b", uint8(frame.DeviceLevelMaster)),
 	})
 	require.NoError(t, err)
 
@@ -311,7 +311,7 @@ func TestAuthorityRegisterSeedsLeaseDeadlineAndExpiresWithoutHeartbeat(t *testin
 
 	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
-		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(frame.DeviceLevelMaster)),
 	})
 	require.NoError(t, err)
 	require.Len(t, requireAuthorityEndpoints(t, app, "u1"), 1)
@@ -328,7 +328,7 @@ func TestAuthorityHeartbeatExplicitLeaseKeepsRouteAlive(t *testing.T) {
 
 	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
-		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(frame.DeviceLevelMaster)),
 	})
 	require.NoError(t, err)
 
@@ -359,7 +359,7 @@ func TestAuthorityHeartbeatStaleLeaseDoesNotShortenDeadline(t *testing.T) {
 
 	_, err := app.RegisterAuthoritative(context.Background(), RegisterAuthoritativeCommand{
 		GroupID: 1,
-		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+		Route:   testRoute("u1", 1, 10, 100, "device-a", uint8(frame.DeviceLevelMaster)),
 	})
 	require.NoError(t, err)
 
@@ -408,7 +408,7 @@ func TestAuthorityReplayStaleLeaseDoesNotShortenDeadline(t *testing.T) {
 			LeaseUntilUnix: now.Add(90 * time.Second).Unix(),
 		},
 		Routes: []Route{
-			testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+			testRoute("u1", 1, 10, 100, "device-a", uint8(frame.DeviceLevelMaster)),
 		},
 	})
 	require.NoError(t, err)
@@ -421,7 +421,7 @@ func TestAuthorityReplayStaleLeaseDoesNotShortenDeadline(t *testing.T) {
 			LeaseUntilUnix: now.Add(5 * time.Second).Unix(),
 		},
 		Routes: []Route{
-			testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+			testRoute("u1", 1, 10, 100, "device-a", uint8(frame.DeviceLevelMaster)),
 		},
 	})
 	require.NoError(t, err)
@@ -447,7 +447,7 @@ func TestAuthorityEndpointsByUIDEvictsExpiredLeaseRoutes(t *testing.T) {
 			LeaseUntilUnix: now.Add(-time.Second).Unix(),
 		},
 		Routes: []Route{
-			testRoute("u1", 9, 99, 100, "device-a", uint8(wkframe.DeviceLevelMaster)),
+			testRoute("u1", 9, 99, 100, "device-a", uint8(frame.DeviceLevelMaster)),
 		},
 	})
 	require.NoError(t, err)
@@ -459,7 +459,7 @@ func TestAuthorityEndpointsByUIDEvictsExpiredLeaseRoutes(t *testing.T) {
 func TestDirectoryUnregisterRemovesOwnerSetWhenAssumedGroupIsWrong(t *testing.T) {
 	dir := newDirectory()
 	nowUnix := time.Unix(200, 0).Unix()
-	route := testRoute("u1", 1, 10, 100, "device-a", uint8(wkframe.DeviceLevelMaster))
+	route := testRoute("u1", 1, 10, 100, "device-a", uint8(frame.DeviceLevelMaster))
 
 	dir.register(1, route, nowUnix)
 	require.Len(t, dir.endpointsByUID("u1", nowUnix), 1)
@@ -480,7 +480,7 @@ func testRoute(uid string, nodeID, bootID, sessionID uint64, deviceID string, le
 		BootID:      bootID,
 		SessionID:   sessionID,
 		DeviceID:    deviceID,
-		DeviceFlag:  uint8(wkframe.APP),
+		DeviceFlag:  uint8(frame.APP),
 		DeviceLevel: level,
 	}
 }

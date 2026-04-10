@@ -17,11 +17,11 @@ import (
 	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	messageusecase "github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/group/multiraft"
+	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -53,11 +53,11 @@ func TestAppMajorityAvailableAfterSingleReplicaNodeFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	channelID := fmt.Sprintf("majority-channel-%d", time.Now().UnixNano())
-	require.NoError(t, survivorLeader.Store().CreateChannel(ctx, channelID, int64(wkframe.ChannelTypeGroup)))
+	require.NoError(t, survivorLeader.Store().CreateChannel(ctx, channelID, int64(frame.ChannelTypeGroup)))
 	for _, app := range harness.runningApps() {
 		app := app
 		require.Eventually(t, func() bool {
-			channel, err := app.Store().GetChannel(context.Background(), channelID, int64(wkframe.ChannelTypeGroup))
+			channel, err := app.Store().GetChannel(context.Background(), channelID, int64(frame.ChannelTypeGroup))
 			return err == nil && channel.ChannelID == channelID
 		}, 5*time.Second, 20*time.Millisecond)
 	}
@@ -86,7 +86,7 @@ func TestThreeNodeAppGatewaySendUsesDurableCommit(t *testing.T) {
 
 	key := channellog.ChannelKey{
 		ChannelID:   channelID,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 	}
 	meta := metadb.ChannelRuntimeMeta{
 		ChannelID:    key.ChannelID,
@@ -112,18 +112,18 @@ func TestThreeNodeAppGatewaySendUsesDurableCommit(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
-	sendAppWKProtoFrame(t, conn, &wkframe.ConnectPacket{
-		Version:         wkframe.LatestVersion,
+	sendAppWKProtoFrame(t, conn, &frame.ConnectPacket{
+		Version:         frame.LatestVersion,
 		UID:             "sender",
 		DeviceID:        "sender-device",
-		DeviceFlag:      wkframe.APP,
+		DeviceFlag:      frame.APP,
 		ClientTimestamp: time.Now().UnixMilli(),
 	})
-	connack, ok := readAppWKProtoFrameWithin(t, conn, multinodeAppReadTimeout).(*wkframe.ConnackPacket)
+	connack, ok := readAppWKProtoFrameWithin(t, conn, multinodeAppReadTimeout).(*frame.ConnackPacket)
 	require.True(t, ok)
-	require.Equal(t, wkframe.ReasonSuccess, connack.ReasonCode)
+	require.Equal(t, frame.ReasonSuccess, connack.ReasonCode)
 
-	sendAppWKProtoFrame(t, conn, &wkframe.SendPacket{
+	sendAppWKProtoFrame(t, conn, &frame.SendPacket{
 		ChannelID:   recipientUID,
 		ChannelType: key.ChannelType,
 		ClientSeq:   1,
@@ -131,9 +131,9 @@ func TestThreeNodeAppGatewaySendUsesDurableCommit(t *testing.T) {
 		Payload:     []byte("hello durable gateway"),
 	})
 
-	sendack, ok := readAppWKProtoFrameWithin(t, conn, multinodeAppReadTimeout).(*wkframe.SendackPacket)
+	sendack, ok := readAppWKProtoFrameWithin(t, conn, multinodeAppReadTimeout).(*frame.SendackPacket)
 	require.True(t, ok)
-	require.Equal(t, wkframe.ReasonSuccess, sendack.ReasonCode)
+	require.Equal(t, frame.ReasonSuccess, sendack.ReasonCode)
 	require.NotZero(t, sendack.MessageSeq)
 	require.NotZero(t, sendack.MessageID)
 
@@ -157,7 +157,7 @@ func TestThreeNodeAppDurableSendReturnsBeforeRemoteAck(t *testing.T) {
 
 	key := channellog.ChannelKey{
 		ChannelID:   channelID,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 	}
 	meta := metadb.ChannelRuntimeMeta{
 		ChannelID:    key.ChannelID,
@@ -185,29 +185,29 @@ func TestThreeNodeAppDurableSendReturnsBeforeRemoteAck(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = recipientConn.Close() })
 
-	sendAppWKProtoFrame(t, senderConn, &wkframe.ConnectPacket{
-		Version:         wkframe.LatestVersion,
+	sendAppWKProtoFrame(t, senderConn, &frame.ConnectPacket{
+		Version:         frame.LatestVersion,
 		UID:             "sender-remote",
 		DeviceID:        "sender-remote-device",
-		DeviceFlag:      wkframe.APP,
+		DeviceFlag:      frame.APP,
 		ClientTimestamp: time.Now().UnixMilli(),
 	})
-	connack, ok := readAppWKProtoFrameWithin(t, senderConn, multinodeAppReadTimeout).(*wkframe.ConnackPacket)
+	connack, ok := readAppWKProtoFrameWithin(t, senderConn, multinodeAppReadTimeout).(*frame.ConnackPacket)
 	require.True(t, ok)
-	require.Equal(t, wkframe.ReasonSuccess, connack.ReasonCode)
+	require.Equal(t, frame.ReasonSuccess, connack.ReasonCode)
 
-	sendAppWKProtoFrame(t, recipientConn, &wkframe.ConnectPacket{
-		Version:         wkframe.LatestVersion,
+	sendAppWKProtoFrame(t, recipientConn, &frame.ConnectPacket{
+		Version:         frame.LatestVersion,
 		UID:             recipientUID,
 		DeviceID:        "recipient-remote-device",
-		DeviceFlag:      wkframe.APP,
+		DeviceFlag:      frame.APP,
 		ClientTimestamp: time.Now().UnixMilli(),
 	})
-	recipientConnack, ok := readAppWKProtoFrameWithin(t, recipientConn, multinodeAppReadTimeout).(*wkframe.ConnackPacket)
+	recipientConnack, ok := readAppWKProtoFrameWithin(t, recipientConn, multinodeAppReadTimeout).(*frame.ConnackPacket)
 	require.True(t, ok)
-	require.Equal(t, wkframe.ReasonSuccess, recipientConnack.ReasonCode)
+	require.Equal(t, frame.ReasonSuccess, recipientConnack.ReasonCode)
 
-	sendAppWKProtoFrame(t, senderConn, &wkframe.SendPacket{
+	sendAppWKProtoFrame(t, senderConn, &frame.SendPacket{
 		ChannelID:   recipientUID,
 		ChannelType: key.ChannelType,
 		ClientSeq:   1,
@@ -215,11 +215,11 @@ func TestThreeNodeAppDurableSendReturnsBeforeRemoteAck(t *testing.T) {
 		Payload:     []byte("hello realtime"),
 	})
 
-	sendack, ok := readAppWKProtoFrameWithin(t, senderConn, multinodeAppReadTimeout).(*wkframe.SendackPacket)
+	sendack, ok := readAppWKProtoFrameWithin(t, senderConn, multinodeAppReadTimeout).(*frame.SendackPacket)
 	require.True(t, ok)
-	require.Equal(t, wkframe.ReasonSuccess, sendack.ReasonCode)
+	require.Equal(t, frame.ReasonSuccess, sendack.ReasonCode)
 
-	recv, ok := readAppWKProtoFrameWithin(t, recipientConn, multinodeAppReadTimeout).(*wkframe.RecvPacket)
+	recv, ok := readAppWKProtoFrameWithin(t, recipientConn, multinodeAppReadTimeout).(*frame.RecvPacket)
 	require.True(t, ok)
 	require.Equal(t, "sender-remote", recv.FromUID)
 	require.Equal(t, sendack.MessageID, recv.MessageID)
@@ -239,7 +239,7 @@ func TestThreeNodeAppDurableSendReturnsBeforeRemoteAck(t *testing.T) {
 		return recipientHasBinding
 	}, 5*time.Second, 20*time.Millisecond)
 
-	sendAppWKProtoFrame(t, recipientConn, &wkframe.RecvackPacket{
+	sendAppWKProtoFrame(t, recipientConn, &frame.RecvackPacket{
 		MessageID:  recv.MessageID,
 		MessageSeq: recv.MessageSeq,
 	})
@@ -259,7 +259,7 @@ func TestThreeNodeAppGroupChannelRealtimeDeliveryUsesStoredSubscribers(t *testin
 
 	key := channellog.ChannelKey{
 		ChannelID:   "group-realtime",
-		ChannelType: wkframe.ChannelTypeGroup,
+		ChannelType: frame.ChannelTypeGroup,
 	}
 	meta := metadb.ChannelRuntimeMeta{
 		ChannelID:    key.ChannelID,
@@ -286,7 +286,7 @@ func TestThreeNodeAppGroupChannelRealtimeDeliveryUsesStoredSubscribers(t *testin
 	recipientConnA := connectMultinodeWKProtoClient(t, recipientNodeA, "group-user-a", "group-device-a")
 	recipientConnB := connectMultinodeWKProtoClient(t, recipientNodeB, "group-user-b", "group-device-b")
 
-	sendAppWKProtoFrame(t, senderConn, &wkframe.SendPacket{
+	sendAppWKProtoFrame(t, senderConn, &frame.SendPacket{
 		ChannelID:   key.ChannelID,
 		ChannelType: key.ChannelType,
 		ClientSeq:   1,
@@ -294,17 +294,17 @@ func TestThreeNodeAppGroupChannelRealtimeDeliveryUsesStoredSubscribers(t *testin
 		Payload:     []byte("hello group members"),
 	})
 
-	sendack, ok := readAppWKProtoFrameWithin(t, senderConn, multinodeAppReadTimeout).(*wkframe.SendackPacket)
+	sendack, ok := readAppWKProtoFrameWithin(t, senderConn, multinodeAppReadTimeout).(*frame.SendackPacket)
 	require.True(t, ok)
-	require.Equal(t, wkframe.ReasonSuccess, sendack.ReasonCode)
+	require.Equal(t, frame.ReasonSuccess, sendack.ReasonCode)
 
-	recvA, ok := readAppWKProtoFrameWithin(t, recipientConnA, multinodeAppReadTimeout).(*wkframe.RecvPacket)
+	recvA, ok := readAppWKProtoFrameWithin(t, recipientConnA, multinodeAppReadTimeout).(*frame.RecvPacket)
 	require.True(t, ok)
 	require.Equal(t, key.ChannelID, recvA.ChannelID)
 	require.Equal(t, key.ChannelType, recvA.ChannelType)
 	require.Equal(t, "group-sender", recvA.FromUID)
 
-	recvB, ok := readAppWKProtoFrameWithin(t, recipientConnB, multinodeAppReadTimeout).(*wkframe.RecvPacket)
+	recvB, ok := readAppWKProtoFrameWithin(t, recipientConnB, multinodeAppReadTimeout).(*frame.RecvPacket)
 	require.True(t, ok)
 	require.Equal(t, key.ChannelID, recvB.ChannelID)
 	require.Equal(t, key.ChannelType, recvB.ChannelType)
@@ -317,8 +317,8 @@ func TestThreeNodeAppHotGroupDoesNotBlockNormalGroupDelivery(t *testing.T) {
 	owner := harness.apps[ownerID]
 	recipientNode := harness.apps[ownerID%3+1]
 
-	hotKey := channellog.ChannelKey{ChannelID: "group-hot", ChannelType: wkframe.ChannelTypeGroup}
-	normalKey := channellog.ChannelKey{ChannelID: "group-normal", ChannelType: wkframe.ChannelTypeGroup}
+	hotKey := channellog.ChannelKey{ChannelID: "group-hot", ChannelType: frame.ChannelTypeGroup}
+	normalKey := channellog.ChannelKey{ChannelID: "group-normal", ChannelType: frame.ChannelTypeGroup}
 	for _, key := range []channellog.ChannelKey{hotKey, normalKey} {
 		require.NoError(t, owner.Store().UpsertChannelRuntimeMeta(context.Background(), metadb.ChannelRuntimeMeta{
 			ChannelID:    key.ChannelID,
@@ -361,17 +361,17 @@ func TestThreeNodeAppHotGroupDoesNotBlockNormalGroupDelivery(t *testing.T) {
 	senderConn := connectMultinodeWKProtoClient(t, owner, "normal-sender", "normal-sender-device")
 	normalRecipientConn := connectMultinodeWKProtoClient(t, recipientNode, "normal-user", "normal-user-device")
 
-	sendAppWKProtoFrame(t, senderConn, &wkframe.SendPacket{
+	sendAppWKProtoFrame(t, senderConn, &frame.SendPacket{
 		ChannelID:   normalKey.ChannelID,
 		ChannelType: normalKey.ChannelType,
 		ClientSeq:   100,
 		ClientMsgNo: "normal-1",
 		Payload:     []byte("normal"),
 	})
-	_, ok := readAppWKProtoFrameWithin(t, senderConn, multinodeAppReadTimeout).(*wkframe.SendackPacket)
+	_, ok := readAppWKProtoFrameWithin(t, senderConn, multinodeAppReadTimeout).(*frame.SendackPacket)
 	require.True(t, ok)
 
-	recvNormal, ok := readAppWKProtoFrameWithin(t, normalRecipientConn, multinodeAppReadTimeout).(*wkframe.RecvPacket)
+	recvNormal, ok := readAppWKProtoFrameWithin(t, normalRecipientConn, multinodeAppReadTimeout).(*frame.RecvPacket)
 	require.True(t, ok)
 	require.Equal(t, normalKey.ChannelID, recvNormal.ChannelID)
 }
@@ -432,7 +432,7 @@ func TestThreeNodeAppSendAckSurvivesLeaderCrash(t *testing.T) {
 
 	key := channellog.ChannelKey{
 		ChannelID:   channelID,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 	}
 	meta := metadb.ChannelRuntimeMeta{
 		ChannelID:    key.ChannelID,
@@ -454,7 +454,7 @@ func TestThreeNodeAppSendAckSurvivesLeaderCrash(t *testing.T) {
 	}
 
 	conn := connectMultinodeWKProtoClient(t, leader, "crash-sender", "crash-sender-device")
-	sendAppWKProtoFrame(t, conn, &wkframe.SendPacket{
+	sendAppWKProtoFrame(t, conn, &frame.SendPacket{
 		ChannelID:   recipientUID,
 		ChannelType: key.ChannelType,
 		ClientSeq:   1,
@@ -462,9 +462,9 @@ func TestThreeNodeAppSendAckSurvivesLeaderCrash(t *testing.T) {
 		Payload:     []byte("survive leader crash"),
 	})
 
-	sendack, ok := readAppWKProtoFrameWithin(t, conn, multinodeAppReadTimeout).(*wkframe.SendackPacket)
+	sendack, ok := readAppWKProtoFrameWithin(t, conn, multinodeAppReadTimeout).(*frame.SendackPacket)
 	require.True(t, ok)
-	require.Equal(t, wkframe.ReasonSuccess, sendack.ReasonCode)
+	require.Equal(t, frame.ReasonSuccess, sendack.ReasonCode)
 	require.NoError(t, conn.Close())
 
 	harness.stopNode(t, leaderID)
@@ -494,7 +494,7 @@ func TestThreeNodeAppRollingRestartPreservesWriteAvailability(t *testing.T) {
 
 	key := channellog.ChannelKey{
 		ChannelID:   channelID,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 	}
 	meta := metadb.ChannelRuntimeMeta{
 		ChannelID:    key.ChannelID,
@@ -536,7 +536,7 @@ func TestThreeNodeAppRollingRestartPreservesWriteAvailability(t *testing.T) {
 			Payload:     payload,
 		})
 		require.NoError(t, err)
-		require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+		require.Equal(t, frame.ReasonSuccess, result.Reason)
 		sent = append(sent, sentMessage{seq: result.MessageSeq, payload: payload})
 	}
 
@@ -834,20 +834,20 @@ func connectMultinodeWKProtoClient(t *testing.T, app *App, uid, deviceID string)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
-	sendAppWKProtoFrame(t, conn, &wkframe.ConnectPacket{
-		Version:         wkframe.LatestVersion,
+	sendAppWKProtoFrame(t, conn, &frame.ConnectPacket{
+		Version:         frame.LatestVersion,
 		UID:             uid,
 		DeviceID:        deviceID,
-		DeviceFlag:      wkframe.APP,
+		DeviceFlag:      frame.APP,
 		ClientTimestamp: time.Now().UnixMilli(),
 	})
-	connack, ok := readAppWKProtoFrameWithin(t, conn, multinodeAppReadTimeout).(*wkframe.ConnackPacket)
+	connack, ok := readAppWKProtoFrameWithin(t, conn, multinodeAppReadTimeout).(*frame.ConnackPacket)
 	require.True(t, ok)
-	require.Equal(t, wkframe.ReasonSuccess, connack.ReasonCode)
+	require.Equal(t, frame.ReasonSuccess, connack.ReasonCode)
 	return conn
 }
 
-func readAppWKProtoFrameWithin(t *testing.T, conn net.Conn, timeout time.Duration) wkframe.Frame {
+func readAppWKProtoFrameWithin(t *testing.T, conn net.Conn, timeout time.Duration) frame.Frame {
 	t.Helper()
 
 	require.NoError(t, conn.SetReadDeadline(time.Now().Add(timeout)))
@@ -855,9 +855,9 @@ func readAppWKProtoFrameWithin(t *testing.T, conn net.Conn, timeout time.Duratio
 		_ = conn.SetReadDeadline(time.Time{})
 	}()
 
-	frame, err := codec.New().DecodePacketWithConn(conn, wkframe.LatestVersion)
+	f, err := codec.New().DecodePacketWithConn(conn, frame.LatestVersion)
 	require.NoError(t, err)
-	return frame
+	return f
 }
 
 func waitForAppCommittedMessage(t *testing.T, store *channellog.Store, seq uint64, timeout time.Duration) channellog.Message {

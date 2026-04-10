@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 type Route struct {
@@ -69,8 +69,8 @@ type ReplayAuthoritativeCommand struct {
 type ActivateCommand struct {
 	UID         string
 	DeviceID    string
-	DeviceFlag  wkframe.DeviceFlag
-	DeviceLevel wkframe.DeviceLevel
+	DeviceFlag  frame.DeviceFlag
+	DeviceLevel frame.DeviceLevel
 	Listener    string
 	ConnectedAt time.Time
 	Session     online.Session

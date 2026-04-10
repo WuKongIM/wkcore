@@ -9,7 +9,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 var ErrUnsupportedFrame = errors.New("access/gateway: unsupported frame")
@@ -79,7 +79,7 @@ func New(opts Options) *Handler {
 
 func (h *Handler) OnListenerError(string, error) {}
 
-func (h *Handler) OnSessionActivate(ctx *coregateway.Context) (*wkframe.ConnackPacket, error) {
+func (h *Handler) OnSessionActivate(ctx *coregateway.Context) (*frame.ConnackPacket, error) {
 	if h == nil {
 		return nil, nil
 	}

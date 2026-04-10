@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 )
 
 func sendWithMetaRefreshRetry(ctx context.Context, cluster ChannelCluster, refresher MetaRefresher, req channellog.AppendRequest) (channellog.AppendResult, error) {

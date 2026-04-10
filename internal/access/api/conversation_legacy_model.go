@@ -6,8 +6,8 @@ import (
 
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
 	conversationusecase "github.com/WuKongIM/WuKongIM/internal/usecase/conversation"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 type syncConversationRequest struct {
@@ -86,7 +86,7 @@ func parseLegacyLastMsgSeqs(uid, raw string) (map[conversationusecase.Conversati
 		}
 
 		channelID := parts[0]
-		if uint8(channelType) == wkframe.ChannelTypePerson {
+		if uint8(channelType) == frame.ChannelTypePerson {
 			channelID, err = runtimechannelid.NormalizePersonChannel(uid, channelID)
 			if err != nil {
 				return nil, err
@@ -144,7 +144,7 @@ func newLegacyMessageResp(uid string, msg channellog.Message) legacyMessageResp 
 }
 
 func legacyConversationChannelID(uid, channelID string, channelType uint8) string {
-	if channelType != wkframe.ChannelTypePerson {
+	if channelType != frame.ChannelTypePerson {
 		return channelID
 	}
 	left, right, err := runtimechannelid.DecodePersonChannel(channelID)

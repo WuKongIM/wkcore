@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
 )
 
 const (

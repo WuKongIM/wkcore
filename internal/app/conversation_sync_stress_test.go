@@ -21,9 +21,9 @@ import (
 
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -488,7 +488,7 @@ func preloadConversationSyncStressData(t *testing.T, harness *threeNodeAppHarnes
 			ownerNodeID := uint64(2 + ((uidIdx + chIdx) % 2))
 			meta := metadb.ChannelRuntimeMeta{
 				ChannelID:    channelID,
-				ChannelType:  int64(wkframe.ChannelTypePerson),
+				ChannelType:  int64(frame.ChannelTypePerson),
 				ChannelEpoch: channelEpoch,
 				LeaderEpoch:  channelEpoch,
 				Replicas:     []uint64{2, 3},
@@ -501,7 +501,7 @@ func preloadConversationSyncStressData(t *testing.T, harness *threeNodeAppHarnes
 			}
 			require.NoError(t, groupLeader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
 
-			key := channellog.ChannelKey{ChannelID: channelID, ChannelType: wkframe.ChannelTypePerson}
+			key := channellog.ChannelKey{ChannelID: channelID, ChannelType: frame.ChannelTypePerson}
 			for _, nodeID := range []uint64{2, 3} {
 				_, err := harness.apps[nodeID].channelMetaSync.RefreshChannelMeta(context.Background(), key)
 				require.NoError(t, err)
@@ -511,7 +511,7 @@ func preloadConversationSyncStressData(t *testing.T, harness *threeNodeAppHarnes
 				UID:         uid,
 				PeerUID:     peerUID,
 				ChannelID:   channelID,
-				ChannelType: wkframe.ChannelTypePerson,
+				ChannelType: frame.ChannelTypePerson,
 				OwnerNodeID: ownerNodeID,
 				Replicas:    []uint64{2, 3},
 			}
@@ -521,7 +521,7 @@ func preloadConversationSyncStressData(t *testing.T, harness *threeNodeAppHarnes
 				_, err := harness.apps[ownerNodeID].Message().Send(context.Background(), message.SendCommand{
 					FromUID:     peerUID,
 					ChannelID:   uid,
-					ChannelType: wkframe.ChannelTypePerson,
+					ChannelType: frame.ChannelTypePerson,
 					ClientMsgNo: fmt.Sprintf("conversation-sync-stress-preload-%03d-%02d-%02d", uidIdx, chIdx, msgIdx),
 					Payload:     []byte(fmt.Sprintf("preload-%03d-%02d-%02d", uidIdx, chIdx, msgIdx)),
 				})

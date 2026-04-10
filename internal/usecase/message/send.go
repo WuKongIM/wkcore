@@ -5,8 +5,8 @@ import (
 	"time"
 
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 func (a *App) Send(ctx context.Context, cmd SendCommand) (SendResult, error) {
@@ -14,10 +14,10 @@ func (a *App) Send(ctx context.Context, cmd SendCommand) (SendResult, error) {
 		return SendResult{}, ErrUnauthenticatedSender
 	}
 
-	if cmd.ChannelType != wkframe.ChannelTypePerson && cmd.ChannelType != wkframe.ChannelTypeGroup {
-		return SendResult{Reason: wkframe.ReasonNotSupportChannelType}, nil
+	if cmd.ChannelType != frame.ChannelTypePerson && cmd.ChannelType != frame.ChannelTypeGroup {
+		return SendResult{Reason: frame.ReasonNotSupportChannelType}, nil
 	}
-	if cmd.ChannelType == wkframe.ChannelTypePerson {
+	if cmd.ChannelType == frame.ChannelTypePerson {
 		channelID, err := runtimechannelid.NormalizePersonChannel(cmd.FromUID, cmd.ChannelID)
 		if err != nil {
 			return SendResult{}, err
@@ -49,7 +49,7 @@ func (a *App) sendDurable(ctx context.Context, cmd SendCommand) (SendResult, err
 	sendResult := SendResult{
 		MessageID:  int64(result.MessageID),
 		MessageSeq: result.MessageSeq,
-		Reason:     wkframe.ReasonSuccess,
+		Reason:     frame.ReasonSuccess,
 	}
 
 	if a.dispatcher != nil {
@@ -77,5 +77,5 @@ func buildDurableMessage(cmd SendCommand, now time.Time) channellog.Message {
 }
 
 func supportsMessageSeqU64(version uint8) bool {
-	return version == 0 || version > wkframe.LegacyMessageSeqVersion
+	return version == 0 || version > frame.LegacyMessageSeqVersion
 }

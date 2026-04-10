@@ -5,23 +5,23 @@ import (
 
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
-func (h *Handler) OnFrame(ctx *coregateway.Context, frame wkframe.Frame) error {
-	switch pkt := frame.(type) {
-	case *wkframe.SendPacket:
+func (h *Handler) OnFrame(ctx *coregateway.Context, f frame.Frame) error {
+	switch pkt := f.(type) {
+	case *frame.SendPacket:
 		return h.handleSend(ctx, pkt)
-	case *wkframe.RecvackPacket:
+	case *frame.RecvackPacket:
 		return h.handleRecvAck(ctx, pkt)
-	case *wkframe.PingPacket:
+	case *frame.PingPacket:
 		return nil
 	default:
 		return ErrUnsupportedFrame
 	}
 }
 
-func (h *Handler) handleSend(ctx *coregateway.Context, pkt *wkframe.SendPacket) error {
+func (h *Handler) handleSend(ctx *coregateway.Context, pkt *frame.SendPacket) error {
 	cmd, err := mapSendCommand(ctx, pkt)
 	if err != nil {
 		if reason, ok := mapSendErrorReason(err); ok {
@@ -48,7 +48,7 @@ func (h *Handler) handleSend(ctx *coregateway.Context, pkt *wkframe.SendPacket) 
 	return writeSendack(ctx, pkt, result)
 }
 
-func (h *Handler) handleRecvAck(ctx *coregateway.Context, pkt *wkframe.RecvackPacket) error {
+func (h *Handler) handleRecvAck(ctx *coregateway.Context, pkt *frame.RecvackPacket) error {
 	cmd, err := mapRecvAckCommand(ctx, pkt)
 	if err != nil {
 		return err

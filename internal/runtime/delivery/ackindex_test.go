@@ -3,7 +3,7 @@ package delivery
 import (
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -13,7 +13,7 @@ func TestAckIndexBindsLooksUpAndRemovesRoutes(t *testing.T) {
 		SessionID:   2,
 		MessageID:   101,
 		ChannelID:   "u1@u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		Route:       testRoute("u2", 1, 11, 2),
 	}
 

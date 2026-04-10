@@ -13,13 +13,13 @@
 适合本地改完复制、选举或多节点路径后先跑一轮。
 
 ```bash
-go test ./pkg/replication/isr -run 'TestBecomeLeader(ReplaysIdenticalEpochPointIdempotently|ReusesRecoveredEpochPointWhenLeaderRestartsSameEpoch)' -count=1
+go test ./pkg/channel/isr -run 'TestBecomeLeader(ReplaysIdenticalEpochPointIdempotently|ReusesRecoveredEpochPointWhenLeaderRestartsSameEpoch)' -count=1
 
-go test ./pkg/replication/isrnode -run 'TestQueuedReplicationRecomputesReplicaProgressBetweenSends|TestReplicationRequest(PopulatesFetchRequestEnvelope|UsesReplicaOffsetEpochInsteadOfGroupMetaEpoch)' -count=1
+go test ./pkg/channel/node -run 'TestQueuedReplicationRecomputesReplicaProgressBetweenSends|TestReplicationRequest(PopulatesFetchRequestEnvelope|UsesReplicaOffsetEpochInsteadOfGroupMetaEpoch)' -count=1
 
-go test ./pkg/cluster/raftcluster -run 'Test(TestNodeRestartReopensClusterWithSameListenAddr|ThreeNodeClusterReelectsAfterLeaderRestart)' -count=1
+go test ./pkg/cluster -run 'Test(TestNodeRestartReopensClusterWithSameListenAddr|ThreeNodeClusterReelectsAfterLeaderRestart)' -count=1
 
-go test ./pkg/storage/channellog -run 'Test(ThreeNodeClusterAppendCommitsBeforeAckAndSurvivesFollowerRestart|ThreeNodeClusterHarnessRestartNodeReopensData|ThreeNodeClusterBlocksCommitUntilMinISRRecovers|FollowerRestartCatchesUpAfterLeaderProgress)' -count=1 -timeout 30s
+go test ./pkg/channel/log -run 'Test(ThreeNodeClusterAppendCommitsBeforeAckAndSurvivesFollowerRestart|ThreeNodeClusterHarnessRestartNodeReopensData|ThreeNodeClusterBlocksCommitUntilMinISRRecovers|FollowerRestartCatchesUpAfterLeaderProgress)' -count=1 -timeout 30s
 
 go test ./internal/app -run 'TestThreeNodeApp(SendAckSurvivesLeaderCrash|RollingRestartPreservesWriteAvailability)' -count=1 -timeout 10m
 ```
@@ -28,47 +28,47 @@ go test ./internal/app -run 'TestThreeNodeApp(SendAckSurvivesLeaderCrash|Rolling
 
 ### 选举与重启
 
-- `pkg/cluster/raftcluster.TestTestNodeRestartReopensClusterWithSameListenAddr`
+- `pkg/cluster.TestTestNodeRestartReopensClusterWithSameListenAddr`
   验证节点重启后仍复用原监听地址和数据目录。
-- `pkg/cluster/raftcluster.TestThreeNodeClusterReelectsAfterLeaderRestart`
+- `pkg/cluster.TestThreeNodeClusterReelectsAfterLeaderRestart`
   验证 leader 停机后可重新选主，旧 leader 重启后仍能继续对外写入。
 
 命令：
 
 ```bash
-go test ./pkg/cluster/raftcluster -run 'Test(TestNodeRestartReopensClusterWithSameListenAddr|ThreeNodeClusterReelectsAfterLeaderRestart)' -count=1
+go test ./pkg/cluster -run 'Test(TestNodeRestartReopensClusterWithSameListenAddr|ThreeNodeClusterReelectsAfterLeaderRestart)' -count=1
 ```
 
 ### ISR 恢复与复制进度
 
-- `pkg/replication/isr.TestBecomeLeaderReusesRecoveredEpochPointWhenLeaderRestartsSameEpoch`
+- `pkg/channel/isr.TestBecomeLeaderReusesRecoveredEpochPointWhenLeaderRestartsSameEpoch`
   验证 leader 同 epoch 重启不会重复写 epoch point。
-- `pkg/replication/isrnode.TestQueuedReplicationRecomputesReplicaProgressBetweenSends`
+- `pkg/channel/node.TestQueuedReplicationRecomputesReplicaProgressBetweenSends`
   验证排队 fetch 请求会按最新 follower 进度发送，不复用 stale offset。
 
 命令：
 
 ```bash
-go test ./pkg/replication/isr -run 'TestBecomeLeader(ReplaysIdenticalEpochPointIdempotently|ReusesRecoveredEpochPointWhenLeaderRestartsSameEpoch)' -count=1
+go test ./pkg/channel/isr -run 'TestBecomeLeader(ReplaysIdenticalEpochPointIdempotently|ReusesRecoveredEpochPointWhenLeaderRestartsSameEpoch)' -count=1
 
-go test ./pkg/replication/isrnode -run 'TestQueuedReplicationRecomputesReplicaProgressBetweenSends|TestReplicationRequest(PopulatesFetchRequestEnvelope|UsesReplicaOffsetEpochInsteadOfGroupMetaEpoch)' -count=1
+go test ./pkg/channel/node -run 'TestQueuedReplicationRecomputesReplicaProgressBetweenSends|TestReplicationRequest(PopulatesFetchRequestEnvelope|UsesReplicaOffsetEpochInsteadOfGroupMetaEpoch)' -count=1
 ```
 
 ### ChannelLog 容灾与 MinISR
 
-- `pkg/storage/channellog.TestThreeNodeClusterAppendCommitsBeforeAckAndSurvivesFollowerRestart`
+- `pkg/channel/log.TestThreeNodeClusterAppendCommitsBeforeAckAndSurvivesFollowerRestart`
   验证 follower 重启后仍能恢复已提交消息。
-- `pkg/storage/channellog.TestThreeNodeClusterHarnessRestartNodeReopensData`
+- `pkg/channel/log.TestThreeNodeClusterHarnessRestartNodeReopensData`
   验证测试 harness 的节点重启路径真实复用落盘目录。
-- `pkg/storage/channellog.TestThreeNodeClusterBlocksCommitUntilMinISRRecovers`
+- `pkg/channel/log.TestThreeNodeClusterBlocksCommitUntilMinISRRecovers`
   验证 `MinISR` 不满足时提交会阻塞，节点恢复后未提交记录可继续达成提交。
-- `pkg/storage/channellog.TestFollowerRestartCatchesUpAfterLeaderProgress`
+- `pkg/channel/log.TestFollowerRestartCatchesUpAfterLeaderProgress`
   验证 follower 离线期间 leader 持续推进，重启后 follower 能追平 `HW/LEO`。
 
 命令：
 
 ```bash
-go test ./pkg/storage/channellog -run 'Test(ThreeNodeClusterAppendCommitsBeforeAckAndSurvivesFollowerRestart|ThreeNodeClusterHarnessRestartNodeReopensData|ThreeNodeClusterBlocksCommitUntilMinISRRecovers|FollowerRestartCatchesUpAfterLeaderProgress)' -count=1 -timeout 30s
+go test ./pkg/channel/log -run 'Test(ThreeNodeClusterAppendCommitsBeforeAckAndSurvivesFollowerRestart|ThreeNodeClusterHarnessRestartNodeReopensData|ThreeNodeClusterBlocksCommitUntilMinISRRecovers|FollowerRestartCatchesUpAfterLeaderProgress)' -count=1 -timeout 30s
 ```
 
 说明：
@@ -97,7 +97,7 @@ go test ./internal/app -run 'TestThreeNodeApp(SendAckSurvivesLeaderCrash|Rolling
 WKCLUSTER_STRESS=1 \
 WKCLUSTER_STRESS_DURATION=2s \
 WKCLUSTER_STRESS_WORKERS=2 \
-go test ./pkg/cluster/raftcluster -run 'TestStress(ThreeNodeMixedWorkloadWithRestarts|ForwardingContentionWithLeaderRestarts)' -count=1 -timeout 10m
+go test ./pkg/cluster -run 'TestStress(ThreeNodeMixedWorkloadWithRestarts|ForwardingContentionWithLeaderRestarts)' -count=1 -timeout 10m
 ```
 
 覆盖点：
@@ -118,17 +118,17 @@ go test ./...
 ## 5. 推荐执行顺序
 
 1. 先跑“快速冒烟”，确认选举、复制、重启路径没有立即回归。
-2. 再跑 `pkg/storage/channellog` 和 `internal/app`，确认多节点持久化和端到端行为。
+2. 再跑 `pkg/channel/log` 和 `internal/app`，确认多节点持久化和端到端行为。
 3. 最后跑轻量 stress 和 `go test ./...`。
 
 ## 6. 适用改动
 
 下列改动建议至少跑完“快速冒烟”：
 
-- `pkg/cluster/raftcluster`
-- `pkg/replication/isr`
-- `pkg/replication/isrnode`
-- `pkg/storage/channellog`
+- `pkg/cluster`
+- `pkg/channel/isr`
+- `pkg/channel/node`
+- `pkg/channel/log`
 - `internal/app` 多节点集成路径
 
 下列改动建议直接补跑压力回归：

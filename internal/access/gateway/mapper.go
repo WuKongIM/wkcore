@@ -4,10 +4,10 @@ import (
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
-func mapSendCommand(ctx *coregateway.Context, pkt *wkframe.SendPacket) (message.SendCommand, error) {
+func mapSendCommand(ctx *coregateway.Context, pkt *frame.SendPacket) (message.SendCommand, error) {
 	if ctx == nil || ctx.Session == nil {
 		return message.SendCommand{}, ErrUnauthenticatedSession
 	}
@@ -17,7 +17,7 @@ func mapSendCommand(ctx *coregateway.Context, pkt *wkframe.SendPacket) (message.
 		return message.SendCommand{}, ErrUnauthenticatedSession
 	}
 
-	protocolVersion := uint8(wkframe.LatestVersion)
+	protocolVersion := uint8(frame.LatestVersion)
 	if sessionVersion, ok := ctx.Session.Value(coregateway.SessionValueProtocolVersion).(uint8); ok && sessionVersion != 0 {
 		protocolVersion = sessionVersion
 	}
@@ -30,7 +30,7 @@ func mapSendCommand(ctx *coregateway.Context, pkt *wkframe.SendPacket) (message.
 	}
 
 	channelID := pkt.ChannelID
-	if pkt.ChannelType == wkframe.ChannelTypePerson && senderUID != "" && channelID != "" {
+	if pkt.ChannelType == frame.ChannelTypePerson && senderUID != "" && channelID != "" {
 		var err error
 		channelID, err = runtimechannelid.NormalizePersonChannel(senderUID, channelID)
 		if err != nil {
@@ -55,7 +55,7 @@ func mapSendCommand(ctx *coregateway.Context, pkt *wkframe.SendPacket) (message.
 	}, nil
 }
 
-func mapRecvAckCommand(ctx *coregateway.Context, pkt *wkframe.RecvackPacket) (message.RecvAckCommand, error) {
+func mapRecvAckCommand(ctx *coregateway.Context, pkt *frame.RecvackPacket) (message.RecvAckCommand, error) {
 	if ctx == nil || ctx.Session == nil {
 		return message.RecvAckCommand{}, ErrUnauthenticatedSession
 	}
@@ -78,7 +78,7 @@ func mapRecvAckCommand(ctx *coregateway.Context, pkt *wkframe.RecvackPacket) (me
 	}, nil
 }
 
-func writeSendack(ctx *coregateway.Context, pkt *wkframe.SendPacket, result message.SendResult) error {
+func writeSendack(ctx *coregateway.Context, pkt *frame.SendPacket, result message.SendResult) error {
 	if ctx == nil || ctx.Session == nil {
 		return ErrUnauthenticatedSession
 	}
@@ -90,7 +90,7 @@ func writeSendack(ctx *coregateway.Context, pkt *wkframe.SendPacket, result mess
 		clientMsgNo = pkt.ClientMsgNo
 	}
 
-	return ctx.WriteFrame(&wkframe.SendackPacket{
+	return ctx.WriteFrame(&frame.SendackPacket{
 		MessageID:   result.MessageID,
 		MessageSeq:  result.MessageSeq,
 		ClientSeq:   clientSeq,

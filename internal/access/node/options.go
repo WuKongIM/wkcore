@@ -7,15 +7,15 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
-	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
-	"github.com/WuKongIM/WuKongIM/pkg/replication/multiraft"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
-	"github.com/WuKongIM/WuKongIM/pkg/transport/nodetransport"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
+	"github.com/WuKongIM/WuKongIM/pkg/group/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
+	"github.com/WuKongIM/WuKongIM/pkg/transport"
 )
 
 type Cluster interface {
-	RPCMux() *nodetransport.RPCMux
+	RPCMux() *transport.RPCMux
 	LeaderOf(groupID multiraft.GroupID) (multiraft.NodeID, error)
 	IsLocal(nodeID multiraft.NodeID) bool
 	SlotForKey(key string) multiraft.GroupID
@@ -51,7 +51,7 @@ type Options struct {
 	DeliveryAck      DeliveryAck
 	DeliveryOffline  DeliveryOffline
 	DeliveryAckIndex *deliveryruntime.AckIndex
-	Codec            wkcodec.Protocol
+	Codec            codec.Protocol
 }
 
 type Adapter struct {
@@ -65,12 +65,12 @@ type Adapter struct {
 	deliveryAck      DeliveryAck
 	deliveryOffline  DeliveryOffline
 	deliveryAckIndex *deliveryruntime.AckIndex
-	codec            wkcodec.Protocol
+	codec            codec.Protocol
 }
 
 func New(opts Options) *Adapter {
 	if opts.Codec == nil {
-		opts.Codec = wkcodec.New()
+		opts.Codec = codec.New()
 	}
 	adapter := &Adapter{
 		cluster:          opts.Cluster,
@@ -98,13 +98,13 @@ func New(opts Options) *Adapter {
 
 type Client struct {
 	cluster Cluster
-	codec   wkcodec.Protocol
+	codec   codec.Protocol
 }
 
 func NewClient(cluster Cluster) *Client {
 	return &Client{
 		cluster: cluster,
-		codec:   wkcodec.New(),
+		codec:   codec.New(),
 	}
 }
 

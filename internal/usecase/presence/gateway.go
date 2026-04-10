@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 const (
@@ -172,8 +172,8 @@ func (a *App) routeFromConn(conn online.OnlineConn) Route {
 
 func (a *App) finishRouteAction(conn online.OnlineConn, action RouteAction) {
 	if action.Kind == routeActionKindKickThenClose && conn.Session != nil {
-		_ = conn.Session.WriteFrame(&wkframe.DisconnectPacket{
-			ReasonCode: wkframe.ReasonConnectKick,
+		_ = conn.Session.WriteFrame(&frame.DisconnectPacket{
+			ReasonCode: frame.ReasonConnectKick,
 			Reason:     routeActionKickReason,
 		})
 	}

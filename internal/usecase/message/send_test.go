@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,7 +20,7 @@ func TestSendRejectsUnauthenticatedSender(t *testing.T) {
 
 	result, err := app.Send(context.Background(), SendCommand{
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		Payload:     []byte("hi"),
 	})
 
@@ -40,7 +40,7 @@ func TestSendReturnsUnsupportedChannelType(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, wkframe.ReasonNotSupportChannelType, result.Reason)
+	require.Equal(t, frame.ReasonNotSupportChannelType, result.Reason)
 	require.Zero(t, result.MessageID)
 	require.Zero(t, result.MessageSeq)
 }
@@ -51,7 +51,7 @@ func TestSendReturnsClusterRequiredWhenClusterNotConfigured(t *testing.T) {
 	result, err := app.Send(context.Background(), SendCommand{
 		FromUID:     "u1",
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		Payload:     []byte("hi"),
 	})
 
@@ -69,8 +69,8 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 				Message: channellog.Message{
 					MessageID:   99,
 					MessageSeq:  7,
-					Framer:      wkframe.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
-					Setting:     wkframe.SettingReceiptEnabled,
+					Framer:      frame.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
+					Setting:     frame.SettingReceiptEnabled,
 					MsgKey:      "k1",
 					Expire:      60,
 					ClientSeq:   9,
@@ -78,7 +78,7 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 					StreamNo:    "stream-1",
 					Timestamp:   int32(fixedSendNow.Unix()),
 					ChannelID:   "u2@u1",
-					ChannelType: wkframe.ChannelTypePerson,
+					ChannelType: frame.ChannelTypePerson,
 					Topic:       "chat",
 					FromUID:     "u1",
 					Payload:     []byte("hi"),
@@ -93,13 +93,13 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 	})
 
 	result, err := app.Send(context.Background(), SendCommand{
-		Framer:      wkframe.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
-		Setting:     wkframe.SettingReceiptEnabled,
+		Framer:      frame.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
+		Setting:     frame.SettingReceiptEnabled,
 		MsgKey:      "k1",
 		Expire:      60,
 		FromUID:     "u1",
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		Topic:       "chat",
 		Payload:     []byte("hi"),
 		ClientSeq:   9,
@@ -108,13 +108,13 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+	require.Equal(t, frame.ReasonSuccess, result.Reason)
 	require.Equal(t, int64(99), result.MessageID)
 	require.Equal(t, uint64(7), result.MessageSeq)
 	require.Len(t, cluster.sendRequests, 1)
 	require.Equal(t, "u2@u1", cluster.sendRequests[0].ChannelID)
-	require.Equal(t, wkframe.Framer{NoPersist: true, RedDot: true, SyncOnce: true}, cluster.sendRequests[0].Message.Framer)
-	require.Equal(t, wkframe.SettingReceiptEnabled, cluster.sendRequests[0].Message.Setting)
+	require.Equal(t, frame.Framer{NoPersist: true, RedDot: true, SyncOnce: true}, cluster.sendRequests[0].Message.Framer)
+	require.Equal(t, frame.SettingReceiptEnabled, cluster.sendRequests[0].Message.Setting)
 	require.Equal(t, "k1", cluster.sendRequests[0].Message.MsgKey)
 	require.Equal(t, uint32(60), cluster.sendRequests[0].Message.Expire)
 	require.Equal(t, uint64(9), cluster.sendRequests[0].Message.ClientSeq)
@@ -128,8 +128,8 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 	require.Equal(t, channellog.Message{
 		MessageID:   99,
 		MessageSeq:  7,
-		Framer:      wkframe.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
-		Setting:     wkframe.SettingReceiptEnabled,
+		Framer:      frame.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
+		Setting:     frame.SettingReceiptEnabled,
 		MsgKey:      "k1",
 		Expire:      60,
 		ClientSeq:   9,
@@ -137,7 +137,7 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 		StreamNo:    "stream-1",
 		Timestamp:   int32(fixedSendNow.Unix()),
 		ChannelID:   "u2@u1",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		Topic:       "chat",
 		FromUID:     "u1",
 		Payload:     []byte("hi"),
@@ -158,12 +158,12 @@ func TestSendRecanonicalizesPrecomposedPersonChannelBeforeDurableWrite(t *testin
 	result, err := app.Send(context.Background(), SendCommand{
 		FromUID:     "u1",
 		ChannelID:   "u1@u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		Payload:     []byte("hi"),
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+	require.Equal(t, frame.ReasonSuccess, result.Reason)
 	require.Len(t, cluster.sendRequests, 1)
 	require.Equal(t, "u2@u1", cluster.sendRequests[0].ChannelID)
 }
@@ -178,7 +178,7 @@ func TestSendRejectsThirdPartyPrecomposedPersonChannel(t *testing.T) {
 	result, err := app.Send(context.Background(), SendCommand{
 		FromUID:     "u1",
 		ChannelID:   "u3@u4",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		Payload:     []byte("hi"),
 	})
 
@@ -203,14 +203,14 @@ func TestSendReturnsSuccessWhenCommittedSubmitFails(t *testing.T) {
 	result, err := app.Send(context.Background(), SendCommand{
 		FromUID:     "u1",
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		Payload:     []byte("hi"),
 		ClientSeq:   14,
 		ClientMsgNo: "m5",
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+	require.Equal(t, frame.ReasonSuccess, result.Reason)
 	require.Equal(t, int64(101), result.MessageID)
 	require.Equal(t, uint64(5), result.MessageSeq)
 	require.Len(t, cluster.sendRequests, 1)
@@ -228,7 +228,7 @@ func TestSendSubmitsCommittedMessageFromClusterResult(t *testing.T) {
 					MessageID:   88,
 					MessageSeq:  7,
 					ChannelID:   "u2@u1",
-					ChannelType: wkframe.ChannelTypePerson,
+					ChannelType: frame.ChannelTypePerson,
 					FromUID:     "committed-sender",
 					ClientMsgNo: "committed-1",
 					Topic:       "committed-topic",
@@ -246,7 +246,7 @@ func TestSendSubmitsCommittedMessageFromClusterResult(t *testing.T) {
 	_, err := app.Send(context.Background(), SendCommand{
 		FromUID:     "u1",
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		ClientMsgNo: "draft-1",
 		Topic:       "draft-topic",
 		Payload:     []byte("draft-payload"),
@@ -298,14 +298,14 @@ func TestSendDoesNotPerformSynchronousDeliveryAfterDurableWrite(t *testing.T) {
 	result, err := app.Send(context.Background(), SendCommand{
 		FromUID:     "u1",
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		Payload:     []byte("hi"),
 		ClientSeq:   31,
 		ClientMsgNo: "m-remote",
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+	require.Equal(t, frame.ReasonSuccess, result.Reason)
 	require.Empty(t, delivery.calls)
 	require.Empty(t, remote.calls)
 }
@@ -322,7 +322,7 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 					MessageID:   201,
 					MessageSeq:  7,
 					ChannelID:   "u2@u1",
-					ChannelType: wkframe.ChannelTypePerson,
+					ChannelType: frame.ChannelTypePerson,
 					FromUID:     "u1",
 					ClientMsgNo: "m6",
 					Payload:     []byte("hi"),
@@ -334,7 +334,7 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	refresher := &fakeMetaRefresher{
 		metas: []channellog.ChannelMeta{{
 			ChannelID:    "u2@u1",
-			ChannelType:  wkframe.ChannelTypePerson,
+			ChannelType:  frame.ChannelTypePerson,
 			ChannelEpoch: 11,
 			LeaderEpoch:  3,
 		}},
@@ -349,14 +349,14 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	result, err := app.Send(context.Background(), SendCommand{
 		FromUID:     "u1",
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		Payload:     []byte("hi"),
 		ClientSeq:   21,
 		ClientMsgNo: "m6",
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+	require.Equal(t, frame.ReasonSuccess, result.Reason)
 	require.Equal(t, int64(201), result.MessageID)
 	require.Equal(t, uint64(7), result.MessageSeq)
 	require.Len(t, refresher.keys, 1)
@@ -371,7 +371,7 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 		MessageID:   201,
 		MessageSeq:  7,
 		ChannelID:   "u2@u1",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		FromUID:     "u1",
 		ClientMsgNo: "m6",
 		Payload:     []byte("hi"),
@@ -391,7 +391,7 @@ func TestSendDurablePersonPropagatesRequestContextToClusterAndMetaRefresh(t *tes
 	refresher := &fakeMetaRefresher{
 		metas: []channellog.ChannelMeta{{
 			ChannelID:    "u2@u1",
-			ChannelType:  wkframe.ChannelTypePerson,
+			ChannelType:  frame.ChannelTypePerson,
 			ChannelEpoch: 12,
 			LeaderEpoch:  4,
 		}},
@@ -406,13 +406,13 @@ func TestSendDurablePersonPropagatesRequestContextToClusterAndMetaRefresh(t *tes
 	result, err := app.Send(ctx, SendCommand{
 		FromUID:     "u1",
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		ClientMsgNo: "m9",
 		Payload:     []byte("hi"),
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+	require.Equal(t, frame.ReasonSuccess, result.Reason)
 	require.Len(t, cluster.sendContexts, 2)
 	require.Same(t, ctx, cluster.sendContexts[0])
 	require.Same(t, ctx, cluster.sendContexts[1])
@@ -438,7 +438,7 @@ func TestSendDurablePersonReturnsContextCanceled(t *testing.T) {
 	result, err := app.Send(ctx, SendCommand{
 		FromUID:     "u1",
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		ClientMsgNo: "m10",
 		Payload:     []byte("hi"),
 	})
@@ -472,11 +472,11 @@ func TestSendReturnsProtocolUpgradeRequiredWhenClusterRejectsLegacyClient(t *tes
 	result, err := app.Send(context.Background(), SendCommand{
 		FromUID:         "u1",
 		ChannelID:       "u2",
-		ChannelType:     wkframe.ChannelTypePerson,
+		ChannelType:     frame.ChannelTypePerson,
 		Payload:         []byte("hi"),
 		ClientSeq:       23,
 		ClientMsgNo:     "m8",
-		ProtocolVersion: wkframe.LegacyMessageSeqVersion,
+		ProtocolVersion: frame.LegacyMessageSeqVersion,
 	})
 
 	require.ErrorIs(t, err, channellog.ErrProtocolUpgradeRequired)
@@ -586,17 +586,17 @@ func (f *fakeRegistry) ActiveGroups() []online.GroupSnapshot {
 
 type deliveryCall struct {
 	recipients []online.OnlineConn
-	frame      wkframe.Frame
+	frame      frame.Frame
 }
 
 type recordingDelivery struct {
 	calls []deliveryCall
 }
 
-func (d *recordingDelivery) Deliver(recipients []online.OnlineConn, frame wkframe.Frame) error {
+func (d *recordingDelivery) Deliver(recipients []online.OnlineConn, f frame.Frame) error {
 	copiedRecipients := make([]online.OnlineConn, len(recipients))
 	copy(copiedRecipients, recipients)
-	d.calls = append(d.calls, deliveryCall{recipients: copiedRecipients, frame: frame})
+	d.calls = append(d.calls, deliveryCall{recipients: copiedRecipients, frame: f})
 	return nil
 }
 
@@ -604,7 +604,7 @@ type failingDelivery struct {
 	err error
 }
 
-func (d failingDelivery) Deliver([]online.OnlineConn, wkframe.Frame) error {
+func (d failingDelivery) Deliver([]online.OnlineConn, frame.Frame) error {
 	return d.err
 }
 
@@ -651,11 +651,11 @@ func (d failingRemoteDelivery) DeliverRemote(context.Context, RemoteDeliveryComm
 	return d.err
 }
 
-func requireRecvPacket(t *testing.T, frame wkframe.Frame) *wkframe.RecvPacket {
+func requireRecvPacket(t *testing.T, f frame.Frame) *frame.RecvPacket {
 	t.Helper()
 
-	recv, ok := frame.(*wkframe.RecvPacket)
-	require.True(t, ok, "expected *wkframe.RecvPacket, got %T", frame)
+	recv, ok := f.(*frame.RecvPacket)
+	require.True(t, ok, "expected *frame.RecvPacket, got %T", f)
 	return recv
 }
 

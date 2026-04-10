@@ -4,7 +4,7 @@ import (
 	"context"
 
 	runtimedelivery "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 )
 
 type Runtime interface {

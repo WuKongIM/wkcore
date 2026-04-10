@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,8 +24,8 @@ func TestRegistryRegisterStoresDeviceIDGroupAndActiveState(t *testing.T) {
 		DeviceID:    "d1",
 		GroupID:     7,
 		State:       LocalRouteStateActive,
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Listener:    "tcp",
 		ConnectedAt: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC),
 		Session:     session.New(session.Config{ID: 11, Listener: "tcp"}),
@@ -55,8 +55,8 @@ func TestRegistryRegisterLookupAndUnregister(t *testing.T) {
 	conn1 := OnlineConn{
 		SessionID:   1,
 		UID:         "u1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Listener:    "tcp",
 		ConnectedAt: fixedNow,
 		Session:     session.New(session.Config{ID: 1, Listener: "tcp"}),
@@ -64,8 +64,8 @@ func TestRegistryRegisterLookupAndUnregister(t *testing.T) {
 	conn2 := OnlineConn{
 		SessionID:   2,
 		UID:         "u1",
-		DeviceFlag:  wkframe.WEB,
-		DeviceLevel: wkframe.DeviceLevelSlave,
+		DeviceFlag:  frame.WEB,
+		DeviceLevel: frame.DeviceLevelSlave,
 		Listener:    "ws",
 		ConnectedAt: fixedNow.Add(time.Minute),
 		Session:     session.New(session.Config{ID: 2, Listener: "ws"}),
@@ -83,8 +83,8 @@ func TestRegistryRegisterLookupAndUnregister(t *testing.T) {
 	require.ElementsMatch(t, []string{"tcp", "ws"}, listenersOf(connections))
 	require.Contains(t, connectionIDsOf(connections), uint64(1))
 	require.Contains(t, connectionIDsOf(connections), uint64(2))
-	require.Contains(t, deviceFlagsOf(connections), wkframe.APP)
-	require.Contains(t, deviceFlagsOf(connections), wkframe.DeviceFlag(wkframe.WEB))
+	require.Contains(t, deviceFlagsOf(connections), frame.APP)
+	require.Contains(t, deviceFlagsOf(connections), frame.DeviceFlag(frame.WEB))
 
 	connections[0].Listener = "mutated"
 	connectionsAgain := reg.ConnectionsByUID("u1")
@@ -103,8 +103,8 @@ func TestRegistryRegisterOverwritesSessionAndCleansOldUIDBucket(t *testing.T) {
 	first := OnlineConn{
 		SessionID:   1,
 		UID:         "u1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Listener:    "tcp",
 		ConnectedAt: fixedNow,
 		Session:     session.New(session.Config{ID: 1, Listener: "tcp"}),
@@ -112,8 +112,8 @@ func TestRegistryRegisterOverwritesSessionAndCleansOldUIDBucket(t *testing.T) {
 	second := OnlineConn{
 		SessionID:   1,
 		UID:         "u2",
-		DeviceFlag:  wkframe.WEB,
-		DeviceLevel: wkframe.DeviceLevelSlave,
+		DeviceFlag:  frame.WEB,
+		DeviceLevel: frame.DeviceLevelSlave,
 		Listener:    "tcp",
 		ConnectedAt: fixedNow.Add(time.Minute),
 		Session:     session.New(session.Config{ID: 1, Listener: "tcp"}),
@@ -135,8 +135,8 @@ func TestRegistryUnregisterIsIdempotent(t *testing.T) {
 	conn := OnlineConn{
 		SessionID:   1,
 		UID:         "u1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Listener:    "tcp",
 		ConnectedAt: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC),
 		Session:     session.New(session.Config{ID: 1, Listener: "tcp"}),
@@ -160,8 +160,8 @@ func TestRegistryMarkClosingRemovesRouteFromUIDDeliveryAndBucketDigest(t *testin
 		DeviceID:    "d1",
 		GroupID:     1,
 		State:       LocalRouteStateActive,
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Session:     session.New(session.Config{ID: 11, Listener: "tcp"}),
 	}))
 
@@ -182,8 +182,8 @@ func TestRegistryMarkClosingUpdatesOnlyOccupiedGroupSnapshots(t *testing.T) {
 		DeviceID:    "d1",
 		GroupID:     1,
 		State:       LocalRouteStateActive,
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Session:     session.New(session.Config{ID: 11, Listener: "tcp"}),
 	}))
 	require.NoError(t, reg.Register(OnlineConn{
@@ -192,8 +192,8 @@ func TestRegistryMarkClosingUpdatesOnlyOccupiedGroupSnapshots(t *testing.T) {
 		DeviceID:    "d2",
 		GroupID:     1,
 		State:       LocalRouteStateActive,
-		DeviceFlag:  wkframe.WEB,
-		DeviceLevel: wkframe.DeviceLevelSlave,
+		DeviceFlag:  frame.WEB,
+		DeviceLevel: frame.DeviceLevelSlave,
 		Session:     session.New(session.Config{ID: 12, Listener: "ws"}),
 	}))
 
@@ -221,8 +221,8 @@ func TestRegistryActiveConnectionsByGroupReturnsOnlyActiveRoutes(t *testing.T) {
 		DeviceID:    "d1",
 		GroupID:     3,
 		State:       LocalRouteStateActive,
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Session:     session.New(session.Config{ID: 11, Listener: "tcp"}),
 	}
 	closing := OnlineConn{
@@ -231,8 +231,8 @@ func TestRegistryActiveConnectionsByGroupReturnsOnlyActiveRoutes(t *testing.T) {
 		DeviceID:    "d2",
 		GroupID:     3,
 		State:       LocalRouteStateClosing,
-		DeviceFlag:  wkframe.WEB,
-		DeviceLevel: wkframe.DeviceLevelSlave,
+		DeviceFlag:  frame.WEB,
+		DeviceLevel: frame.DeviceLevelSlave,
 		Session:     session.New(session.Config{ID: 12, Listener: "ws"}),
 	}
 
@@ -260,8 +260,8 @@ func connectionIDsOf(conns []OnlineConn) []uint64 {
 	return ids
 }
 
-func deviceFlagsOf(conns []OnlineConn) []wkframe.DeviceFlag {
-	flags := make([]wkframe.DeviceFlag, 0, len(conns))
+func deviceFlagsOf(conns []OnlineConn) []frame.DeviceFlag {
+	flags := make([]frame.DeviceFlag, 0, len(conns))
 	for _, conn := range conns {
 		flags = append(flags, conn.DeviceFlag)
 	}

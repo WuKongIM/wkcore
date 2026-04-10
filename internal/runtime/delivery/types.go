@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 )
 
 type ChannelKey = channellog.ChannelKey

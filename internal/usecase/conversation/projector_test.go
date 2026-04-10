@@ -9,9 +9,9 @@ import (
 	"time"
 
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -47,9 +47,9 @@ func TestProjectorColdWakeupTouchesPersonConversationStates(t *testing.T) {
 	now := time.Unix(40*24*60*60, 0)
 	store := newProjectorStoreStub()
 	channelID := runtimechannelid.EncodePersonChannel("u1", "u2")
-	store.cold[metadb.ConversationKey{ChannelID: channelID, ChannelType: int64(wkframe.ChannelTypePerson)}] = metadb.ChannelUpdateLog{
+	store.cold[metadb.ConversationKey{ChannelID: channelID, ChannelType: int64(frame.ChannelTypePerson)}] = metadb.ChannelUpdateLog{
 		ChannelID:   channelID,
-		ChannelType: int64(wkframe.ChannelTypePerson),
+		ChannelType: int64(frame.ChannelTypePerson),
 		LastMsgAt:   now.Add(-31 * 24 * time.Hour).UnixNano(),
 	}
 
@@ -64,20 +64,20 @@ func TestProjectorColdWakeupTouchesPersonConversationStates(t *testing.T) {
 
 	msg := channellog.Message{
 		ChannelID:   channelID,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageSeq:  10,
 		ClientMsgNo: "c1",
 		Timestamp:   int32(now.Unix()),
 	}
 	require.NoError(t, projector.SubmitCommitted(context.Background(), msg))
 	require.ElementsMatch(t, []metadb.UserConversationActivePatch{
-		{UID: "u1", ChannelID: channelID, ChannelType: int64(wkframe.ChannelTypePerson), ActiveAt: time.Unix(int64(msg.Timestamp), 0).UnixNano()},
-		{UID: "u2", ChannelID: channelID, ChannelType: int64(wkframe.ChannelTypePerson), ActiveAt: time.Unix(int64(msg.Timestamp), 0).UnixNano()},
+		{UID: "u1", ChannelID: channelID, ChannelType: int64(frame.ChannelTypePerson), ActiveAt: time.Unix(int64(msg.Timestamp), 0).UnixNano()},
+		{UID: "u2", ChannelID: channelID, ChannelType: int64(frame.ChannelTypePerson), ActiveAt: time.Unix(int64(msg.Timestamp), 0).UnixNano()},
 	}, store.touches)
 
 	require.NoError(t, projector.SubmitCommitted(context.Background(), channellog.Message{
 		ChannelID:   channelID,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageSeq:  11,
 		ClientMsgNo: "c2",
 		Timestamp:   int32(now.Add(time.Second).Unix()),
@@ -168,9 +168,9 @@ func TestProjectorRetriesColdWakeupOnLaterFlush(t *testing.T) {
 	now := time.Unix(40*24*60*60, 0)
 	store := newProjectorStoreStub()
 	channelID := runtimechannelid.EncodePersonChannel("u1", "u2")
-	store.cold[metadb.ConversationKey{ChannelID: channelID, ChannelType: int64(wkframe.ChannelTypePerson)}] = metadb.ChannelUpdateLog{
+	store.cold[metadb.ConversationKey{ChannelID: channelID, ChannelType: int64(frame.ChannelTypePerson)}] = metadb.ChannelUpdateLog{
 		ChannelID:   channelID,
-		ChannelType: int64(wkframe.ChannelTypePerson),
+		ChannelType: int64(frame.ChannelTypePerson),
 		LastMsgAt:   now.Add(-31 * 24 * time.Hour).UnixNano(),
 	}
 	store.touchErrs = []error{errors.New("transient")}
@@ -186,7 +186,7 @@ func TestProjectorRetriesColdWakeupOnLaterFlush(t *testing.T) {
 
 	msg := channellog.Message{
 		ChannelID:   channelID,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageSeq:  10,
 		ClientMsgNo: "c1",
 		Timestamp:   int32(now.Unix()),
@@ -197,8 +197,8 @@ func TestProjectorRetriesColdWakeupOnLaterFlush(t *testing.T) {
 
 	require.NoError(t, projector.Flush(context.Background()))
 	require.ElementsMatch(t, []metadb.UserConversationActivePatch{
-		{UID: "u1", ChannelID: channelID, ChannelType: int64(wkframe.ChannelTypePerson), ActiveAt: time.Unix(int64(msg.Timestamp), 0).UnixNano()},
-		{UID: "u2", ChannelID: channelID, ChannelType: int64(wkframe.ChannelTypePerson), ActiveAt: time.Unix(int64(msg.Timestamp), 0).UnixNano()},
+		{UID: "u1", ChannelID: channelID, ChannelType: int64(frame.ChannelTypePerson), ActiveAt: time.Unix(int64(msg.Timestamp), 0).UnixNano()},
+		{UID: "u2", ChannelID: channelID, ChannelType: int64(frame.ChannelTypePerson), ActiveAt: time.Unix(int64(msg.Timestamp), 0).UnixNano()},
 	}, store.touches)
 	require.Equal(t, 2, store.touchCalls)
 }
@@ -217,12 +217,12 @@ func TestProjectorFlushWakeupsSerializesConcurrentRuns(t *testing.T) {
 	channelID := runtimechannelid.EncodePersonChannel("u1", "u2")
 	msg := channellog.Message{
 		ChannelID:   channelID,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageSeq:  10,
 		ClientMsgNo: "c1",
 		Timestamp:   100,
 	}
-	key := metadb.ConversationKey{ChannelID: channelID, ChannelType: int64(wkframe.ChannelTypePerson)}
+	key := metadb.ConversationKey{ChannelID: channelID, ChannelType: int64(frame.ChannelTypePerson)}
 	projector.wakeups[key] = msg
 
 	firstTouchStarted := make(chan struct{})
@@ -272,16 +272,16 @@ func TestProjectorFlushWakeupsBatchesPersonTouches(t *testing.T) {
 
 	channelID1 := runtimechannelid.EncodePersonChannel("u1", "u2")
 	channelID2 := runtimechannelid.EncodePersonChannel("u1", "u3")
-	projector.wakeups[metadb.ConversationKey{ChannelID: channelID1, ChannelType: int64(wkframe.ChannelTypePerson)}] = channellog.Message{
+	projector.wakeups[metadb.ConversationKey{ChannelID: channelID1, ChannelType: int64(frame.ChannelTypePerson)}] = channellog.Message{
 		ChannelID:   channelID1,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageSeq:  10,
 		ClientMsgNo: "c1",
 		Timestamp:   100,
 	}
-	projector.wakeups[metadb.ConversationKey{ChannelID: channelID2, ChannelType: int64(wkframe.ChannelTypePerson)}] = channellog.Message{
+	projector.wakeups[metadb.ConversationKey{ChannelID: channelID2, ChannelType: int64(frame.ChannelTypePerson)}] = channellog.Message{
 		ChannelID:   channelID2,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageSeq:  11,
 		ClientMsgNo: "c2",
 		Timestamp:   101,
@@ -290,10 +290,10 @@ func TestProjectorFlushWakeupsBatchesPersonTouches(t *testing.T) {
 	require.NoError(t, projector.flushWakeups(context.Background()))
 	require.Equal(t, 1, store.touchCalls)
 	require.ElementsMatch(t, []metadb.UserConversationActivePatch{
-		{UID: "u1", ChannelID: channelID1, ChannelType: int64(wkframe.ChannelTypePerson), ActiveAt: time.Unix(100, 0).UnixNano()},
-		{UID: "u2", ChannelID: channelID1, ChannelType: int64(wkframe.ChannelTypePerson), ActiveAt: time.Unix(100, 0).UnixNano()},
-		{UID: "u1", ChannelID: channelID2, ChannelType: int64(wkframe.ChannelTypePerson), ActiveAt: time.Unix(101, 0).UnixNano()},
-		{UID: "u3", ChannelID: channelID2, ChannelType: int64(wkframe.ChannelTypePerson), ActiveAt: time.Unix(101, 0).UnixNano()},
+		{UID: "u1", ChannelID: channelID1, ChannelType: int64(frame.ChannelTypePerson), ActiveAt: time.Unix(100, 0).UnixNano()},
+		{UID: "u2", ChannelID: channelID1, ChannelType: int64(frame.ChannelTypePerson), ActiveAt: time.Unix(100, 0).UnixNano()},
+		{UID: "u1", ChannelID: channelID2, ChannelType: int64(frame.ChannelTypePerson), ActiveAt: time.Unix(101, 0).UnixNano()},
+		{UID: "u3", ChannelID: channelID2, ChannelType: int64(frame.ChannelTypePerson), ActiveAt: time.Unix(101, 0).UnixNano()},
 	}, store.touches)
 }
 
@@ -302,14 +302,14 @@ func TestProjectorSubmitCommittedSchedulesSingleWakeupWorker(t *testing.T) {
 	store := newProjectorStoreStub()
 	channelID1 := runtimechannelid.EncodePersonChannel("u1", "u2")
 	channelID2 := runtimechannelid.EncodePersonChannel("u1", "u3")
-	store.cold[metadb.ConversationKey{ChannelID: channelID1, ChannelType: int64(wkframe.ChannelTypePerson)}] = metadb.ChannelUpdateLog{
+	store.cold[metadb.ConversationKey{ChannelID: channelID1, ChannelType: int64(frame.ChannelTypePerson)}] = metadb.ChannelUpdateLog{
 		ChannelID:   channelID1,
-		ChannelType: int64(wkframe.ChannelTypePerson),
+		ChannelType: int64(frame.ChannelTypePerson),
 		LastMsgAt:   now.Add(-31 * 24 * time.Hour).UnixNano(),
 	}
-	store.cold[metadb.ConversationKey{ChannelID: channelID2, ChannelType: int64(wkframe.ChannelTypePerson)}] = metadb.ChannelUpdateLog{
+	store.cold[metadb.ConversationKey{ChannelID: channelID2, ChannelType: int64(frame.ChannelTypePerson)}] = metadb.ChannelUpdateLog{
 		ChannelID:   channelID2,
-		ChannelType: int64(wkframe.ChannelTypePerson),
+		ChannelType: int64(frame.ChannelTypePerson),
 		LastMsgAt:   now.Add(-31 * 24 * time.Hour).UnixNano(),
 	}
 
@@ -327,14 +327,14 @@ func TestProjectorSubmitCommittedSchedulesSingleWakeupWorker(t *testing.T) {
 
 	require.NoError(t, projector.SubmitCommitted(context.Background(), channellog.Message{
 		ChannelID:   channelID1,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageSeq:  10,
 		ClientMsgNo: "c1",
 		Timestamp:   int32(now.Unix()),
 	}))
 	require.NoError(t, projector.SubmitCommitted(context.Background(), channellog.Message{
 		ChannelID:   channelID2,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageSeq:  11,
 		ClientMsgNo: "c2",
 		Timestamp:   int32(now.Add(time.Second).Unix()),
@@ -360,7 +360,7 @@ func TestProjectorFirstMessageSkipsColdLookup(t *testing.T) {
 
 	require.NoError(t, projector.SubmitCommitted(context.Background(), channellog.Message{
 		ChannelID:   channelID,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageSeq:  1,
 		ClientMsgNo: "c1",
 		Timestamp:   100,

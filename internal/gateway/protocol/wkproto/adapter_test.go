@@ -7,15 +7,15 @@ import (
 	adapterpkg "github.com/WuKongIM/WuKongIM/internal/gateway/protocol/wkproto"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
-	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 func TestAdapterDecodeReturnsZeroUntilFrameIsComplete(t *testing.T) {
 	adapter := adapterpkg.New()
 	sess := testkit.NewProtocolSession()
 
-	wire, err := codec.New().EncodeFrame(&wkframe.PingPacket{}, wkframe.LatestVersion)
+	wire, err := codec.New().EncodeFrame(&frame.PingPacket{}, frame.LatestVersion)
 	if err != nil {
 		t.Fatalf("encode frame failed: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestAdapterEncodeRoundTrip(t *testing.T) {
 	adapter := adapterpkg.New()
 	sess := testkit.NewProtocolSession()
 
-	encoded, err := adapter.Encode(sess, &wkframe.PingPacket{}, session.OutboundMeta{})
+	encoded, err := adapter.Encode(sess, &frame.PingPacket{}, session.OutboundMeta{})
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestAdapterEncodeRoundTrip(t *testing.T) {
 	if len(frames) != 1 {
 		t.Fatalf("expected one frame, got %d", len(frames))
 	}
-	if _, ok := frames[0].(*wkframe.PingPacket); !ok {
+	if _, ok := frames[0].(*frame.PingPacket); !ok {
 		t.Fatalf("expected ping packet, got %T", frames[0])
 	}
 }
@@ -58,11 +58,11 @@ func TestAdapterDecodeStickyFrames(t *testing.T) {
 	sess := testkit.NewProtocolSession()
 
 	codec := codec.New()
-	first, err := codec.EncodeFrame(&wkframe.PingPacket{}, wkframe.LatestVersion)
+	first, err := codec.EncodeFrame(&frame.PingPacket{}, frame.LatestVersion)
 	if err != nil {
 		t.Fatalf("encode first frame failed: %v", err)
 	}
-	second, err := codec.EncodeFrame(&wkframe.PongPacket{}, wkframe.LatestVersion)
+	second, err := codec.EncodeFrame(&frame.PongPacket{}, frame.LatestVersion)
 	if err != nil {
 		t.Fatalf("encode second frame failed: %v", err)
 	}
@@ -85,24 +85,24 @@ func TestAdapterUsesSessionVersionForOutboundFrames(t *testing.T) {
 	sess := testkit.NewProtocolSession()
 	sess.SetValue(gateway.SessionValueProtocolVersion, uint8(5))
 
-	encoded, err := adapter.Encode(sess, &wkframe.SendackPacket{
+	encoded, err := adapter.Encode(sess, &frame.SendackPacket{
 		MessageID:   9,
 		MessageSeq:  42,
 		ClientSeq:   7,
 		ClientMsgNo: "m1",
-		ReasonCode:  wkframe.ReasonSuccess,
+		ReasonCode:  frame.ReasonSuccess,
 	}, session.OutboundMeta{})
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
 
-	frame, _, err := codec.New().DecodeFrame(encoded, 5)
+	f, _, err := codec.New().DecodeFrame(encoded, 5)
 	if err != nil {
 		t.Fatalf("DecodeFrame: %v", err)
 	}
-	ack, ok := frame.(*wkframe.SendackPacket)
+	ack, ok := f.(*frame.SendackPacket)
 	if !ok {
-		t.Fatalf("expected sendack, got %T", frame)
+		t.Fatalf("expected sendack, got %T", f)
 	}
 	if ack.MessageSeq != 42 {
 		t.Fatalf("MessageSeq = %d, want 42", ack.MessageSeq)

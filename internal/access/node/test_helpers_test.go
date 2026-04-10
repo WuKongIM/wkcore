@@ -8,8 +8,8 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,9 +20,9 @@ func mustMarshal(t *testing.T, value any) []byte {
 	return body
 }
 
-func mustEncodeFrame(t *testing.T, frame wkframe.Frame) []byte {
+func mustEncodeFrame(t *testing.T, f frame.Frame) []byte {
 	t.Helper()
-	body, err := wkcodec.New().EncodeFrame(frame, wkframe.LatestVersion)
+	body, err := codec.New().EncodeFrame(f, frame.LatestVersion)
 	require.NoError(t, err)
 	return body
 }
@@ -46,8 +46,8 @@ func testOnlineConn(sessionID uint64, uid string, groupID uint64) online.OnlineC
 		SessionID:   sessionID,
 		UID:         uid,
 		DeviceID:    "d1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		GroupID:     groupID,
 		State:       online.LocalRouteStateActive,
 		Listener:    "tcp",
@@ -61,7 +61,7 @@ type recordingSession struct {
 	listener string
 
 	mu     sync.Mutex
-	frames []wkframe.Frame
+	frames []frame.Frame
 }
 
 func newRecordingSession(id uint64, listener string) *recordingSession {
@@ -76,10 +76,10 @@ func (s *recordingSession) RemoteAddr() string { return "" }
 
 func (s *recordingSession) LocalAddr() string { return "" }
 
-func (s *recordingSession) WriteFrame(frame wkframe.Frame, _ ...session.WriteOption) error {
+func (s *recordingSession) WriteFrame(f frame.Frame, _ ...session.WriteOption) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.frames = append(s.frames, frame)
+	s.frames = append(s.frames, f)
 	return nil
 }
 
@@ -89,10 +89,10 @@ func (s *recordingSession) SetValue(string, any) {}
 
 func (s *recordingSession) Value(string) any { return nil }
 
-func (s *recordingSession) WrittenFrames() []wkframe.Frame {
+func (s *recordingSession) WrittenFrames() []frame.Frame {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]wkframe.Frame, len(s.frames))
+	out := make([]frame.Frame, len(s.frames))
 	copy(out, s.frames)
 	return out
 }

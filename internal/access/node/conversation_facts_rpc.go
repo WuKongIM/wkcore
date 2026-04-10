@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 )
 
 const (

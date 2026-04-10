@@ -6,8 +6,8 @@ import (
 
 	runtimedelivery "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,7 +17,7 @@ func TestSubmitCommittedDelegatesToRuntimeWithDurableMessage(t *testing.T) {
 
 	err := app.SubmitCommitted(context.Background(), channellog.Message{
 		ChannelID:   "u1@u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageID:   101,
 		MessageSeq:  7,
 		FromUID:     "u1",
@@ -29,7 +29,7 @@ func TestSubmitCommittedDelegatesToRuntimeWithDurableMessage(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []channellog.Message{{
 		ChannelID:   "u1@u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageID:   101,
 		MessageSeq:  7,
 		FromUID:     "u1",

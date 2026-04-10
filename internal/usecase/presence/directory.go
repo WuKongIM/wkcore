@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 type routeKey struct {
@@ -254,9 +254,9 @@ func conflicts(incoming, existing Route) bool {
 		return false
 	}
 	switch incoming.DeviceLevel {
-	case uint8(wkframe.DeviceLevelMaster):
+	case uint8(frame.DeviceLevelMaster):
 		return true
-	case uint8(wkframe.DeviceLevelSlave):
+	case uint8(frame.DeviceLevelSlave):
 		return incoming.DeviceID == existing.DeviceID
 	default:
 		return false
@@ -274,7 +274,7 @@ func (d *directory) replayConflictsLocked(route Route) bool {
 
 func actionForReplacement(incoming, existing Route) RouteAction {
 	kind := "close"
-	if incoming.DeviceLevel == uint8(wkframe.DeviceLevelMaster) && incoming.DeviceID != existing.DeviceID {
+	if incoming.DeviceLevel == uint8(frame.DeviceLevelMaster) && incoming.DeviceID != existing.DeviceID {
 		kind = "kick_then_close"
 	}
 	return RouteAction{

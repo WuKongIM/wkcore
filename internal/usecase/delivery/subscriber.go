@@ -3,8 +3,8 @@ package delivery
 import (
 	"context"
 
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 type ChannelSubscriberStore interface {
@@ -13,8 +13,8 @@ type ChannelSubscriberStore interface {
 }
 
 type SnapshotToken struct {
-	key        channellog.ChannelKey
-	snapshot   []string
+	key      channellog.ChannelKey
+	snapshot []string
 }
 
 type SubscriberResolver interface {
@@ -36,7 +36,7 @@ func NewSubscriberResolver(opts SubscriberResolverOptions) SubscriberResolver {
 
 func (r *subscriberResolver) BeginSnapshot(ctx context.Context, key channellog.ChannelKey) (SnapshotToken, error) {
 	token := SnapshotToken{key: key}
-	if key.ChannelType == wkframe.ChannelTypePerson {
+	if key.ChannelType == frame.ChannelTypePerson {
 		left, right, err := DecodePersonChannel(key.ChannelID)
 		if err != nil {
 			return SnapshotToken{}, err

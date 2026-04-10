@@ -11,9 +11,9 @@ import (
 	"unsafe"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
-	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/raftstorage"
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
 	"github.com/stretchr/testify/require"
 )
 

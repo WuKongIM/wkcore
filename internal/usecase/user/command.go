@@ -4,14 +4,14 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 type UpdateTokenCommand struct {
 	UID         string
 	Token       string
-	DeviceFlag  wkframe.DeviceFlag
-	DeviceLevel wkframe.DeviceLevel
+	DeviceFlag  frame.DeviceFlag
+	DeviceLevel frame.DeviceLevel
 }
 
 func (c UpdateTokenCommand) Validate() error {

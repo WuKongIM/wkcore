@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,16 +15,16 @@ func TestLocalDeliveryWritesFrameToEveryRecipientSession(t *testing.T) {
 	s2 := newRecordingSession(12, "tcp")
 	delivery := LocalDelivery{}
 
-	frame := &wkframe.PingPacket{}
+	f := &frame.PingPacket{}
 	err := delivery.Deliver([]OnlineConn{
 		{UID: "u2", Session: s1},
 		{UID: "u2", Session: s2},
-	}, frame)
+	}, f)
 	require.NoError(t, err)
 	require.Len(t, s1.WrittenFrames(), 1)
 	require.Len(t, s2.WrittenFrames(), 1)
-	require.Same(t, frame, s1.WrittenFrames()[0])
-	require.Same(t, frame, s2.WrittenFrames()[0])
+	require.Same(t, f, s1.WrittenFrames()[0])
+	require.Same(t, f, s2.WrittenFrames()[0])
 }
 
 func TestLocalDeliveryContinuesAfterWriteFrameError(t *testing.T) {
@@ -36,7 +36,7 @@ func TestLocalDeliveryContinuesAfterWriteFrameError(t *testing.T) {
 	err := delivery.Deliver([]OnlineConn{
 		{UID: "u2", Session: first},
 		{UID: "u2", Session: second},
-	}, &wkframe.PingPacket{})
+	}, &frame.PingPacket{})
 
 	require.ErrorIs(t, err, writeErr)
 	require.Equal(t, 1, first.writeAttempts)
@@ -51,7 +51,7 @@ func TestLocalDeliverySkipsClosingRoutes(t *testing.T) {
 	err := delivery.Deliver([]OnlineConn{
 		{UID: "u2", Session: active, State: LocalRouteStateActive},
 		{UID: "u2", Session: closing, State: LocalRouteStateClosing},
-	}, &wkframe.PingPacket{})
+	}, &frame.PingPacket{})
 
 	require.NoError(t, err)
 	require.Len(t, active.WrittenFrames(), 1)
@@ -64,9 +64,9 @@ type erroringSession struct {
 	writeAttempts int
 }
 
-func (s *erroringSession) WriteFrame(frame wkframe.Frame, opts ...session.WriteOption) error {
+func (s *erroringSession) WriteFrame(f frame.Frame, opts ...session.WriteOption) error {
 	s.writeAttempts++
-	_ = frame
+	_ = f
 	_ = opts
 	return s.err
 }
@@ -76,7 +76,7 @@ type recordingSession struct {
 	listener string
 
 	mu            sync.Mutex
-	writtenFrames []wkframe.Frame
+	writtenFrames []frame.Frame
 }
 
 func newRecordingSession(id uint64, listener string) *recordingSession {
@@ -99,11 +99,11 @@ func (s *recordingSession) LocalAddr() string {
 	return ""
 }
 
-func (s *recordingSession) WriteFrame(frame wkframe.Frame, _ ...session.WriteOption) error {
+func (s *recordingSession) WriteFrame(f frame.Frame, _ ...session.WriteOption) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.writtenFrames = append(s.writtenFrames, frame)
+	s.writtenFrames = append(s.writtenFrames, f)
 	return nil
 }
 
@@ -117,11 +117,11 @@ func (s *recordingSession) Value(string) any {
 	return nil
 }
 
-func (s *recordingSession) WrittenFrames() []wkframe.Frame {
+func (s *recordingSession) WrittenFrames() []frame.Frame {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	out := make([]wkframe.Frame, len(s.writtenFrames))
+	out := make([]frame.Frame, len(s.writtenFrames))
 	copy(out, s.writtenFrames)
 	return out
 }

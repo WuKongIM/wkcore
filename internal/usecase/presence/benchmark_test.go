@@ -8,7 +8,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 func BenchmarkHeartbeatBuckets100kRoutes(b *testing.B) {
@@ -24,8 +24,8 @@ func BenchmarkHeartbeatBuckets100kRoutes(b *testing.B) {
 			SessionID:   uint64(i + 1),
 			UID:         fmt.Sprintf("u-%d", i),
 			DeviceID:    fmt.Sprintf("d-%d", i),
-			DeviceFlag:  wkframe.APP,
-			DeviceLevel: wkframe.DeviceLevelMaster,
+			DeviceFlag:  frame.APP,
+			DeviceLevel: frame.DeviceLevelMaster,
 			GroupID:     groupID,
 			State:       online.LocalRouteStateActive,
 			Listener:    "tcp",

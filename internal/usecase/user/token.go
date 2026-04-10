@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 const (
@@ -43,7 +43,7 @@ func (a *App) UpdateToken(ctx context.Context, cmd UpdateTokenCommand) error {
 		return err
 	}
 
-	if cmd.DeviceLevel != wkframe.DeviceLevelMaster || a.online == nil {
+	if cmd.DeviceLevel != frame.DeviceLevelMaster || a.online == nil {
 		return nil
 	}
 
@@ -52,8 +52,8 @@ func (a *App) UpdateToken(ctx context.Context, cmd UpdateTokenCommand) error {
 			continue
 		}
 		sess := conn.Session
-		_ = sess.WriteFrame(&wkframe.DisconnectPacket{
-			ReasonCode: wkframe.ReasonConnectKick,
+		_ = sess.WriteFrame(&frame.DisconnectPacket{
+			ReasonCode: frame.ReasonConnectKick,
 			Reason:     updateTokenKickReason,
 		})
 		a.afterFunc(updateTokenCloseDelay, func() { _ = sess.Close() })

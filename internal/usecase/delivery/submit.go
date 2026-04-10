@@ -3,7 +3,7 @@ package delivery
 import (
 	"context"
 
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 )
 
 func (a *App) SubmitCommitted(ctx context.Context, msg channellog.Message) error {

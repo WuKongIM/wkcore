@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,7 +24,7 @@ func TestSubscriberResolverReturnsTwoUIDsForPersonChannel(t *testing.T) {
 
 	token, err := resolver.BeginSnapshot(context.Background(), channellog.ChannelKey{
 		ChannelID:   EncodePersonChannel("u1", "u2"),
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 	})
 	require.NoError(t, err)
 
@@ -49,7 +49,7 @@ func TestSubscriberResolverPagesGroupSubscribersFromMetastore(t *testing.T) {
 
 	token, err := resolver.BeginSnapshot(context.Background(), channellog.ChannelKey{
 		ChannelID:   "g1",
-		ChannelType: wkframe.ChannelTypeGroup,
+		ChannelType: frame.ChannelTypeGroup,
 	})
 	require.NoError(t, err)
 
@@ -66,7 +66,7 @@ func TestSubscriberResolverPagesGroupSubscribersFromMetastore(t *testing.T) {
 	require.True(t, done)
 
 	require.Equal(t, []subscriberSnapshotCall{
-		{channelID: "g1", channelType: int64(wkframe.ChannelTypeGroup)},
+		{channelID: "g1", channelType: int64(frame.ChannelTypeGroup)},
 	}, store.snapshotCalls)
 	require.Empty(t, store.pageCalls)
 }

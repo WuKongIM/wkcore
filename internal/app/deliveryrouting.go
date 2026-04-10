@@ -11,9 +11,9 @@ import (
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 var (
@@ -224,11 +224,11 @@ type localDeliveryPush struct {
 }
 
 func (p localDeliveryPush) Push(_ context.Context, cmd deliveryruntime.PushCommand) (deliveryruntime.PushResult, error) {
-	frame := buildRealtimeRecvPacket(cmd.Envelope, recipientUIDForRoutes(cmd.Routes))
-	return p.pushFrame(frame, cmd.Routes), nil
+	f := buildRealtimeRecvPacket(cmd.Envelope, recipientUIDForRoutes(cmd.Routes))
+	return p.pushFrame(f, cmd.Routes), nil
 }
 
-func (p localDeliveryPush) pushFrame(frame wkframe.Frame, routes []deliveryruntime.RouteKey) deliveryruntime.PushResult {
+func (p localDeliveryPush) pushFrame(f frame.Frame, routes []deliveryruntime.RouteKey) deliveryruntime.PushResult {
 	result := deliveryruntime.PushResult{}
 	for _, route := range routes {
 		switch {
@@ -242,7 +242,7 @@ func (p localDeliveryPush) pushFrame(frame wkframe.Frame, routes []deliveryrunti
 				result.Dropped = append(result.Dropped, route)
 				continue
 			}
-			if err := conn.Session.WriteFrame(frame); err != nil {
+			if err := conn.Session.WriteFrame(f); err != nil {
 				result.Retryable = append(result.Retryable, route)
 				continue
 			}
@@ -256,15 +256,15 @@ type distributedDeliveryPush struct {
 	localNodeID uint64
 	local       localDeliveryPush
 	client      *accessnode.Client
-	codec       wkcodec.Protocol
+	codec       codec.Protocol
 }
 
 func (p distributedDeliveryPush) Push(ctx context.Context, cmd deliveryruntime.PushCommand) (deliveryruntime.PushResult, error) {
 	if p.codec == nil {
-		p.codec = wkcodec.New()
+		p.codec = codec.New()
 	}
-	frame := buildRealtimeRecvPacket(cmd.Envelope, recipientUIDForRoutes(cmd.Routes))
-	frameBytes, err := p.codec.EncodeFrame(frame, wkframe.LatestVersion)
+	f := buildRealtimeRecvPacket(cmd.Envelope, recipientUIDForRoutes(cmd.Routes))
+	frameBytes, err := p.codec.EncodeFrame(f, frame.LatestVersion)
 	if err != nil {
 		return deliveryruntime.PushResult{}, err
 	}
@@ -281,7 +281,7 @@ func (p distributedDeliveryPush) Push(ctx context.Context, cmd deliveryruntime.P
 
 	result := deliveryruntime.PushResult{}
 	if len(localRoutes) > 0 {
-		localResult := p.local.pushFrame(frame, localRoutes)
+		localResult := p.local.pushFrame(f, localRoutes)
 		result.Accepted = append(result.Accepted, localResult.Accepted...)
 		result.Retryable = append(result.Retryable, localResult.Retryable...)
 		result.Dropped = append(result.Dropped, localResult.Dropped...)
@@ -413,11 +413,11 @@ func recipientUIDForRoutes(routes []deliveryruntime.RouteKey) string {
 	return routes[0].UID
 }
 
-func buildRealtimeRecvPacket(msg channellog.Message, recipientUID string) *wkframe.RecvPacket {
+func buildRealtimeRecvPacket(msg channellog.Message, recipientUID string) *frame.RecvPacket {
 	framer := msg.Framer
-	framer.FrameType = wkframe.RECV
+	framer.FrameType = frame.RECV
 
-	packet := &wkframe.RecvPacket{
+	packet := &frame.RecvPacket{
 		Framer:      framer,
 		Setting:     msg.Setting,
 		MsgKey:      msg.MsgKey,
@@ -436,9 +436,9 @@ func buildRealtimeRecvPacket(msg channellog.Message, recipientUID string) *wkfra
 		Payload:     append([]byte(nil), msg.Payload...),
 		ClientSeq:   msg.ClientSeq,
 	}
-	if msg.ChannelType == wkframe.ChannelTypePerson && recipientUID != "" {
+	if msg.ChannelType == frame.ChannelTypePerson && recipientUID != "" {
 		packet.ChannelID = msg.FromUID
-		packet.ChannelType = wkframe.ChannelTypePerson
+		packet.ChannelType = frame.ChannelTypePerson
 	}
 	return packet
 }

@@ -12,9 +12,9 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -53,7 +53,7 @@ func TestAPIServerSendMessageWithRealMessageApp(t *testing.T) {
 	body := map[string]any{
 		"from_uid":     "u1",
 		"channel_id":   "u2",
-		"channel_type": float64(wkframe.ChannelTypePerson),
+		"channel_type": float64(frame.ChannelTypePerson),
 		"payload":      base64.StdEncoding.EncodeToString([]byte("hi")),
 	}
 	payload, err := json.Marshal(body)
@@ -73,7 +73,7 @@ func TestAPIServerSendMessageWithRealMessageApp(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 	require.Equal(t, int64(66), got.MessageID)
 	require.Equal(t, uint64(7), got.MessageSeq)
-	require.Equal(t, uint8(wkframe.ReasonSuccess), got.Reason)
+	require.Equal(t, uint8(frame.ReasonSuccess), got.Reason)
 }
 
 type fakeIdentityStore struct{}

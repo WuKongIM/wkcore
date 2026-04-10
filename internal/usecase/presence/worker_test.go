@@ -8,7 +8,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -98,8 +98,8 @@ func mustRegisterTestConn(t *testing.T, reg online.Registry, sessionID uint64, u
 		SessionID:   sessionID,
 		UID:         uid,
 		DeviceID:    deviceID,
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		GroupID:     groupID,
 		State:       online.LocalRouteStateActive,
 		Listener:    "tcp",

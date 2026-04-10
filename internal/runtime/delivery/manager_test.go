@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,20 +39,20 @@ func TestManagerPromotesHighActivityChannelToDedicatedLane(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
 			ChannelID:   "g-hot",
-			ChannelType: wkframe.ChannelTypeGroup,
+			ChannelType: frame.ChannelTypeGroup,
 			MessageID:   uint64(i + 1),
 			MessageSeq:  uint64(i + 1),
-			FromUID:   "u1",
+			FromUID:     "u1",
 			Payload:     []byte("hot"),
 		}))
 	}
 
-	require.Equal(t, LaneDedicated, runtime.ActorLane("g-hot", wkframe.ChannelTypeGroup))
+	require.Equal(t, LaneDedicated, runtime.ActorLane("g-hot", frame.ChannelTypeGroup))
 }
 
 func TestManagerSubmitKeepsShardLockUntilActorIsLocked(t *testing.T) {
 	runtime, clock, _ := newTestManager()
-	key := ChannelKey{ChannelID: "g-submit-race", ChannelType: wkframe.ChannelTypeGroup}
+	key := ChannelKey{ChannelID: "g-submit-race", ChannelType: frame.ChannelTypeGroup}
 	shard := runtime.shardFor(key)
 
 	shard.mu.Lock()
@@ -68,7 +68,7 @@ func TestManagerSubmitKeepsShardLockUntilActorIsLocked(t *testing.T) {
 			ChannelType: key.ChannelType,
 			MessageID:   701,
 			MessageSeq:  1,
-			FromUID:   "u1",
+			FromUID:     "u1",
 			Payload:     []byte("race"),
 		})
 	}()
@@ -265,10 +265,10 @@ const testChannelID = "u1@u2"
 func testEnvelope(messageID, messageSeq uint64) CommittedEnvelope {
 	return CommittedEnvelope{
 		ChannelID:   testChannelID,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageID:   messageID,
 		MessageSeq:  messageSeq,
-		FromUID:   "u1",
+		FromUID:     "u1",
 		ClientMsgNo: "m1",
 		Payload:     []byte("hi"),
 		ClientSeq:   9,

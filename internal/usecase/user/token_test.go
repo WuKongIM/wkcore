@@ -8,8 +8,8 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,8 +24,8 @@ func TestUpdateTokenCreatesUserWhenMissingAndUpsertsDevice(t *testing.T) {
 	err := app.UpdateToken(context.Background(), UpdateTokenCommand{
 		UID:         "u1",
 		Token:       "token-1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelSlave,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelSlave,
 	})
 
 	require.NoError(t, err)
@@ -35,9 +35,9 @@ func TestUpdateTokenCreatesUserWhenMissingAndUpsertsDevice(t *testing.T) {
 	require.Len(t, devices.upserted, 1)
 	require.Equal(t, metadb.Device{
 		UID:         "u1",
-		DeviceFlag:  int64(wkframe.APP),
+		DeviceFlag:  int64(frame.APP),
 		Token:       "token-1",
-		DeviceLevel: int64(wkframe.DeviceLevelSlave),
+		DeviceLevel: int64(frame.DeviceLevelSlave),
 	}, devices.upserted[0])
 }
 
@@ -52,8 +52,8 @@ func TestUpdateTokenDoesNotRewriteExistingUser(t *testing.T) {
 	err := app.UpdateToken(context.Background(), UpdateTokenCommand{
 		UID:         "u1",
 		Token:       "token-1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelSlave,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelSlave,
 	})
 
 	require.NoError(t, err)
@@ -76,8 +76,8 @@ func TestUpdateTokenMissingUserCreateAlreadyExistsStillSucceeds(t *testing.T) {
 	err := app.UpdateToken(context.Background(), UpdateTokenCommand{
 		UID:         "u1",
 		Token:       "token-1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelSlave,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelSlave,
 	})
 
 	require.NoError(t, err)
@@ -150,15 +150,15 @@ func TestUpdateTokenMasterKicksOnlySameDeviceFlagSessions(t *testing.T) {
 	require.NoError(t, reg.Register(online.OnlineConn{
 		SessionID:   11,
 		UID:         "u1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Session:     sameDevice,
 	}))
 	require.NoError(t, reg.Register(online.OnlineConn{
 		SessionID:   12,
 		UID:         "u1",
-		DeviceFlag:  wkframe.WEB,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.WEB,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Session:     otherDevice,
 	}))
 
@@ -176,8 +176,8 @@ func TestUpdateTokenMasterKicksOnlySameDeviceFlagSessions(t *testing.T) {
 	err := app.UpdateToken(context.Background(), UpdateTokenCommand{
 		UID:         "u1",
 		Token:       "token-1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 	})
 
 	require.NoError(t, err)
@@ -187,9 +187,9 @@ func TestUpdateTokenMasterKicksOnlySameDeviceFlagSessions(t *testing.T) {
 	require.False(t, otherDevice.closed)
 	require.Equal(t, []time.Duration{10 * time.Second}, scheduled)
 
-	disconnect, ok := sameDevice.WrittenFrames()[0].(*wkframe.DisconnectPacket)
+	disconnect, ok := sameDevice.WrittenFrames()[0].(*frame.DisconnectPacket)
 	require.True(t, ok)
-	require.Equal(t, wkframe.ReasonConnectKick, disconnect.ReasonCode)
+	require.Equal(t, frame.ReasonConnectKick, disconnect.ReasonCode)
 	require.Equal(t, "账号在其他设备上登录", disconnect.Reason)
 }
 
@@ -199,8 +199,8 @@ func TestUpdateTokenSlaveDoesNotKickSessions(t *testing.T) {
 	require.NoError(t, reg.Register(online.OnlineConn{
 		SessionID:   11,
 		UID:         "u1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Session:     sess,
 	}))
 
@@ -218,8 +218,8 @@ func TestUpdateTokenSlaveDoesNotKickSessions(t *testing.T) {
 	err := app.UpdateToken(context.Background(), UpdateTokenCommand{
 		UID:         "u1",
 		Token:       "token-1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelSlave,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelSlave,
 	})
 
 	require.NoError(t, err)
@@ -287,7 +287,7 @@ type recordingSession struct {
 	listener string
 
 	mu            sync.Mutex
-	writtenFrames []wkframe.Frame
+	writtenFrames []frame.Frame
 	closed        bool
 }
 
@@ -311,11 +311,11 @@ func (s *recordingSession) LocalAddr() string {
 	return ""
 }
 
-func (s *recordingSession) WriteFrame(frame wkframe.Frame, _ ...session.WriteOption) error {
+func (s *recordingSession) WriteFrame(f frame.Frame, _ ...session.WriteOption) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.writtenFrames = append(s.writtenFrames, frame)
+	s.writtenFrames = append(s.writtenFrames, f)
 	return nil
 }
 
@@ -332,11 +332,11 @@ func (s *recordingSession) Value(string) any {
 	return nil
 }
 
-func (s *recordingSession) WrittenFrames() []wkframe.Frame {
+func (s *recordingSession) WrittenFrames() []frame.Frame {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	out := make([]wkframe.Frame, len(s.writtenFrames))
+	out := make([]frame.Frame, len(s.writtenFrames))
 	copy(out, s.writtenFrames)
 	return out
 }

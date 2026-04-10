@@ -7,7 +7,7 @@ import (
 	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,8 +21,8 @@ func TestPushBatchRPCRejectsBootMismatchAndClosingRoutes(t *testing.T) {
 		GroupID:     1,
 		State:       online.LocalRouteStateActive,
 		Listener:    "tcp",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Session:     active,
 	}))
 	require.NoError(t, reg.Register(online.OnlineConn{
@@ -31,8 +31,8 @@ func TestPushBatchRPCRejectsBootMismatchAndClosingRoutes(t *testing.T) {
 		GroupID:     1,
 		State:       online.LocalRouteStateActive,
 		Listener:    "tcp",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 		Session:     closing,
 	}))
 	_, ok := reg.MarkClosing(11)
@@ -50,7 +50,7 @@ func TestPushBatchRPCRejectsBootMismatchAndClosingRoutes(t *testing.T) {
 	body, err := adapter.handleDeliveryPushRPC(context.Background(), mustMarshal(t, deliveryPushRequest{
 		OwnerNodeID: 2,
 		ChannelID:   "u2",
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		MessageID:   88,
 		MessageSeq:  9,
 		Routes: []deliveryruntime.RouteKey{
@@ -58,7 +58,7 @@ func TestPushBatchRPCRejectsBootMismatchAndClosingRoutes(t *testing.T) {
 			{UID: "u2", NodeID: 1, BootID: 99, SessionID: 10},
 			{UID: "u2", NodeID: 1, BootID: 7, SessionID: 11},
 		},
-		Frame: mustEncodeFrame(t, &wkframe.RecvPacket{MessageID: 88, MessageSeq: 9}),
+		Frame: mustEncodeFrame(t, &frame.RecvPacket{MessageID: 88, MessageSeq: 9}),
 	}))
 	require.NoError(t, err)
 

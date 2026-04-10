@@ -4,7 +4,7 @@ import (
 	"context"
 
 	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 type dispatcher struct {
@@ -29,13 +29,13 @@ func (d dispatcher) sessionOpen(state *sessionState) error {
 	return d.handler.OnSessionOpen(d.context(state, "", state.closeReason(), nil))
 }
 
-func (d dispatcher) frame(state *sessionState, replyToken string, frame wkframe.Frame) error {
+func (d dispatcher) frame(state *sessionState, replyToken string, f frame.Frame) error {
 	if d.handler == nil {
 		return nil
 	}
 	ctx, cancel := d.requestContext(state)
 	defer cancel()
-	return d.handler.OnFrame(d.context(state, replyToken, state.closeReason(), ctx), frame)
+	return d.handler.OnFrame(d.context(state, replyToken, state.closeReason(), ctx), f)
 }
 
 func (d dispatcher) sessionError(state *sessionState, reason gatewaytypes.CloseReason, err error) {

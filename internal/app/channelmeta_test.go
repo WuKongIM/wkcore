@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/replication/isr"
-	"github.com/WuKongIM/WuKongIM/pkg/replication/isrnode"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	isrnode "github.com/WuKongIM/WuKongIM/pkg/channel/node"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
 	"github.com/stretchr/testify/require"
 )
 

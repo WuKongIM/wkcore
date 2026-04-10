@@ -4,19 +4,19 @@ import (
 	"context"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 type Handler interface {
 	OnListenerError(listener string, err error)
 	OnSessionOpen(ctx *Context) error
-	OnFrame(ctx *Context, frame wkframe.Frame) error
+	OnFrame(ctx *Context, f frame.Frame) error
 	OnSessionClose(ctx *Context) error
 	OnSessionError(ctx *Context, err error)
 }
 
 type SessionActivator interface {
-	OnSessionActivate(ctx *Context) (*wkframe.ConnackPacket, error)
+	OnSessionActivate(ctx *Context) (*frame.ConnackPacket, error)
 }
 
 type Context struct {
@@ -30,9 +30,9 @@ type Context struct {
 	RequestContext context.Context
 }
 
-func (ctx *Context) WriteFrame(frame wkframe.Frame) error {
+func (ctx *Context) WriteFrame(f frame.Frame) error {
 	if ctx == nil || ctx.Session == nil {
 		return session.ErrSessionClosed
 	}
-	return ctx.Session.WriteFrame(frame, session.WithReplyToken(ctx.ReplyToken))
+	return ctx.Session.WriteFrame(f, session.WithReplyToken(ctx.ReplyToken))
 }

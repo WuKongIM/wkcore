@@ -11,10 +11,10 @@ import (
 
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/metadb"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/group/meta"
+	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,18 +35,18 @@ func TestAppStartAcceptsWKProtoConnectionAndStopsCleanly(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
-	sendAppWKProtoFrame(t, conn, &wkframe.ConnectPacket{
-		Version:         wkframe.LatestVersion,
+	sendAppWKProtoFrame(t, conn, &frame.ConnectPacket{
+		Version:         frame.LatestVersion,
 		UID:             "app-user",
 		DeviceID:        "app-device",
-		DeviceFlag:      wkframe.APP,
+		DeviceFlag:      frame.APP,
 		ClientTimestamp: time.Now().UnixMilli(),
 	})
 
-	frame := readAppWKProtoFrame(t, conn)
-	connack, ok := frame.(*wkframe.ConnackPacket)
-	require.True(t, ok, "expected *wkframe.ConnackPacket, got %T", frame)
-	require.Equal(t, wkframe.ReasonSuccess, connack.ReasonCode)
+	pkt := readAppWKProtoFrame(t, conn)
+	connack, ok := pkt.(*frame.ConnackPacket)
+	require.True(t, ok, "expected *frame.ConnackPacket, got %T", pkt)
+	require.Equal(t, frame.ReasonSuccess, connack.ReasonCode)
 }
 
 func TestAppStartPreloadsLocalChannelRuntimeMeta(t *testing.T) {
@@ -92,7 +92,7 @@ func TestAppStartWiresMessageSendThroughDurableChannelLog(t *testing.T) {
 
 	key := channellog.ChannelKey{
 		ChannelID:   deliveryusecase.EncodePersonChannel("sender", "durable-user"),
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 	}
 	meta := metadb.ChannelRuntimeMeta{
 		ChannelID:    key.ChannelID,
@@ -122,7 +122,7 @@ func TestAppStartWiresMessageSendThroughDurableChannelLog(t *testing.T) {
 		Payload:     []byte("hello durable"),
 	})
 	require.NoError(t, err)
-	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+	require.Equal(t, frame.ReasonSuccess, result.Reason)
 	require.NotZero(t, result.MessageID)
 	require.Equal(t, uint64(1), result.MessageSeq)
 
@@ -144,7 +144,7 @@ func TestAppSendReturnsBeforeRealtimeAckArrives(t *testing.T) {
 
 	app, err := New(cfg)
 	require.NoError(t, err)
-	seedChannelRuntimeMeta(t, app, channelID, wkframe.ChannelTypePerson)
+	seedChannelRuntimeMeta(t, app, channelID, frame.ChannelTypePerson)
 
 	require.NoError(t, app.Start())
 	t.Cleanup(func() {
@@ -157,25 +157,25 @@ func TestAppSendReturnsBeforeRealtimeAckArrives(t *testing.T) {
 	result, err := app.Message().Send(context.Background(), message.SendCommand{
 		FromUID:     "u1",
 		ChannelID:   channelID,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		ClientMsgNo: "async-1",
 		Payload:     []byte("hi async"),
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, wkframe.ReasonSuccess, result.Reason)
+	require.Equal(t, frame.ReasonSuccess, result.Reason)
 	require.NotZero(t, result.MessageID)
 	require.NotZero(t, result.MessageSeq)
 
 	recv := readAppRecvPacket(t, recipientConn)
 	require.Equal(t, "u1", recv.FromUID)
 	require.Equal(t, "u1", recv.ChannelID)
-	require.Equal(t, wkframe.ChannelTypePerson, recv.ChannelType)
+	require.Equal(t, frame.ChannelTypePerson, recv.ChannelType)
 	require.Equal(t, []byte("hi async"), recv.Payload)
 	require.Equal(t, uint64(result.MessageID), uint64(recv.MessageID))
 	require.Equal(t, result.MessageSeq, recv.MessageSeq)
 
-	sendAppWKProtoFrame(t, recipientConn, &wkframe.RecvackPacket{
+	sendAppWKProtoFrame(t, recipientConn, &frame.RecvackPacket{
 		MessageID:  recv.MessageID,
 		MessageSeq: recv.MessageSeq,
 	})
@@ -187,7 +187,7 @@ func TestAppRecvAckCompletesLocalInflightRoute(t *testing.T) {
 
 	app, err := New(cfg)
 	require.NoError(t, err)
-	seedChannelRuntimeMeta(t, app, channelID, wkframe.ChannelTypePerson)
+	seedChannelRuntimeMeta(t, app, channelID, frame.ChannelTypePerson)
 
 	require.NoError(t, app.Start())
 	t.Cleanup(func() {
@@ -202,7 +202,7 @@ func TestAppRecvAckCompletesLocalInflightRoute(t *testing.T) {
 	result, err := app.Message().Send(context.Background(), message.SendCommand{
 		FromUID:     "u1",
 		ChannelID:   channelID,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		ClientMsgNo: "async-ack-1",
 		Payload:     []byte("hi ack"),
 	})
@@ -214,7 +214,7 @@ func TestAppRecvAckCompletesLocalInflightRoute(t *testing.T) {
 		return app.deliveryRuntime.HasAckBinding(sessionID, uint64(recv.MessageID))
 	}, time.Second, 10*time.Millisecond)
 
-	sendAppWKProtoFrame(t, recipientConn, &wkframe.RecvackPacket{
+	sendAppWKProtoFrame(t, recipientConn, &frame.RecvackPacket{
 		MessageID:  recv.MessageID,
 		MessageSeq: recv.MessageSeq,
 	})
@@ -230,7 +230,7 @@ func TestAppSessionCloseDropsRealtimeRouteAndDoesNotBlockSend(t *testing.T) {
 
 	app, err := New(cfg)
 	require.NoError(t, err)
-	seedChannelRuntimeMeta(t, app, channelID, wkframe.ChannelTypePerson)
+	seedChannelRuntimeMeta(t, app, channelID, frame.ChannelTypePerson)
 
 	require.NoError(t, app.Start())
 	t.Cleanup(func() {
@@ -243,7 +243,7 @@ func TestAppSessionCloseDropsRealtimeRouteAndDoesNotBlockSend(t *testing.T) {
 	first, err := app.Message().Send(context.Background(), message.SendCommand{
 		FromUID:     "u1",
 		ChannelID:   channelID,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		ClientMsgNo: "async-close-1",
 		Payload:     []byte("hi close"),
 	})
@@ -267,12 +267,12 @@ func TestAppSessionCloseDropsRealtimeRouteAndDoesNotBlockSend(t *testing.T) {
 	second, err := app.Message().Send(context.Background(), message.SendCommand{
 		FromUID:     "u1",
 		ChannelID:   channelID,
-		ChannelType: wkframe.ChannelTypePerson,
+		ChannelType: frame.ChannelTypePerson,
 		ClientMsgNo: "async-close-2",
 		Payload:     []byte("still durable"),
 	})
 	require.NoError(t, err)
-	require.Equal(t, wkframe.ReasonSuccess, second.Reason)
+	require.Equal(t, frame.ReasonSuccess, second.Reason)
 	require.NotZero(t, second.MessageSeq)
 }
 
@@ -319,17 +319,17 @@ func TestAppStartServesLegacyUserTokenEndpoint(t *testing.T) {
 	}, gotDevice)
 }
 
-func sendAppWKProtoFrame(t *testing.T, conn net.Conn, frame wkframe.Frame) {
+func sendAppWKProtoFrame(t *testing.T, conn net.Conn, f frame.Frame) {
 	t.Helper()
 
-	payload, err := codec.New().EncodeFrame(frame, wkframe.LatestVersion)
+	payload, err := codec.New().EncodeFrame(f, frame.LatestVersion)
 	require.NoError(t, err)
 
 	_, err = conn.Write(payload)
 	require.NoError(t, err)
 }
 
-func readAppWKProtoFrame(t *testing.T, conn net.Conn) wkframe.Frame {
+func readAppWKProtoFrame(t *testing.T, conn net.Conn) frame.Frame {
 	t.Helper()
 
 	require.NoError(t, conn.SetReadDeadline(time.Now().Add(appReadTimeout)))
@@ -337,9 +337,9 @@ func readAppWKProtoFrame(t *testing.T, conn net.Conn) wkframe.Frame {
 		_ = conn.SetReadDeadline(time.Time{})
 	}()
 
-	frame, err := codec.New().DecodePacketWithConn(conn, wkframe.LatestVersion)
+	f, err := codec.New().DecodePacketWithConn(conn, frame.LatestVersion)
 	require.NoError(t, err)
-	return frame
+	return f
 }
 
 func connectAppWKProtoClient(t *testing.T, app *App, uid string) net.Conn {
@@ -348,28 +348,28 @@ func connectAppWKProtoClient(t *testing.T, app *App, uid string) net.Conn {
 	conn, err := net.Dial("tcp", app.Gateway().ListenerAddr("tcp-wkproto"))
 	require.NoError(t, err)
 
-	sendAppWKProtoFrame(t, conn, &wkframe.ConnectPacket{
-		Version:         wkframe.LatestVersion,
+	sendAppWKProtoFrame(t, conn, &frame.ConnectPacket{
+		Version:         frame.LatestVersion,
 		UID:             uid,
 		DeviceID:        uid + "-device",
-		DeviceFlag:      wkframe.APP,
+		DeviceFlag:      frame.APP,
 		ClientTimestamp: time.Now().UnixMilli(),
 	})
 
-	frame := readAppWKProtoFrame(t, conn)
-	connack, ok := frame.(*wkframe.ConnackPacket)
-	require.True(t, ok, "expected *wkframe.ConnackPacket, got %T", frame)
-	require.Equal(t, wkframe.ReasonSuccess, connack.ReasonCode)
+	pkt := readAppWKProtoFrame(t, conn)
+	connack, ok := pkt.(*frame.ConnackPacket)
+	require.True(t, ok, "expected *frame.ConnackPacket, got %T", pkt)
+	require.Equal(t, frame.ReasonSuccess, connack.ReasonCode)
 
 	return conn
 }
 
-func readAppRecvPacket(t *testing.T, conn net.Conn) *wkframe.RecvPacket {
+func readAppRecvPacket(t *testing.T, conn net.Conn) *frame.RecvPacket {
 	t.Helper()
 
-	frame := readAppWKProtoFrame(t, conn)
-	recv, ok := frame.(*wkframe.RecvPacket)
-	require.True(t, ok, "expected *wkframe.RecvPacket, got %T", frame)
+	pkt := readAppWKProtoFrame(t, conn)
+	recv, ok := pkt.(*frame.RecvPacket)
+	require.True(t, ok, "expected *frame.RecvPacket, got %T", pkt)
 	return recv
 }
 

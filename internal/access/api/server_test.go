@@ -14,8 +14,8 @@ import (
 	conversationusecase "github.com/WuKongIM/WuKongIM/internal/usecase/conversation"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/user"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
-	"github.com/WuKongIM/WuKongIM/pkg/storage/channellog"
+	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,7 +36,7 @@ func TestSendMessageMapsJSONToUsecaseCommand(t *testing.T) {
 		result: message.SendResult{
 			MessageID:  99,
 			MessageSeq: uint64(^uint32(0)) + 7,
-			Reason:     wkframe.ReasonSuccess,
+			Reason:     frame.ReasonSuccess,
 		},
 	}
 	srv := New(Options{Messages: msgs})
@@ -44,7 +44,7 @@ func TestSendMessageMapsJSONToUsecaseCommand(t *testing.T) {
 	body := map[string]any{
 		"from_uid":     "u1",
 		"channel_id":   "u2",
-		"channel_type": float64(wkframe.ChannelTypePerson),
+		"channel_type": float64(frame.ChannelTypePerson),
 		"payload":      base64.StdEncoding.EncodeToString([]byte("hi")),
 	}
 	payload, err := json.Marshal(body)
@@ -61,7 +61,7 @@ func TestSendMessageMapsJSONToUsecaseCommand(t *testing.T) {
 	require.Len(t, msgs.calls, 1)
 	require.Equal(t, "u1", msgs.calls[0].FromUID)
 	require.Equal(t, "u2@u1", msgs.calls[0].ChannelID)
-	require.Equal(t, uint8(wkframe.ChannelTypePerson), msgs.calls[0].ChannelType)
+	require.Equal(t, uint8(frame.ChannelTypePerson), msgs.calls[0].ChannelType)
 	require.Equal(t, []byte("hi"), msgs.calls[0].Payload)
 }
 
@@ -245,8 +245,8 @@ func TestUpdateTokenMapsJSONToUsecaseCommand(t *testing.T) {
 	require.Equal(t, user.UpdateTokenCommand{
 		UID:         "u1",
 		Token:       "t1",
-		DeviceFlag:  wkframe.APP,
-		DeviceLevel: wkframe.DeviceLevelMaster,
+		DeviceFlag:  frame.APP,
+		DeviceLevel: frame.DeviceLevelMaster,
 	}, users.calls[0])
 }
 
@@ -330,7 +330,7 @@ func TestConversationSyncMapsLegacyRequestToUsecaseQuery(t *testing.T) {
 		UID:     "u1",
 		Version: 123,
 		LastMsgSeqs: map[conversationusecase.ConversationKey]uint64{
-			{ChannelID: runtimechannelid.EncodePersonChannel("u1", "u2"), ChannelType: wkframe.ChannelTypePerson}: 9,
+			{ChannelID: runtimechannelid.EncodePersonChannel("u1", "u2"), ChannelType: frame.ChannelTypePerson}: 9,
 			{ChannelID: "g1", ChannelType: 2}: 7,
 		},
 		MsgCount:            3,
@@ -364,7 +364,7 @@ func TestConversationSyncReturnsLegacyArrayResponse(t *testing.T) {
 			Conversations: []conversationusecase.SyncConversation{
 				{
 					ChannelID:       "u2",
-					ChannelType:     wkframe.ChannelTypePerson,
+					ChannelType:     frame.ChannelTypePerson,
 					Unread:          2,
 					Timestamp:       123,
 					LastMsgSeq:      7,
@@ -373,14 +373,14 @@ func TestConversationSyncReturnsLegacyArrayResponse(t *testing.T) {
 					Version:         999,
 					Recents: []channellog.Message{
 						{
-							Framer:      wkframe.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
+							Framer:      frame.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
 							Setting:     3,
 							MessageID:   88,
 							MessageSeq:  7,
 							ClientMsgNo: "c1",
 							FromUID:     "u1",
 							ChannelID:   runtimechannelid.EncodePersonChannel("u1", "u2"),
-							ChannelType: wkframe.ChannelTypePerson,
+							ChannelType: frame.ChannelTypePerson,
 							Expire:      60,
 							Timestamp:   123,
 							Payload:     []byte("hello"),

@@ -4,13 +4,13 @@ import (
 	"testing"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 func TestAuthenticatorStoresNegotiatedProtocolVersion(t *testing.T) {
 	auth := gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{})
 
-	result, err := auth.Authenticate(nil, &wkframe.ConnectPacket{
+	result, err := auth.Authenticate(nil, &frame.ConnectPacket{
 		Version: 5,
 		UID:     "u1",
 	})
@@ -25,7 +25,7 @@ func TestAuthenticatorStoresNegotiatedProtocolVersion(t *testing.T) {
 func TestAuthenticatorStoresDeviceIDSessionValue(t *testing.T) {
 	auth := gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{})
 
-	result, err := auth.Authenticate(nil, &wkframe.ConnectPacket{
+	result, err := auth.Authenticate(nil, &frame.ConnectPacket{
 		UID:      "u1",
 		DeviceID: "d-1",
 	})

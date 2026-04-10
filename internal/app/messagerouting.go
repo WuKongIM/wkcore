@@ -7,8 +7,8 @@ import (
 	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
-	"github.com/WuKongIM/WuKongIM/pkg/cluster/raftcluster"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkcodec"
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 )
 
 type messageRecipientDirectory struct {
@@ -44,7 +44,7 @@ func (d messageRemoteDelivery) DeliverRemote(ctx context.Context, cmd message.Re
 	if d.cluster == nil || d.client == nil {
 		return nil
 	}
-	frameBytes, err := wkcodec.New().EncodeFrame(cmd.Frame, 0)
+	frameBytes, err := codec.New().EncodeFrame(cmd.Frame, 0)
 	if err != nil {
 		return err
 	}

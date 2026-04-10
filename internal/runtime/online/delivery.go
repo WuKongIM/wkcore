@@ -1,10 +1,10 @@
 package online
 
-import "github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+import "github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 
 type LocalDelivery struct{}
 
-func (LocalDelivery) Deliver(recipients []OnlineConn, frame wkframe.Frame) error {
+func (LocalDelivery) Deliver(recipients []OnlineConn, f frame.Frame) error {
 	var firstErr error
 	for _, recipient := range recipients {
 		if recipient.State == LocalRouteStateClosing {
@@ -16,7 +16,7 @@ func (LocalDelivery) Deliver(recipients []OnlineConn, frame wkframe.Frame) error
 			}
 			continue
 		}
-		if err := recipient.Session.WriteFrame(frame); err != nil {
+		if err := recipient.Session.WriteFrame(f); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}

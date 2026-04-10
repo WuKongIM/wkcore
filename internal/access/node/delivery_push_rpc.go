@@ -6,17 +6,17 @@ import (
 
 	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	"github.com/WuKongIM/WuKongIM/pkg/protocol/wkframe"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 type deliveryPushRequest struct {
-	OwnerNodeID uint64                      `json:"owner_node_id"`
-	ChannelID   string                      `json:"channel_id"`
-	ChannelType uint8                       `json:"channel_type"`
-	MessageID   uint64                      `json:"message_id"`
-	MessageSeq  uint64                      `json:"message_seq"`
-	Routes      []deliveryruntime.RouteKey  `json:"routes"`
-	Frame       []byte                      `json:"frame"`
+	OwnerNodeID uint64                     `json:"owner_node_id"`
+	ChannelID   string                     `json:"channel_id"`
+	ChannelType uint8                      `json:"channel_type"`
+	MessageID   uint64                     `json:"message_id"`
+	MessageSeq  uint64                     `json:"message_seq"`
+	Routes      []deliveryruntime.RouteKey `json:"routes"`
+	Frame       []byte                     `json:"frame"`
 }
 
 func (a *Adapter) handleDeliveryPushRPC(ctx context.Context, body []byte) ([]byte, error) {
@@ -25,7 +25,7 @@ func (a *Adapter) handleDeliveryPushRPC(ctx context.Context, body []byte) ([]byt
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
 	}
-	frame, _, err := a.codec.DecodeFrame(req.Frame, wkframe.LatestVersion)
+	f, _, err := a.codec.DecodeFrame(req.Frame, frame.LatestVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +53,7 @@ func (a *Adapter) handleDeliveryPushRPC(ctx context.Context, body []byte) ([]byt
 					Route:       route,
 				})
 			}
-			if err := conn.Session.WriteFrame(frame); err != nil {
+			if err := conn.Session.WriteFrame(f); err != nil {
 				if a.deliveryAckIndex != nil {
 					a.deliveryAckIndex.Remove(route.SessionID, req.MessageID)
 				}
