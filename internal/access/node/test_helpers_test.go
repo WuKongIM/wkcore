@@ -41,14 +41,14 @@ func mustDecodeDeliveryPushResponse(t *testing.T, body []byte) deliveryPushRespo
 	return resp
 }
 
-func testOnlineConn(sessionID uint64, uid string, groupID uint64) online.OnlineConn {
+func testOnlineConn(sessionID uint64, uid string, slotID uint64) online.OnlineConn {
 	return online.OnlineConn{
 		SessionID:   sessionID,
 		UID:         uid,
 		DeviceID:    "d1",
 		DeviceFlag:  frame.APP,
 		DeviceLevel: frame.DeviceLevelMaster,
-		GroupID:     groupID,
+		SlotID:      slotID,
 		State:       online.LocalRouteStateActive,
 		Listener:    "tcp",
 		ConnectedAt: time.Unix(200, 0),

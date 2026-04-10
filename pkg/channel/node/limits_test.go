@@ -15,8 +15,8 @@ func TestMaxFetchInflightPeerQueuesExcessReplication(t *testing.T) {
 	mustEnsureLocal(t, env.runtime, testMetaLocal(51, 1, 1, []isr.NodeID{1, 2}))
 	mustEnsureLocal(t, env.runtime, testMetaLocal(52, 1, 1, []isr.NodeID{1, 2}))
 
-	env.runtime.enqueueReplication(testGroupKey(51), 2)
-	env.runtime.enqueueReplication(testGroupKey(52), 2)
+	env.runtime.enqueueReplication(testChannelKey(51), 2)
+	env.runtime.enqueueReplication(testChannelKey(52), 2)
 	env.runtime.runScheduler()
 
 	if got := env.sessions.session(2).sendCount(); got != 1 {
@@ -34,8 +34,8 @@ func TestFetchResponseDrainsQueuedReplicationForPeer(t *testing.T) {
 	mustEnsureLocal(t, env.runtime, testMetaLocal(71, 3, 1, []isr.NodeID{1, 2}))
 	mustEnsureLocal(t, env.runtime, testMetaLocal(72, 3, 1, []isr.NodeID{1, 2}))
 
-	env.runtime.enqueueReplication(testGroupKey(71), 2)
-	env.runtime.enqueueReplication(testGroupKey(72), 2)
+	env.runtime.enqueueReplication(testChannelKey(71), 2)
+	env.runtime.enqueueReplication(testChannelKey(72), 2)
 	env.runtime.runScheduler()
 	if got := env.runtime.queuedPeerRequests(2); got != 1 {
 		t.Fatalf("expected queued request before response, got %d", got)
@@ -43,7 +43,7 @@ func TestFetchResponseDrainsQueuedReplicationForPeer(t *testing.T) {
 
 	env.transport.deliver(Envelope{
 		Peer:       2,
-		GroupKey:   testGroupKey(71),
+		ChannelKey: testChannelKey(71),
 		Generation: 1,
 		Epoch:      3,
 		Kind:       MessageKindFetchResponse,
@@ -71,8 +71,8 @@ func TestFetchResponseApplyErrorKeepsPeerInflightAndQueuedReplication(t *testing
 
 	env.factory.replicas[0].applyFetchErr = isr.ErrCorruptState
 
-	env.runtime.enqueueReplication(testGroupKey(81), 2)
-	env.runtime.enqueueReplication(testGroupKey(82), 2)
+	env.runtime.enqueueReplication(testChannelKey(81), 2)
+	env.runtime.enqueueReplication(testChannelKey(82), 2)
 	env.runtime.runScheduler()
 	if got := env.runtime.queuedPeerRequests(2); got != 1 {
 		t.Fatalf("expected queued request before failed response, got %d", got)
@@ -80,7 +80,7 @@ func TestFetchResponseApplyErrorKeepsPeerInflightAndQueuedReplication(t *testing
 
 	env.transport.deliver(Envelope{
 		Peer:       2,
-		GroupKey:   testGroupKey(81),
+		ChannelKey: testChannelKey(81),
 		Generation: 1,
 		Epoch:      3,
 		Kind:       MessageKindFetchResponse,
@@ -97,7 +97,7 @@ func TestFetchResponseApplyErrorKeepsPeerInflightAndQueuedReplication(t *testing
 		t.Fatalf("apply failure should keep queued request, got %d", got)
 	}
 
-	env.runtime.enqueueReplication(testGroupKey(83), 2)
+	env.runtime.enqueueReplication(testChannelKey(83), 2)
 	env.runtime.runScheduler()
 
 	if got := env.sessions.session(2).sendCount(); got != 1 {
@@ -115,15 +115,15 @@ func TestDrainPeerQueueSendErrorRequeuesReplication(t *testing.T) {
 	mustEnsureLocal(t, env.runtime, testMetaLocal(84, 3, 1, []isr.NodeID{1, 2}))
 	mustEnsureLocal(t, env.runtime, testMetaLocal(85, 3, 1, []isr.NodeID{1, 2}))
 
-	env.runtime.enqueueReplication(testGroupKey(84), 2)
-	env.runtime.enqueueReplication(testGroupKey(85), 2)
+	env.runtime.enqueueReplication(testChannelKey(84), 2)
+	env.runtime.enqueueReplication(testChannelKey(85), 2)
 	env.runtime.runScheduler()
 
 	session := env.sessions.session(2)
 	session.setSendErr(errors.New("boom"))
 	env.transport.deliver(Envelope{
 		Peer:       2,
-		GroupKey:   testGroupKey(84),
+		ChannelKey: testChannelKey(84),
 		Generation: 1,
 		Epoch:      3,
 		Kind:       MessageKindFetchResponse,
@@ -151,13 +151,13 @@ func TestUnknownFetchResponseDoesNotReleasePeerInflight(t *testing.T) {
 	mustEnsureLocal(t, env.runtime, testMetaLocal(73, 3, 1, []isr.NodeID{1, 2}))
 	mustEnsureLocal(t, env.runtime, testMetaLocal(74, 3, 1, []isr.NodeID{1, 2}))
 
-	env.runtime.enqueueReplication(testGroupKey(73), 2)
-	env.runtime.enqueueReplication(testGroupKey(74), 2)
+	env.runtime.enqueueReplication(testChannelKey(73), 2)
+	env.runtime.enqueueReplication(testChannelKey(74), 2)
 	env.runtime.runScheduler()
 
 	env.transport.deliver(Envelope{
 		Peer:       2,
-		GroupKey:   testGroupKey(999),
+		ChannelKey: testChannelKey(999),
 		Generation: 999,
 		Epoch:      3,
 		Kind:       MessageKindFetchResponse,
@@ -178,7 +178,7 @@ func TestHardBackpressureQueuesWithoutSending(t *testing.T) {
 	mustEnsureLocal(t, env.runtime, testMetaLocal(75, 3, 1, []isr.NodeID{1, 2}))
 
 	env.sessions.session(2).setBackpressure(BackpressureState{Level: BackpressureHard})
-	env.runtime.enqueueReplication(testGroupKey(75), 2)
+	env.runtime.enqueueReplication(testChannelKey(75), 2)
 	env.runtime.runScheduler()
 
 	if got := env.sessions.session(2).sendCount(); got != 0 {
@@ -193,8 +193,8 @@ func TestPeerRequestStateRetainsQueueBucketAfterDrain(t *testing.T) {
 	state := newPeerRequestState()
 	peer := isr.NodeID(2)
 
-	state.enqueue(Envelope{Peer: peer, GroupKey: testGroupKey(1)})
-	state.enqueue(Envelope{Peer: peer, GroupKey: testGroupKey(2)})
+	state.enqueue(Envelope{Peer: peer, ChannelKey: testChannelKey(1)})
+	state.enqueue(Envelope{Peer: peer, ChannelKey: testChannelKey(2)})
 
 	if _, ok := state.popQueued(peer); !ok {
 		t.Fatal("expected first queued envelope")
@@ -210,39 +210,39 @@ func TestPeerRequestStateRetainsQueueBucketAfterDrain(t *testing.T) {
 		t.Fatalf("queuedCount() = %d, want 0", got)
 	}
 
-	state.enqueue(Envelope{Peer: peer, GroupKey: testGroupKey(3)})
+	state.enqueue(Envelope{Peer: peer, ChannelKey: testChannelKey(3)})
 	if got := state.queuedCount(peer); got != 1 {
 		t.Fatalf("queuedCount() after reuse = %d, want 1", got)
 	}
 }
 
-func TestPeerQueueRetainsEnvelopeGroupKeyOrder(t *testing.T) {
+func TestPeerQueueRetainsEnvelopeChannelKeyOrder(t *testing.T) {
 	state := newPeerRequestState()
 	peer := isr.NodeID(2)
 
-	state.enqueue(Envelope{Peer: peer, GroupKey: testGroupKey(1)})
-	state.enqueue(Envelope{Peer: peer, GroupKey: testGroupKey(2)})
-	state.enqueue(Envelope{Peer: peer, GroupKey: testGroupKey(3)})
+	state.enqueue(Envelope{Peer: peer, ChannelKey: testChannelKey(1)})
+	state.enqueue(Envelope{Peer: peer, ChannelKey: testChannelKey(2)})
+	state.enqueue(Envelope{Peer: peer, ChannelKey: testChannelKey(3)})
 
 	for _, want := range []uint64{1, 2} {
 		env, ok := state.popQueued(peer)
 		if !ok {
 			t.Fatalf("popQueued() missing envelope %d", want)
 		}
-		if env.GroupKey != testGroupKey(want) {
-			t.Fatalf("popQueued() group = %q, want %q", env.GroupKey, testGroupKey(want))
+		if env.ChannelKey != testChannelKey(want) {
+			t.Fatalf("popQueued() group = %q, want %q", env.ChannelKey, testChannelKey(want))
 		}
 	}
 
-	state.enqueue(Envelope{Peer: peer, GroupKey: testGroupKey(4)})
+	state.enqueue(Envelope{Peer: peer, ChannelKey: testChannelKey(4)})
 
 	for _, want := range []uint64{3, 4} {
 		env, ok := state.popQueued(peer)
 		if !ok {
 			t.Fatalf("popQueued() missing envelope %d", want)
 		}
-		if env.GroupKey != testGroupKey(want) {
-			t.Fatalf("popQueued() group = %q, want %q", env.GroupKey, testGroupKey(want))
+		if env.ChannelKey != testChannelKey(want) {
+			t.Fatalf("popQueued() group = %q, want %q", env.ChannelKey, testChannelKey(want))
 		}
 	}
 }

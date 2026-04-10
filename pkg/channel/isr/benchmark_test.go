@@ -79,7 +79,7 @@ func (h *benchmarkRoundTripHarness) runOnce(ctx context.Context) (CommitResult, 
 
 func (h *benchmarkRoundTripHarness) replicateFollower(ctx context.Context, follower *replica, maxBytes int) {
 	req := FetchRequest{
-		GroupKey:    h.cluster.leader.state.GroupKey,
+		ChannelKey:  h.cluster.leader.state.ChannelKey,
 		Epoch:       h.cluster.leader.state.Epoch,
 		ReplicaID:   follower.localNode,
 		FetchOffset: follower.state.LEO,
@@ -91,7 +91,7 @@ func (h *benchmarkRoundTripHarness) replicateFollower(ctx context.Context, follo
 		h.t.Fatalf("Fetch() error = %v", err)
 	}
 	if err := follower.ApplyFetch(ctx, ApplyFetchRequest{
-		GroupKey:   req.GroupKey,
+		ChannelKey: req.ChannelKey,
 		Epoch:      result.Epoch,
 		Leader:     h.cluster.leader.localNode,
 		TruncateTo: result.TruncateTo,
@@ -101,7 +101,7 @@ func (h *benchmarkRoundTripHarness) replicateFollower(ctx context.Context, follo
 		h.t.Fatalf("ApplyFetch() error = %v", err)
 	}
 	_, err = h.cluster.leader.Fetch(ctx, FetchRequest{
-		GroupKey:    req.GroupKey,
+		ChannelKey:  req.ChannelKey,
 		Epoch:       result.Epoch,
 		ReplicaID:   follower.localNode,
 		FetchOffset: follower.state.LEO,
@@ -162,7 +162,7 @@ func (h *benchmarkFetchHarness) rebuild() {
 	}
 
 	h.req = FetchRequest{
-		GroupKey:    h.leader.state.GroupKey,
+		ChannelKey:  h.leader.state.ChannelKey,
 		Epoch:       h.leader.state.Epoch,
 		ReplicaID:   2,
 		FetchOffset: 0,
@@ -216,11 +216,11 @@ func (h *benchmarkApplyFetchHarness) rebuild() {
 	h.followerEnv = newFollowerEnv(h.t)
 	h.follower = h.followerEnv.replica
 	h.req = ApplyFetchRequest{
-		GroupKey: h.follower.state.GroupKey,
-		Epoch:    h.follower.state.Epoch,
-		Leader:   1,
-		Records:  makeBenchmarkRecords(1, h.cfg.payloadBytes),
-		LeaderHW: 1,
+		ChannelKey: h.follower.state.ChannelKey,
+		Epoch:      h.follower.state.Epoch,
+		Leader:     1,
+		Records:    makeBenchmarkRecords(1, h.cfg.payloadBytes),
+		LeaderHW:   1,
 	}
 
 	switch h.cfg.mode {

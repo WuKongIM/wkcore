@@ -8,12 +8,12 @@ func (r *runtime) sendEnvelope(env Envelope) error {
 		r.peerRequests.enqueue(env)
 		return ErrBackpressured
 	}
-	if trackInflight && !r.peerRequests.tryAcquireGroup(env.GroupKey, env.Peer) {
+	if trackInflight && !r.peerRequests.tryAcquireChannel(env.ChannelKey, env.Peer) {
 		r.peerRequests.enqueue(env)
 		return ErrBackpressured
 	}
 	if trackInflight && !r.peerRequests.tryAcquire(env.Peer, r.cfg.Limits.MaxFetchInflightPeer) {
-		r.peerRequests.releaseGroup(env.GroupKey, env.Peer)
+		r.peerRequests.releaseChannel(env.ChannelKey, env.Peer)
 		r.peerRequests.enqueue(env)
 		return ErrBackpressured
 	}
@@ -24,7 +24,7 @@ func (r *runtime) sendEnvelope(env Envelope) error {
 	if err := session.Send(env); err != nil {
 		if trackInflight {
 			r.peerRequests.release(env.Peer)
-			r.peerRequests.releaseGroup(env.GroupKey, env.Peer)
+			r.peerRequests.releaseChannel(env.ChannelKey, env.Peer)
 		}
 		return err
 	}
@@ -37,7 +37,7 @@ func (r *runtime) refreshFetchEnvelope(env Envelope) Envelope {
 	}
 
 	r.mu.RLock()
-	g, ok := r.groups[env.GroupKey]
+	g, ok := r.groups[env.ChannelKey]
 	r.mu.RUnlock()
 	if !ok {
 		return env
@@ -45,7 +45,7 @@ func (r *runtime) refreshFetchEnvelope(env Envelope) Envelope {
 
 	meta := g.Status()
 	req := *env.FetchRequest
-	req.GroupKey = env.GroupKey
+	req.ChannelKey = env.ChannelKey
 	req.Epoch = meta.Epoch
 	req.Generation = g.generation
 	req.ReplicaID = r.cfg.LocalNode

@@ -13,7 +13,7 @@ const (
 	rpcStatusOK        = "ok"
 	rpcStatusNotLeader = "not_leader"
 	rpcStatusNoLeader  = "no_leader"
-	rpcStatusNoGroup   = "no_group"
+	rpcStatusNoSlot    = "no_slot"
 	rpcStatusNotFound  = "not_found"
 )
 
@@ -24,18 +24,18 @@ type authoritativeRPCResponse interface {
 
 type rpcStatusEncoder func(status string, leaderID uint64) ([]byte, error)
 
-func (s *Store) shouldServeGroupLocally(groupID multiraft.GroupID) bool {
-	if s.cluster == nil || s.singleLocalPeerGroup(groupID) {
+func (s *Store) shouldServeSlotLocally(slotID multiraft.SlotID) bool {
+	if s.cluster == nil || s.singleLocalPeerSlot(slotID) {
 		return true
 	}
-	leaderID, err := s.cluster.LeaderOf(groupID)
+	leaderID, err := s.cluster.LeaderOf(slotID)
 	return err == nil && s.cluster.IsLocal(leaderID)
 }
 
 func callAuthoritativeRPC[T authoritativeRPCResponse](
 	ctx context.Context,
 	s *Store,
-	groupID multiraft.GroupID,
+	slotID multiraft.SlotID,
 	serviceID uint8,
 	payload []byte,
 	decode func([]byte) (T, error),
@@ -46,9 +46,9 @@ func callAuthoritativeRPC[T authoritativeRPCResponse](
 		return zero, fmt.Errorf("metastore: cluster not configured")
 	}
 
-	peers := s.cluster.PeersForGroup(groupID)
+	peers := s.cluster.PeersForSlot(slotID)
 	if len(peers) == 0 {
-		return zero, raftcluster.ErrGroupNotFound
+		return zero, raftcluster.ErrSlotNotFound
 	}
 
 	tried := make(map[multiraft.NodeID]struct{}, len(peers))
@@ -63,7 +63,7 @@ func callAuthoritativeRPC[T authoritativeRPCResponse](
 		}
 		tried[peer] = struct{}{}
 
-		body, err := s.cluster.RPCService(ctx, peer, groupID, serviceID, payload)
+		body, err := s.cluster.RPCService(ctx, peer, slotID, serviceID, payload)
 		if err != nil {
 			lastErr = err
 			continue
@@ -88,8 +88,8 @@ func callAuthoritativeRPC[T authoritativeRPCResponse](
 		case rpcStatusNoLeader:
 			lastErr = raftcluster.ErrNoLeader
 			continue
-		case rpcStatusNoGroup:
-			lastErr = raftcluster.ErrGroupNotFound
+		case rpcStatusNoSlot:
+			lastErr = raftcluster.ErrSlotNotFound
 			continue
 		default:
 			lastErr = fmt.Errorf("metastore: unexpected rpc status %q", resp.rpcStatus())
@@ -103,11 +103,11 @@ func callAuthoritativeRPC[T authoritativeRPCResponse](
 	return zero, raftcluster.ErrNoLeader
 }
 
-func (s *Store) handleAuthoritativeRPC(groupID multiraft.GroupID, encode rpcStatusEncoder) ([]byte, bool, error) {
-	leaderID, err := s.cluster.LeaderOf(groupID)
+func (s *Store) handleAuthoritativeRPC(slotID multiraft.SlotID, encode rpcStatusEncoder) ([]byte, bool, error) {
+	leaderID, err := s.cluster.LeaderOf(slotID)
 	switch {
-	case errors.Is(err, raftcluster.ErrGroupNotFound):
-		body, encodeErr := encode(rpcStatusNoGroup, 0)
+	case errors.Is(err, raftcluster.ErrSlotNotFound):
+		body, encodeErr := encode(rpcStatusNoSlot, 0)
 		return body, true, encodeErr
 	case err != nil:
 		body, encodeErr := encode(rpcStatusNoLeader, 0)

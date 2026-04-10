@@ -12,13 +12,13 @@ import (
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 )
 
-func TestPlannerCreatesBootstrapTaskForBrandNewGroup(t *testing.T) {
-	planner := NewPlanner(PlannerConfig{GroupCount: 4, ReplicaN: 3})
+func TestPlannerCreatesBootstrapTaskForBrandNewSlot(t *testing.T) {
+	planner := NewPlanner(PlannerConfig{SlotCount: 4, ReplicaN: 3})
 	state := testState(
 		aliveNode(1), aliveNode(2), aliveNode(3), aliveNode(4),
 	)
 
-	decision, err := planner.ReconcileGroup(context.Background(), state, 1)
+	decision, err := planner.ReconcileSlot(context.Background(), state, 1)
 	require.NoError(t, err)
 	require.NotNil(t, decision.Task)
 	require.Equal(t, controllermeta.TaskKindBootstrap, decision.Task.Kind)
@@ -26,7 +26,7 @@ func TestPlannerCreatesBootstrapTaskForBrandNewGroup(t *testing.T) {
 }
 
 func TestPlannerPrefersRepairBeforeRebalance(t *testing.T) {
-	planner := NewPlanner(PlannerConfig{GroupCount: 2, ReplicaN: 3})
+	planner := NewPlanner(PlannerConfig{SlotCount: 2, ReplicaN: 3})
 	state := testState(
 		aliveNode(1), aliveNode(2), deadNode(3), aliveNode(4),
 		withAssignment(1, 1, 2, 3),
@@ -37,27 +37,27 @@ func TestPlannerPrefersRepairBeforeRebalance(t *testing.T) {
 
 	decision, err := planner.NextDecision(context.Background(), state)
 	require.NoError(t, err)
-	require.Equal(t, uint32(1), decision.GroupID)
+	require.Equal(t, uint32(1), decision.SlotID)
 	require.NotNil(t, decision.Task)
 	require.Equal(t, controllermeta.TaskKindRepair, decision.Task.Kind)
 }
 
 func TestPlannerDoesNotMigrateOnSuspectNode(t *testing.T) {
-	planner := NewPlanner(PlannerConfig{GroupCount: 1, ReplicaN: 3, RebalanceSkewThreshold: 2})
+	planner := NewPlanner(PlannerConfig{SlotCount: 1, ReplicaN: 3, RebalanceSkewThreshold: 2})
 	state := testState(
 		aliveNode(1), aliveNode(2), suspectNode(3), aliveNode(4),
 		withAssignment(1, 1, 2, 3),
 		withRuntimeView(1, []uint64{1, 2, 3}, true),
 	)
 
-	decision, err := planner.ReconcileGroup(context.Background(), state, 1)
+	decision, err := planner.ReconcileSlot(context.Background(), state, 1)
 	require.NoError(t, err)
 	require.Nil(t, decision.Task)
 	require.False(t, decision.Degraded)
 }
 
 func TestPlannerRebalancesOnlyWhenSkewExceedsThreshold(t *testing.T) {
-	planner := NewPlanner(PlannerConfig{GroupCount: 4, ReplicaN: 3, RebalanceSkewThreshold: 2})
+	planner := NewPlanner(PlannerConfig{SlotCount: 4, ReplicaN: 3, RebalanceSkewThreshold: 2})
 	state := testState(
 		aliveNode(1), aliveNode(2), aliveNode(3), aliveNode(4),
 		withAssignment(1, 1, 2, 3),
@@ -78,7 +78,7 @@ func TestPlannerRebalancesOnlyWhenSkewExceedsThreshold(t *testing.T) {
 }
 
 func TestPlannerRebalancesWhenSkewMatchesThreshold(t *testing.T) {
-	planner := NewPlanner(PlannerConfig{GroupCount: 2, ReplicaN: 3, RebalanceSkewThreshold: 2})
+	planner := NewPlanner(PlannerConfig{SlotCount: 2, ReplicaN: 3, RebalanceSkewThreshold: 2})
 	state := testState(
 		aliveNode(1), aliveNode(2), aliveNode(3), aliveNode(4),
 		withAssignment(1, 1, 2, 3),
@@ -95,7 +95,7 @@ func TestPlannerRebalancesWhenSkewMatchesThreshold(t *testing.T) {
 }
 
 func TestPlannerDoesNotRebalanceOptimalSingleSkewDistribution(t *testing.T) {
-	planner := NewPlanner(PlannerConfig{GroupCount: 2, ReplicaN: 3})
+	planner := NewPlanner(PlannerConfig{SlotCount: 2, ReplicaN: 3})
 	state := testState(
 		aliveNode(1), aliveNode(2), aliveNode(3), aliveNode(4),
 		withAssignment(1, 1, 2, 3),
@@ -106,26 +106,26 @@ func TestPlannerDoesNotRebalanceOptimalSingleSkewDistribution(t *testing.T) {
 
 	decision, err := planner.NextDecision(context.Background(), state)
 	require.NoError(t, err)
-	require.Zero(t, decision.GroupID)
+	require.Zero(t, decision.SlotID)
 	require.Nil(t, decision.Task)
 }
 
 func TestPlannerStopsAutomaticChangesAfterQuorumLoss(t *testing.T) {
-	planner := NewPlanner(PlannerConfig{GroupCount: 1, ReplicaN: 3})
+	planner := NewPlanner(PlannerConfig{SlotCount: 1, ReplicaN: 3})
 	state := testState(
 		aliveNode(1), deadNode(2), deadNode(3), aliveNode(4),
 		withAssignment(1, 1, 2, 3),
 		withRuntimeView(1, []uint64{1}, false),
 	)
 
-	decision, err := planner.ReconcileGroup(context.Background(), state, 1)
+	decision, err := planner.ReconcileSlot(context.Background(), state, 1)
 	require.NoError(t, err)
 	require.Nil(t, decision.Task)
 	require.True(t, decision.Degraded)
 }
 
-func TestPlannerSkipsDegradedGroupAndReturnsLaterRepairDecision(t *testing.T) {
-	planner := NewPlanner(PlannerConfig{GroupCount: 2, ReplicaN: 3})
+func TestPlannerSkipsDegradedSlotAndReturnsLaterRepairDecision(t *testing.T) {
+	planner := NewPlanner(PlannerConfig{SlotCount: 2, ReplicaN: 3})
 	state := testState(
 		aliveNode(1), aliveNode(2), deadNode(3), aliveNode(4), deadNode(5),
 		withAssignment(1, 1, 2, 3),
@@ -136,20 +136,20 @@ func TestPlannerSkipsDegradedGroupAndReturnsLaterRepairDecision(t *testing.T) {
 
 	decision, err := planner.NextDecision(context.Background(), state)
 	require.NoError(t, err)
-	require.Equal(t, uint32(2), decision.GroupID)
+	require.Equal(t, uint32(2), decision.SlotID)
 	require.NotNil(t, decision.Task)
 	require.Equal(t, controllermeta.TaskKindRepair, decision.Task.Kind)
 	require.False(t, decision.Degraded)
 }
 
 func TestPlannerDoesNotReissueRetryingTaskBeforeNextRunAt(t *testing.T) {
-	planner := NewPlanner(PlannerConfig{GroupCount: 1, ReplicaN: 3})
+	planner := NewPlanner(PlannerConfig{SlotCount: 1, ReplicaN: 3})
 	state := testState(
 		aliveNode(1), aliveNode(2), deadNode(3), aliveNode(4),
 		withAssignment(1, 1, 2, 3),
 		withRuntimeView(1, []uint64{1, 2, 3}, true),
 		withTask(controllermeta.ReconcileTask{
-			GroupID:    1,
+			SlotID:     1,
 			Kind:       controllermeta.TaskKindRepair,
 			Step:       controllermeta.TaskStepAddLearner,
 			SourceNode: 3,
@@ -161,25 +161,25 @@ func TestPlannerDoesNotReissueRetryingTaskBeforeNextRunAt(t *testing.T) {
 
 	decision, err := planner.NextDecision(context.Background(), state)
 	require.NoError(t, err)
-	require.Zero(t, decision.GroupID)
+	require.Zero(t, decision.SlotID)
 	require.Nil(t, decision.Task)
 
 	state.Now = time.Unix(200, 0)
 	decision, err = planner.NextDecision(context.Background(), state)
 	require.NoError(t, err)
-	require.Equal(t, uint32(1), decision.GroupID)
+	require.Equal(t, uint32(1), decision.SlotID)
 	require.NotNil(t, decision.Task)
 	require.Equal(t, controllermeta.TaskStatusRetrying, decision.Task.Status)
 }
 
 func TestPlannerFailedTaskBlocksAutomaticRegeneration(t *testing.T) {
-	planner := NewPlanner(PlannerConfig{GroupCount: 1, ReplicaN: 3})
+	planner := NewPlanner(PlannerConfig{SlotCount: 1, ReplicaN: 3})
 	state := testState(
 		aliveNode(1), aliveNode(2), deadNode(3), aliveNode(4),
 		withAssignment(1, 1, 2, 3),
 		withRuntimeView(1, []uint64{1, 2, 3}, true),
 		withTask(controllermeta.ReconcileTask{
-			GroupID:    1,
+			SlotID:     1,
 			Kind:       controllermeta.TaskKindRepair,
 			Step:       controllermeta.TaskStepAddLearner,
 			SourceNode: 3,
@@ -189,14 +189,14 @@ func TestPlannerFailedTaskBlocksAutomaticRegeneration(t *testing.T) {
 		}),
 	)
 
-	decision, err := planner.ReconcileGroup(context.Background(), state, 1)
+	decision, err := planner.ReconcileSlot(context.Background(), state, 1)
 	require.NoError(t, err)
 	require.Nil(t, decision.Task)
-	require.Equal(t, uint32(1), decision.Assignment.GroupID)
+	require.Equal(t, uint32(1), decision.Assignment.SlotID)
 }
 
-func TestPlannerDegradedGroupDoesNotReissueExistingTaskAndDoesNotBlockLaterPlanning(t *testing.T) {
-	planner := NewPlanner(PlannerConfig{GroupCount: 2, ReplicaN: 3})
+func TestPlannerDegradedSlotDoesNotReissueExistingTaskAndDoesNotBlockLaterPlanning(t *testing.T) {
+	planner := NewPlanner(PlannerConfig{SlotCount: 2, ReplicaN: 3})
 	state := testState(
 		aliveNode(1), aliveNode(2), deadNode(3), aliveNode(4), deadNode(5),
 		withAssignment(1, 1, 2, 3),
@@ -204,7 +204,7 @@ func TestPlannerDegradedGroupDoesNotReissueExistingTaskAndDoesNotBlockLaterPlann
 		withRuntimeView(1, []uint64{1, 2}, false),
 		withRuntimeView(2, []uint64{1, 4, 5}, true),
 		withTask(controllermeta.ReconcileTask{
-			GroupID:    1,
+			SlotID:     1,
 			Kind:       controllermeta.TaskKindRepair,
 			Step:       controllermeta.TaskStepAddLearner,
 			SourceNode: 3,
@@ -213,20 +213,20 @@ func TestPlannerDegradedGroupDoesNotReissueExistingTaskAndDoesNotBlockLaterPlann
 		}),
 	)
 
-	decision, err := planner.ReconcileGroup(context.Background(), state, 1)
+	decision, err := planner.ReconcileSlot(context.Background(), state, 1)
 	require.NoError(t, err)
 	require.True(t, decision.Degraded)
 	require.Nil(t, decision.Task)
 
 	decision, err = planner.NextDecision(context.Background(), state)
 	require.NoError(t, err)
-	require.Equal(t, uint32(2), decision.GroupID)
+	require.Equal(t, uint32(2), decision.SlotID)
 	require.NotNil(t, decision.Task)
 	require.Equal(t, controllermeta.TaskKindRepair, decision.Task.Kind)
 }
 
 func TestPlannerBootstrapUsesLeastLoadedAliveNodes(t *testing.T) {
-	planner := NewPlanner(PlannerConfig{GroupCount: 4, ReplicaN: 3})
+	planner := NewPlanner(PlannerConfig{SlotCount: 4, ReplicaN: 3})
 	state := testState(
 		aliveNode(1), aliveNode(2), aliveNode(3), aliveNode(4), aliveNode(5),
 		withAssignment(10, 1, 2, 3),
@@ -234,22 +234,22 @@ func TestPlannerBootstrapUsesLeastLoadedAliveNodes(t *testing.T) {
 		withAssignment(12, 1, 2, 4),
 	)
 
-	decision, err := planner.ReconcileGroup(context.Background(), state, 1)
+	decision, err := planner.ReconcileSlot(context.Background(), state, 1)
 	require.NoError(t, err)
 	require.NotNil(t, decision.Task)
 	require.Equal(t, []uint64{3, 4, 5}, decision.Assignment.DesiredPeers)
 }
 
 func TestPlannerInitializesAndIncrementsConfigEpochOnMembershipChanges(t *testing.T) {
-	planner := NewPlanner(PlannerConfig{GroupCount: 2, ReplicaN: 3})
+	planner := NewPlanner(PlannerConfig{SlotCount: 2, ReplicaN: 3})
 
-	bootstrapDecision, err := planner.ReconcileGroup(context.Background(), testState(
+	bootstrapDecision, err := planner.ReconcileSlot(context.Background(), testState(
 		aliveNode(1), aliveNode(2), aliveNode(3), aliveNode(4),
 	), 1)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, bootstrapDecision.Assignment.ConfigEpoch)
 
-	repairDecision, err := planner.ReconcileGroup(context.Background(), testState(
+	repairDecision, err := planner.ReconcileSlot(context.Background(), testState(
 		aliveNode(1), aliveNode(2), deadNode(3), aliveNode(4),
 		withAssignment(2, 1, 2, 3),
 		withAssignmentConfigEpoch(2, 7),
@@ -265,7 +265,7 @@ func TestControllerTickNoOpsWhenNotLeader(t *testing.T) {
 	require.NoError(t, store.Close())
 
 	controller := NewController(store, ControllerConfig{
-		Planner:  PlannerConfig{GroupCount: 1, ReplicaN: 3},
+		Planner:  PlannerConfig{SlotCount: 1, ReplicaN: 3},
 		IsLeader: func() bool { return false },
 	})
 
@@ -406,7 +406,7 @@ func TestStateMachineResumeNodeClearsRepairTasksForThatNode(t *testing.T) {
 		Op:   &OperatorRequest{Kind: OperatorMarkNodeDraining, NodeID: 2},
 	}))
 	require.NoError(t, store.UpsertTask(ctx, controllermeta.ReconcileTask{
-		GroupID:    1,
+		SlotID:     1,
 		Kind:       controllermeta.TaskKindRepair,
 		Step:       controllermeta.TaskStepAddLearner,
 		SourceNode: 2,
@@ -415,7 +415,7 @@ func TestStateMachineResumeNodeClearsRepairTasksForThatNode(t *testing.T) {
 		NextRunAt:  time.Unix(10, 0),
 	}))
 	require.NoError(t, store.UpsertTask(ctx, controllermeta.ReconcileTask{
-		GroupID:    2,
+		SlotID:     2,
 		Kind:       controllermeta.TaskKindRepair,
 		Step:       controllermeta.TaskStepAddLearner,
 		SourceNode: 3,
@@ -424,7 +424,7 @@ func TestStateMachineResumeNodeClearsRepairTasksForThatNode(t *testing.T) {
 		NextRunAt:  time.Unix(11, 0),
 	}))
 	require.NoError(t, store.UpsertTask(ctx, controllermeta.ReconcileTask{
-		GroupID:    3,
+		SlotID:     3,
 		Kind:       controllermeta.TaskKindRebalance,
 		Step:       controllermeta.TaskStepAddLearner,
 		SourceNode: 2,
@@ -447,7 +447,7 @@ func TestStateMachineResumeNodeClearsRepairTasksForThatNode(t *testing.T) {
 
 	task, err := store.GetTask(ctx, 2)
 	require.NoError(t, err)
-	require.Equal(t, uint32(2), task.GroupID)
+	require.Equal(t, uint32(2), task.SlotID)
 
 	task, err = store.GetTask(ctx, 3)
 	require.NoError(t, err)
@@ -468,13 +468,13 @@ func TestStateMachineIgnoresStaleRepairProposalAfterResume(t *testing.T) {
 		Op:   &OperatorRequest{Kind: OperatorResumeNode, NodeID: 2},
 	}))
 
-	assignment := controllermeta.GroupAssignment{
-		GroupID:      1,
+	assignment := controllermeta.SlotAssignment{
+		SlotID:       1,
 		DesiredPeers: []uint64{1, 3, 4},
 		ConfigEpoch:  2,
 	}
 	task := controllermeta.ReconcileTask{
-		GroupID:    1,
+		SlotID:     1,
 		Kind:       controllermeta.TaskKindRepair,
 		Step:       controllermeta.TaskStepAddLearner,
 		SourceNode: 2,
@@ -504,13 +504,13 @@ func TestStateMachineResumeNodeRestoresAssignmentFromPendingRepair(t *testing.T)
 		Kind: CommandKindOperatorRequest,
 		Op:   &OperatorRequest{Kind: OperatorMarkNodeDraining, NodeID: 4},
 	}))
-	require.NoError(t, store.UpsertAssignment(ctx, controllermeta.GroupAssignment{
-		GroupID:      1,
+	require.NoError(t, store.UpsertAssignment(ctx, controllermeta.SlotAssignment{
+		SlotID:       1,
 		DesiredPeers: []uint64{1, 2, 3},
 		ConfigEpoch:  2,
 	}))
 	require.NoError(t, store.UpsertTask(ctx, controllermeta.ReconcileTask{
-		GroupID:    1,
+		SlotID:     1,
 		Kind:       controllermeta.TaskKindRepair,
 		Step:       controllermeta.TaskStepAddLearner,
 		SourceNode: 4,
@@ -542,7 +542,7 @@ func TestStateMachineMarksTaskFailedAfterRetryExhaustion(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, store.UpsertTask(ctx, controllermeta.ReconcileTask{
-		GroupID:   1,
+		SlotID:    1,
 		Kind:      controllermeta.TaskKindRepair,
 		Step:      controllermeta.TaskStepAddLearner,
 		Attempt:   2,
@@ -553,7 +553,7 @@ func TestStateMachineMarksTaskFailedAfterRetryExhaustion(t *testing.T) {
 	require.NoError(t, sm.Apply(ctx, Command{
 		Kind: CommandKindTaskResult,
 		Advance: &TaskAdvance{
-			GroupID: 1,
+			SlotID:  1,
 			Attempt: 2,
 			Now:     time.Unix(11, 0),
 			Err:     errors.New("learner catch-up timeout"),
@@ -576,7 +576,7 @@ func TestStateMachineIgnoresDuplicateTaskResultForAdvancedAttempt(t *testing.T) 
 	ctx := context.Background()
 
 	original := controllermeta.ReconcileTask{
-		GroupID:   1,
+		SlotID:    1,
 		Kind:      controllermeta.TaskKindRepair,
 		Step:      controllermeta.TaskStepAddLearner,
 		Attempt:   2,
@@ -589,7 +589,7 @@ func TestStateMachineIgnoresDuplicateTaskResultForAdvancedAttempt(t *testing.T) 
 	require.NoError(t, sm.Apply(ctx, Command{
 		Kind: CommandKindTaskResult,
 		Advance: &TaskAdvance{
-			GroupID: 1,
+			SlotID:  1,
 			Attempt: 1,
 			Now:     time.Unix(11, 0),
 			Err:     errors.New("stale duplicate failure"),
@@ -610,8 +610,8 @@ func testState(options ...stateOption) PlannerState {
 	state := PlannerState{
 		Now:         time.Unix(100, 0),
 		Nodes:       make(map[uint64]controllermeta.ClusterNode),
-		Assignments: make(map[uint32]controllermeta.GroupAssignment),
-		Runtime:     make(map[uint32]controllermeta.GroupRuntimeView),
+		Assignments: make(map[uint32]controllermeta.SlotAssignment),
+		Runtime:     make(map[uint32]controllermeta.SlotRuntimeView),
 		Tasks:       make(map[uint32]controllermeta.ReconcileTask),
 	}
 	for _, option := range options {
@@ -644,29 +644,29 @@ func withNode(nodeID uint64, status controllermeta.NodeStatus) stateOption {
 	}
 }
 
-func withAssignment(groupID uint32, peers ...uint64) stateOption {
+func withAssignment(slotID uint32, peers ...uint64) stateOption {
 	return func(state *PlannerState) {
-		state.Assignments[groupID] = controllermeta.GroupAssignment{
-			GroupID:      groupID,
+		state.Assignments[slotID] = controllermeta.SlotAssignment{
+			SlotID:       slotID,
 			DesiredPeers: append([]uint64(nil), peers...),
 			ConfigEpoch:  1,
 		}
 	}
 }
 
-func withAssignmentConfigEpoch(groupID uint32, epoch uint64) stateOption {
+func withAssignmentConfigEpoch(slotID uint32, epoch uint64) stateOption {
 	return func(state *PlannerState) {
-		assignment := state.Assignments[groupID]
-		assignment.GroupID = groupID
+		assignment := state.Assignments[slotID]
+		assignment.SlotID = slotID
 		assignment.ConfigEpoch = epoch
-		state.Assignments[groupID] = assignment
+		state.Assignments[slotID] = assignment
 	}
 }
 
-func withRuntimeView(groupID uint32, peers []uint64, hasQuorum bool) stateOption {
+func withRuntimeView(slotID uint32, peers []uint64, hasQuorum bool) stateOption {
 	return func(state *PlannerState) {
-		state.Runtime[groupID] = controllermeta.GroupRuntimeView{
-			GroupID:             groupID,
+		state.Runtime[slotID] = controllermeta.SlotRuntimeView{
+			SlotID:              slotID,
 			CurrentPeers:        append([]uint64(nil), peers...),
 			LeaderID:            peers[0],
 			HealthyVoters:       uint32(len(peers)),
@@ -679,7 +679,7 @@ func withRuntimeView(groupID uint32, peers []uint64, hasQuorum bool) stateOption
 
 func withTask(task controllermeta.ReconcileTask) stateOption {
 	return func(state *PlannerState) {
-		state.Tasks[task.GroupID] = task
+		state.Tasks[task.SlotID] = task
 	}
 }
 

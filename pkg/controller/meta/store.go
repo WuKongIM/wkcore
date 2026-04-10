@@ -131,9 +131,9 @@ func (s *Store) UpsertNodeAndDeleteRepairTasks(ctx context.Context, node Cluster
 	if err != nil {
 		return err
 	}
-	assignmentsByGroup := make(map[uint32]GroupAssignment, len(assignments))
+	assignmentsByGroup := make(map[uint32]SlotAssignment, len(assignments))
 	for _, assignment := range assignments {
-		assignmentsByGroup[assignment.GroupID] = assignment
+		assignmentsByGroup[assignment.SlotID] = assignment
 	}
 
 	writes := []batchWrite{{
@@ -144,32 +144,32 @@ func (s *Store) UpsertNodeAndDeleteRepairTasks(ctx context.Context, node Cluster
 		if task.Kind != TaskKindRepair || task.SourceNode != node.NodeID {
 			continue
 		}
-		if assignment, ok := assignmentsByGroup[task.GroupID]; ok {
+		if assignment, ok := assignmentsByGroup[task.SlotID]; ok {
 			if restored, changed := restoreRepairAssignment(assignment, task); changed {
-				assignmentsByGroup[task.GroupID] = restored
+				assignmentsByGroup[task.SlotID] = restored
 				writes = append(writes, batchWrite{
-					key:   encodeGroupKey(recordPrefixAssignment, restored.GroupID),
+					key:   encodeGroupKey(recordPrefixAssignment, restored.SlotID),
 					value: encodeGroupAssignment(restored),
 				})
 			}
 		}
 		writes = append(writes, batchWrite{
-			key:    encodeGroupKey(recordPrefixTask, task.GroupID),
+			key:    encodeGroupKey(recordPrefixTask, task.SlotID),
 			delete: true,
 		})
 	}
 	return s.writeBatchLocked(writes)
 }
 
-func restoreRepairAssignment(assignment GroupAssignment, task ReconcileTask) (GroupAssignment, bool) {
-	if assignment.GroupID == 0 || assignment.GroupID != task.GroupID {
-		return GroupAssignment{}, false
+func restoreRepairAssignment(assignment SlotAssignment, task ReconcileTask) (SlotAssignment, bool) {
+	if assignment.SlotID == 0 || assignment.SlotID != task.SlotID {
+		return SlotAssignment{}, false
 	}
 	if task.SourceNode == 0 || task.TargetNode == 0 {
-		return GroupAssignment{}, false
+		return SlotAssignment{}, false
 	}
 	if containsUint64(assignment.DesiredPeers, task.SourceNode) || !containsUint64(assignment.DesiredPeers, task.TargetNode) {
-		return GroupAssignment{}, false
+		return SlotAssignment{}, false
 	}
 
 	restored := assignment
@@ -197,33 +197,33 @@ func containsUint64(values []uint64, target uint64) bool {
 	return false
 }
 
-func (s *Store) GetAssignment(ctx context.Context, groupID uint32) (GroupAssignment, error) {
+func (s *Store) GetAssignment(ctx context.Context, slotID uint32) (SlotAssignment, error) {
 	if err := s.ensureOpen(); err != nil {
-		return GroupAssignment{}, err
+		return SlotAssignment{}, err
 	}
-	if groupID == 0 {
-		return GroupAssignment{}, ErrInvalidArgument
+	if slotID == 0 {
+		return SlotAssignment{}, ErrInvalidArgument
 	}
 	if err := s.checkContext(ctx); err != nil {
-		return GroupAssignment{}, err
+		return SlotAssignment{}, err
 	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	key := encodeGroupKey(recordPrefixAssignment, groupID)
+	key := encodeGroupKey(recordPrefixAssignment, slotID)
 	value, err := s.getValueLocked(key)
 	if err != nil {
-		return GroupAssignment{}, err
+		return SlotAssignment{}, err
 	}
 	return decodeGroupAssignment(key, value)
 }
 
-func (s *Store) DeleteAssignment(ctx context.Context, groupID uint32) error {
+func (s *Store) DeleteAssignment(ctx context.Context, slotID uint32) error {
 	if err := s.ensureOpen(); err != nil {
 		return err
 	}
-	if groupID == 0 {
+	if slotID == 0 {
 		return ErrInvalidArgument
 	}
 	if err := s.checkContext(ctx); err != nil {
@@ -233,10 +233,10 @@ func (s *Store) DeleteAssignment(ctx context.Context, groupID uint32) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.deleteValueLocked(encodeGroupKey(recordPrefixAssignment, groupID))
+	return s.deleteValueLocked(encodeGroupKey(recordPrefixAssignment, slotID))
 }
 
-func (s *Store) ListAssignments(ctx context.Context) ([]GroupAssignment, error) {
+func (s *Store) ListAssignments(ctx context.Context) ([]SlotAssignment, error) {
 	if err := s.ensureOpen(); err != nil {
 		return nil, err
 	}
@@ -250,14 +250,14 @@ func (s *Store) ListAssignments(ctx context.Context) ([]GroupAssignment, error) 
 	return s.listAssignmentsLocked(ctx)
 }
 
-func (s *Store) UpsertAssignment(ctx context.Context, assignment GroupAssignment) error {
+func (s *Store) UpsertAssignment(ctx context.Context, assignment SlotAssignment) error {
 	if err := s.ensureOpen(); err != nil {
 		return err
 	}
 	if err := s.checkContext(ctx); err != nil {
 		return err
 	}
-	if assignment.GroupID == 0 {
+	if assignment.SlotID == 0 {
 		return ErrInvalidArgument
 	}
 	assignment = normalizeGroupAssignment(assignment)
@@ -270,30 +270,30 @@ func (s *Store) UpsertAssignment(ctx context.Context, assignment GroupAssignment
 
 	return s.writeBatchLocked([]batchWrite{
 		{
-			key:   encodeGroupKey(recordPrefixAssignment, assignment.GroupID),
+			key:   encodeGroupKey(recordPrefixAssignment, assignment.SlotID),
 			value: encodeGroupAssignment(assignment),
 		},
 	})
 }
 
-func (s *Store) GetRuntimeView(ctx context.Context, groupID uint32) (GroupRuntimeView, error) {
+func (s *Store) GetRuntimeView(ctx context.Context, slotID uint32) (SlotRuntimeView, error) {
 	if err := s.ensureOpen(); err != nil {
-		return GroupRuntimeView{}, err
+		return SlotRuntimeView{}, err
 	}
-	if groupID == 0 {
-		return GroupRuntimeView{}, ErrInvalidArgument
+	if slotID == 0 {
+		return SlotRuntimeView{}, ErrInvalidArgument
 	}
 	if err := s.checkContext(ctx); err != nil {
-		return GroupRuntimeView{}, err
+		return SlotRuntimeView{}, err
 	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	key := encodeGroupKey(recordPrefixRuntimeView, groupID)
+	key := encodeGroupKey(recordPrefixRuntimeView, slotID)
 	value, err := s.getValueLocked(key)
 	if err != nil {
-		return GroupRuntimeView{}, err
+		return SlotRuntimeView{}, err
 	}
 	return decodeGroupRuntimeView(key, value)
 }
@@ -330,7 +330,7 @@ func (s *Store) DeleteControllerMembership(ctx context.Context) error {
 	return s.deleteValueLocked(membershipKey())
 }
 
-func (s *Store) ListRuntimeViews(ctx context.Context) ([]GroupRuntimeView, error) {
+func (s *Store) ListRuntimeViews(ctx context.Context) ([]SlotRuntimeView, error) {
 	if err := s.ensureOpen(); err != nil {
 		return nil, err
 	}
@@ -344,11 +344,11 @@ func (s *Store) ListRuntimeViews(ctx context.Context) ([]GroupRuntimeView, error
 	return s.listRuntimeViewsLocked(ctx)
 }
 
-func (s *Store) DeleteRuntimeView(ctx context.Context, groupID uint32) error {
+func (s *Store) DeleteRuntimeView(ctx context.Context, slotID uint32) error {
 	if err := s.ensureOpen(); err != nil {
 		return err
 	}
-	if groupID == 0 {
+	if slotID == 0 {
 		return ErrInvalidArgument
 	}
 	if err := s.checkContext(ctx); err != nil {
@@ -358,7 +358,7 @@ func (s *Store) DeleteRuntimeView(ctx context.Context, groupID uint32) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.deleteValueLocked(encodeGroupKey(recordPrefixRuntimeView, groupID))
+	return s.deleteValueLocked(encodeGroupKey(recordPrefixRuntimeView, slotID))
 }
 
 func (s *Store) UpsertControllerMembership(ctx context.Context, membership ControllerMembership) error {
@@ -379,14 +379,14 @@ func (s *Store) UpsertControllerMembership(ctx context.Context, membership Contr
 	return s.writeValueLocked(membershipKey(), encodeControllerMembership(membership))
 }
 
-func (s *Store) UpsertRuntimeView(ctx context.Context, view GroupRuntimeView) error {
+func (s *Store) UpsertRuntimeView(ctx context.Context, view SlotRuntimeView) error {
 	if err := s.ensureOpen(); err != nil {
 		return err
 	}
 	if err := s.checkContext(ctx); err != nil {
 		return err
 	}
-	if view.GroupID == 0 {
+	if view.SlotID == 0 {
 		return ErrInvalidArgument
 	}
 	view = normalizeGroupRuntimeView(view)
@@ -398,16 +398,16 @@ func (s *Store) UpsertRuntimeView(ctx context.Context, view GroupRuntimeView) er
 	defer s.mu.Unlock()
 
 	return s.writeValueLocked(
-		encodeGroupKey(recordPrefixRuntimeView, view.GroupID),
+		encodeGroupKey(recordPrefixRuntimeView, view.SlotID),
 		encodeGroupRuntimeView(view),
 	)
 }
 
-func (s *Store) GetTask(ctx context.Context, groupID uint32) (ReconcileTask, error) {
+func (s *Store) GetTask(ctx context.Context, slotID uint32) (ReconcileTask, error) {
 	if err := s.ensureOpen(); err != nil {
 		return ReconcileTask{}, err
 	}
-	if groupID == 0 {
+	if slotID == 0 {
 		return ReconcileTask{}, ErrInvalidArgument
 	}
 	if err := s.checkContext(ctx); err != nil {
@@ -417,7 +417,7 @@ func (s *Store) GetTask(ctx context.Context, groupID uint32) (ReconcileTask, err
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	key := encodeGroupKey(recordPrefixTask, groupID)
+	key := encodeGroupKey(recordPrefixTask, slotID)
 	value, err := s.getValueLocked(key)
 	if err != nil {
 		return ReconcileTask{}, err
@@ -425,11 +425,11 @@ func (s *Store) GetTask(ctx context.Context, groupID uint32) (ReconcileTask, err
 	return decodeReconcileTask(key, value)
 }
 
-func (s *Store) DeleteTask(ctx context.Context, groupID uint32) error {
+func (s *Store) DeleteTask(ctx context.Context, slotID uint32) error {
 	if err := s.ensureOpen(); err != nil {
 		return err
 	}
-	if groupID == 0 {
+	if slotID == 0 {
 		return ErrInvalidArgument
 	}
 	if err := s.checkContext(ctx); err != nil {
@@ -439,7 +439,7 @@ func (s *Store) DeleteTask(ctx context.Context, groupID uint32) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.deleteValueLocked(encodeGroupKey(recordPrefixTask, groupID))
+	return s.deleteValueLocked(encodeGroupKey(recordPrefixTask, slotID))
 }
 
 func (s *Store) ListTasks(ctx context.Context) ([]ReconcileTask, error) {
@@ -464,7 +464,7 @@ func (s *Store) UpsertTask(ctx context.Context, task ReconcileTask) error {
 		return err
 	}
 	task = normalizeReconcileTask(task)
-	if task.GroupID == 0 || !validTaskKind(task.Kind) || !validTaskStep(task.Step) || !validTaskStatus(task.Status) || validateReconcileTaskState(task, ErrInvalidArgument) != nil {
+	if task.SlotID == 0 || !validTaskKind(task.Kind) || !validTaskStep(task.Step) || !validTaskStatus(task.Status) || validateReconcileTaskState(task, ErrInvalidArgument) != nil {
 		return ErrInvalidArgument
 	}
 
@@ -473,20 +473,20 @@ func (s *Store) UpsertTask(ctx context.Context, task ReconcileTask) error {
 
 	return s.writeBatchLocked([]batchWrite{
 		{
-			key:   encodeGroupKey(recordPrefixTask, task.GroupID),
+			key:   encodeGroupKey(recordPrefixTask, task.SlotID),
 			value: encodeReconcileTask(task),
 		},
 	})
 }
 
-func (s *Store) UpsertAssignmentTask(ctx context.Context, assignment GroupAssignment, task ReconcileTask) error {
+func (s *Store) UpsertAssignmentTask(ctx context.Context, assignment SlotAssignment, task ReconcileTask) error {
 	if err := s.ensureOpen(); err != nil {
 		return err
 	}
 	if err := s.checkContext(ctx); err != nil {
 		return err
 	}
-	if assignment.GroupID == 0 || task.GroupID == 0 || assignment.GroupID != task.GroupID {
+	if assignment.SlotID == 0 || task.SlotID == 0 || assignment.SlotID != task.SlotID {
 		return ErrInvalidArgument
 	}
 	assignment = normalizeGroupAssignment(assignment)
@@ -506,11 +506,11 @@ func (s *Store) UpsertAssignmentTask(ctx context.Context, assignment GroupAssign
 
 	return s.writeBatchLocked([]batchWrite{
 		{
-			key:   encodeGroupKey(recordPrefixAssignment, assignment.GroupID),
+			key:   encodeGroupKey(recordPrefixAssignment, assignment.SlotID),
 			value: encodeGroupAssignment(assignment),
 		},
 		{
-			key:   encodeGroupKey(recordPrefixTask, task.GroupID),
+			key:   encodeGroupKey(recordPrefixTask, task.SlotID),
 			value: encodeReconcileTask(task),
 		},
 	})
@@ -520,11 +520,11 @@ func (s *Store) listNodesLocked(ctx context.Context) ([]ClusterNode, error) {
 	return listRecords(ctx, s.db, recordPrefixNode, decodeClusterNode)
 }
 
-func (s *Store) listAssignmentsLocked(ctx context.Context) ([]GroupAssignment, error) {
+func (s *Store) listAssignmentsLocked(ctx context.Context) ([]SlotAssignment, error) {
 	return listRecords(ctx, s.db, recordPrefixAssignment, decodeGroupAssignment)
 }
 
-func (s *Store) listRuntimeViewsLocked(ctx context.Context) ([]GroupRuntimeView, error) {
+func (s *Store) listRuntimeViewsLocked(ctx context.Context) ([]SlotRuntimeView, error) {
 	return listRecords(ctx, s.db, recordPrefixRuntimeView, decodeGroupRuntimeView)
 }
 

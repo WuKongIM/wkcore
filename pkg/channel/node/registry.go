@@ -7,13 +7,13 @@ import (
 )
 
 type tombstone struct {
-	groupKey   isr.GroupKey
+	channelKey isr.ChannelKey
 	generation uint64
 	expiresAt  time.Time
 }
 
-func (r *runtime) groupLocked(groupKey isr.GroupKey) (*group, bool) {
-	g, ok := r.groups[groupKey]
+func (r *runtime) channelLocked(channelKey isr.ChannelKey) (*group, bool) {
+	g, ok := r.groups[channelKey]
 	return g, ok
 }
 
@@ -28,14 +28,14 @@ func (r *runtime) tombstoneGroupLocked(g *group) {
 		r.tombstones[g.id] = generations
 	}
 	generations[g.generation] = tombstone{
-		groupKey:   g.id,
+		channelKey: g.id,
 		generation: g.generation,
 		expiresAt:  r.cfg.Now().Add(r.cfg.Tombstones.TombstoneTTL),
 	}
 }
 
 func (r *runtime) dropExpiredTombstonesLocked(now time.Time) {
-	for groupKey, generations := range r.tombstones {
+	for channelKey, generations := range r.tombstones {
 		for generation, stone := range generations {
 			if now.Before(stone.expiresAt) {
 				continue
@@ -43,7 +43,7 @@ func (r *runtime) dropExpiredTombstonesLocked(now time.Time) {
 			delete(generations, generation)
 		}
 		if len(generations) == 0 {
-			delete(r.tombstones, groupKey)
+			delete(r.tombstones, channelKey)
 		}
 	}
 }

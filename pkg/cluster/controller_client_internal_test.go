@@ -49,7 +49,7 @@ func TestClusterGetReconcileTaskFallsThroughSlowStaleLeaderToCurrentLeader(t *te
 		require.Equal(t, controllerRPCGetTask, req.Kind)
 
 		task := controllermeta.ReconcileTask{
-			GroupID:   req.GroupID,
+			SlotID:    req.SlotID,
 			Kind:      controllermeta.TaskKindRepair,
 			Step:      controllermeta.TaskStepAddLearner,
 			Attempt:   2,
@@ -91,7 +91,7 @@ func TestClusterGetReconcileTaskFallsThroughSlowStaleLeaderToCurrentLeader(t *te
 
 	task, err := cluster.GetReconcileTask(ctx, 9)
 	require.NoError(t, err)
-	require.Equal(t, uint32(9), task.GroupID)
+	require.Equal(t, uint32(9), task.SlotID)
 	require.Equal(t, uint32(2), task.Attempt)
 	require.Equal(t, controllermeta.TaskStatusRetrying, task.Status)
 }

@@ -42,11 +42,11 @@ func TestSessionManagerReusesSessionPerPeer(t *testing.T) {
 	}
 }
 
-func TestNewDoesNotCollideWithClusterManagedGroupRPCService(t *testing.T) {
-	const managedGroupRPCServiceID uint8 = 20
+func TestNewDoesNotCollideWithClusterManagedSlotRPCService(t *testing.T) {
+	const managedSlotRPCServiceID uint8 = 20
 
 	mux := transport.NewRPCMux()
-	mux.Handle(managedGroupRPCServiceID, func(ctx context.Context, body []byte) ([]byte, error) {
+	mux.Handle(managedSlotRPCServiceID, func(ctx context.Context, body []byte) ([]byte, error) {
 		return nil, nil
 	})
 
@@ -88,7 +88,7 @@ func TestPeerSessionReportsHardBackpressureWhileRPCInFlight(t *testing.T) {
 		started <- struct{}{}
 		<-release
 		return encodeFetchResponse(isrnode.FetchResponseEnvelope{
-			GroupKey:   "g1",
+			ChannelKey: "g1",
 			Epoch:      3,
 			Generation: 7,
 			LeaderHW:   9,
@@ -122,13 +122,13 @@ func TestPeerSessionReportsHardBackpressureWhileRPCInFlight(t *testing.T) {
 	go func() {
 		errCh <- session.Send(isrnode.Envelope{
 			Peer:       2,
-			GroupKey:   "g1",
+			ChannelKey: "g1",
 			Epoch:      3,
 			Generation: 7,
 			RequestID:  1,
 			Kind:       isrnode.MessageKindFetchRequest,
 			FetchRequest: &isrnode.FetchRequestEnvelope{
-				GroupKey:    "g1",
+				ChannelKey:  "g1",
 				Epoch:       3,
 				Generation:  7,
 				ReplicaID:   1,
@@ -182,7 +182,7 @@ func TestPeerSessionBackpressureAllowsConfiguredConcurrentInflightRPCs(t *testin
 		started <- struct{}{}
 		<-release
 		return encodeFetchResponse(isrnode.FetchResponseEnvelope{
-			GroupKey:   "g-concurrent",
+			ChannelKey: "g-concurrent",
 			Epoch:      3,
 			Generation: 7,
 			LeaderHW:   9,
@@ -312,7 +312,7 @@ func TestPeerSessionDistributesConcurrentFetchRPCsAcrossPoolShards(t *testing.T)
 					<-release
 
 					respPayload, err := encodeFetchResponse(isrnode.FetchResponseEnvelope{
-						GroupKey:   "g-ok",
+						ChannelKey: "g-ok",
 						Epoch:      3,
 						Generation: 7,
 						LeaderHW:   9,
@@ -346,18 +346,18 @@ func TestPeerSessionDistributesConcurrentFetchRPCsAcrossPoolShards(t *testing.T)
 		t.Fatalf("New() error = %v", err)
 	}
 
-	groupKey0 := groupKeyForShard(t, 0, 2)
-	groupKey1 := groupKeyForShard(t, 1, 2)
+	channelKey0 := channelKeyForShard(t, 0, 2)
+	channelKey1 := channelKeyForShard(t, 1, 2)
 	session := adapter.SessionManager().Session(2)
 
 	errCh1 := make(chan error, 1)
 	go func() {
-		errCh1 <- session.Send(fetchRequestEnvelopeForTest(string(groupKey0)))
+		errCh1 <- session.Send(fetchRequestEnvelopeForTest(string(channelKey0)))
 	}()
 
 	errCh2 := make(chan error, 1)
 	go func() {
-		errCh2 <- session.Send(fetchRequestEnvelopeForTest(string(groupKey1)))
+		errCh2 <- session.Send(fetchRequestEnvelopeForTest(string(channelKey1)))
 	}()
 
 	for i := 0; i < 2; i++ {
@@ -390,7 +390,7 @@ func TestPeerSessionUsesConfiguredRPCTimeout(t *testing.T) {
 		started <- struct{}{}
 		<-release
 		return encodeFetchResponse(isrnode.FetchResponseEnvelope{
-			GroupKey:   "g-timeout",
+			ChannelKey: "g-timeout",
 			Epoch:      3,
 			Generation: 7,
 			LeaderHW:   9,
@@ -443,7 +443,7 @@ func TestPeerSessionSendReturnsErrStoppedWhenClientStops(t *testing.T) {
 		started <- struct{}{}
 		<-release
 		return encodeFetchResponse(isrnode.FetchResponseEnvelope{
-			GroupKey:   "g-stop",
+			ChannelKey: "g-stop",
 			Epoch:      3,
 			Generation: 7,
 			LeaderHW:   9,
@@ -519,13 +519,13 @@ func TestPeerSessionSendDispatchesProgressAckRPC(t *testing.T) {
 	session := adapter.SessionManager().Session(2)
 	env := isrnode.Envelope{
 		Peer:       2,
-		GroupKey:   "g-progress",
+		ChannelKey: "g-progress",
 		Epoch:      3,
 		Generation: 7,
 		RequestID:  1,
 		Kind:       isrnode.MessageKindProgressAck,
 		ProgressAck: &isrnode.ProgressAckEnvelope{
-			GroupKey:    "g-progress",
+			ChannelKey:  "g-progress",
 			Epoch:       3,
 			Generation:  7,
 			ReplicaID:   1,
@@ -572,7 +572,7 @@ func TestAdapterHandleProgressAckInvokesRegisteredHandler(t *testing.T) {
 	})
 
 	body, err := encodeProgressAck(isrnode.ProgressAckEnvelope{
-		GroupKey:    "g-progress",
+		ChannelKey:  "g-progress",
 		Epoch:       3,
 		Generation:  7,
 		ReplicaID:   2,
@@ -651,7 +651,7 @@ func TestPeerSessionFlushSendsSingleFetchBatchRPC(t *testing.T) {
 		singleCalls++
 		mu.Unlock()
 		return encodeFetchResponse(isrnode.FetchResponseEnvelope{
-			GroupKey:   "g-single",
+			ChannelKey: "g-single",
 			Epoch:      3,
 			Generation: 7,
 			LeaderHW:   9,
@@ -675,7 +675,7 @@ func TestPeerSessionFlushSendsSingleFetchBatchRPC(t *testing.T) {
 			resp.Items = append(resp.Items, isrnode.FetchBatchResponseItem{
 				RequestID: item.RequestID,
 				Response: &isrnode.FetchResponseEnvelope{
-					GroupKey:   item.Request.GroupKey,
+					ChannelKey: item.Request.ChannelKey,
 					Epoch:      item.Request.Epoch,
 					Generation: item.Request.Generation,
 					LeaderHW:   item.Request.FetchOffset,
@@ -740,7 +740,7 @@ func TestBatchedFetchResponseFansOutResultsPerGroup(t *testing.T) {
 			resp.Items = append(resp.Items, isrnode.FetchBatchResponseItem{
 				RequestID: item.RequestID,
 				Response: &isrnode.FetchResponseEnvelope{
-					GroupKey:   item.Request.GroupKey,
+					ChannelKey: item.Request.ChannelKey,
 					Epoch:      item.Request.Epoch,
 					Generation: item.Request.Generation,
 					LeaderHW:   item.Request.FetchOffset + 100,
@@ -781,17 +781,17 @@ func TestBatchedFetchResponseFansOutResultsPerGroup(t *testing.T) {
 		t.Fatalf("session.Flush() error = %v", err)
 	}
 
-	got := make(map[isr.GroupKey]isrnode.Envelope, 2)
+	got := make(map[isr.ChannelKey]isrnode.Envelope, 2)
 	for i := 0; i < 2; i++ {
 		select {
 		case env := <-delivered:
-			got[env.GroupKey] = env
+			got[env.ChannelKey] = env
 		case <-time.After(2 * time.Second):
 			t.Fatalf("delivered envelopes = %d, want 2", len(got))
 		}
 	}
 
-	env1, ok := got[isr.GroupKey("g-fanout-1")]
+	env1, ok := got[isr.ChannelKey("g-fanout-1")]
 	if !ok {
 		t.Fatal("missing fanout response for g-fanout-1")
 	}
@@ -805,7 +805,7 @@ func TestBatchedFetchResponseFansOutResultsPerGroup(t *testing.T) {
 		t.Fatalf("g-fanout-1 response = %+v, want LeaderHW=111", env1.FetchResponse)
 	}
 
-	env2, ok := got[isr.GroupKey("g-fanout-2")]
+	env2, ok := got[isr.ChannelKey("g-fanout-2")]
 	if !ok {
 		t.Fatal("missing fanout response for g-fanout-2")
 	}
@@ -847,7 +847,7 @@ func TestPeerSessionFlushBatchFailureDeliversFetchFailureEnvelope(t *testing.T) 
 		if env.Kind != isrnode.MessageKindFetchFailure {
 			t.Fatalf("kind = %v, want fetch failure", env.Kind)
 		}
-		if env.RequestID != 99 || env.GroupKey != isr.GroupKey("g-batch-fail") {
+		if env.RequestID != 99 || env.ChannelKey != isr.ChannelKey("g-batch-fail") {
 			t.Fatalf("failure envelope = %+v", env)
 		}
 	case <-time.After(2 * time.Second):
@@ -922,17 +922,17 @@ func newAdapterWithTestTimeout(t *testing.T, client *transport.Client, timeout t
 	return adapter
 }
 
-func fetchRequestEnvelopeForTest(groupKey string) isrnode.Envelope {
-	key := isr.GroupKey(groupKey)
+func fetchRequestEnvelopeForTest(channelKey string) isrnode.Envelope {
+	key := isr.ChannelKey(channelKey)
 	return isrnode.Envelope{
 		Peer:       2,
-		GroupKey:   key,
+		ChannelKey: key,
 		Epoch:      3,
 		Generation: 7,
 		RequestID:  1,
 		Kind:       isrnode.MessageKindFetchRequest,
 		FetchRequest: &isrnode.FetchRequestEnvelope{
-			GroupKey:    key,
+			ChannelKey:  key,
 			Epoch:       3,
 			Generation:  7,
 			ReplicaID:   1,
@@ -943,11 +943,11 @@ func fetchRequestEnvelopeForTest(groupKey string) isrnode.Envelope {
 	}
 }
 
-func groupKeyForShard(t *testing.T, shard int, poolSize int) isr.GroupKey {
+func channelKeyForShard(t *testing.T, shard int, poolSize int) isr.ChannelKey {
 	t.Helper()
 
 	for i := 0; i < 1024; i++ {
-		key := isr.GroupKey(fmt.Sprintf("g-shard-%d", i))
+		key := isr.ChannelKey(fmt.Sprintf("g-shard-%d", i))
 		if fetchShardForTest(key, poolSize) == shard {
 			return key
 		}
@@ -956,9 +956,9 @@ func groupKeyForShard(t *testing.T, shard int, poolSize int) isr.GroupKey {
 	return ""
 }
 
-func fetchShardForTest(groupKey isr.GroupKey, poolSize int) int {
+func fetchShardForTest(channelKey isr.ChannelKey, poolSize int) int {
 	hasher := fnv.New64a()
-	_, _ = hasher.Write([]byte(groupKey))
+	_, _ = hasher.Write([]byte(channelKey))
 	return int(hasher.Sum64() % uint64(poolSize))
 }
 

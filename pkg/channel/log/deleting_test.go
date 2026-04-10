@@ -66,7 +66,7 @@ func TestInFlightAppendReturnsDeletingWhenFenceWinsBeforeCommit(t *testing.T) {
 
 type deletingEnv struct {
 	cluster *cluster
-	group   *fakeGroupHandle
+	group   *fakeChannelHandle
 	log     *fakeMessageLog
 	key     ChannelKey
 	meta    ChannelMeta

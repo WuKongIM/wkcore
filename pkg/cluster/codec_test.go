@@ -8,24 +8,24 @@ import (
 func TestRaftBodyRoundTrip(t *testing.T) {
 	data := []byte("raft-data")
 	body := encodeRaftBody(7, data)
-	groupID, decoded, err := decodeRaftBody(body)
+	slotID, decoded, err := decodeRaftBody(body)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if groupID != 7 || !bytes.Equal(decoded, data) {
-		t.Fatalf("mismatch: groupID=%d", groupID)
+	if slotID != 7 || !bytes.Equal(decoded, data) {
+		t.Fatalf("mismatch: slotID=%d", slotID)
 	}
 }
 
 func TestForwardPayloadRoundTrip(t *testing.T) {
 	cmd := []byte("test-command")
 	payload := encodeForwardPayload(7, cmd)
-	groupID, decoded, err := decodeForwardPayload(payload)
+	slotID, decoded, err := decodeForwardPayload(payload)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if groupID != 7 || !bytes.Equal(decoded, cmd) {
-		t.Fatalf("mismatch: groupID=%d", groupID)
+	if slotID != 7 || !bytes.Equal(decoded, cmd) {
+		t.Fatalf("mismatch: slotID=%d", slotID)
 	}
 }
 

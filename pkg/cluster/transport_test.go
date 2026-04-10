@@ -35,7 +35,7 @@ func TestRaftTransport_Send(t *testing.T) {
 
 	msg := raftpb.Message{To: 2, From: 1, Type: raftpb.MsgHeartbeat}
 	err := rt.Send(context.Background(), []multiraft.Envelope{
-		{GroupID: 1, Message: msg},
+		{SlotID: 1, Message: msg},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -48,12 +48,12 @@ func TestRaftTransport_Send(t *testing.T) {
 	}
 
 	// Verify body is a valid raft body
-	groupID, data, err := decodeRaftBody(receivedBody)
+	slotID, data, err := decodeRaftBody(receivedBody)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if groupID != 1 {
-		t.Fatalf("expected groupID=1, got %d", groupID)
+	if slotID != 1 {
+		t.Fatalf("expected slotID=1, got %d", slotID)
 	}
 	var decoded raftpb.Message
 	if err := decoded.Unmarshal(data); err != nil {
@@ -77,7 +77,7 @@ func TestRaftTransport_CtxCancel(t *testing.T) {
 	cancel() // cancel immediately
 
 	err := rt.Send(ctx, []multiraft.Envelope{
-		{GroupID: 1, Message: raftpb.Message{To: 2, From: 1}},
+		{SlotID: 1, Message: raftpb.Message{To: 2, From: 1}},
 	})
 	if err != context.Canceled {
 		t.Fatalf("expected context.Canceled, got: %v", err)

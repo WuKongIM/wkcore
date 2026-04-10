@@ -15,7 +15,7 @@ func NewReplica(store *Store, localNode isr.NodeID, now func() time.Time) (isr.R
 	if err != nil {
 		return nil, err
 	}
-	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), store, store.db, store.key, state, store.groupKey)
+	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), store, store.db, store.key, state, store.channelKey)
 	if err != nil {
 		return nil, err
 	}

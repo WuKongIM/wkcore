@@ -32,7 +32,7 @@ type noopPeerSession struct{}
 
 type memoryGenerationStore struct {
 	mu     sync.Mutex
-	values map[isr.GroupKey]uint64
+	values map[isr.ChannelKey]uint64
 }
 
 type channelReplicaFactory struct {
@@ -40,15 +40,15 @@ type channelReplicaFactory struct {
 	db        *channellog.DB
 	localNode isr.NodeID
 	now       func() time.Time
-	keys      map[isr.GroupKey]channellog.ChannelKey
+	keys      map[isr.ChannelKey]channellog.ChannelKey
 }
 
 type channelLogRuntimeAdapter struct {
 	runtime isrnode.Runtime
 }
 
-type channelLogGroupHandleAdapter struct {
-	handle isrnode.GroupHandle
+type channelLogChannelHandleAdapter struct {
+	handle isrnode.ChannelHandle
 }
 
 type removableChannelMeta interface {
@@ -125,20 +125,20 @@ func (noopPeerSession) Close() error {
 
 func newMemoryGenerationStore() *memoryGenerationStore {
 	return &memoryGenerationStore{
-		values: make(map[isr.GroupKey]uint64),
+		values: make(map[isr.ChannelKey]uint64),
 	}
 }
 
-func (s *memoryGenerationStore) Load(groupKey isr.GroupKey) (uint64, error) {
+func (s *memoryGenerationStore) Load(channelKey isr.ChannelKey) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.values[groupKey], nil
+	return s.values[channelKey], nil
 }
 
-func (s *memoryGenerationStore) Store(groupKey isr.GroupKey, generation uint64) error {
+func (s *memoryGenerationStore) Store(channelKey isr.ChannelKey, generation uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.values[groupKey] = generation
+	s.values[channelKey] = generation
 	return nil
 }
 
@@ -147,7 +147,7 @@ func newChannelReplicaFactory(db *channellog.DB, localNode isr.NodeID, now func(
 		db:        db,
 		localNode: localNode,
 		now:       now,
-		keys:      make(map[isr.GroupKey]channellog.ChannelKey),
+		keys:      make(map[isr.ChannelKey]channellog.ChannelKey),
 	}
 }
 
@@ -155,15 +155,15 @@ func (f *channelReplicaFactory) Register(key channellog.ChannelKey) {
 	if f == nil {
 		return
 	}
-	groupKey := channellog.GroupKeyForChannel(key)
+	channelKey := channellog.ISRChannelKeyForChannel(key)
 	f.mu.Lock()
-	f.keys[groupKey] = key
+	f.keys[channelKey] = key
 	f.mu.Unlock()
 }
 
-func (f *channelReplicaFactory) New(cfg isrnode.GroupConfig) (isr.Replica, error) {
+func (f *channelReplicaFactory) New(cfg isrnode.ChannelConfig) (isr.Replica, error) {
 	f.mu.RLock()
-	key, ok := f.keys[cfg.GroupKey]
+	key, ok := f.keys[cfg.ChannelKey]
 	f.mu.RUnlock()
 	if !ok {
 		return nil, errChannelDataPlaneNotReady
@@ -283,22 +283,22 @@ func newChannelLogRuntimeAdapter(runtime isrnode.Runtime) channellog.Runtime {
 	return &channelLogRuntimeAdapter{runtime: runtime}
 }
 
-func (a *channelLogRuntimeAdapter) Group(groupKey isr.GroupKey) (channellog.GroupHandle, bool) {
+func (a *channelLogRuntimeAdapter) Channel(channelKey isr.ChannelKey) (channellog.ChannelHandle, bool) {
 	if a == nil || a.runtime == nil {
 		return nil, false
 	}
-	handle, ok := a.runtime.Group(groupKey)
+	handle, ok := a.runtime.Channel(channelKey)
 	if !ok {
 		return nil, false
 	}
-	return &channelLogGroupHandleAdapter{handle: handle}, true
+	return &channelLogChannelHandleAdapter{handle: handle}, true
 }
 
-func (a *channelLogGroupHandleAdapter) Append(ctx context.Context, records []isr.Record) (isr.CommitResult, error) {
+func (a *channelLogChannelHandleAdapter) Append(ctx context.Context, records []isr.Record) (isr.CommitResult, error) {
 	return a.handle.Append(ctx, records)
 }
 
-func (a *channelLogGroupHandleAdapter) Status() isr.ReplicaState {
+func (a *channelLogChannelHandleAdapter) Status() isr.ReplicaState {
 	return a.handle.Status()
 }
 
@@ -313,10 +313,10 @@ func (s *channelMetaSync) apply(meta metadb.ChannelRuntimeMeta) (channellog.Chan
 	if s.replicaFactory != nil {
 		s.replicaFactory.Register(key)
 	}
-	runtimeMeta := projectISRGroupMeta(key, meta)
-	handle, runtimeExists := s.runtime.Group(runtimeMeta.GroupKey)
+	runtimeMeta := projectISRChannelMeta(key, meta)
+	handle, runtimeExists := s.runtime.Channel(runtimeMeta.ChannelKey)
 	hadAppliedLocal := s.hasAppliedLocalKey(key)
-	var previousMeta isr.GroupMeta
+	var previousMeta isr.ChannelMeta
 	if runtimeExists {
 		previousMeta = handle.Meta()
 	}
@@ -325,7 +325,7 @@ func (s *channelMetaSync) apply(meta metadb.ChannelRuntimeMeta) (channellog.Chan
 			return channellog.ChannelMeta{}, err
 		}
 	} else {
-		if err := s.runtime.EnsureGroup(runtimeMeta); err != nil {
+		if err := s.runtime.EnsureChannel(runtimeMeta); err != nil {
 			return channellog.ChannelMeta{}, err
 		}
 	}
@@ -341,13 +341,13 @@ func (s *channelMetaSync) apply(meta metadb.ChannelRuntimeMeta) (channellog.Chan
 	return channelMeta, nil
 }
 
-func projectISRGroupMeta(key channellog.ChannelKey, meta metadb.ChannelRuntimeMeta) isr.GroupMeta {
+func projectISRChannelMeta(key channellog.ChannelKey, meta metadb.ChannelRuntimeMeta) isr.ChannelMeta {
 	var leaseUntil time.Time
 	if meta.LeaseUntilMS > 0 {
 		leaseUntil = time.UnixMilli(meta.LeaseUntilMS).UTC()
 	}
-	return isr.GroupMeta{
-		GroupKey:   channellog.GroupKeyForChannel(key),
+	return isr.ChannelMeta{
+		ChannelKey: channellog.ISRChannelKeyForChannel(key),
 		Epoch:      meta.LeaderEpoch,
 		Leader:     isr.NodeID(meta.Leader),
 		Replicas:   projectNodeIDs(meta.Replicas),
@@ -439,7 +439,7 @@ func (s *channelMetaSync) deleteAppliedLocalKey(key channellog.ChannelKey) {
 	}
 }
 
-func (s *channelMetaSync) rollbackClusterApplyFailure(key channellog.ChannelKey, previousMeta isr.GroupMeta, runtimeExists, hadAppliedLocal bool) error {
+func (s *channelMetaSync) rollbackClusterApplyFailure(key channellog.ChannelKey, previousMeta isr.ChannelMeta, runtimeExists, hadAppliedLocal bool) error {
 	var err error
 	if runtimeExists {
 		err = s.runtime.ApplyMeta(previousMeta)
@@ -456,8 +456,8 @@ func (s *channelMetaSync) rollbackClusterApplyFailure(key channellog.ChannelKey,
 }
 
 func (s *channelMetaSync) removeLocal(key channellog.ChannelKey) error {
-	groupKey := channellog.GroupKeyForChannel(key)
-	if err := s.runtime.RemoveGroup(groupKey); err != nil && !errors.Is(err, isrnode.ErrGroupNotFound) {
+	channelKey := channellog.ISRChannelKeyForChannel(key)
+	if err := s.runtime.RemoveChannel(channelKey); err != nil && !errors.Is(err, isrnode.ErrChannelNotFound) {
 		return err
 	}
 	if cluster, ok := s.cluster.(removableChannelMeta); ok {

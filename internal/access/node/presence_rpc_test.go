@@ -31,7 +31,7 @@ func TestPresenceRPCClientFollowsNotLeaderRedirect(t *testing.T) {
 
 	client := NewClient(node1)
 	_, err := client.RegisterAuthoritative(context.Background(), presence.RegisterAuthoritativeCommand{
-		GroupID: 1,
+		SlotID: 1,
 		Route: presence.Route{
 			UID:         "u1",
 			NodeID:      2,
@@ -64,7 +64,7 @@ func TestPresenceRPCRegisterRoundTrip(t *testing.T) {
 
 	client := NewClient(node1)
 	result, err := client.RegisterAuthoritative(context.Background(), presence.RegisterAuthoritativeCommand{
-		GroupID: 1,
+		SlotID: 1,
 		Route: presence.Route{
 			UID:         "u1",
 			NodeID:      1,
@@ -107,14 +107,14 @@ func TestPresenceRPCUnregisterRoundTrip(t *testing.T) {
 		Listener:    "tcp",
 	}
 	_, err := client.RegisterAuthoritative(context.Background(), presence.RegisterAuthoritativeCommand{
-		GroupID: 1,
-		Route:   route,
+		SlotID: 1,
+		Route:  route,
 	})
 	require.NoError(t, err)
 
 	require.NoError(t, client.UnregisterAuthoritative(context.Background(), presence.UnregisterAuthoritativeCommand{
-		GroupID: 1,
-		Route:   route,
+		SlotID: 1,
+		Route:  route,
 	}))
 	require.Empty(t, requirePresenceEndpoints(t, presenceApp, "u1"))
 }
@@ -136,7 +136,7 @@ func TestPresenceRPCReplayRoundTrip(t *testing.T) {
 	client := NewClient(node1)
 	err := client.ReplayAuthoritative(context.Background(), presence.ReplayAuthoritativeCommand{
 		Lease: presence.GatewayLease{
-			GroupID:        1,
+			SlotID:         1,
 			GatewayNodeID:  1,
 			GatewayBootID:  11,
 			LeaseUntilUnix: 230,
@@ -202,7 +202,7 @@ func TestPresenceRPCEndpointsByUIDsRoundTrip(t *testing.T) {
 
 	client := NewClient(node1)
 	_, err := client.RegisterAuthoritative(context.Background(), presence.RegisterAuthoritativeCommand{
-		GroupID: 1,
+		SlotID: 1,
 		Route: presence.Route{
 			UID:         "u1",
 			NodeID:      1,
@@ -216,7 +216,7 @@ func TestPresenceRPCEndpointsByUIDsRoundTrip(t *testing.T) {
 	})
 	require.NoError(t, err)
 	_, err = client.RegisterAuthoritative(context.Background(), presence.RegisterAuthoritativeCommand{
-		GroupID: 1,
+		SlotID: 1,
 		Route: presence.Route{
 			UID:         "u2",
 			NodeID:      1,
@@ -278,8 +278,8 @@ func (c *fakeCluster) RPCMux() *transport.RPCMux {
 	return c.network.mux(c.localNodeID)
 }
 
-func (c *fakeCluster) LeaderOf(groupID multiraft.GroupID) (multiraft.NodeID, error) {
-	leaderID, ok := c.network.leaders[uint64(groupID)]
+func (c *fakeCluster) LeaderOf(slotID multiraft.SlotID) (multiraft.NodeID, error) {
+	leaderID, ok := c.network.leaders[uint64(slotID)]
 	if !ok {
 		return 0, raftcluster.ErrNoLeader
 	}
@@ -290,16 +290,16 @@ func (c *fakeCluster) IsLocal(nodeID multiraft.NodeID) bool {
 	return c.localNodeID == uint64(nodeID)
 }
 
-func (c *fakeCluster) SlotForKey(key string) multiraft.GroupID {
-	return multiraft.GroupID(1)
+func (c *fakeCluster) SlotForKey(key string) multiraft.SlotID {
+	return multiraft.SlotID(1)
 }
 
-func (c *fakeCluster) RPCService(ctx context.Context, nodeID multiraft.NodeID, groupID multiraft.GroupID, serviceID uint8, payload []byte) ([]byte, error) {
+func (c *fakeCluster) RPCService(ctx context.Context, nodeID multiraft.NodeID, slotID multiraft.SlotID, serviceID uint8, payload []byte) ([]byte, error) {
 	return c.network.mux(uint64(nodeID)).HandleRPC(ctx, append([]byte{serviceID}, payload...))
 }
 
-func (c *fakeCluster) PeersForGroup(groupID multiraft.GroupID) []multiraft.NodeID {
-	peers := c.network.peers[uint64(groupID)]
+func (c *fakeCluster) PeersForSlot(slotID multiraft.SlotID) []multiraft.NodeID {
+	peers := c.network.peers[uint64(slotID)]
 	out := make([]multiraft.NodeID, 0, len(peers))
 	for _, peer := range peers {
 		out = append(out, multiraft.NodeID(peer))

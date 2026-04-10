@@ -52,24 +52,24 @@ func TestConfigRejectsNodeIDSnowflakeOverflow(t *testing.T) {
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
-func TestConfigValidateRejectsZeroGroupCount(t *testing.T) {
+func TestConfigValidateRejectsZeroSlotCount(t *testing.T) {
 	cfg := validConfig()
-	cfg.Cluster.GroupCount = 0
+	cfg.Cluster.SlotCount = 0
 
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
-func TestConfigValidateRejectsStaticClusterGroups(t *testing.T) {
+func TestConfigValidateRejectsStaticClusterSlots(t *testing.T) {
 	cfg := validConfig()
-	cfg.Cluster.Groups = []GroupConfig{{ID: 1, Peers: []uint64{1}}}
+	cfg.Cluster.Slots = []SlotConfig{{ID: 1, Peers: []uint64{1}}}
 
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
-func TestConfigValidateAllowsNilStaticGroupsWithExplicitGroupCount(t *testing.T) {
+func TestConfigValidateAllowsNilStaticSlotsWithExplicitSlotCount(t *testing.T) {
 	cfg := validConfig()
-	cfg.Cluster.Groups = nil
-	cfg.Cluster.GroupCount = 1
+	cfg.Cluster.Slots = nil
+	cfg.Cluster.SlotCount = 1
 
 	require.NoError(t, cfg.ApplyDefaultsAndValidate())
 }
@@ -77,7 +77,7 @@ func TestConfigValidateAllowsNilStaticGroupsWithExplicitGroupCount(t *testing.T)
 func TestConfigValidateRejectsInvalidControllerReplicaN(t *testing.T) {
 	cfg := validConfig()
 	cfg.Cluster.ControllerReplicaN = 4
-	cfg.Cluster.GroupReplicaN = 3
+	cfg.Cluster.SlotReplicaN = 3
 	cfg.Cluster.Nodes = []NodeConfigRef{
 		{ID: 3, Addr: "127.0.0.1:7002"},
 		{ID: 1, Addr: "127.0.0.1:7000"},
@@ -131,7 +131,7 @@ func TestConfigValidateRejectsLocalNodeMissingFromClusterNodes(t *testing.T) {
 	cfg := validConfig()
 	cfg.Node.ID = 9
 	cfg.Cluster.ControllerReplicaN = 3
-	cfg.Cluster.GroupReplicaN = 3
+	cfg.Cluster.SlotReplicaN = 3
 
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
@@ -188,10 +188,10 @@ func validConfig() Config {
 		},
 		Cluster: ClusterConfig{
 			ListenAddr:         "127.0.0.1:7000",
-			GroupCount:         1,
+			SlotCount:          1,
 			Nodes:              []NodeConfigRef{{ID: 1, Addr: "127.0.0.1:7000"}},
 			ControllerReplicaN: 1,
-			GroupReplicaN:      1,
+			SlotReplicaN:       1,
 			ForwardTimeout:     5 * time.Second,
 			PoolSize:           4,
 			TickInterval:       100 * time.Millisecond,

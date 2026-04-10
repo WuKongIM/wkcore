@@ -10,7 +10,7 @@ import (
 const subscriberRPCServiceID uint8 = 10
 
 type subscriberRPCRequest struct {
-	GroupID     uint64 `json:"group_id"`
+	SlotID      uint64 `json:"slot_id"`
 	ChannelID   string `json:"channel_id"`
 	ChannelType int64  `json:"channel_type"`
 	Snapshot    bool   `json:"snapshot,omitempty"`
@@ -34,13 +34,13 @@ func (r subscriberRPCResponse) rpcLeaderID() uint64 {
 	return r.LeaderID
 }
 
-func (s *Store) listChannelSubscribersAuthoritative(ctx context.Context, groupID multiraft.GroupID, channelID string, channelType int64, afterUID string, limit int) ([]string, string, bool, error) {
-	if s.shouldServeGroupLocally(groupID) {
-		return s.db.ForSlot(uint64(groupID)).ListSubscribersPage(ctx, channelID, channelType, afterUID, limit)
+func (s *Store) listChannelSubscribersAuthoritative(ctx context.Context, slotID multiraft.SlotID, channelID string, channelType int64, afterUID string, limit int) ([]string, string, bool, error) {
+	if s.shouldServeSlotLocally(slotID) {
+		return s.db.ForSlot(uint64(slotID)).ListSubscribersPage(ctx, channelID, channelType, afterUID, limit)
 	}
 
-	resp, err := s.callSubscriberRPC(ctx, groupID, subscriberRPCRequest{
-		GroupID:     uint64(groupID),
+	resp, err := s.callSubscriberRPC(ctx, slotID, subscriberRPCRequest{
+		SlotID:      uint64(slotID),
 		ChannelID:   channelID,
 		ChannelType: channelType,
 		AfterUID:    afterUID,
@@ -53,13 +53,13 @@ func (s *Store) listChannelSubscribersAuthoritative(ctx context.Context, groupID
 }
 
 func (s *Store) SnapshotChannelSubscribers(ctx context.Context, channelID string, channelType int64) ([]string, error) {
-	groupID := s.cluster.SlotForKey(channelID)
-	if s.shouldServeGroupLocally(groupID) {
-		return s.db.ForSlot(uint64(groupID)).ListSubscribersSnapshot(ctx, channelID, channelType)
+	slotID := s.cluster.SlotForKey(channelID)
+	if s.shouldServeSlotLocally(slotID) {
+		return s.db.ForSlot(uint64(slotID)).ListSubscribersSnapshot(ctx, channelID, channelType)
 	}
 
-	resp, err := s.callSubscriberRPC(ctx, groupID, subscriberRPCRequest{
-		GroupID:     uint64(groupID),
+	resp, err := s.callSubscriberRPC(ctx, slotID, subscriberRPCRequest{
+		SlotID:      uint64(slotID),
 		ChannelID:   channelID,
 		ChannelType: channelType,
 		Snapshot:    true,
@@ -70,12 +70,12 @@ func (s *Store) SnapshotChannelSubscribers(ctx context.Context, channelID string
 	return append([]string(nil), resp.UIDs...), nil
 }
 
-func (s *Store) callSubscriberRPC(ctx context.Context, groupID multiraft.GroupID, req subscriberRPCRequest) (subscriberRPCResponse, error) {
+func (s *Store) callSubscriberRPC(ctx context.Context, slotID multiraft.SlotID, req subscriberRPCRequest) (subscriberRPCResponse, error) {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return subscriberRPCResponse{}, err
 	}
-	return callAuthoritativeRPC(ctx, s, groupID, subscriberRPCServiceID, payload, decodeSubscriberRPCResponse)
+	return callAuthoritativeRPC(ctx, s, slotID, subscriberRPCServiceID, payload, decodeSubscriberRPCResponse)
 }
 
 func (s *Store) handleSubscriberRPC(ctx context.Context, body []byte) ([]byte, error) {
@@ -84,8 +84,8 @@ func (s *Store) handleSubscriberRPC(ctx context.Context, body []byte) ([]byte, e
 		return nil, err
 	}
 
-	groupID := multiraft.GroupID(req.GroupID)
-	if statusBody, handled, err := s.handleAuthoritativeRPC(groupID, func(status string, leaderID uint64) ([]byte, error) {
+	slotID := multiraft.SlotID(req.SlotID)
+	if statusBody, handled, err := s.handleAuthoritativeRPC(slotID, func(status string, leaderID uint64) ([]byte, error) {
 		return encodeSubscriberRPCResponse(subscriberRPCResponse{
 			Status:   status,
 			LeaderID: leaderID,
@@ -95,7 +95,7 @@ func (s *Store) handleSubscriberRPC(ctx context.Context, body []byte) ([]byte, e
 	}
 
 	if req.Snapshot {
-		uids, err := s.db.ForSlot(uint64(groupID)).ListSubscribersSnapshot(ctx, req.ChannelID, req.ChannelType)
+		uids, err := s.db.ForSlot(uint64(slotID)).ListSubscribersSnapshot(ctx, req.ChannelID, req.ChannelType)
 		if err != nil {
 			return nil, err
 		}
@@ -106,7 +106,7 @@ func (s *Store) handleSubscriberRPC(ctx context.Context, body []byte) ([]byte, e
 		})
 	}
 
-	uids, nextCursor, done, err := s.db.ForSlot(uint64(groupID)).ListSubscribersPage(ctx, req.ChannelID, req.ChannelType, req.AfterUID, req.Limit)
+	uids, nextCursor, done, err := s.db.ForSlot(uint64(slotID)).ListSubscribersPage(ctx, req.ChannelID, req.ChannelType, req.AfterUID, req.Limit)
 	if err != nil {
 		return nil, err
 	}

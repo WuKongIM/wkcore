@@ -13,14 +13,14 @@ func TestNewReplicaValidatesRequiredDependencies(t *testing.T) {
 	}
 }
 
-func TestReplicaSurfaceUsesGroupKey(t *testing.T) {
+func TestReplicaSurfaceUsesChannelKey(t *testing.T) {
 	var req FetchRequest
-	req.GroupKey = GroupKey("channel/1/YzE")
+	req.ChannelKey = ChannelKey("channel/1/YzE")
 	req.ReplicaID = 2
 	req.OffsetEpoch = 5
 
 	var apply ApplyFetchRequest
-	apply.GroupKey = req.GroupKey
+	apply.ChannelKey = req.ChannelKey
 	apply.Leader = 1
 
 	var r Replica = &replica{}

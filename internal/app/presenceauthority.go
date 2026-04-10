@@ -17,28 +17,28 @@ type presenceAuthorityClient struct {
 }
 
 func (c *presenceAuthorityClient) RegisterAuthoritative(ctx context.Context, cmd presence.RegisterAuthoritativeCommand) (presence.RegisterAuthoritativeResult, error) {
-	if c.shouldUseLocalLeader(cmd.GroupID) {
+	if c.shouldUseLocalLeader(cmd.SlotID) {
 		return c.local.RegisterAuthoritative(ctx, cmd)
 	}
 	return c.remote.RegisterAuthoritative(ctx, cmd)
 }
 
 func (c *presenceAuthorityClient) UnregisterAuthoritative(ctx context.Context, cmd presence.UnregisterAuthoritativeCommand) error {
-	if c.shouldUseLocalLeader(cmd.GroupID) {
+	if c.shouldUseLocalLeader(cmd.SlotID) {
 		return c.local.UnregisterAuthoritative(ctx, cmd)
 	}
 	return c.remote.UnregisterAuthoritative(ctx, cmd)
 }
 
 func (c *presenceAuthorityClient) HeartbeatAuthoritative(ctx context.Context, cmd presence.HeartbeatAuthoritativeCommand) (presence.HeartbeatAuthoritativeResult, error) {
-	if c.shouldUseLocalLeader(cmd.Lease.GroupID) {
+	if c.shouldUseLocalLeader(cmd.Lease.SlotID) {
 		return c.local.HeartbeatAuthoritative(ctx, cmd)
 	}
 	return c.remote.HeartbeatAuthoritative(ctx, cmd)
 }
 
 func (c *presenceAuthorityClient) ReplayAuthoritative(ctx context.Context, cmd presence.ReplayAuthoritativeCommand) error {
-	if c.shouldUseLocalLeader(cmd.Lease.GroupID) {
+	if c.shouldUseLocalLeader(cmd.Lease.SlotID) {
 		return c.local.ReplayAuthoritative(ctx, cmd)
 	}
 	return c.remote.ReplayAuthoritative(ctx, cmd)
@@ -51,8 +51,8 @@ func (c *presenceAuthorityClient) EndpointsByUID(ctx context.Context, uid string
 		}
 		return c.local.EndpointsByUID(ctx, uid)
 	}
-	groupID := c.cluster.SlotForKey(uid)
-	if leaderID, err := c.cluster.LeaderOf(groupID); err == nil && c.cluster.IsLocal(leaderID) {
+	slotID := c.cluster.SlotForKey(uid)
+	if leaderID, err := c.cluster.LeaderOf(slotID); err == nil && c.cluster.IsLocal(leaderID) {
 		return c.local.EndpointsByUID(ctx, uid)
 	}
 	return c.remote.EndpointsByUID(ctx, uid)
@@ -68,13 +68,13 @@ func (c *presenceAuthorityClient) EndpointsByUIDs(ctx context.Context, uids []st
 
 	grouped := make(map[uint64][]string)
 	for _, uid := range uids {
-		groupID := uint64(c.cluster.SlotForKey(uid))
-		grouped[groupID] = append(grouped[groupID], uid)
+		slotID := uint64(c.cluster.SlotForKey(uid))
+		grouped[slotID] = append(grouped[slotID], uid)
 	}
 
 	out := make(map[string][]presence.Route, len(uids))
-	for groupID, groupUIDs := range grouped {
-		if leaderID, err := c.cluster.LeaderOf(multiraft.GroupID(groupID)); err == nil && c.cluster.IsLocal(leaderID) {
+	for slotID, groupUIDs := range grouped {
+		if leaderID, err := c.cluster.LeaderOf(multiraft.SlotID(slotID)); err == nil && c.cluster.IsLocal(leaderID) {
 			routes, err := c.local.EndpointsByUIDs(ctx, groupUIDs)
 			if err != nil {
 				return nil, err
@@ -103,13 +103,13 @@ func (c *presenceAuthorityClient) ApplyRouteAction(ctx context.Context, action p
 	return c.remote.ApplyRouteAction(ctx, action)
 }
 
-func (c *presenceAuthorityClient) shouldUseLocalLeader(groupID uint64) bool {
+func (c *presenceAuthorityClient) shouldUseLocalLeader(slotID uint64) bool {
 	if c.local == nil {
 		return false
 	}
 	if c.cluster == nil {
 		return true
 	}
-	leaderID, err := c.cluster.LeaderOf(multiraft.GroupID(groupID))
+	leaderID, err := c.cluster.LeaderOf(multiraft.SlotID(slotID))
 	return err == nil && c.cluster.IsLocal(leaderID)
 }

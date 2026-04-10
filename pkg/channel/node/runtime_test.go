@@ -14,7 +14,7 @@ func TestAppendChecksLeaseSynchronouslyBeforeReplicaAppend(t *testing.T) {
 	meta := fencedLeaderMeta(11)
 	mustEnsure(t, env.runtime, meta)
 
-	_, err := mustGroup(t, env.runtime, 11).Append(context.Background(), []isr.Record{{Payload: []byte("x"), SizeBytes: 1}})
+	_, err := mustChannel(t, env.runtime, 11).Append(context.Background(), []isr.Record{{Payload: []byte("x"), SizeBytes: 1}})
 	if !errors.Is(err, isr.ErrLeaseExpired) {
 		t.Fatalf("expected ErrLeaseExpired, got %v", err)
 	}
@@ -33,20 +33,20 @@ func TestRuntimeReconcileFlowEnsureApplyRemoveEnsure(t *testing.T) {
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}
 	mustRemove(t, env.runtime, 31)
-	if err := env.runtime.EnsureGroup(meta2); err != nil {
-		t.Fatalf("EnsureGroup() after remove error = %v", err)
+	if err := env.runtime.EnsureChannel(meta2); err != nil {
+		t.Fatalf("EnsureChannel() after remove error = %v", err)
 	}
-	if got := env.generations.stored[testGroupKey(31)]; got != 2 {
+	if got := env.generations.stored[testChannelKey(31)]; got != 2 {
 		t.Fatalf("expected generation 2 after re-ensure, got %d", got)
 	}
 }
 
-func TestEnsureGroupPromotesLocalLeaderReplica(t *testing.T) {
+func TestEnsureChannelPromotesLocalLeaderReplica(t *testing.T) {
 	env := newTestEnv(t)
 
 	mustEnsure(t, env.runtime, testMeta(32, 1, 1, []isr.NodeID{1, 2}))
 
-	if got := mustGroup(t, env.runtime, 32).Status().Role; got != isr.RoleLeader {
+	if got := mustChannel(t, env.runtime, 32).Status().Role; got != isr.RoleLeader {
 		t.Fatalf("expected RoleLeader, got %v", got)
 	}
 }
@@ -55,21 +55,21 @@ func TestApplyMetaTransitionsReplicaRoleWithLeadershipChanges(t *testing.T) {
 	env := newTestEnv(t)
 
 	mustEnsure(t, env.runtime, testMeta(33, 1, 2, []isr.NodeID{1, 2}))
-	if got := mustGroup(t, env.runtime, 33).Status().Role; got != isr.RoleFollower {
+	if got := mustChannel(t, env.runtime, 33).Status().Role; got != isr.RoleFollower {
 		t.Fatalf("expected initial RoleFollower, got %v", got)
 	}
 
 	if err := env.runtime.ApplyMeta(testMeta(33, 2, 1, []isr.NodeID{1, 2})); err != nil {
 		t.Fatalf("ApplyMeta() promote leader error = %v", err)
 	}
-	if got := mustGroup(t, env.runtime, 33).Status().Role; got != isr.RoleLeader {
+	if got := mustChannel(t, env.runtime, 33).Status().Role; got != isr.RoleLeader {
 		t.Fatalf("expected promoted RoleLeader, got %v", got)
 	}
 
 	if err := env.runtime.ApplyMeta(testMeta(33, 3, 2, []isr.NodeID{1, 2})); err != nil {
 		t.Fatalf("ApplyMeta() demote follower error = %v", err)
 	}
-	if got := mustGroup(t, env.runtime, 33).Status().Role; got != isr.RoleFollower {
+	if got := mustChannel(t, env.runtime, 33).Status().Role; got != isr.RoleFollower {
 		t.Fatalf("expected demoted RoleFollower, got %v", got)
 	}
 }
@@ -106,23 +106,23 @@ func TestApplyMetaSkipsReplicaUpdateWhenMetaUnchangedForLeader(t *testing.T) {
 	}
 }
 
-func TestEnsureGroupReturnsErrTooManyGroups(t *testing.T) {
-	env := newTestEnvWithOptions(t, withMaxGroups(1))
+func TestEnsureChannelReturnsErrTooManyChannels(t *testing.T) {
+	env := newTestEnvWithOptions(t, withMaxChannels(1))
 	mustEnsure(t, env.runtime, testMeta(41, 1, 1, []isr.NodeID{1, 2}))
-	err := env.runtime.EnsureGroup(testMeta(42, 1, 1, []isr.NodeID{1, 2}))
-	if !errors.Is(err, isrnode.ErrTooManyGroups) {
-		t.Fatalf("expected ErrTooManyGroups, got %v", err)
+	err := env.runtime.EnsureChannel(testMeta(42, 1, 1, []isr.NodeID{1, 2}))
+	if !errors.Is(err, isrnode.ErrTooManyChannels) {
+		t.Fatalf("expected ErrTooManyChannels, got %v", err)
 	}
 }
 
-func TestEnsureGroupRejectsDuplicateActiveGroup(t *testing.T) {
+func TestEnsureChannelRejectsDuplicateActiveGroup(t *testing.T) {
 	env := newTestEnv(t)
 	meta := testMeta(43, 1, 1, []isr.NodeID{1, 2})
 
 	mustEnsure(t, env.runtime, meta)
-	err := env.runtime.EnsureGroup(meta)
-	if !errors.Is(err, isrnode.ErrGroupExists) {
-		t.Fatalf("expected ErrGroupExists, got %v", err)
+	err := env.runtime.EnsureChannel(meta)
+	if !errors.Is(err, isrnode.ErrChannelExists) {
+		t.Fatalf("expected ErrChannelExists, got %v", err)
 	}
 }
 
@@ -131,7 +131,7 @@ func TestServeFetchRejectsUnknownGeneration(t *testing.T) {
 	mustEnsure(t, env.runtime, testMeta(44, 1, 1, []isr.NodeID{1, 2}))
 
 	_, err := env.runtime.(isrnode.FetchService).ServeFetch(context.Background(), isrnode.FetchRequestEnvelope{
-		GroupKey:    testGroupKey(44),
+		ChannelKey:  testChannelKey(44),
 		Epoch:       1,
 		Generation:  99,
 		ReplicaID:   2,
@@ -150,15 +150,15 @@ func TestServeFetchRejectsUnknownGroup(t *testing.T) {
 	env := newTestEnv(t)
 
 	_, err := env.runtime.(isrnode.FetchService).ServeFetch(context.Background(), isrnode.FetchRequestEnvelope{
-		GroupKey:    testGroupKey(45),
+		ChannelKey:  testChannelKey(45),
 		Epoch:       1,
 		Generation:  1,
 		ReplicaID:   2,
 		FetchOffset: 0,
 		MaxBytes:    1 << 20,
 	})
-	if !errors.Is(err, isrnode.ErrGroupNotFound) {
-		t.Fatalf("expected ErrGroupNotFound, got %v", err)
+	if !errors.Is(err, isrnode.ErrChannelNotFound) {
+		t.Fatalf("expected ErrChannelNotFound, got %v", err)
 	}
 }
 
@@ -167,7 +167,7 @@ func TestServeFetchRejectsStaleEpoch(t *testing.T) {
 	mustEnsure(t, env.runtime, testMeta(46, 3, 1, []isr.NodeID{1, 2}))
 
 	_, err := env.runtime.(isrnode.FetchService).ServeFetch(context.Background(), isrnode.FetchRequestEnvelope{
-		GroupKey:    testGroupKey(46),
+		ChannelKey:  testChannelKey(46),
 		Epoch:       2,
 		Generation:  1,
 		ReplicaID:   2,

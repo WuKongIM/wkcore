@@ -131,7 +131,7 @@ type LogRecord struct {
 }
 
 type MessageLog interface {
-	Read(groupKey isr.GroupKey, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error)
+	Read(channelKey isr.ChannelKey, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error)
 }
 
 type ChannelStateStore interface {
@@ -150,10 +150,10 @@ type MessageIDGenerator interface {
 }
 
 type Runtime interface {
-	Group(groupKey isr.GroupKey) (GroupHandle, bool)
+	Channel(channelKey isr.ChannelKey) (ChannelHandle, bool)
 }
 
-type GroupHandle interface {
+type ChannelHandle interface {
 	Append(ctx context.Context, records []isr.Record) (isr.CommitResult, error)
 	Status() isr.ReplicaState
 }

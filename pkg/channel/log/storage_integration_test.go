@@ -15,7 +15,7 @@ func TestClusterWithRealStoreAppendFetchAndSeqReads(t *testing.T) {
 	store := db.ForChannel(key)
 
 	replica := newChannelLogReplica(t, store, 1)
-	meta := singleReplicaMeta(store.groupKey, 7, 1)
+	meta := singleReplicaMeta(store.channelKey, 7, 1)
 	if err := replica.ApplyMeta(meta); err != nil {
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}
@@ -122,7 +122,7 @@ func TestClusterWithRealStoreFetchHidesDirtyTailAfterReplicaRecovery(t *testing.
 	}
 
 	replica := newStoreReplica(t, store, 1)
-	meta := singleReplicaMeta(store.groupKey, 7, 1)
+	meta := singleReplicaMeta(store.channelKey, 7, 1)
 	if err := replica.ApplyMeta(meta); err != nil {
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}
@@ -181,7 +181,7 @@ func TestCheckpointBridgeUsesCoordinatorForCommittedState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StateStoreFactory().ForChannel() error = %v", err)
 	}
-	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), store, db, key, state, store.groupKey)
+	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), store, db, key, state, store.channelKey)
 	if err != nil {
 		t.Fatalf("newCheckpointBridge() error = %v", err)
 	}
@@ -244,7 +244,7 @@ func TestClusterAppendDoesNotFailAfterAtomicCheckpointIdempotencyCommit(t *testi
 		directPutErr: errors.New("direct put should be skipped after checkpoint commit"),
 	}
 
-	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), store, db, key, state, channelGroupKey(key))
+	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), store, db, key, state, isrChannelKeyForChannel(key))
 	if err != nil {
 		t.Fatalf("newCheckpointBridge() error = %v", err)
 	}
@@ -260,7 +260,7 @@ func TestClusterAppendDoesNotFailAfterAtomicCheckpointIdempotencyCommit(t *testi
 		t.Fatalf("NewReplica() error = %v", err)
 	}
 
-	meta := singleReplicaMeta(store.groupKey, 7, 1)
+	meta := singleReplicaMeta(store.channelKey, 7, 1)
 	if err := replica.ApplyMeta(meta); err != nil {
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}
@@ -270,8 +270,8 @@ func TestClusterAppendDoesNotFailAfterAtomicCheckpointIdempotencyCommit(t *testi
 
 	got, err := New(Config{
 		Runtime: &realRuntime{
-			groups: map[isr.GroupKey]GroupHandle{
-				channelGroupKey(key): replica,
+			groups: map[isr.ChannelKey]ChannelHandle{
+				isrChannelKeyForChannel(key): replica,
 			},
 		},
 		Log:        db,
@@ -319,11 +319,11 @@ func TestClusterAppendDoesNotFailAfterAtomicCheckpointIdempotencyCommit(t *testi
 }
 
 type realRuntime struct {
-	groups map[isr.GroupKey]GroupHandle
+	groups map[isr.ChannelKey]ChannelHandle
 }
 
-func (r *realRuntime) Group(groupKey isr.GroupKey) (GroupHandle, bool) {
-	group, ok := r.groups[groupKey]
+func (r *realRuntime) Channel(channelKey isr.ChannelKey) (ChannelHandle, bool) {
+	group, ok := r.groups[channelKey]
 	return group, ok
 }
 
@@ -332,8 +332,8 @@ func newRealStoreCluster(t testing.TB, db *DB, key ChannelKey, replica isr.Repli
 
 	got, err := New(Config{
 		Runtime: &realRuntime{
-			groups: map[isr.GroupKey]GroupHandle{
-				channelGroupKey(key): replica,
+			groups: map[isr.ChannelKey]ChannelHandle{
+				isrChannelKeyForChannel(key): replica,
 			},
 		},
 		Log:        db,

@@ -34,21 +34,21 @@ func decodeNodeKey(key []byte) (uint64, error) {
 	return nodeID, nil
 }
 
-func encodeGroupKey(prefix byte, groupID uint32) []byte {
+func encodeGroupKey(prefix byte, slotID uint32) []byte {
 	key := make([]byte, 1, 1+4)
 	key[0] = prefix
-	return binary.BigEndian.AppendUint32(key, groupID)
+	return binary.BigEndian.AppendUint32(key, slotID)
 }
 
 func decodeGroupKey(key []byte, prefix byte) (uint32, error) {
 	if len(key) != 1+4 || key[0] != prefix {
 		return 0, ErrCorruptValue
 	}
-	groupID := binary.BigEndian.Uint32(key[1:])
-	if groupID == 0 {
+	slotID := binary.BigEndian.Uint32(key[1:])
+	if slotID == 0 {
 		return 0, ErrCorruptValue
 	}
-	return groupID, nil
+	return slotID, nil
 }
 
 func membershipKey() []byte {
@@ -139,7 +139,7 @@ func decodeClusterNode(key, data []byte) (ClusterNode, error) {
 	}, nil
 }
 
-func encodeGroupAssignment(assignment GroupAssignment) []byte {
+func encodeGroupAssignment(assignment SlotAssignment) []byte {
 	assignment = normalizeGroupAssignment(assignment)
 
 	data := make([]byte, 0, 32)
@@ -150,13 +150,13 @@ func encodeGroupAssignment(assignment GroupAssignment) []byte {
 	return data
 }
 
-func decodeGroupAssignment(key, data []byte) (GroupAssignment, error) {
-	groupID, err := decodeGroupKey(key, recordPrefixAssignment)
+func decodeGroupAssignment(key, data []byte) (SlotAssignment, error) {
+	slotID, err := decodeGroupKey(key, recordPrefixAssignment)
 	if err != nil {
-		return GroupAssignment{}, err
+		return SlotAssignment{}, err
 	}
 	if len(data) < 1+8+8 || data[0] != recordVersion {
-		return GroupAssignment{}, ErrCorruptValue
+		return SlotAssignment{}, ErrCorruptValue
 	}
 	rest := data[1:]
 
@@ -166,21 +166,21 @@ func decodeGroupAssignment(key, data []byte) (GroupAssignment, error) {
 	rest = rest[8:]
 	desiredPeers, rest, err := readUint64Slice(rest)
 	if err != nil || len(rest) != 0 {
-		return GroupAssignment{}, ErrCorruptValue
+		return SlotAssignment{}, ErrCorruptValue
 	}
 
 	if err := validateCanonicalPeerSet(desiredPeers, ErrCorruptValue); err != nil {
-		return GroupAssignment{}, err
+		return SlotAssignment{}, err
 	}
-	return GroupAssignment{
-		GroupID:        groupID,
+	return SlotAssignment{
+		SlotID:         slotID,
 		DesiredPeers:   desiredPeers,
 		ConfigEpoch:    configEpoch,
 		BalanceVersion: balanceVersion,
 	}, nil
 }
 
-func encodeGroupRuntimeView(view GroupRuntimeView) []byte {
+func encodeGroupRuntimeView(view SlotRuntimeView) []byte {
 	view = normalizeGroupRuntimeView(view)
 
 	data := make([]byte, 0, 48)
@@ -198,13 +198,13 @@ func encodeGroupRuntimeView(view GroupRuntimeView) []byte {
 	return data
 }
 
-func decodeGroupRuntimeView(key, data []byte) (GroupRuntimeView, error) {
-	groupID, err := decodeGroupKey(key, recordPrefixRuntimeView)
+func decodeGroupRuntimeView(key, data []byte) (SlotRuntimeView, error) {
+	slotID, err := decodeGroupKey(key, recordPrefixRuntimeView)
 	if err != nil {
-		return GroupRuntimeView{}, err
+		return SlotRuntimeView{}, err
 	}
 	if len(data) < 1+8+4+1+8+8 || data[0] != recordVersion {
-		return GroupRuntimeView{}, ErrCorruptValue
+		return SlotRuntimeView{}, ErrCorruptValue
 	}
 	rest := data[1:]
 
@@ -213,7 +213,7 @@ func decodeGroupRuntimeView(key, data []byte) (GroupRuntimeView, error) {
 	healthyVoters := binary.BigEndian.Uint32(rest[:4])
 	rest = rest[4:]
 	if rest[0] != 0 && rest[0] != 1 {
-		return GroupRuntimeView{}, ErrCorruptValue
+		return SlotRuntimeView{}, ErrCorruptValue
 	}
 	hasQuorum := rest[0] == 1
 	rest = rest[1:]
@@ -221,18 +221,18 @@ func decodeGroupRuntimeView(key, data []byte) (GroupRuntimeView, error) {
 	rest = rest[8:]
 	lastReportAt, rest, err := readInt64(rest)
 	if err != nil {
-		return GroupRuntimeView{}, err
+		return SlotRuntimeView{}, err
 	}
 	currentPeers, rest, err := readUint64Slice(rest)
 	if err != nil || len(rest) != 0 {
-		return GroupRuntimeView{}, ErrCorruptValue
+		return SlotRuntimeView{}, ErrCorruptValue
 	}
 
 	if err := validateCanonicalPeerSet(currentPeers, ErrCorruptValue); err != nil {
-		return GroupRuntimeView{}, err
+		return SlotRuntimeView{}, err
 	}
-	view := GroupRuntimeView{
-		GroupID:             groupID,
+	view := SlotRuntimeView{
+		SlotID:              slotID,
 		CurrentPeers:        currentPeers,
 		LeaderID:            leaderID,
 		HealthyVoters:       healthyVoters,
@@ -241,7 +241,7 @@ func decodeGroupRuntimeView(key, data []byte) (GroupRuntimeView, error) {
 		LastReportAt:        time.Unix(0, lastReportAt),
 	}
 	if err := validateRuntimeViewState(view, ErrCorruptValue); err != nil {
-		return GroupRuntimeView{}, err
+		return SlotRuntimeView{}, err
 	}
 	return view, nil
 }
@@ -263,7 +263,7 @@ func encodeReconcileTask(task ReconcileTask) []byte {
 }
 
 func decodeReconcileTask(key, data []byte) (ReconcileTask, error) {
-	groupID, err := decodeGroupKey(key, recordPrefixTask)
+	slotID, err := decodeGroupKey(key, recordPrefixTask)
 	if err != nil {
 		return ReconcileTask{}, err
 	}
@@ -307,7 +307,7 @@ func decodeReconcileTask(key, data []byte) (ReconcileTask, error) {
 	}
 
 	task := ReconcileTask{
-		GroupID:    groupID,
+		SlotID:     slotID,
 		Kind:       kind,
 		Step:       step,
 		SourceNode: sourceNode,
@@ -353,12 +353,12 @@ func normalizeClusterNode(node ClusterNode) ClusterNode {
 	return node
 }
 
-func normalizeGroupAssignment(assignment GroupAssignment) GroupAssignment {
+func normalizeGroupAssignment(assignment SlotAssignment) SlotAssignment {
 	assignment.DesiredPeers = normalizeUint64Set(assignment.DesiredPeers)
 	return assignment
 }
 
-func normalizeGroupRuntimeView(view GroupRuntimeView) GroupRuntimeView {
+func normalizeGroupRuntimeView(view SlotRuntimeView) SlotRuntimeView {
 	view.CurrentPeers = normalizeUint64Set(view.CurrentPeers)
 	return view
 }
@@ -450,7 +450,7 @@ func validateCanonicalPeerSet(values []uint64, invalid error) error {
 	return nil
 }
 
-func validateRuntimeViewState(view GroupRuntimeView, invalid error) error {
+func validateRuntimeViewState(view SlotRuntimeView, invalid error) error {
 	if err := validateRequiredPeerSet(view.CurrentPeers, invalid); err != nil {
 		return err
 	}

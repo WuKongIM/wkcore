@@ -18,10 +18,10 @@ type authoritativeRPCResponse interface {
 }
 
 func (c *Client) RegisterAuthoritative(ctx context.Context, cmd presence.RegisterAuthoritativeCommand) (presence.RegisterAuthoritativeResult, error) {
-	resp, err := c.callPresenceAuthoritative(ctx, multiraft.GroupID(cmd.GroupID), presenceRPCRequest{
-		Op:      presenceOpRegister,
-		GroupID: cmd.GroupID,
-		Route:   &cmd.Route,
+	resp, err := c.callPresenceAuthoritative(ctx, multiraft.SlotID(cmd.SlotID), presenceRPCRequest{
+		Op:     presenceOpRegister,
+		SlotID: cmd.SlotID,
+		Route:  &cmd.Route,
 	})
 	if err != nil {
 		return presence.RegisterAuthoritativeResult{}, err
@@ -33,16 +33,16 @@ func (c *Client) RegisterAuthoritative(ctx context.Context, cmd presence.Registe
 }
 
 func (c *Client) UnregisterAuthoritative(ctx context.Context, cmd presence.UnregisterAuthoritativeCommand) error {
-	_, err := c.callPresenceAuthoritative(ctx, multiraft.GroupID(cmd.GroupID), presenceRPCRequest{
-		Op:      presenceOpUnregister,
-		GroupID: cmd.GroupID,
-		Route:   &cmd.Route,
+	_, err := c.callPresenceAuthoritative(ctx, multiraft.SlotID(cmd.SlotID), presenceRPCRequest{
+		Op:     presenceOpUnregister,
+		SlotID: cmd.SlotID,
+		Route:  &cmd.Route,
 	})
 	return err
 }
 
 func (c *Client) HeartbeatAuthoritative(ctx context.Context, cmd presence.HeartbeatAuthoritativeCommand) (presence.HeartbeatAuthoritativeResult, error) {
-	resp, err := c.callPresenceAuthoritative(ctx, multiraft.GroupID(cmd.Lease.GroupID), presenceRPCRequest{
+	resp, err := c.callPresenceAuthoritative(ctx, multiraft.SlotID(cmd.Lease.SlotID), presenceRPCRequest{
 		Op:    presenceOpHeartbeat,
 		Lease: &cmd.Lease,
 	})
@@ -56,7 +56,7 @@ func (c *Client) HeartbeatAuthoritative(ctx context.Context, cmd presence.Heartb
 }
 
 func (c *Client) ReplayAuthoritative(ctx context.Context, cmd presence.ReplayAuthoritativeCommand) error {
-	_, err := c.callPresenceAuthoritative(ctx, multiraft.GroupID(cmd.Lease.GroupID), presenceRPCRequest{
+	_, err := c.callPresenceAuthoritative(ctx, multiraft.SlotID(cmd.Lease.SlotID), presenceRPCRequest{
 		Op:     presenceOpReplay,
 		Lease:  &cmd.Lease,
 		Routes: cmd.Routes,
@@ -65,11 +65,11 @@ func (c *Client) ReplayAuthoritative(ctx context.Context, cmd presence.ReplayAut
 }
 
 func (c *Client) EndpointsByUID(ctx context.Context, uid string) ([]presence.Route, error) {
-	groupID := c.cluster.SlotForKey(uid)
-	resp, err := c.callPresenceAuthoritative(ctx, groupID, presenceRPCRequest{
-		Op:      presenceOpEndpoints,
-		GroupID: uint64(groupID),
-		UID:     uid,
+	slotID := c.cluster.SlotForKey(uid)
+	resp, err := c.callPresenceAuthoritative(ctx, slotID, presenceRPCRequest{
+		Op:     presenceOpEndpoints,
+		SlotID: uint64(slotID),
+		UID:    uid,
 	})
 	if err != nil {
 		return nil, err
@@ -81,11 +81,11 @@ func (c *Client) EndpointsByUIDs(ctx context.Context, uids []string) (map[string
 	if len(uids) == 0 {
 		return nil, nil
 	}
-	groupID := c.cluster.SlotForKey(uids[0])
-	resp, err := c.callPresenceAuthoritative(ctx, groupID, presenceRPCRequest{
-		Op:      presenceOpEndpointsByUIDs,
-		GroupID: uint64(groupID),
-		UIDs:    append([]string(nil), uids...),
+	slotID := c.cluster.SlotForKey(uids[0])
+	resp, err := c.callPresenceAuthoritative(ctx, slotID, presenceRPCRequest{
+		Op:     presenceOpEndpointsByUIDs,
+		SlotID: uint64(slotID),
+		UIDs:   append([]string(nil), uids...),
 	})
 	if err != nil {
 		return nil, err
@@ -221,20 +221,20 @@ func (c *Client) LoadRecentConversationMessagesBatch(ctx context.Context, nodeID
 	return out, nil
 }
 
-func (c *Client) callPresenceAuthoritative(ctx context.Context, groupID multiraft.GroupID, req presenceRPCRequest) (presenceRPCResponse, error) {
+func (c *Client) callPresenceAuthoritative(ctx context.Context, slotID multiraft.SlotID, req presenceRPCRequest) (presenceRPCResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return presenceRPCResponse{}, err
 	}
-	return callAuthoritativeRPC(ctx, c, groupID, presenceRPCServiceID, body, decodePresenceResponse)
+	return callAuthoritativeRPC(ctx, c, slotID, presenceRPCServiceID, body, decodePresenceResponse)
 }
 
-func (c *Client) callPresenceDirect(ctx context.Context, nodeID multiraft.NodeID, groupID multiraft.GroupID, req presenceRPCRequest) (presenceRPCResponse, error) {
+func (c *Client) callPresenceDirect(ctx context.Context, nodeID multiraft.NodeID, slotID multiraft.SlotID, req presenceRPCRequest) (presenceRPCResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return presenceRPCResponse{}, err
 	}
-	respBody, err := c.cluster.RPCService(ctx, nodeID, groupID, presenceRPCServiceID, body)
+	respBody, err := c.cluster.RPCService(ctx, nodeID, slotID, presenceRPCServiceID, body)
 	if err != nil {
 		return presenceRPCResponse{}, err
 	}
@@ -296,7 +296,7 @@ func callDirectRPC[T any](
 func callAuthoritativeRPC[T authoritativeRPCResponse](
 	ctx context.Context,
 	c *Client,
-	groupID multiraft.GroupID,
+	slotID multiraft.SlotID,
 	serviceID uint8,
 	payload []byte,
 	decode func([]byte) (T, error),
@@ -307,9 +307,9 @@ func callAuthoritativeRPC[T authoritativeRPCResponse](
 		return zero, fmt.Errorf("access/node: cluster not configured")
 	}
 
-	peers := c.cluster.PeersForGroup(groupID)
+	peers := c.cluster.PeersForSlot(slotID)
 	if len(peers) == 0 {
-		return zero, raftcluster.ErrGroupNotFound
+		return zero, raftcluster.ErrSlotNotFound
 	}
 
 	tried := make(map[multiraft.NodeID]struct{}, len(peers))
@@ -324,7 +324,7 @@ func callAuthoritativeRPC[T authoritativeRPCResponse](
 		}
 		tried[peer] = struct{}{}
 
-		respBody, err := c.cluster.RPCService(ctx, peer, groupID, serviceID, payload)
+		respBody, err := c.cluster.RPCService(ctx, peer, slotID, serviceID, payload)
 		if err != nil {
 			lastErr = err
 			continue
@@ -348,8 +348,8 @@ func callAuthoritativeRPC[T authoritativeRPCResponse](
 		case rpcStatusNoLeader:
 			lastErr = raftcluster.ErrNoLeader
 			continue
-		case rpcStatusNoGroup:
-			lastErr = raftcluster.ErrGroupNotFound
+		case rpcStatusNoSlot:
+			lastErr = raftcluster.ErrSlotNotFound
 			continue
 		default:
 			lastErr = fmt.Errorf("access/node: unexpected rpc status %q", resp.rpcStatus())

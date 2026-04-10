@@ -81,7 +81,7 @@ func (b *isrLogStoreBridge) Read(from uint64, maxBytes int) ([]isr.Record, error
 	}
 
 	out := make([]isr.Record, 0, logScanInitialCapacity)
-	_, err := b.store.db.scanGroupOffsets(b.store.groupKey, from, maxLogScanLimit(), maxBytes, func(_ uint64, payload []byte) error {
+	_, err := b.store.db.scanGroupOffsets(b.store.channelKey, from, maxLogScanLimit(), maxBytes, func(_ uint64, payload []byte) error {
 		out = append(out, isr.Record{
 			Payload:   payload,
 			SizeBytes: len(payload),

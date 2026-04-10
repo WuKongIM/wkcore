@@ -22,7 +22,7 @@ const (
 
 type userConversationStateRPCRequest struct {
 	Op          string                               `json:"op"`
-	GroupID     uint64                               `json:"group_id"`
+	SlotID      uint64                               `json:"slot_id"`
 	UID         string                               `json:"uid,omitempty"`
 	ChannelID   string                               `json:"channel_id,omitempty"`
 	ChannelType int64                                `json:"channel_type,omitempty"`
@@ -50,18 +50,18 @@ func (r userConversationStateRPCResponse) rpcLeaderID() uint64 {
 }
 
 func (s *Store) GetUserConversationState(ctx context.Context, uid, channelID string, channelType int64) (metadb.UserConversationState, error) {
-	groupID := s.cluster.SlotForKey(uid)
-	return s.getUserConversationStateAuthoritative(ctx, groupID, uid, channelID, channelType)
+	slotID := s.cluster.SlotForKey(uid)
+	return s.getUserConversationStateAuthoritative(ctx, slotID, uid, channelID, channelType)
 }
 
 func (s *Store) ListUserConversationActive(ctx context.Context, uid string, limit int) ([]metadb.UserConversationState, error) {
-	groupID := s.cluster.SlotForKey(uid)
-	return s.listUserConversationActiveAuthoritative(ctx, groupID, uid, limit)
+	slotID := s.cluster.SlotForKey(uid)
+	return s.listUserConversationActiveAuthoritative(ctx, slotID, uid, limit)
 }
 
 func (s *Store) ScanUserConversationStatePage(ctx context.Context, uid string, after metadb.ConversationCursor, limit int) ([]metadb.UserConversationState, metadb.ConversationCursor, bool, error) {
-	groupID := s.cluster.SlotForKey(uid)
-	return s.scanUserConversationStatePageAuthoritative(ctx, groupID, uid, after, limit)
+	slotID := s.cluster.SlotForKey(uid)
+	return s.scanUserConversationStatePageAuthoritative(ctx, slotID, uid, after, limit)
 }
 
 func (s *Store) TouchUserConversationActiveAt(ctx context.Context, patches []metadb.UserConversationActivePatch) error {
@@ -69,21 +69,21 @@ func (s *Store) TouchUserConversationActiveAt(ctx context.Context, patches []met
 		return nil
 	}
 
-	grouped, err := s.groupUserConversationActivePatchesByGroup(patches)
+	grouped, err := s.groupUserConversationActivePatchesBySlot(patches)
 	if err != nil {
 		return err
 	}
-	for groupID, groupPatches := range grouped {
-		if s.shouldServeGroupLocally(groupID) {
+	for slotID, groupPatches := range grouped {
+		if s.shouldServeSlotLocally(slotID) {
 			cmd := metafsm.EncodeTouchUserConversationActiveAtCommand(groupPatches)
-			if err := s.cluster.Propose(ctx, groupID, cmd); err != nil {
+			if err := s.cluster.Propose(ctx, slotID, cmd); err != nil {
 				return err
 			}
 			continue
 		}
-		if _, err := s.callUserConversationStateRPC(ctx, groupID, userConversationStateRPCRequest{
+		if _, err := s.callUserConversationStateRPC(ctx, slotID, userConversationStateRPCRequest{
 			Op:      userConversationStateRPCTouch,
-			GroupID: uint64(groupID),
+			SlotID:  uint64(slotID),
 			Patches: groupPatches,
 		}); err != nil {
 			return err
@@ -97,29 +97,29 @@ func (s *Store) ClearUserConversationActiveAt(ctx context.Context, uid string, k
 		return nil
 	}
 
-	groupID := s.cluster.SlotForKey(uid)
-	if s.shouldServeGroupLocally(groupID) {
+	slotID := s.cluster.SlotForKey(uid)
+	if s.shouldServeSlotLocally(slotID) {
 		cmd := metafsm.EncodeClearUserConversationActiveAtCommand(uid, keys)
-		return s.cluster.Propose(ctx, groupID, cmd)
+		return s.cluster.Propose(ctx, slotID, cmd)
 	}
 
-	_, err := s.callUserConversationStateRPC(ctx, groupID, userConversationStateRPCRequest{
-		Op:      userConversationStateRPCClear,
-		GroupID: uint64(groupID),
-		UID:     uid,
-		Keys:    keys,
+	_, err := s.callUserConversationStateRPC(ctx, slotID, userConversationStateRPCRequest{
+		Op:     userConversationStateRPCClear,
+		SlotID: uint64(slotID),
+		UID:    uid,
+		Keys:   keys,
 	})
 	return err
 }
 
-func (s *Store) getUserConversationStateAuthoritative(ctx context.Context, groupID multiraft.GroupID, uid, channelID string, channelType int64) (metadb.UserConversationState, error) {
-	if s.shouldServeGroupLocally(groupID) {
-		return s.db.ForSlot(uint64(groupID)).GetUserConversationState(ctx, uid, channelID, channelType)
+func (s *Store) getUserConversationStateAuthoritative(ctx context.Context, slotID multiraft.SlotID, uid, channelID string, channelType int64) (metadb.UserConversationState, error) {
+	if s.shouldServeSlotLocally(slotID) {
+		return s.db.ForSlot(uint64(slotID)).GetUserConversationState(ctx, uid, channelID, channelType)
 	}
 
-	resp, err := s.callUserConversationStateRPC(ctx, groupID, userConversationStateRPCRequest{
+	resp, err := s.callUserConversationStateRPC(ctx, slotID, userConversationStateRPCRequest{
 		Op:          userConversationStateRPCGet,
-		GroupID:     uint64(groupID),
+		SlotID:      uint64(slotID),
 		UID:         uid,
 		ChannelID:   channelID,
 		ChannelType: channelType,
@@ -133,16 +133,16 @@ func (s *Store) getUserConversationStateAuthoritative(ctx context.Context, group
 	return *resp.State, nil
 }
 
-func (s *Store) listUserConversationActiveAuthoritative(ctx context.Context, groupID multiraft.GroupID, uid string, limit int) ([]metadb.UserConversationState, error) {
-	if s.shouldServeGroupLocally(groupID) {
-		return s.db.ForSlot(uint64(groupID)).ListUserConversationActive(ctx, uid, limit)
+func (s *Store) listUserConversationActiveAuthoritative(ctx context.Context, slotID multiraft.SlotID, uid string, limit int) ([]metadb.UserConversationState, error) {
+	if s.shouldServeSlotLocally(slotID) {
+		return s.db.ForSlot(uint64(slotID)).ListUserConversationActive(ctx, uid, limit)
 	}
 
-	resp, err := s.callUserConversationStateRPC(ctx, groupID, userConversationStateRPCRequest{
-		Op:      userConversationStateRPCList,
-		GroupID: uint64(groupID),
-		UID:     uid,
-		Limit:   limit,
+	resp, err := s.callUserConversationStateRPC(ctx, slotID, userConversationStateRPCRequest{
+		Op:     userConversationStateRPCList,
+		SlotID: uint64(slotID),
+		UID:    uid,
+		Limit:  limit,
 	})
 	if err != nil {
 		return nil, err
@@ -150,17 +150,17 @@ func (s *Store) listUserConversationActiveAuthoritative(ctx context.Context, gro
 	return append([]metadb.UserConversationState(nil), resp.States...), nil
 }
 
-func (s *Store) scanUserConversationStatePageAuthoritative(ctx context.Context, groupID multiraft.GroupID, uid string, after metadb.ConversationCursor, limit int) ([]metadb.UserConversationState, metadb.ConversationCursor, bool, error) {
-	if s.shouldServeGroupLocally(groupID) {
-		return s.db.ForSlot(uint64(groupID)).ListUserConversationStatePage(ctx, uid, after, limit)
+func (s *Store) scanUserConversationStatePageAuthoritative(ctx context.Context, slotID multiraft.SlotID, uid string, after metadb.ConversationCursor, limit int) ([]metadb.UserConversationState, metadb.ConversationCursor, bool, error) {
+	if s.shouldServeSlotLocally(slotID) {
+		return s.db.ForSlot(uint64(slotID)).ListUserConversationStatePage(ctx, uid, after, limit)
 	}
 
-	resp, err := s.callUserConversationStateRPC(ctx, groupID, userConversationStateRPCRequest{
-		Op:      userConversationStateRPCScanPage,
-		GroupID: uint64(groupID),
-		UID:     uid,
-		After:   &after,
-		Limit:   limit,
+	resp, err := s.callUserConversationStateRPC(ctx, slotID, userConversationStateRPCRequest{
+		Op:     userConversationStateRPCScanPage,
+		SlotID: uint64(slotID),
+		UID:    uid,
+		After:  &after,
+		Limit:  limit,
 	})
 	if err != nil {
 		return nil, metadb.ConversationCursor{}, false, err
@@ -168,12 +168,12 @@ func (s *Store) scanUserConversationStatePageAuthoritative(ctx context.Context, 
 	return append([]metadb.UserConversationState(nil), resp.States...), resp.Cursor, resp.Done, nil
 }
 
-func (s *Store) callUserConversationStateRPC(ctx context.Context, groupID multiraft.GroupID, req userConversationStateRPCRequest) (userConversationStateRPCResponse, error) {
+func (s *Store) callUserConversationStateRPC(ctx context.Context, slotID multiraft.SlotID, req userConversationStateRPCRequest) (userConversationStateRPCResponse, error) {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return userConversationStateRPCResponse{}, err
 	}
-	return callAuthoritativeRPC(ctx, s, groupID, userConversationStateRPCServiceID, payload, decodeUserConversationStateRPCResponse)
+	return callAuthoritativeRPC(ctx, s, slotID, userConversationStateRPCServiceID, payload, decodeUserConversationStateRPCResponse)
 }
 
 func (s *Store) handleUserConversationStateRPC(ctx context.Context, body []byte) ([]byte, error) {
@@ -182,8 +182,8 @@ func (s *Store) handleUserConversationStateRPC(ctx context.Context, body []byte)
 		return nil, err
 	}
 
-	groupID := multiraft.GroupID(req.GroupID)
-	if statusBody, handled, err := s.handleAuthoritativeRPC(groupID, func(status string, leaderID uint64) ([]byte, error) {
+	slotID := multiraft.SlotID(req.SlotID)
+	if statusBody, handled, err := s.handleAuthoritativeRPC(slotID, func(status string, leaderID uint64) ([]byte, error) {
 		return encodeUserConversationStateRPCResponse(userConversationStateRPCResponse{
 			Status:   status,
 			LeaderID: leaderID,
@@ -192,7 +192,7 @@ func (s *Store) handleUserConversationStateRPC(ctx context.Context, body []byte)
 		return statusBody, err
 	}
 
-	shard := s.db.ForSlot(uint64(groupID))
+	shard := s.db.ForSlot(uint64(slotID))
 	switch req.Op {
 	case userConversationStateRPCGet:
 		state, err := shard.GetUserConversationState(ctx, req.UID, req.ChannelID, req.ChannelType)
@@ -232,13 +232,13 @@ func (s *Store) handleUserConversationStateRPC(ctx context.Context, body []byte)
 		})
 	case userConversationStateRPCTouch:
 		cmd := metafsm.EncodeTouchUserConversationActiveAtCommand(req.Patches)
-		if err := s.cluster.Propose(ctx, groupID, cmd); err != nil {
+		if err := s.cluster.Propose(ctx, slotID, cmd); err != nil {
 			return nil, err
 		}
 		return encodeUserConversationStateRPCResponse(userConversationStateRPCResponse{Status: rpcStatusOK})
 	case userConversationStateRPCClear:
 		cmd := metafsm.EncodeClearUserConversationActiveAtCommand(req.UID, req.Keys)
-		if err := s.cluster.Propose(ctx, groupID, cmd); err != nil {
+		if err := s.cluster.Propose(ctx, slotID, cmd); err != nil {
 			return nil, err
 		}
 		return encodeUserConversationStateRPCResponse(userConversationStateRPCResponse{Status: rpcStatusOK})
@@ -259,14 +259,14 @@ func decodeUserConversationStateRPCResponse(body []byte) (userConversationStateR
 	return resp, nil
 }
 
-func (s *Store) groupUserConversationActivePatchesByGroup(patches []metadb.UserConversationActivePatch) (map[multiraft.GroupID][]metadb.UserConversationActivePatch, error) {
-	grouped := make(map[multiraft.GroupID][]metadb.UserConversationActivePatch, len(patches))
+func (s *Store) groupUserConversationActivePatchesBySlot(patches []metadb.UserConversationActivePatch) (map[multiraft.SlotID][]metadb.UserConversationActivePatch, error) {
+	grouped := make(map[multiraft.SlotID][]metadb.UserConversationActivePatch, len(patches))
 	for _, patch := range patches {
 		if patch.UID == "" {
 			return nil, fmt.Errorf("metastore: empty uid in touch patch")
 		}
-		groupID := s.cluster.SlotForKey(patch.UID)
-		grouped[groupID] = append(grouped[groupID], patch)
+		slotID := s.cluster.SlotForKey(patch.UID)
+		grouped[slotID] = append(grouped[slotID], patch)
 	}
 	return grouped, nil
 }

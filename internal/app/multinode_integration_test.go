@@ -32,7 +32,7 @@ func TestAppThreeNodeClusterStartsWithoutStaticGroupPeers(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		for _, app := range harness.orderedApps() {
-			assignments, err := app.Cluster().ListGroupAssignments(context.Background())
+			assignments, err := app.Cluster().ListSlotAssignments(context.Background())
 			if err != nil || len(assignments) != 1 {
 				return false
 			}
@@ -63,12 +63,12 @@ func TestAppMajorityAvailableAfterSingleReplicaNodeFailure(t *testing.T) {
 	}
 }
 
-func TestAppManagedGroupStartupAllowsSubsetAssignmentsPerNode(t *testing.T) {
+func TestAppManagedSlotStartupAllowsSubsetAssignmentsPerNode(t *testing.T) {
 	harness := newThreeNodeManagedAppHarnessWithLayout(t, 4, 2)
 
 	require.Eventually(t, func() bool {
 		for _, app := range harness.orderedApps() {
-			assignments, err := app.Cluster().ListGroupAssignments(context.Background())
+			assignments, err := app.Cluster().ListSlotAssignments(context.Background())
 			if err != nil || len(assignments) != 4 {
 				return false
 			}
@@ -258,7 +258,7 @@ func TestThreeNodeAppGroupChannelRealtimeDeliveryUsesStoredSubscribers(t *testin
 	recipientNodeB := harness.apps[(ownerID+1)%3+1]
 
 	key := channellog.ChannelKey{
-		ChannelID:   "group-realtime",
+		ChannelID:   "slot-realtime",
 		ChannelType: frame.ChannelTypeGroup,
 	}
 	meta := metadb.ChannelRuntimeMeta{
@@ -275,23 +275,23 @@ func TestThreeNodeAppGroupChannelRealtimeDeliveryUsesStoredSubscribers(t *testin
 		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 	}
 	require.NoError(t, owner.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
-	require.NoError(t, owner.Store().AddChannelSubscribers(context.Background(), key.ChannelID, int64(key.ChannelType), []string{"group-user-a", "group-user-b"}))
+	require.NoError(t, owner.Store().AddChannelSubscribers(context.Background(), key.ChannelID, int64(key.ChannelType), []string{"slot-user-a", "slot-user-b"}))
 
 	for _, app := range harness.appsWithLeaderFirst(ownerID) {
 		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), key)
 		require.NoError(t, err)
 	}
 
-	senderConn := connectMultinodeWKProtoClient(t, senderNode, "group-sender", "group-sender-device")
-	recipientConnA := connectMultinodeWKProtoClient(t, recipientNodeA, "group-user-a", "group-device-a")
-	recipientConnB := connectMultinodeWKProtoClient(t, recipientNodeB, "group-user-b", "group-device-b")
+	senderConn := connectMultinodeWKProtoClient(t, senderNode, "slot-sender", "slot-sender-device")
+	recipientConnA := connectMultinodeWKProtoClient(t, recipientNodeA, "slot-user-a", "slot-device-a")
+	recipientConnB := connectMultinodeWKProtoClient(t, recipientNodeB, "slot-user-b", "slot-device-b")
 
 	sendAppWKProtoFrame(t, senderConn, &frame.SendPacket{
 		ChannelID:   key.ChannelID,
 		ChannelType: key.ChannelType,
 		ClientSeq:   1,
-		ClientMsgNo: "three-node-group-1",
-		Payload:     []byte("hello group members"),
+		ClientMsgNo: "three-node-slot-1",
+		Payload:     []byte("hello slot members"),
 	})
 
 	sendack, ok := readAppWKProtoFrameWithin(t, senderConn, multinodeAppReadTimeout).(*frame.SendackPacket)
@@ -302,13 +302,13 @@ func TestThreeNodeAppGroupChannelRealtimeDeliveryUsesStoredSubscribers(t *testin
 	require.True(t, ok)
 	require.Equal(t, key.ChannelID, recvA.ChannelID)
 	require.Equal(t, key.ChannelType, recvA.ChannelType)
-	require.Equal(t, "group-sender", recvA.FromUID)
+	require.Equal(t, "slot-sender", recvA.FromUID)
 
 	recvB, ok := readAppWKProtoFrameWithin(t, recipientConnB, multinodeAppReadTimeout).(*frame.RecvPacket)
 	require.True(t, ok)
 	require.Equal(t, key.ChannelID, recvB.ChannelID)
 	require.Equal(t, key.ChannelType, recvB.ChannelType)
-	require.Equal(t, "group-sender", recvB.FromUID)
+	require.Equal(t, "slot-sender", recvB.FromUID)
 }
 
 func TestThreeNodeAppHotGroupDoesNotBlockNormalGroupDelivery(t *testing.T) {
@@ -317,8 +317,8 @@ func TestThreeNodeAppHotGroupDoesNotBlockNormalGroupDelivery(t *testing.T) {
 	owner := harness.apps[ownerID]
 	recipientNode := harness.apps[ownerID%3+1]
 
-	hotKey := channellog.ChannelKey{ChannelID: "group-hot", ChannelType: frame.ChannelTypeGroup}
-	normalKey := channellog.ChannelKey{ChannelID: "group-normal", ChannelType: frame.ChannelTypeGroup}
+	hotKey := channellog.ChannelKey{ChannelID: "slot-hot", ChannelType: frame.ChannelTypeGroup}
+	normalKey := channellog.ChannelKey{ChannelID: "slot-normal", ChannelType: frame.ChannelTypeGroup}
 	for _, key := range []channellog.ChannelKey{hotKey, normalKey} {
 		require.NoError(t, owner.Store().UpsertChannelRuntimeMeta(context.Background(), metadb.ChannelRuntimeMeta{
 			ChannelID:    key.ChannelID,
@@ -618,15 +618,15 @@ func newThreeNodeManagedAppHarness(t *testing.T) *threeNodeAppHarness {
 	return newThreeNodeManagedAppHarnessWithLayout(t, 1, 3)
 }
 
-func newThreeNodeManagedAppHarnessWithLayout(t *testing.T, groupCount uint32, groupReplicaN int) *threeNodeAppHarness {
-	return newThreeNodeAppHarnessWithOptions(t, groupCount, groupReplicaN, nil)
+func newThreeNodeManagedAppHarnessWithLayout(t *testing.T, slotCount uint32, slotReplicaN int) *threeNodeAppHarness {
+	return newThreeNodeAppHarnessWithOptions(t, slotCount, slotReplicaN, nil)
 }
 
 func newThreeNodeAppHarnessWithConfigMutator(t *testing.T, mutate func(*Config)) *threeNodeAppHarness {
 	return newThreeNodeAppHarnessWithOptions(t, 1, 3, mutate)
 }
 
-func newThreeNodeAppHarnessWithOptions(t *testing.T, groupCount uint32, groupReplicaN int, mutate func(*Config)) *threeNodeAppHarness {
+func newThreeNodeAppHarnessWithOptions(t *testing.T, slotCount uint32, slotReplicaN int, mutate func(*Config)) *threeNodeAppHarness {
 	t.Helper()
 
 	clusterAddrs := reserveTestTCPAddrs(t, 3)
@@ -652,10 +652,10 @@ func newThreeNodeAppHarnessWithOptions(t *testing.T, groupCount uint32, groupRep
 		cfg.Storage = StorageConfig{}
 		cfg.Cluster.ListenAddr = clusterAddrs[nodeID]
 		cfg.Cluster.Nodes = append([]NodeConfigRef(nil), clusterNodes...)
-		cfg.Cluster.GroupCount = groupCount
+		cfg.Cluster.SlotCount = slotCount
 		cfg.Cluster.ControllerReplicaN = 3
-		cfg.Cluster.GroupReplicaN = groupReplicaN
-		cfg.Cluster.Groups = nil
+		cfg.Cluster.SlotReplicaN = slotReplicaN
+		cfg.Cluster.Slots = nil
 		cfg.Cluster.TickInterval = 10 * time.Millisecond
 		cfg.Cluster.ElectionTick = 10
 		cfg.Cluster.HeartbeatTick = 1
@@ -758,24 +758,24 @@ func (h *threeNodeAppHarness) restartNode(t *testing.T, nodeID uint64) *App {
 	return app
 }
 
-func (h *threeNodeAppHarness) waitForLeaderChange(t *testing.T, groupID uint64, oldLeader uint64) uint64 {
+func (h *threeNodeAppHarness) waitForLeaderChange(t *testing.T, slotID uint64, oldLeader uint64) uint64 {
 	t.Helper()
 
 	require.Eventually(t, func() bool {
-		leader, ok := h.consensusLeader(multiraft.GroupID(groupID))
+		leader, ok := h.consensusLeader(multiraft.SlotID(slotID))
 		return ok && leader != 0 && uint64(leader) != oldLeader
 	}, 10*time.Second, 50*time.Millisecond)
-	return h.waitForStableLeader(t, groupID)
+	return h.waitForStableLeader(t, slotID)
 }
 
-func (h *threeNodeAppHarness) waitForStableLeader(t *testing.T, groupID uint64) uint64 {
+func (h *threeNodeAppHarness) waitForStableLeader(t *testing.T, slotID uint64) uint64 {
 	t.Helper()
 
 	deadline := time.Now().Add(10 * time.Second)
 	var stable multiraft.NodeID
 	stableCount := 0
 	for time.Now().Before(deadline) {
-		leader, ok := h.consensusLeader(multiraft.GroupID(groupID))
+		leader, ok := h.consensusLeader(multiraft.SlotID(slotID))
 		if ok && leader != 0 {
 			if leader == stable {
 				stableCount++
@@ -792,14 +792,14 @@ func (h *threeNodeAppHarness) waitForStableLeader(t *testing.T, groupID uint64) 
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for stable leader for group %d", groupID)
+	t.Fatalf("timed out waiting for stable leader for slot %d", slotID)
 	return 0
 }
 
-func (h *threeNodeAppHarness) consensusLeader(groupID multiraft.GroupID) (multiraft.NodeID, bool) {
+func (h *threeNodeAppHarness) consensusLeader(slotID multiraft.SlotID) (multiraft.NodeID, bool) {
 	var leader multiraft.NodeID
 	for _, app := range h.runningApps() {
-		current, err := app.Cluster().LeaderOf(groupID)
+		current, err := app.Cluster().LeaderOf(slotID)
 		if err != nil {
 			return 0, false
 		}

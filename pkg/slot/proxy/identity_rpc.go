@@ -19,7 +19,7 @@ const (
 
 type identityRPCRequest struct {
 	Op         string `json:"op"`
-	GroupID    uint64 `json:"group_id"`
+	SlotID     uint64 `json:"slot_id"`
 	UID        string `json:"uid,omitempty"`
 	DeviceFlag int64  `json:"device_flag,omitempty"`
 }
@@ -39,15 +39,15 @@ func (r identityRPCResponse) rpcLeaderID() uint64 {
 	return r.LeaderID
 }
 
-func (s *Store) getUserAuthoritative(ctx context.Context, groupID multiraft.GroupID, uid string) (metadb.User, error) {
-	if s.shouldServeGroupLocally(groupID) {
-		return s.db.ForSlot(uint64(groupID)).GetUser(ctx, uid)
+func (s *Store) getUserAuthoritative(ctx context.Context, slotID multiraft.SlotID, uid string) (metadb.User, error) {
+	if s.shouldServeSlotLocally(slotID) {
+		return s.db.ForSlot(uint64(slotID)).GetUser(ctx, uid)
 	}
 
-	resp, err := s.callIdentityRPC(ctx, groupID, identityRPCRequest{
-		Op:      identityRPCGetUser,
-		GroupID: uint64(groupID),
-		UID:     uid,
+	resp, err := s.callIdentityRPC(ctx, slotID, identityRPCRequest{
+		Op:     identityRPCGetUser,
+		SlotID: uint64(slotID),
+		UID:    uid,
 	})
 	if err != nil {
 		return metadb.User{}, err
@@ -58,14 +58,14 @@ func (s *Store) getUserAuthoritative(ctx context.Context, groupID multiraft.Grou
 	return *resp.User, nil
 }
 
-func (s *Store) getDeviceAuthoritative(ctx context.Context, groupID multiraft.GroupID, uid string, deviceFlag int64) (metadb.Device, error) {
-	if s.shouldServeGroupLocally(groupID) {
-		return s.db.ForSlot(uint64(groupID)).GetDevice(ctx, uid, deviceFlag)
+func (s *Store) getDeviceAuthoritative(ctx context.Context, slotID multiraft.SlotID, uid string, deviceFlag int64) (metadb.Device, error) {
+	if s.shouldServeSlotLocally(slotID) {
+		return s.db.ForSlot(uint64(slotID)).GetDevice(ctx, uid, deviceFlag)
 	}
 
-	resp, err := s.callIdentityRPC(ctx, groupID, identityRPCRequest{
+	resp, err := s.callIdentityRPC(ctx, slotID, identityRPCRequest{
 		Op:         identityRPCGetDevice,
-		GroupID:    uint64(groupID),
+		SlotID:     uint64(slotID),
 		UID:        uid,
 		DeviceFlag: deviceFlag,
 	})
@@ -78,12 +78,12 @@ func (s *Store) getDeviceAuthoritative(ctx context.Context, groupID multiraft.Gr
 	return *resp.Device, nil
 }
 
-func (s *Store) callIdentityRPC(ctx context.Context, groupID multiraft.GroupID, req identityRPCRequest) (identityRPCResponse, error) {
+func (s *Store) callIdentityRPC(ctx context.Context, slotID multiraft.SlotID, req identityRPCRequest) (identityRPCResponse, error) {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return identityRPCResponse{}, err
 	}
-	return callAuthoritativeRPC(ctx, s, groupID, identityRPCServiceID, payload, decodeIdentityRPCResponse)
+	return callAuthoritativeRPC(ctx, s, slotID, identityRPCServiceID, payload, decodeIdentityRPCResponse)
 }
 
 func (s *Store) handleIdentityRPC(ctx context.Context, body []byte) ([]byte, error) {
@@ -92,8 +92,8 @@ func (s *Store) handleIdentityRPC(ctx context.Context, body []byte) ([]byte, err
 		return nil, err
 	}
 
-	groupID := multiraft.GroupID(req.GroupID)
-	if statusBody, handled, err := s.handleAuthoritativeRPC(groupID, func(status string, leaderID uint64) ([]byte, error) {
+	slotID := multiraft.SlotID(req.SlotID)
+	if statusBody, handled, err := s.handleAuthoritativeRPC(slotID, func(status string, leaderID uint64) ([]byte, error) {
 		return encodeIdentityRPCResponse(identityRPCResponse{
 			Status:   status,
 			LeaderID: leaderID,
@@ -104,7 +104,7 @@ func (s *Store) handleIdentityRPC(ctx context.Context, body []byte) ([]byte, err
 
 	switch req.Op {
 	case identityRPCGetUser:
-		user, err := s.db.ForSlot(uint64(groupID)).GetUser(ctx, req.UID)
+		user, err := s.db.ForSlot(uint64(slotID)).GetUser(ctx, req.UID)
 		if errors.Is(err, metadb.ErrNotFound) {
 			return encodeIdentityRPCResponse(identityRPCResponse{Status: rpcStatusNotFound})
 		}
@@ -116,7 +116,7 @@ func (s *Store) handleIdentityRPC(ctx context.Context, body []byte) ([]byte, err
 			User:   &user,
 		})
 	case identityRPCGetDevice:
-		device, err := s.db.ForSlot(uint64(groupID)).GetDevice(ctx, req.UID, req.DeviceFlag)
+		device, err := s.db.ForSlot(uint64(slotID)).GetDevice(ctx, req.UID, req.DeviceFlag)
 		if errors.Is(err, metadb.ErrNotFound) {
 			return encodeIdentityRPCResponse(identityRPCResponse{Status: rpcStatusNotFound})
 		}

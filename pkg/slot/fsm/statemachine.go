@@ -49,7 +49,7 @@ func (m *stateMachine) ApplyBatch(ctx context.Context, cmds []multiraft.Command)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if cmd.GroupID != multiraft.GroupID(m.slot) {
+		if cmd.SlotID != multiraft.SlotID(m.slot) {
 			return nil, metadb.ErrInvalidArgument
 		}
 
@@ -87,8 +87,8 @@ func (m *stateMachine) Snapshot(ctx context.Context) (multiraft.Snapshot, error)
 }
 
 // NewStateMachineFactory returns a factory function suitable for raftcluster.Config.NewStateMachine.
-func NewStateMachineFactory(db *metadb.DB) func(groupID multiraft.GroupID) (multiraft.StateMachine, error) {
-	return func(groupID multiraft.GroupID) (multiraft.StateMachine, error) {
-		return NewStateMachine(db, uint64(groupID))
+func NewStateMachineFactory(db *metadb.DB) func(slotID multiraft.SlotID) (multiraft.StateMachine, error) {
+	return func(slotID multiraft.SlotID) (multiraft.StateMachine, error) {
+		return NewStateMachine(db, uint64(slotID))
 	}
 }

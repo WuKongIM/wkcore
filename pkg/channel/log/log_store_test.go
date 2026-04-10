@@ -25,14 +25,14 @@ func TestStoreAppendAndReadByOffset(t *testing.T) {
 	}
 }
 
-func TestDBReadScopesByGroupKeyAndBudget(t *testing.T) {
+func TestDBReadScopesByChannelKeyAndBudget(t *testing.T) {
 	db := openTestDB(t)
 	first := db.ForChannel(ChannelKey{ChannelID: "c1", ChannelType: 1})
 	second := db.ForChannel(ChannelKey{ChannelID: "c2", ChannelType: 1})
 	mustAppendPayloads(t, first, []string{"one", "two"})
 	mustAppendPayloads(t, second, []string{"zzz"})
 
-	records, err := db.Read(channelGroupKey(first.key), 0, 10, len("one"))
+	records, err := db.Read(isrChannelKeyForChannel(first.key), 0, 10, len("one"))
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
@@ -46,7 +46,7 @@ func TestDBReadBudgetCountsPayloadBytesOnly(t *testing.T) {
 	store := db.ForChannel(ChannelKey{ChannelID: "c1", ChannelType: 1})
 	mustAppendPayloads(t, store, []string{"one", "two"})
 
-	records, err := db.Read(channelGroupKey(store.key), 0, 10, len("one")+len("two"))
+	records, err := db.Read(isrChannelKeyForChannel(store.key), 0, 10, len("one")+len("two"))
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}

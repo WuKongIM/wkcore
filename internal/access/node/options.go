@@ -16,11 +16,11 @@ import (
 
 type Cluster interface {
 	RPCMux() *transport.RPCMux
-	LeaderOf(groupID multiraft.GroupID) (multiraft.NodeID, error)
+	LeaderOf(slotID multiraft.SlotID) (multiraft.NodeID, error)
 	IsLocal(nodeID multiraft.NodeID) bool
-	SlotForKey(key string) multiraft.GroupID
-	RPCService(ctx context.Context, nodeID multiraft.NodeID, groupID multiraft.GroupID, serviceID uint8, payload []byte) ([]byte, error)
-	PeersForGroup(groupID multiraft.GroupID) []multiraft.NodeID
+	SlotForKey(key string) multiraft.SlotID
+	RPCService(ctx context.Context, nodeID multiraft.NodeID, slotID multiraft.SlotID, serviceID uint8, payload []byte) ([]byte, error)
+	PeersForSlot(slotID multiraft.SlotID) []multiraft.NodeID
 }
 
 type Presence interface {

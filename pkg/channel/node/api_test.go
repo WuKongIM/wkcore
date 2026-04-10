@@ -15,15 +15,15 @@ func TestNewRuntimeValidatesRequiredDependencies(t *testing.T) {
 	}
 }
 
-func TestRuntimeSurfaceUsesGroupKey(t *testing.T) {
+func TestRuntimeSurfaceUsesChannelKey(t *testing.T) {
 	var rt isrnode.Runtime
-	meta := isr.GroupMeta{GroupKey: isr.GroupKey("group-1")}
+	meta := isr.ChannelMeta{ChannelKey: isr.ChannelKey("group-1")}
 
 	compileRuntimeSurface := func(r isrnode.Runtime) {
-		_ = r.EnsureGroup(meta)
+		_ = r.EnsureChannel(meta)
 		_ = r.ApplyMeta(meta)
-		_ = r.RemoveGroup(meta.GroupKey)
-		_, _ = r.Group(meta.GroupKey)
+		_ = r.RemoveChannel(meta.ChannelKey)
+		_, _ = r.Channel(meta.ChannelKey)
 	}
 
 	_ = compileRuntimeSurface

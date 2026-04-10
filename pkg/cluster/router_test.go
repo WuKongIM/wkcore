@@ -6,7 +6,7 @@ import (
 )
 
 func TestSlotForKey_Deterministic(t *testing.T) {
-	r := &Router{groupCount: 3}
+	r := &Router{slotCount: 3}
 	a := r.SlotForKey("test-channel")
 	b := r.SlotForKey("test-channel")
 	if a != b {
@@ -15,7 +15,7 @@ func TestSlotForKey_Deterministic(t *testing.T) {
 }
 
 func TestSlotForKey_Range(t *testing.T) {
-	r := &Router{groupCount: 10}
+	r := &Router{slotCount: 10}
 	for _, id := range []string{"a", "b", "c", "d", "e", "channel-123", "xyz"} {
 		slot := r.SlotForKey(id)
 		if slot < 1 || slot > 10 {
@@ -25,7 +25,7 @@ func TestSlotForKey_Range(t *testing.T) {
 }
 
 func TestSlotForKey_Distribution(t *testing.T) {
-	r := &Router{groupCount: 3}
+	r := &Router{slotCount: 3}
 	counts := make(map[uint64]int)
 	for i := 0; i < 1000; i++ {
 		slot := r.SlotForKey(fmt.Sprintf("channel-%d", i))
@@ -33,7 +33,7 @@ func TestSlotForKey_Distribution(t *testing.T) {
 	}
 	for g := uint64(1); g <= 3; g++ {
 		if counts[g] == 0 {
-			t.Fatalf("group %d has 0 channels — bad distribution", g)
+			t.Fatalf("slot %d has 0 channels — bad distribution", g)
 		}
 	}
 }

@@ -19,14 +19,14 @@ func BenchmarkHeartbeatBuckets100kRoutes(b *testing.B) {
 
 	onlineReg := online.NewRegistry()
 	for i := 0; i < totalRoutes; i++ {
-		groupID := uint64(i%groupCount + 1)
+		slotID := uint64(i%groupCount + 1)
 		_ = onlineReg.Register(online.OnlineConn{
 			SessionID:   uint64(i + 1),
 			UID:         fmt.Sprintf("u-%d", i),
 			DeviceID:    fmt.Sprintf("d-%d", i),
 			DeviceFlag:  frame.APP,
 			DeviceLevel: frame.DeviceLevelMaster,
-			GroupID:     groupID,
+			SlotID:      slotID,
 			State:       online.LocalRouteStateActive,
 			Listener:    "tcp",
 			ConnectedAt: time.Unix(200, 0),

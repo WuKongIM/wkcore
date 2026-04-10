@@ -240,7 +240,7 @@ func (h *pressureHarness) initGroups() {
 	h.groupIDs = make([]uint64, 0, h.cfg.groups)
 	for i := 0; i < h.cfg.groups; i++ {
 		groupID := uint64(i + 1)
-		mustEnsurePressureGroup(h.tb, h.runtime, testMetaLocal(groupID, 1, 1, replicas))
+		mustEnsurePressureChannel(h.tb, h.runtime, testMetaLocal(groupID, 1, 1, replicas))
 		h.groupIDs = append(h.groupIDs, groupID)
 	}
 }
@@ -252,12 +252,12 @@ func (h *pressureHarness) peerFor(groupIndex, round int) isr.NodeID {
 
 func (h *pressureHarness) enqueueReplication(groupIndex, round int) {
 	groupID := h.groupIDs[groupIndex%len(h.groupIDs)]
-	h.runtime.enqueueReplication(testGroupKey(groupID), h.peerFor(groupIndex, round))
+	h.runtime.enqueueReplication(testChannelKey(groupID), h.peerFor(groupIndex, round))
 }
 
 func (h *pressureHarness) enqueueReplicationToPeer(groupIndex int, peer isr.NodeID) {
 	groupID := h.groupIDs[groupIndex%len(h.groupIDs)]
-	h.runtime.enqueueReplication(testGroupKey(groupID), peer)
+	h.runtime.enqueueReplication(testChannelKey(groupID), peer)
 }
 
 func (h *pressureHarness) enqueueReplicationRound(round int) {
@@ -268,7 +268,7 @@ func (h *pressureHarness) enqueueReplicationRound(round int) {
 
 func (h *pressureHarness) queueSnapshot(groupIndex int, bytes int64) {
 	groupID := h.groupIDs[groupIndex%len(h.groupIDs)]
-	h.runtime.queueSnapshotChunk(testGroupKey(groupID), bytes)
+	h.runtime.queueSnapshotChunk(testChannelKey(groupID), bytes)
 }
 
 func (h *pressureHarness) runSchedulingTicks(rounds int) {
@@ -303,7 +303,7 @@ func (h *pressureHarness) deliverPeerFetchResponses(peer isr.NodeID, limit int) 
 		for _, env := range envs {
 			h.transport.deliver(Envelope{
 				Peer:       env.Peer,
-				GroupKey:   env.GroupKey,
+				ChannelKey: env.ChannelKey,
 				Generation: env.Generation,
 				Epoch:      env.Epoch,
 				Kind:       MessageKindFetchResponse,
@@ -409,43 +409,43 @@ func (h *pressureHarness) deliverAvailableFetchResponses() int {
 	return delivered
 }
 
-func mustEnsurePressureGroup(tb testing.TB, rt *runtime, meta isr.GroupMeta) {
+func mustEnsurePressureChannel(tb testing.TB, rt *runtime, meta isr.ChannelMeta) {
 	tb.Helper()
-	if err := rt.EnsureGroup(meta); err != nil {
-		tb.Fatalf("EnsureGroup(%q) error = %v", meta.GroupKey, err)
+	if err := rt.EnsureChannel(meta); err != nil {
+		tb.Fatalf("EnsureChannel(%q) error = %v", meta.ChannelKey, err)
 	}
 }
 
 type pressureReplicaFactory struct {
 	mu       sync.Mutex
-	replicas map[isr.GroupKey]*pressureReplica
+	replicas map[isr.ChannelKey]*pressureReplica
 }
 
 func newPressureReplicaFactory() *pressureReplicaFactory {
 	return &pressureReplicaFactory{
-		replicas: make(map[isr.GroupKey]*pressureReplica),
+		replicas: make(map[isr.ChannelKey]*pressureReplica),
 	}
 }
 
-func (f *pressureReplicaFactory) New(cfg GroupConfig) (isr.Replica, error) {
+func (f *pressureReplicaFactory) New(cfg ChannelConfig) (isr.Replica, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	replica := &pressureReplica{
 		state: isr.ReplicaState{
-			GroupKey: cfg.GroupKey,
-			Role:     isr.RoleLeader,
-			Epoch:    cfg.Meta.Epoch,
-			Leader:   cfg.Meta.Leader,
+			ChannelKey: cfg.ChannelKey,
+			Role:       isr.RoleLeader,
+			Epoch:      cfg.Meta.Epoch,
+			Leader:     cfg.Meta.Leader,
 		},
 	}
-	f.replicas[cfg.GroupKey] = replica
+	f.replicas[cfg.ChannelKey] = replica
 	return replica, nil
 }
 
 func (f *pressureReplicaFactory) progressCount(groupID uint64) int {
 	f.mu.Lock()
-	replica := f.replicas[testGroupKey(groupID)]
+	replica := f.replicas[testChannelKey(groupID)]
 	f.mu.Unlock()
 	if replica == nil {
 		return 0
@@ -459,7 +459,7 @@ type pressureReplica struct {
 	applyFetchCalls int
 }
 
-func (r *pressureReplica) ApplyMeta(meta isr.GroupMeta) error {
+func (r *pressureReplica) ApplyMeta(meta isr.ChannelMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.state.Epoch = meta.Epoch
@@ -467,8 +467,8 @@ func (r *pressureReplica) ApplyMeta(meta isr.GroupMeta) error {
 	return nil
 }
 
-func (r *pressureReplica) BecomeLeader(meta isr.GroupMeta) error   { return r.ApplyMeta(meta) }
-func (r *pressureReplica) BecomeFollower(meta isr.GroupMeta) error { return r.ApplyMeta(meta) }
+func (r *pressureReplica) BecomeLeader(meta isr.ChannelMeta) error   { return r.ApplyMeta(meta) }
+func (r *pressureReplica) BecomeFollower(meta isr.ChannelMeta) error { return r.ApplyMeta(meta) }
 
 func (r *pressureReplica) Tombstone() error {
 	r.mu.Lock()

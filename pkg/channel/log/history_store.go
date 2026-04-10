@@ -11,7 +11,7 @@ func (s *Store) loadEpochHistory() ([]isr.EpochPoint, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
-	prefix := encodeHistoryPrefix(s.groupKey)
+	prefix := encodeHistoryPrefix(s.channelKey)
 	iter, err := s.db.db.NewIter(&pebble.IterOptions{
 		LowerBound: prefix,
 		UpperBound: keyUpperBound(prefix),
@@ -39,7 +39,7 @@ func (s *Store) appendEpochPoint(point isr.EpochPoint) error {
 	if err := s.validate(); err != nil {
 		return err
 	}
-	return s.db.db.Set(encodeHistoryKey(s.groupKey, point.StartOffset), encodeEpochPoint(point), pebble.Sync)
+	return s.db.db.Set(encodeHistoryKey(s.channelKey, point.StartOffset), encodeEpochPoint(point), pebble.Sync)
 }
 
 func (s *Store) truncateEpochHistoryTo(leo uint64) error {
@@ -53,10 +53,10 @@ func (s *Store) trimEpochHistoryAfter(startOffset uint64) error {
 	if err := s.validate(); err != nil {
 		return err
 	}
-	prefix := encodeHistoryPrefix(s.groupKey)
+	prefix := encodeHistoryPrefix(s.channelKey)
 	batch := s.db.db.NewBatch()
 	defer batch.Close()
-	if err := batch.DeleteRange(encodeHistoryKey(s.groupKey, startOffset), keyUpperBound(prefix), pebble.Sync); err != nil {
+	if err := batch.DeleteRange(encodeHistoryKey(s.channelKey, startOffset), keyUpperBound(prefix), pebble.Sync); err != nil {
 		return err
 	}
 	return batch.Commit(pebble.Sync)

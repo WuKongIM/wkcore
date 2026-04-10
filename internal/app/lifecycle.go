@@ -34,7 +34,7 @@ func (a *App) Start() error {
 		return err
 	}
 	a.clusterOn.Store(true)
-	if err := a.waitForManagedGroupsReady(); err != nil {
+	if err := a.waitForManagedSlotsReady(); err != nil {
 		_ = a.stopClusterWithError()
 		a.started.Store(false)
 		return err
@@ -315,13 +315,13 @@ func (a *App) stopClusterWithError() error {
 	return nil
 }
 
-func (a *App) waitForManagedGroupsReady() error {
+func (a *App) waitForManagedSlotsReady() error {
 	if a == nil || a.cluster == nil {
 		return nil
 	}
 	readyCtx, cancel := context.WithTimeout(context.Background(), presenceLeaderReadyTimeout)
 	defer cancel()
-	return a.cluster.WaitForManagedGroupsReady(readyCtx)
+	return a.cluster.WaitForManagedSlotsReady(readyCtx)
 }
 
 func (a *App) closeRaftDB() error {

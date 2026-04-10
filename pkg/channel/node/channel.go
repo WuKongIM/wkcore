@@ -9,13 +9,13 @@ import (
 )
 
 type group struct {
-	id         isr.GroupKey
+	id         isr.ChannelKey
 	generation uint64
 	replica    isr.Replica
 	now        func() time.Time
 
 	mu      sync.Mutex
-	meta    isr.GroupMeta
+	meta    isr.ChannelMeta
 	pending taskMask
 
 	replicationPeers nodeIDQueue
@@ -28,11 +28,11 @@ type group struct {
 	onSnapshot    func()
 }
 
-func (g *group) ID() isr.GroupKey {
+func (g *group) ID() isr.ChannelKey {
 	return g.id
 }
 
-func (g *group) Meta() isr.GroupMeta {
+func (g *group) Meta() isr.ChannelMeta {
 	return g.metaSnapshot()
 }
 
@@ -60,13 +60,13 @@ func (g *group) Append(ctx context.Context, records []isr.Record) (isr.CommitRes
 	return g.replica.Append(ctx, records)
 }
 
-func (g *group) setMeta(meta isr.GroupMeta) {
+func (g *group) setMeta(meta isr.ChannelMeta) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.meta = meta
 }
 
-func (g *group) metaSnapshot() isr.GroupMeta {
+func (g *group) metaSnapshot() isr.ChannelMeta {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.meta

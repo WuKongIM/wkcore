@@ -10,7 +10,7 @@ func (s *Store) loadSnapshotPayload() ([]byte, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
-	value, closer, err := s.db.db.Get(encodeSnapshotKey(s.groupKey))
+	value, closer, err := s.db.db.Get(encodeSnapshotKey(s.channelKey))
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {
 			return nil, nil
@@ -25,5 +25,5 @@ func (s *Store) storeSnapshotPayload(payload []byte) error {
 	if err := s.validate(); err != nil {
 		return err
 	}
-	return s.db.db.Set(encodeSnapshotKey(s.groupKey), append([]byte(nil), payload...), pebble.Sync)
+	return s.db.db.Set(encodeSnapshotKey(s.channelKey), append([]byte(nil), payload...), pebble.Sync)
 }

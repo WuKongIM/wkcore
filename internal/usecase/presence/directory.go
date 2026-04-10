@@ -18,7 +18,7 @@ type routeKey struct {
 }
 
 type leaseKey struct {
-	groupID       uint64
+	slotID        uint64
 	gatewayNodeID uint64
 	gatewayBootID uint64
 }
@@ -40,13 +40,13 @@ func newDirectory() *directory {
 	}
 }
 
-func (d *directory) register(groupID uint64, route Route, nowUnix int64) []RouteAction {
+func (d *directory) register(slotID uint64, route Route, nowUnix int64) []RouteAction {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	d.sweepExpiredLocked(nowUnix)
 
-	k := leaseKey{groupID: groupID, gatewayNodeID: route.NodeID, gatewayBootID: route.BootID}
+	k := leaseKey{slotID: slotID, gatewayNodeID: route.NodeID, gatewayBootID: route.BootID}
 	if d.byUID[route.UID] == nil {
 		d.byUID[route.UID] = make(map[routeKey]Route)
 	}
@@ -64,7 +64,7 @@ func (d *directory) register(groupID uint64, route Route, nowUnix int64) []Route
 			continue
 		}
 		delete(d.byUID[route.UID], existingKey)
-		deleteOwnerRoute(d.ownerSet, d.leases, groupID, existing)
+		deleteOwnerRoute(d.ownerSet, d.leases, slotID, existing)
 		actions = append(actions, actionForReplacement(route, existing))
 	}
 
@@ -76,7 +76,7 @@ func (d *directory) register(groupID uint64, route Route, nowUnix int64) []Route
 		leaseUntilUnix = defaultLeaseUntilUnix
 	}
 	d.leases[k] = GatewayLease{
-		GroupID:        groupID,
+		SlotID:         slotID,
 		GatewayNodeID:  route.NodeID,
 		GatewayBootID:  route.BootID,
 		RouteCount:     len(d.ownerSet[k]),
@@ -87,7 +87,7 @@ func (d *directory) register(groupID uint64, route Route, nowUnix int64) []Route
 	return actions
 }
 
-func (d *directory) unregister(groupID uint64, route Route, nowUnix int64) {
+func (d *directory) unregister(slotID uint64, route Route, nowUnix int64) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -100,7 +100,7 @@ func (d *directory) unregister(groupID uint64, route Route, nowUnix int64) {
 			delete(d.byUID, route.UID)
 		}
 	}
-	deleteOwnerRoute(d.ownerSet, d.leases, groupID, route)
+	deleteOwnerRoute(d.ownerSet, d.leases, slotID, route)
 }
 
 func (d *directory) heartbeat(lease GatewayLease, nowUnix int64) HeartbeatAuthoritativeResult {
@@ -296,14 +296,14 @@ func makeRouteKey(route Route) routeKey {
 
 func makeLeaseKey(lease GatewayLease) leaseKey {
 	return leaseKey{
-		groupID:       lease.GroupID,
+		slotID:        lease.SlotID,
 		gatewayNodeID: lease.GatewayNodeID,
 		gatewayBootID: lease.GatewayBootID,
 	}
 }
 
-func deleteOwnerRoute(ownerSet map[leaseKey]map[routeKey]Route, leases map[leaseKey]GatewayLease, groupID uint64, route Route) {
-	k := leaseKey{groupID: groupID, gatewayNodeID: route.NodeID, gatewayBootID: route.BootID}
+func deleteOwnerRoute(ownerSet map[leaseKey]map[routeKey]Route, leases map[leaseKey]GatewayLease, slotID uint64, route Route) {
+	k := leaseKey{slotID: slotID, gatewayNodeID: route.NodeID, gatewayBootID: route.BootID}
 	routes := ownerSet[k]
 	rk := makeRouteKey(route)
 	if routes == nil || routes[rk].UID == "" {
@@ -335,7 +335,7 @@ func digestRoutes(routes map[routeKey]Route) uint64 {
 	return digest
 }
 
-// Keep this fingerprint aligned with online.GroupSnapshot.Digest. The owner set
+// Keep this fingerprint aligned with online.SlotSnapshot.Digest. The owner set
 // already scopes routes by gateway node/boot, so those fields are excluded.
 func routeFingerprint(route Route) uint64 {
 	h := fnv.New64a()

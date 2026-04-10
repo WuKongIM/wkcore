@@ -172,9 +172,9 @@ func startTwoNodeShardedStores(t testing.TB) []*testStoreNode {
 		_ = listeners[i].Close()
 	}
 
-	groups := []raftcluster.GroupConfig{
-		{GroupID: 1, Peers: []multiraft.NodeID{1}},
-		{GroupID: 2, Peers: []multiraft.NodeID{2}},
+	slots := []raftcluster.SlotConfig{
+		{SlotID: 1, Peers: []multiraft.NodeID{1}},
+		{SlotID: 2, Peers: []multiraft.NodeID{2}},
 	}
 
 	out := make([]*testStoreNode, 2)
@@ -186,15 +186,15 @@ func startTwoNodeShardedStores(t testing.TB) []*testStoreNode {
 		cluster, err := raftcluster.NewCluster(raftcluster.Config{
 			NodeID:             multiraft.NodeID(i + 1),
 			ListenAddr:         nodes[i].Addr,
-			GroupCount:         2,
+			SlotCount:          2,
 			ControllerReplicaN: len(nodes),
-			GroupReplicaN:      len(nodes),
-			NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
-				return raftDB.ForGroup(uint64(groupID)), nil
+			SlotReplicaN:       len(nodes),
+			NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
+				return raftDB.ForGroup(uint64(slotID)), nil
 			},
 			NewStateMachine: metafsm.NewStateMachineFactory(db),
 			Nodes:           nodes,
-			Groups:          groups,
+			Slots:           slots,
 		})
 		if err != nil {
 			t.Fatalf("NewCluster(node=%d) error = %v", i+1, err)
@@ -211,12 +211,12 @@ func startTwoNodeShardedStores(t testing.TB) []*testStoreNode {
 		}
 	}
 
-	for groupID := uint64(1); groupID <= 2; groupID++ {
-		leaderNode := out[groupID-1]
+	for slotID := uint64(1); slotID <= 2; slotID++ {
+		leaderNode := out[slotID-1]
 		waitForCondition(t, func() bool {
-			leaderID, err := leaderNode.cluster.LeaderOf(multiraft.GroupID(groupID))
-			return err == nil && leaderID == multiraft.NodeID(groupID)
-		}, fmt.Sprintf("group %d leader elected on expected node", groupID))
+			leaderID, err := leaderNode.cluster.LeaderOf(multiraft.SlotID(slotID))
+			return err == nil && leaderID == multiraft.NodeID(slotID)
+		}, fmt.Sprintf("slot %d leader elected on expected node", slotID))
 	}
 
 	return out

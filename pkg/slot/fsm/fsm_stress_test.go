@@ -142,7 +142,7 @@ func TestFSMStressConcurrentApply(t *testing.T) {
 
 				slot := uint64((worker+int(idx))%cfg.Slots) + 1
 				sm := machines[slot]
-				groupID := multiraft.GroupID(slot)
+				slotID := multiraft.SlotID(slot)
 
 				if rng.Intn(2) == 0 {
 					user := metadb.User{
@@ -153,10 +153,10 @@ func TestFSMStressConcurrentApply(t *testing.T) {
 					}
 					slotMu[slot].Lock()
 					_, err := sm.Apply(ctx, multiraft.Command{
-						GroupID: groupID,
-						Index:   idx,
-						Term:    1,
-						Data:    EncodeUpsertUserCommand(user),
+						SlotID: slotID,
+						Index:  idx,
+						Term:   1,
+						Data:   EncodeUpsertUserCommand(user),
 					})
 					slotMu[slot].Unlock()
 					if err != nil {
@@ -183,10 +183,10 @@ func TestFSMStressConcurrentApply(t *testing.T) {
 					}
 					slotMu[slot].Lock()
 					_, err := sm.Apply(ctx, multiraft.Command{
-						GroupID: groupID,
-						Index:   idx,
-						Term:    1,
-						Data:    EncodeUpsertChannelCommand(channel),
+						SlotID: slotID,
+						Index:  idx,
+						Term:   1,
+						Data:   EncodeUpsertChannelCommand(channel),
 					})
 					slotMu[slot].Unlock()
 					if err != nil {
@@ -299,7 +299,7 @@ func TestFSMStressSnapshotRestoreUnderConcurrentApply(t *testing.T) {
 				}
 				slot := uint64((worker+int(idx))%cfg.Slots) + 1
 				sm := machines[slot]
-				groupID := multiraft.GroupID(slot)
+				slotID := multiraft.SlotID(slot)
 
 				user := metadb.User{
 					UID:         fmt.Sprintf("snap-u-%d-%d", slot, rng.Intn(20)),
@@ -309,10 +309,10 @@ func TestFSMStressSnapshotRestoreUnderConcurrentApply(t *testing.T) {
 				}
 				slotMu[slot].Lock()
 				_, err := sm.Apply(ctx, multiraft.Command{
-					GroupID: groupID,
-					Index:   idx,
-					Term:    1,
-					Data:    EncodeUpsertUserCommand(user),
+					SlotID: slotID,
+					Index:  idx,
+					Term:   1,
+					Data:   EncodeUpsertUserCommand(user),
 				})
 				slotMu[slot].Unlock()
 				if err != nil {
@@ -459,15 +459,15 @@ func TestFSMStressMultiSlotIsolation(t *testing.T) {
 				}
 				slot := uint64((worker+int(idx))%cfg.Slots) + 1
 				sm := machines[slot]
-				groupID := multiraft.GroupID(slot)
+				slotID := multiraft.SlotID(slot)
 
 				// Use a UID that encodes the slot, so we can verify isolation.
 				uid := fmt.Sprintf("iso-s%d-w%d-%d", slot, worker, rng.Intn(20))
 				slotMu[slot].Lock()
 				_, err := sm.Apply(ctx, multiraft.Command{
-					GroupID: groupID,
-					Index:   idx,
-					Term:    1,
+					SlotID: slotID,
+					Index:  idx,
+					Term:   1,
 					Data: EncodeUpsertUserCommand(metadb.User{
 						UID:   uid,
 						Token: fmt.Sprintf("tok-%d", idx),
@@ -547,29 +547,28 @@ func TestFSMStressRaftIntegrationApply(t *testing.T) {
 	db := openTestDB(t)
 	rt := newStartedRuntime(t)
 
-	slots := make([]multiraft.GroupID, cfg.Slots)
+	slots := make([]multiraft.SlotID, cfg.Slots)
 	for i := 0; i < cfg.Slots; i++ {
-		groupID := multiraft.GroupID(100 + i)
-		slots[i] = groupID
-		if err := rt.BootstrapGroup(context.Background(), multiraft.BootstrapGroupRequest{
-			Group: multiraft.GroupOptions{
-				ID:           groupID,
+		slotID := multiraft.SlotID(100 + i)
+		slots[i] = slotID
+		if err := rt.BootstrapSlot(context.Background(), multiraft.BootstrapSlotRequest{
+			Slot: multiraft.SlotOptions{
+				ID:           slotID,
 				Storage:      raftstorage.NewMemory(),
-				StateMachine: mustNewStateMachine(t, db, uint64(groupID)),
+				StateMachine: mustNewStateMachine(t, db, uint64(slotID)),
 			},
 			Voters: []multiraft.NodeID{1},
 		}); err != nil {
-			t.Fatalf("BootstrapGroup(slot=%d): %v", groupID, err)
+			t.Fatalf("BootstrapSlot(slot=%d): %v", slotID, err)
 		}
 	}
 
-	// Wait for all groups to become leader.
-	for _, groupID := range slots {
-		gid := groupID
+	// Wait for all slots to become leader.
+	for _, slotID := range slots {
 		waitForCondition(t, func() bool {
-			st, err := rt.Status(gid)
+			st, err := rt.Status(slotID)
 			return err == nil && st.Role == multiraft.RoleLeader
-		}, "group become leader")
+		}, "slot become leader")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration)
@@ -591,31 +590,31 @@ func TestFSMStressRaftIntegrationApply(t *testing.T) {
 				if ctx.Err() != nil {
 					return
 				}
-				groupID := slots[(worker+idx)%len(slots)]
+				slotID := slots[(worker+idx)%len(slots)]
 
 				var data []byte
 				if rng.Intn(2) == 0 {
 					data = EncodeUpsertUserCommand(metadb.User{
-						UID:         fmt.Sprintf("raft-u-%d-%d", groupID, rng.Intn(16)),
+						UID:         fmt.Sprintf("raft-u-%d-%d", slotID, rng.Intn(16)),
 						Token:       fmt.Sprintf("tok-%d-%d", worker, idx),
 						DeviceFlag:  int64(rng.Intn(8)),
 						DeviceLevel: int64(rng.Intn(16)),
 					})
 				} else {
 					data = EncodeUpsertChannelCommand(metadb.Channel{
-						ChannelID:   fmt.Sprintf("raft-c-%d-%d", groupID, rng.Intn(8)),
+						ChannelID:   fmt.Sprintf("raft-c-%d-%d", slotID, rng.Intn(8)),
 						ChannelType: int64(rng.Intn(4) + 1),
 						Ban:         int64(rng.Intn(2)),
 					})
 				}
 
-				fut, err := rt.Propose(ctx, groupID, data)
+				fut, err := rt.Propose(ctx, slotID, data)
 				if err != nil {
 					if ctx.Err() != nil {
 						return
 					}
 					select {
-					case errCh <- fmt.Errorf("worker %d Propose(group=%d): %w", worker, groupID, err):
+					case errCh <- fmt.Errorf("worker %d Propose(slot=%d): %w", worker, slotID, err):
 					default:
 					}
 					cancel()
@@ -626,7 +625,7 @@ func TestFSMStressRaftIntegrationApply(t *testing.T) {
 						return
 					}
 					select {
-					case errCh <- fmt.Errorf("worker %d Wait(group=%d): %w", worker, groupID, err):
+					case errCh <- fmt.Errorf("worker %d Wait(slot=%d): %w", worker, slotID, err):
 					default:
 					}
 					cancel()
@@ -664,28 +663,28 @@ func TestFSMStressPebbleBackedRaftIntegration(t *testing.T) {
 	raftDB := openTestRaftDBAt(t, raftPath)
 	rt := newStartedRuntime(t)
 
-	slots := make([]multiraft.GroupID, cfg.Slots)
+	slots := make([]multiraft.SlotID, cfg.Slots)
 	for i := 0; i < cfg.Slots; i++ {
-		groupID := multiraft.GroupID(200 + i)
-		slots[i] = groupID
-		if err := rt.BootstrapGroup(context.Background(), multiraft.BootstrapGroupRequest{
-			Group: multiraft.GroupOptions{
-				ID:           groupID,
-				Storage:      raftDB.ForGroup(uint64(groupID)),
-				StateMachine: mustNewStateMachine(t, bizDB, uint64(groupID)),
+		slotID := multiraft.SlotID(200 + i)
+		slots[i] = slotID
+		if err := rt.BootstrapSlot(context.Background(), multiraft.BootstrapSlotRequest{
+			Slot: multiraft.SlotOptions{
+				ID:           slotID,
+				Storage:      raftDB.ForGroup(uint64(slotID)),
+				StateMachine: mustNewStateMachine(t, bizDB, uint64(slotID)),
 			},
 			Voters: []multiraft.NodeID{1},
 		}); err != nil {
-			t.Fatalf("BootstrapGroup(slot=%d): %v", groupID, err)
+			t.Fatalf("BootstrapSlot(slot=%d): %v", slotID, err)
 		}
 	}
 
-	for _, groupID := range slots {
-		gid := groupID
+	for _, slotID := range slots {
+		gid := slotID
 		waitForCondition(t, func() bool {
 			st, err := rt.Status(gid)
 			return err == nil && st.Role == multiraft.RoleLeader
-		}, "group become leader")
+		}, "slot become leader")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration)
@@ -707,22 +706,22 @@ func TestFSMStressPebbleBackedRaftIntegration(t *testing.T) {
 				if ctx.Err() != nil {
 					return
 				}
-				groupID := slots[(worker+idx)%len(slots)]
+				slotID := slots[(worker+idx)%len(slots)]
 
 				user := metadb.User{
-					UID:         fmt.Sprintf("pebble-u-%d-%d", groupID, rng.Intn(16)),
+					UID:         fmt.Sprintf("pebble-u-%d-%d", slotID, rng.Intn(16)),
 					Token:       fmt.Sprintf("tok-%d-%d", worker, idx),
 					DeviceFlag:  int64(rng.Intn(8)),
 					DeviceLevel: int64(rng.Intn(16)),
 				}
 
-				fut, err := rt.Propose(ctx, groupID, EncodeUpsertUserCommand(user))
+				fut, err := rt.Propose(ctx, slotID, EncodeUpsertUserCommand(user))
 				if err != nil {
 					if ctx.Err() != nil {
 						return
 					}
 					select {
-					case errCh <- fmt.Errorf("worker %d Propose(group=%d): %w", worker, groupID, err):
+					case errCh <- fmt.Errorf("worker %d Propose(slot=%d): %w", worker, slotID, err):
 					default:
 					}
 					cancel()
@@ -733,7 +732,7 @@ func TestFSMStressPebbleBackedRaftIntegration(t *testing.T) {
 						return
 					}
 					select {
-					case errCh <- fmt.Errorf("worker %d Wait(group=%d): %w", worker, groupID, err):
+					case errCh <- fmt.Errorf("worker %d Wait(slot=%d): %w", worker, slotID, err):
 					default:
 					}
 					cancel()
@@ -754,12 +753,12 @@ func TestFSMStressPebbleBackedRaftIntegration(t *testing.T) {
 
 	// Verify some data is actually persisted.
 	verifyCtx := context.Background()
-	for _, groupID := range slots {
-		slot := uint64(groupID)
+	for _, slotID := range slots {
+		slot := uint64(slotID)
 		shard := bizDB.ForSlot(slot)
 		found := 0
 		for i := 0; i < 16; i++ {
-			uid := fmt.Sprintf("pebble-u-%d-%d", groupID, i)
+			uid := fmt.Sprintf("pebble-u-%d-%d", slotID, i)
 			if _, err := shard.GetUser(verifyCtx, uid); err == nil {
 				found++
 			}

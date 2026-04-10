@@ -138,16 +138,16 @@ func stressRestartInterval(duration time.Duration) time.Duration {
 
 // TestStressSingleNodeThroughput hammers a single-node cluster with
 // concurrent CreateChannel + GetChannel from multiple goroutines across
-// multiple raft groups, measuring throughput and verifying data integrity.
+// multiple raft slots, measuring throughput and verifying data integrity.
 func TestStressSingleNodeThroughput(t *testing.T) {
 	cfg := loadStressConfig(t)
 	requireStressEnabled(t, cfg)
 
-	const groupCount = 4
-	n := startSingleNode(t, groupCount)
+	const slotCount = 4
+	n := startSingleNode(t, slotCount)
 	defer n.stop()
 
-	for g := 1; g <= groupCount; g++ {
+	for g := 1; g <= slotCount; g++ {
 		waitForLeader(t, n.cluster, uint64(g))
 	}
 
@@ -250,7 +250,7 @@ func TestStressSingleNodeThroughput(t *testing.T) {
 		title: "Single-Node Throughput",
 		config: []reportLine{
 			{"Nodes", "1"},
-			{"Raft Groups", fmt.Sprintf("%d", groupCount)},
+			{"Raft Slots", fmt.Sprintf("%d", slotCount)},
 			{"Workers", fmt.Sprintf("%d", cfg.Workers)},
 			{"Duration", elapsed.Round(time.Millisecond).String()},
 			{"Seed", fmt.Sprintf("%d", cfg.Seed)},
@@ -277,15 +277,15 @@ func TestStressThreeNodeMixedWorkload(t *testing.T) {
 	cfg := loadStressConfig(t)
 	requireStressEnabled(t, cfg)
 
-	const groupCount = 3
-	testNodes := startThreeNodes(t, groupCount)
+	const slotCount = 3
+	testNodes := startThreeNodes(t, slotCount)
 	defer func() {
 		for _, n := range testNodes {
 			n.stop()
 		}
 	}()
 
-	waitForAllStableLeaders(t, testNodes, groupCount)
+	waitForAllStableLeaders(t, testNodes, slotCount)
 
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration)
@@ -397,7 +397,7 @@ func TestStressThreeNodeMixedWorkload(t *testing.T) {
 		title: "3-Node Mixed Workload",
 		config: []reportLine{
 			{"Nodes", "3"},
-			{"Raft Groups", fmt.Sprintf("%d", groupCount)},
+			{"Raft Slots", fmt.Sprintf("%d", slotCount)},
 			{"Workers", fmt.Sprintf("%d", cfg.Workers)},
 			{"Duration", elapsed.Round(time.Millisecond).String()},
 			{"Seed", fmt.Sprintf("%d", cfg.Seed)},
@@ -424,15 +424,15 @@ func TestStressThreeNodeMixedWorkloadWithRestarts(t *testing.T) {
 	cfg := loadStressConfig(t)
 	requireStressEnabled(t, cfg)
 
-	const groupCount = 3
-	testNodes := startThreeNodes(t, groupCount)
+	const slotCount = 3
+	testNodes := startThreeNodes(t, slotCount)
 	defer func() {
 		for _, n := range testNodes {
 			n.stop()
 		}
 	}()
 
-	waitForAllStableLeaders(t, testNodes, groupCount)
+	waitForAllStableLeaders(t, testNodes, slotCount)
 
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration)
@@ -518,13 +518,13 @@ restartLoop:
 		case <-ctx.Done():
 			break restartLoop
 		case <-restartTimer.C:
-			groupID := uint64(restarts.Load()%groupCount + 1)
-			leaderID, err := stableLeaderWithin(testNodes, groupID, 10*time.Second)
+			slotID := uint64(restarts.Load()%slotCount + 1)
+			leaderID, err := stableLeaderWithin(testNodes, slotID, 10*time.Second)
 			if err != nil {
-				t.Fatalf("stable leader for group %d before restart: %v", groupID, err)
+				t.Fatalf("stable leader for slot %d before restart: %v", slotID, err)
 			}
 			restartNode(t, testNodes, int(leaderID-1))
-			waitForStableLeader(t, testNodes, groupID)
+			waitForStableLeader(t, testNodes, slotID)
 			restarts.Add(1)
 			restartTimer.Reset(restartEvery)
 		}
@@ -565,7 +565,7 @@ restartLoop:
 		title: "3-Node Mixed Workload With Restarts",
 		config: []reportLine{
 			{"Nodes", "3"},
-			{"Raft Groups", fmt.Sprintf("%d", groupCount)},
+			{"Raft Slots", fmt.Sprintf("%d", slotCount)},
 			{"Workers", fmt.Sprintf("%d", cfg.Workers)},
 			{"Duration", elapsed.Round(time.Millisecond).String()},
 			{"Seed", fmt.Sprintf("%d", cfg.Seed)},
@@ -597,15 +597,15 @@ func TestStressForwardingContention(t *testing.T) {
 	cfg := loadStressConfig(t)
 	requireStressEnabled(t, cfg)
 
-	const groupCount = 2
-	testNodes := startThreeNodes(t, groupCount)
+	const slotCount = 2
+	testNodes := startThreeNodes(t, slotCount)
 	defer func() {
 		for _, n := range testNodes {
 			n.stop()
 		}
 	}()
 
-	leaders := waitForAllStableLeaders(t, testNodes, groupCount)
+	leaders := waitForAllStableLeaders(t, testNodes, slotCount)
 
 	var followers []*testNode
 	for _, n := range testNodes {
@@ -682,7 +682,7 @@ func TestStressForwardingContention(t *testing.T) {
 		title: "Forwarding Contention",
 		config: []reportLine{
 			{"Nodes", "3"},
-			{"Raft Groups", fmt.Sprintf("%d", groupCount)},
+			{"Raft Slots", fmt.Sprintf("%d", slotCount)},
 			{"Workers", fmt.Sprintf("%d", cfg.Workers)},
 			{"Duration", elapsed.Round(time.Millisecond).String()},
 			{"Seed", fmt.Sprintf("%d", cfg.Seed)},
@@ -704,8 +704,8 @@ func TestStressForwardingContentionWithLeaderRestarts(t *testing.T) {
 	cfg := loadStressConfig(t)
 	requireStressEnabled(t, cfg)
 
-	const groupCount = 1
-	testNodes := startThreeNodes(t, groupCount)
+	const slotCount = 1
+	testNodes := startThreeNodes(t, slotCount)
 	defer func() {
 		for _, n := range testNodes {
 			n.stop()
@@ -826,7 +826,7 @@ restartLoopForward:
 		title: "Forwarding Contention With Restarts",
 		config: []reportLine{
 			{"Nodes", "3"},
-			{"Raft Groups", fmt.Sprintf("%d", groupCount)},
+			{"Raft Slots", fmt.Sprintf("%d", slotCount)},
 			{"Workers", fmt.Sprintf("%d", cfg.Workers)},
 			{"Duration", elapsed.Round(time.Millisecond).String()},
 			{"Seed", fmt.Sprintf("%d", cfg.Seed)},
@@ -855,11 +855,11 @@ func TestStressConcurrentCreateReadVerify(t *testing.T) {
 	cfg := loadStressConfig(t)
 	requireStressEnabled(t, cfg)
 
-	const groupCount = 4
-	n := startSingleNode(t, groupCount)
+	const slotCount = 4
+	n := startSingleNode(t, slotCount)
 	defer n.stop()
 
-	for g := 1; g <= groupCount; g++ {
+	for g := 1; g <= slotCount; g++ {
 		waitForLeader(t, n.cluster, uint64(g))
 	}
 
@@ -960,7 +960,7 @@ func TestStressConcurrentCreateReadVerify(t *testing.T) {
 		title: "Concurrent Create + Read Verify",
 		config: []reportLine{
 			{"Nodes", "1"},
-			{"Raft Groups", fmt.Sprintf("%d", groupCount)},
+			{"Raft Slots", fmt.Sprintf("%d", slotCount)},
 			{"Workers", fmt.Sprintf("%d", cfg.Workers)},
 			{"Duration", elapsed.Round(time.Millisecond).String()},
 			{"Seed", fmt.Sprintf("%d", cfg.Seed)},

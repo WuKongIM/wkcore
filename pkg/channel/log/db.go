@@ -59,9 +59,9 @@ func (db *DB) ForChannel(key ChannelKey) *Store {
 		return store
 	}
 	store := &Store{
-		db:       db,
-		key:      key,
-		groupKey: channelGroupKey(key),
+		db:         db,
+		key:        key,
+		channelKey: isrChannelKeyForChannel(key),
 	}
 	db.stores[key] = store
 	return store

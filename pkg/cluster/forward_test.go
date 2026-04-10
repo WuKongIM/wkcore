@@ -13,11 +13,11 @@ func TestForwardToLeader_RoundTrip(t *testing.T) {
 	srv := transport.NewServer()
 	mux := transport.NewRPCMux()
 	mux.Handle(rpcServiceForward, func(ctx context.Context, body []byte) ([]byte, error) {
-		groupID, cmd, err := decodeForwardPayload(body)
+		slotID, cmd, err := decodeForwardPayload(body)
 		if err != nil {
 			return nil, err
 		}
-		_ = groupID
+		_ = slotID
 		return encodeForwardResp(errCodeOK, cmd), nil
 	})
 	srv.HandleRPCMux(mux)

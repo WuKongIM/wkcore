@@ -9,7 +9,7 @@ import (
 
 func TestFetchRequestCodecRoundTrip(t *testing.T) {
 	req := isrnode.FetchRequestEnvelope{
-		GroupKey:    isr.GroupKey("g1"),
+		ChannelKey:  isr.ChannelKey("g1"),
 		Epoch:       3,
 		Generation:  7,
 		ReplicaID:   2,
@@ -34,7 +34,7 @@ func TestFetchRequestCodecRoundTrip(t *testing.T) {
 func TestFetchResponseCodecRoundTrip(t *testing.T) {
 	truncateTo := uint64(9)
 	resp := isrnode.FetchResponseEnvelope{
-		GroupKey:   isr.GroupKey("g1"),
+		ChannelKey: isr.ChannelKey("g1"),
 		Epoch:      3,
 		Generation: 7,
 		TruncateTo: &truncateTo,
@@ -53,7 +53,7 @@ func TestFetchResponseCodecRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeFetchResponse() error = %v", err)
 	}
-	if got.GroupKey != resp.GroupKey || got.Epoch != resp.Epoch || got.Generation != resp.Generation || got.LeaderHW != resp.LeaderHW {
+	if got.ChannelKey != resp.ChannelKey || got.Epoch != resp.Epoch || got.Generation != resp.Generation || got.LeaderHW != resp.LeaderHW {
 		t.Fatalf("response metadata = %+v, want %+v", got, resp)
 	}
 	if got.TruncateTo == nil || *got.TruncateTo != truncateTo {
@@ -70,7 +70,7 @@ func TestFetchBatchRequestCodecRoundTrip(t *testing.T) {
 			{
 				RequestID: 11,
 				Request: isrnode.FetchRequestEnvelope{
-					GroupKey:    isr.GroupKey("g1"),
+					ChannelKey:  isr.ChannelKey("g1"),
 					Epoch:       3,
 					Generation:  7,
 					ReplicaID:   2,
@@ -82,7 +82,7 @@ func TestFetchBatchRequestCodecRoundTrip(t *testing.T) {
 			{
 				RequestID: 12,
 				Request: isrnode.FetchRequestEnvelope{
-					GroupKey:    isr.GroupKey("g2"),
+					ChannelKey:  isr.ChannelKey("g2"),
 					Epoch:       4,
 					Generation:  8,
 					ReplicaID:   3,
@@ -119,7 +119,7 @@ func TestFetchBatchResponseCodecRoundTrip(t *testing.T) {
 			{
 				RequestID: 11,
 				Response: &isrnode.FetchResponseEnvelope{
-					GroupKey:   isr.GroupKey("g1"),
+					ChannelKey: isr.ChannelKey("g1"),
 					Epoch:      3,
 					Generation: 7,
 					TruncateTo: &truncateTo,
@@ -151,7 +151,7 @@ func TestFetchBatchResponseCodecRoundTrip(t *testing.T) {
 	if got.Items[0].RequestID != 11 || got.Items[0].Response == nil {
 		t.Fatalf("first item = %+v", got.Items[0])
 	}
-	if got.Items[0].Response.GroupKey != isr.GroupKey("g1") || got.Items[0].Response.LeaderHW != 12 {
+	if got.Items[0].Response.ChannelKey != isr.ChannelKey("g1") || got.Items[0].Response.LeaderHW != 12 {
 		t.Fatalf("first response = %+v", got.Items[0].Response)
 	}
 	if got.Items[0].Response.TruncateTo == nil || *got.Items[0].Response.TruncateTo != truncateTo {
@@ -167,7 +167,7 @@ func TestFetchBatchResponseCodecRoundTrip(t *testing.T) {
 
 func TestProgressAckCodecRoundTrip(t *testing.T) {
 	ack := isrnode.ProgressAckEnvelope{
-		GroupKey:    isr.GroupKey("g1"),
+		ChannelKey:  isr.ChannelKey("g1"),
 		Epoch:       3,
 		Generation:  7,
 		ReplicaID:   2,

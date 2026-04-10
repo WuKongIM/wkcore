@@ -60,15 +60,15 @@ type ClusterNode struct {
 	CapacityWeight  int
 }
 
-type GroupAssignment struct {
-	GroupID        uint32
+type SlotAssignment struct {
+	SlotID         uint32
 	DesiredPeers   []uint64
 	ConfigEpoch    uint64
 	BalanceVersion uint64
 }
 
-type GroupRuntimeView struct {
-	GroupID             uint32
+type SlotRuntimeView struct {
+	SlotID              uint32
 	CurrentPeers        []uint64
 	LeaderID            uint64
 	HealthyVoters       uint32
@@ -82,7 +82,7 @@ type ControllerMembership struct {
 }
 
 type ReconcileTask struct {
-	GroupID    uint32
+	SlotID     uint32
 	Kind       TaskKind
 	Step       TaskStep
 	SourceNode uint64

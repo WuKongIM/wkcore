@@ -80,7 +80,7 @@ func TestChannelMetaSyncRefreshUpdatesExistingGroupBeforeChannelLog(t *testing.T
 		},
 	}
 	runtime := newFakeChannelRuntime(&calls)
-	runtime.groups[channellog.GroupKeyForChannel(channellog.ChannelKey{ChannelID: "u2", ChannelType: 1})] = struct{}{}
+	runtime.groups[channellog.ISRChannelKeyForChannel(channellog.ChannelKey{ChannelID: "u2", ChannelType: 1})] = struct{}{}
 	cluster := newFakeChannelMetaCluster(&calls)
 	syncer := &channelMetaSync{
 		source:    source,
@@ -100,10 +100,10 @@ func TestChannelMetaSyncRefreshUpdatesExistingGroupBeforeChannelLog(t *testing.T
 	require.Equal(t, uint64(9), runtime.applied[0].Epoch)
 }
 
-func TestProjectISRGroupMetaKeepsZeroLeaseUnset(t *testing.T) {
+func TestProjectISRChannelMetaKeepsZeroLeaseUnset(t *testing.T) {
 	key := channellog.ChannelKey{ChannelID: "u0", ChannelType: 1}
 
-	meta := projectISRGroupMeta(key, metadb.ChannelRuntimeMeta{
+	meta := projectISRChannelMeta(key, metadb.ChannelRuntimeMeta{
 		ChannelID:   key.ChannelID,
 		ChannelType: int64(key.ChannelType),
 		LeaderEpoch: 3,
@@ -199,7 +199,7 @@ func TestChannelMetaSyncRefreshRejectsNonLocalReplicaMeta(t *testing.T) {
 func TestChannelMetaSyncSyncOnceRemovesGroupsAndMetaNoLongerAssignedLocally(t *testing.T) {
 	var calls []string
 	key := channellog.ChannelKey{ChannelID: "local", ChannelType: 1}
-	groupKey := channellog.GroupKeyForChannel(key)
+	channelKey := channellog.ISRChannelKeyForChannel(key)
 	source := &fakeChannelMetaSource{
 		list: []metadb.ChannelRuntimeMeta{
 			{
@@ -217,7 +217,7 @@ func TestChannelMetaSyncSyncOnceRemovesGroupsAndMetaNoLongerAssignedLocally(t *t
 		},
 	}
 	runtime := newFakeChannelRuntime(&calls)
-	runtime.groups[groupKey] = struct{}{}
+	runtime.groups[channelKey] = struct{}{}
 	cluster := newFakeChannelMetaCluster(&calls)
 	syncer := &channelMetaSync{
 		source:    source,
@@ -231,17 +231,17 @@ func TestChannelMetaSyncSyncOnceRemovesGroupsAndMetaNoLongerAssignedLocally(t *t
 
 	require.NoError(t, syncer.syncOnce(context.Background()))
 	require.Equal(t, []string{"runtime.remove", "cluster.remove"}, calls)
-	require.Equal(t, []isr.GroupKey{groupKey}, runtime.removed)
+	require.Equal(t, []isr.ChannelKey{channelKey}, runtime.removed)
 	require.Equal(t, []channellog.ChannelKey{key}, cluster.removed)
 }
 
 func TestChannelMetaSyncStopRemovesAppliedLocalGroups(t *testing.T) {
 	var calls []string
 	key := channellog.ChannelKey{ChannelID: "local", ChannelType: 1}
-	groupKey := channellog.GroupKeyForChannel(key)
+	channelKey := channellog.ISRChannelKeyForChannel(key)
 
 	runtime := newFakeChannelRuntime(&calls)
-	runtime.groups[groupKey] = struct{}{}
+	runtime.groups[channelKey] = struct{}{}
 	cluster := newFakeChannelMetaCluster(&calls)
 	done := make(chan struct{})
 	syncer := &channelMetaSync{
@@ -259,7 +259,7 @@ func TestChannelMetaSyncStopRemovesAppliedLocalGroups(t *testing.T) {
 
 	require.NoError(t, syncer.Stop())
 	require.Equal(t, []string{"runtime.remove", "cluster.remove"}, calls)
-	require.Equal(t, []isr.GroupKey{groupKey}, runtime.removed)
+	require.Equal(t, []isr.ChannelKey{channelKey}, runtime.removed)
 	require.Equal(t, []channellog.ChannelKey{key}, cluster.removed)
 	require.Nil(t, syncer.snapshotAppliedLocal())
 }
@@ -304,7 +304,7 @@ func TestChannelMetaSyncStopRemovesRuntimeGroupLeftByClusterApplyFailure(t *test
 
 	require.NoError(t, syncer.Stop())
 	require.Equal(t, []string{"runtime.ensure", "cluster.apply", "runtime.remove", "cluster.remove"}, calls)
-	require.Equal(t, []isr.GroupKey{channellog.GroupKeyForChannel(key)}, runtime.removed)
+	require.Equal(t, []isr.ChannelKey{channellog.ISRChannelKeyForChannel(key)}, runtime.removed)
 	require.Equal(t, []channellog.ChannelKey{key}, cluster.removed)
 }
 
@@ -341,7 +341,7 @@ func TestChannelMetaSyncRefreshRollsBackNewRuntimeGroupWhenClusterApplyFails(t *
 	_, err := syncer.RefreshChannelMeta(context.Background(), key)
 	require.ErrorIs(t, err, channellog.ErrConflictingMeta)
 	require.Equal(t, []string{"runtime.ensure", "cluster.apply", "runtime.remove", "cluster.remove"}, calls)
-	require.Equal(t, []isr.GroupKey{channellog.GroupKeyForChannel(key)}, runtime.removed)
+	require.Equal(t, []isr.ChannelKey{channellog.ISRChannelKeyForChannel(key)}, runtime.removed)
 	require.Equal(t, []channellog.ChannelKey{key}, cluster.removed)
 	require.Nil(t, syncer.snapshotAppliedLocal())
 }
@@ -349,7 +349,7 @@ func TestChannelMetaSyncRefreshRollsBackNewRuntimeGroupWhenClusterApplyFails(t *
 func TestChannelMetaSyncStartCleansAppliedLocalStateWhenInitialSyncFails(t *testing.T) {
 	var calls []string
 	key := channellog.ChannelKey{ChannelID: "local", ChannelType: 1}
-	groupKey := channellog.GroupKeyForChannel(key)
+	channelKey := channellog.ISRChannelKeyForChannel(key)
 
 	source := &fakeChannelMetaSource{
 		list: []metadb.ChannelRuntimeMeta{
@@ -380,7 +380,7 @@ func TestChannelMetaSyncStartCleansAppliedLocalStateWhenInitialSyncFails(t *test
 	err := syncer.Start()
 	require.ErrorIs(t, err, channellog.ErrConflictingMeta)
 	require.Equal(t, []string{"runtime.ensure", "cluster.apply", "runtime.remove", "cluster.remove"}, calls)
-	require.Equal(t, []isr.GroupKey{groupKey}, runtime.removed)
+	require.Equal(t, []isr.ChannelKey{channelKey}, runtime.removed)
 	require.Equal(t, []channellog.ChannelKey{key}, cluster.removed)
 	require.Nil(t, syncer.snapshotAppliedLocal())
 }
@@ -388,8 +388,8 @@ func TestChannelMetaSyncStartCleansAppliedLocalStateWhenInitialSyncFails(t *test
 func TestChannelMetaSyncRefreshRollsBackExistingRuntimeGroupWhenClusterApplyFails(t *testing.T) {
 	var calls []string
 	key := channellog.ChannelKey{ChannelID: "local", ChannelType: 1}
-	groupKey := channellog.GroupKeyForChannel(key)
-	previous := projectISRGroupMeta(key, metadb.ChannelRuntimeMeta{
+	channelKey := channellog.ISRChannelKeyForChannel(key)
+	previous := projectISRChannelMeta(key, metadb.ChannelRuntimeMeta{
 		ChannelID:    key.ChannelID,
 		ChannelType:  int64(key.ChannelType),
 		ChannelEpoch: 1,
@@ -418,8 +418,8 @@ func TestChannelMetaSyncRefreshRollsBackExistingRuntimeGroupWhenClusterApplyFail
 		},
 	}
 	runtime := newFakeChannelRuntime(&calls)
-	runtime.groups[groupKey] = struct{}{}
-	runtime.current[groupKey] = previous
+	runtime.groups[channelKey] = struct{}{}
+	runtime.current[channelKey] = previous
 	cluster := newFakeChannelMetaCluster(&calls)
 	cluster.applyErr = channellog.ErrConflictingMeta
 	syncer := &channelMetaSync{
@@ -435,7 +435,7 @@ func TestChannelMetaSyncRefreshRollsBackExistingRuntimeGroupWhenClusterApplyFail
 	_, err := syncer.RefreshChannelMeta(context.Background(), key)
 	require.ErrorIs(t, err, channellog.ErrConflictingMeta)
 	require.Equal(t, []string{"runtime.apply", "cluster.apply", "runtime.apply"}, calls)
-	require.Equal(t, previous, runtime.current[groupKey])
+	require.Equal(t, previous, runtime.current[channelKey])
 	require.Equal(t, map[channellog.ChannelKey]struct{}{key: {}}, syncer.snapshotAppliedLocal())
 }
 
@@ -488,83 +488,83 @@ func (f *fakeChannelMetaSource) ListChannelRuntimeMeta(context.Context) ([]metad
 }
 
 type fakeChannelRuntime struct {
-	groups    map[isr.GroupKey]struct{}
-	current   map[isr.GroupKey]isr.GroupMeta
-	ensured   []isr.GroupMeta
-	applied   []isr.GroupMeta
-	removed   []isr.GroupKey
+	groups    map[isr.ChannelKey]struct{}
+	current   map[isr.ChannelKey]isr.ChannelMeta
+	ensured   []isr.ChannelMeta
+	applied   []isr.ChannelMeta
+	removed   []isr.ChannelKey
 	removeErr error
 	callSink  *[]string
 }
 
 func newFakeChannelRuntime(callSink *[]string) *fakeChannelRuntime {
 	return &fakeChannelRuntime{
-		groups:   make(map[isr.GroupKey]struct{}),
-		current:  make(map[isr.GroupKey]isr.GroupMeta),
+		groups:   make(map[isr.ChannelKey]struct{}),
+		current:  make(map[isr.ChannelKey]isr.ChannelMeta),
 		callSink: callSink,
 	}
 }
 
-func (f *fakeChannelRuntime) EnsureGroup(meta isr.GroupMeta) error {
+func (f *fakeChannelRuntime) EnsureChannel(meta isr.ChannelMeta) error {
 	if f.callSink != nil {
 		*f.callSink = append(*f.callSink, "runtime.ensure")
 	}
-	f.groups[meta.GroupKey] = struct{}{}
-	f.current[meta.GroupKey] = meta
+	f.groups[meta.ChannelKey] = struct{}{}
+	f.current[meta.ChannelKey] = meta
 	f.ensured = append(f.ensured, meta)
 	return nil
 }
 
-func (f *fakeChannelRuntime) RemoveGroup(groupKey isr.GroupKey) error {
+func (f *fakeChannelRuntime) RemoveChannel(channelKey isr.ChannelKey) error {
 	if f.callSink != nil {
 		*f.callSink = append(*f.callSink, "runtime.remove")
 	}
 	if f.removeErr != nil {
 		return f.removeErr
 	}
-	f.removed = append(f.removed, groupKey)
-	delete(f.groups, groupKey)
-	delete(f.current, groupKey)
+	f.removed = append(f.removed, channelKey)
+	delete(f.groups, channelKey)
+	delete(f.current, channelKey)
 	return nil
 }
 
-func (f *fakeChannelRuntime) ApplyMeta(meta isr.GroupMeta) error {
+func (f *fakeChannelRuntime) ApplyMeta(meta isr.ChannelMeta) error {
 	if f.callSink != nil {
 		*f.callSink = append(*f.callSink, "runtime.apply")
 	}
-	f.current[meta.GroupKey] = meta
+	f.current[meta.ChannelKey] = meta
 	f.applied = append(f.applied, meta)
 	return nil
 }
 
-func (f *fakeChannelRuntime) Group(groupKey isr.GroupKey) (isrnode.GroupHandle, bool) {
-	if _, ok := f.groups[groupKey]; !ok {
+func (f *fakeChannelRuntime) Channel(channelKey isr.ChannelKey) (isrnode.ChannelHandle, bool) {
+	if _, ok := f.groups[channelKey]; !ok {
 		return nil, false
 	}
-	return fakeRuntimeGroupHandle{meta: f.current[groupKey]}, true
+	return fakeRuntimeChannelHandle{meta: f.current[channelKey]}, true
 }
 
 func (f *fakeChannelRuntime) ServeFetch(context.Context, isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
 	return isrnode.FetchResponseEnvelope{}, nil
 }
 
-type fakeRuntimeGroupHandle struct {
-	meta isr.GroupMeta
+type fakeRuntimeChannelHandle struct {
+	meta isr.ChannelMeta
 }
 
-func (fakeRuntimeGroupHandle) ID() isr.GroupKey {
+func (fakeRuntimeChannelHandle) ID() isr.ChannelKey {
 	return ""
 }
 
-func (fakeRuntimeGroupHandle) Status() isr.ReplicaState {
+func (fakeRuntimeChannelHandle) Status() isr.ReplicaState {
 	return isr.ReplicaState{}
 }
 
-func (f fakeRuntimeGroupHandle) Meta() isr.GroupMeta {
+func (f fakeRuntimeChannelHandle) Meta() isr.ChannelMeta {
 	return f.meta
 }
 
-func (fakeRuntimeGroupHandle) Append(context.Context, []isr.Record) (isr.CommitResult, error) {
+func (fakeRuntimeChannelHandle) Append(context.Context, []isr.Record) (isr.CommitResult, error) {
 	return isr.CommitResult{}, nil
 }
 

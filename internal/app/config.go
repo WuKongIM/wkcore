@@ -35,11 +35,11 @@ type StorageConfig struct {
 
 type ClusterConfig struct {
 	ListenAddr                string
-	GroupCount                uint32
+	SlotCount                 uint32
 	Nodes                     []NodeConfigRef
-	Groups                    []GroupConfig
+	Slots                     []SlotConfig
 	ControllerReplicaN        int
-	GroupReplicaN             int
+	SlotReplicaN              int
 	ForwardTimeout            time.Duration
 	PoolSize                  int
 	DataPlanePoolSize         int
@@ -58,7 +58,7 @@ type NodeConfigRef struct {
 	Addr string
 }
 
-type GroupConfig struct {
+type SlotConfig struct {
 	ID    uint32
 	Peers []uint64
 }
@@ -122,12 +122,12 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	if c.Gateway.TokenAuthOn {
 		return fmt.Errorf("%w: gateway token auth requires verifier hooks", ErrInvalidConfig)
 	}
-	if len(c.Cluster.Groups) > 0 {
-		return fmt.Errorf("%w: Cluster.Groups is no longer supported; remove static group peers and keep Cluster.GroupCount only", ErrInvalidConfig)
+	if len(c.Cluster.Slots) > 0 {
+		return fmt.Errorf("%w: Cluster.Slots is no longer supported; remove static slot peers and keep Cluster.SlotCount only", ErrInvalidConfig)
 	}
 
-	if c.Cluster.GroupCount == 0 {
-		return fmt.Errorf("%w: cluster group count must be set", ErrInvalidConfig)
+	if c.Cluster.SlotCount == 0 {
+		return fmt.Errorf("%w: cluster slot count must be set", ErrInvalidConfig)
 	}
 	if c.Cluster.ControllerReplicaN == 0 {
 		c.Cluster.ControllerReplicaN = len(c.Cluster.Nodes)
@@ -138,14 +138,14 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	if c.Cluster.ControllerReplicaN > len(c.Cluster.Nodes) {
 		return fmt.Errorf("%w: controller replica count %d exceeds cluster nodes %d", ErrInvalidConfig, c.Cluster.ControllerReplicaN, len(c.Cluster.Nodes))
 	}
-	if c.Cluster.GroupReplicaN == 0 {
-		c.Cluster.GroupReplicaN = len(c.Cluster.Nodes)
+	if c.Cluster.SlotReplicaN == 0 {
+		c.Cluster.SlotReplicaN = len(c.Cluster.Nodes)
 	}
-	if c.Cluster.GroupReplicaN <= 0 {
-		return fmt.Errorf("%w: group replica count must be positive", ErrInvalidConfig)
+	if c.Cluster.SlotReplicaN <= 0 {
+		return fmt.Errorf("%w: slot replica count must be positive", ErrInvalidConfig)
 	}
-	if c.Cluster.GroupReplicaN > len(c.Cluster.Nodes) {
-		return fmt.Errorf("%w: group replica count %d exceeds cluster nodes %d", ErrInvalidConfig, c.Cluster.GroupReplicaN, len(c.Cluster.Nodes))
+	if c.Cluster.SlotReplicaN > len(c.Cluster.Nodes) {
+		return fmt.Errorf("%w: slot replica count %d exceeds cluster nodes %d", ErrInvalidConfig, c.Cluster.SlotReplicaN, len(c.Cluster.Nodes))
 	}
 
 	if c.Storage.DBPath == "" {

@@ -20,20 +20,20 @@ func TestCommitCoordinatorBatchesMultipleGroupsIntoSinglePebbleSync(t *testing.T
 
 	errCh := make(chan error, 2)
 	start := make(chan struct{})
-	for i, groupKey := range []isr.GroupKey{"group-1", "group-2"} {
-		go func(groupKey isr.GroupKey, index int) {
+	for i, channelKey := range []isr.ChannelKey{"group-1", "group-2"} {
+		go func(channelKey isr.ChannelKey, index int) {
 			<-start
 			errCh <- coordinator.submit(commitRequest{
-				groupKey: groupKey,
+				channelKey: channelKey,
 				build: func(batch *pebble.Batch) error {
 					return batch.Set(
-						encodeCheckpointKey(groupKey),
+						encodeCheckpointKey(channelKey),
 						encodeCheckpoint(isr.Checkpoint{Epoch: uint64(index + 1), HW: uint64(index + 1)}),
 						pebble.NoSync,
 					)
 				},
 			})
-		}(groupKey, i)
+		}(channelKey, i)
 	}
 	close(start)
 
@@ -60,7 +60,7 @@ func TestCommitCoordinatorDoesNotPublishBeforeSyncCompletes(t *testing.T) {
 	fs.enableNextSyncBlock()
 	go func() {
 		done <- coordinator.submit(commitRequest{
-			groupKey: "group-1",
+			channelKey: "group-1",
 			build: func(batch *pebble.Batch) error {
 				return batch.Set(
 					encodeCheckpointKey("group-1"),
@@ -113,14 +113,14 @@ func TestCommitCoordinatorFanoutsBatchFailureToAllWaiters(t *testing.T) {
 	var publishMu sync.Mutex
 	errCh := make(chan error, 2)
 	start := make(chan struct{})
-	for _, groupKey := range []isr.GroupKey{"group-1", "group-2"} {
-		go func(groupKey isr.GroupKey) {
+	for _, channelKey := range []isr.ChannelKey{"group-1", "group-2"} {
+		go func(channelKey isr.ChannelKey) {
 			<-start
 			errCh <- coordinator.submit(commitRequest{
-				groupKey: groupKey,
+				channelKey: channelKey,
 				build: func(batch *pebble.Batch) error {
 					return batch.Set(
-						encodeCheckpointKey(groupKey),
+						encodeCheckpointKey(channelKey),
 						encodeCheckpoint(isr.Checkpoint{Epoch: 3, HW: 1}),
 						pebble.NoSync,
 					)
@@ -132,7 +132,7 @@ func TestCommitCoordinatorFanoutsBatchFailureToAllWaiters(t *testing.T) {
 					return nil
 				},
 			})
-		}(groupKey)
+		}(channelKey)
 	}
 	close(start)
 

@@ -21,7 +21,7 @@ const (
 
 type runtimeMetaRPCRequest struct {
 	Op          string                   `json:"op"`
-	GroupID     uint64                   `json:"group_id"`
+	SlotID      uint64                   `json:"slot_id"`
 	ChannelID   string                   `json:"channel_id,omitempty"`
 	ChannelType int64                    `json:"channel_type,omitempty"`
 	Keys        []metadb.ConversationKey `json:"keys,omitempty"`
@@ -42,14 +42,14 @@ func (r runtimeMetaRPCResponse) rpcLeaderID() uint64 {
 	return r.LeaderID
 }
 
-func (s *Store) getChannelRuntimeMetaAuthoritative(ctx context.Context, groupID multiraft.GroupID, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error) {
-	if s.shouldServeGroupLocally(groupID) {
-		return s.db.ForSlot(uint64(groupID)).GetChannelRuntimeMeta(ctx, channelID, channelType)
+func (s *Store) getChannelRuntimeMetaAuthoritative(ctx context.Context, slotID multiraft.SlotID, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error) {
+	if s.shouldServeSlotLocally(slotID) {
+		return s.db.ForSlot(uint64(slotID)).GetChannelRuntimeMeta(ctx, channelID, channelType)
 	}
 
-	resp, err := s.callRuntimeMetaRPC(ctx, groupID, runtimeMetaRPCRequest{
+	resp, err := s.callRuntimeMetaRPC(ctx, slotID, runtimeMetaRPCRequest{
 		Op:          runtimeMetaRPCGet,
-		GroupID:     uint64(groupID),
+		SlotID:      uint64(slotID),
 		ChannelID:   channelID,
 		ChannelType: channelType,
 	})
@@ -62,27 +62,27 @@ func (s *Store) getChannelRuntimeMetaAuthoritative(ctx context.Context, groupID 
 	return *resp.Meta, nil
 }
 
-func (s *Store) listChannelRuntimeMetaAuthoritative(ctx context.Context, groupID multiraft.GroupID) ([]metadb.ChannelRuntimeMeta, error) {
+func (s *Store) listChannelRuntimeMetaAuthoritative(ctx context.Context, slotID multiraft.SlotID) ([]metadb.ChannelRuntimeMeta, error) {
 	if s.cluster == nil {
 		return s.db.ListChannelRuntimeMeta(ctx)
 	}
-	if s.shouldServeGroupLocally(groupID) {
+	if s.shouldServeSlotLocally(slotID) {
 		metas, err := s.db.ListChannelRuntimeMeta(ctx)
 		if err != nil {
 			return nil, err
 		}
-		return filterChannelRuntimeMetaByGroup(s.cluster, groupID, metas), nil
+		return filterChannelRuntimeMetaBySlot(s.cluster, slotID, metas), nil
 	}
 
-	resp, err := s.callRuntimeMetaRPC(ctx, groupID, runtimeMetaRPCRequest{
-		Op:      runtimeMetaRPCList,
-		GroupID: uint64(groupID),
+	resp, err := s.callRuntimeMetaRPC(ctx, slotID, runtimeMetaRPCRequest{
+		Op:     runtimeMetaRPCList,
+		SlotID: uint64(slotID),
 	})
 	if err != nil {
-		// Managed groups are opened lazily. If a slot has not been bootstrapped
+		// Managed slots are opened lazily. If a slot has not been bootstrapped
 		// yet, treat it as currently having no runtime metadata and let the next
-		// refresh pick it up once the controller brings the group online.
-		if errors.Is(err, raftcluster.ErrGroupNotFound) {
+		// refresh pick it up once the controller brings the slot online.
+		if errors.Is(err, raftcluster.ErrSlotNotFound) {
 			return nil, nil
 		}
 		return nil, err
@@ -95,15 +95,15 @@ func (s *Store) BatchGetChannelRuntimeMetas(ctx context.Context, keys []metadb.C
 		return map[metadb.ConversationKey]metadb.ChannelRuntimeMeta{}, nil
 	}
 
-	grouped := make(map[multiraft.GroupID][]metadb.ConversationKey, len(keys))
+	grouped := make(map[multiraft.SlotID][]metadb.ConversationKey, len(keys))
 	for _, key := range keys {
-		groupID := s.cluster.SlotForKey(key.ChannelID)
-		grouped[groupID] = append(grouped[groupID], key)
+		slotID := s.cluster.SlotForKey(key.ChannelID)
+		grouped[slotID] = append(grouped[slotID], key)
 	}
 
 	out := make(map[metadb.ConversationKey]metadb.ChannelRuntimeMeta, len(keys))
-	for groupID, groupKeys := range grouped {
-		metasByKey, err := s.batchGetChannelRuntimeMetaAuthoritative(ctx, groupID, groupKeys)
+	for slotID, groupKeys := range grouped {
+		metasByKey, err := s.batchGetChannelRuntimeMetaAuthoritative(ctx, slotID, groupKeys)
 		if err != nil {
 			return nil, err
 		}
@@ -114,12 +114,12 @@ func (s *Store) BatchGetChannelRuntimeMetas(ctx context.Context, keys []metadb.C
 	return out, nil
 }
 
-func (s *Store) callRuntimeMetaRPC(ctx context.Context, groupID multiraft.GroupID, req runtimeMetaRPCRequest) (runtimeMetaRPCResponse, error) {
+func (s *Store) callRuntimeMetaRPC(ctx context.Context, slotID multiraft.SlotID, req runtimeMetaRPCRequest) (runtimeMetaRPCResponse, error) {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return runtimeMetaRPCResponse{}, err
 	}
-	return callAuthoritativeRPC(ctx, s, groupID, runtimeMetaRPCServiceID, payload, decodeRuntimeMetaRPCResponse)
+	return callAuthoritativeRPC(ctx, s, slotID, runtimeMetaRPCServiceID, payload, decodeRuntimeMetaRPCResponse)
 }
 
 func (s *Store) handleRuntimeMetaRPC(ctx context.Context, body []byte) ([]byte, error) {
@@ -128,8 +128,8 @@ func (s *Store) handleRuntimeMetaRPC(ctx context.Context, body []byte) ([]byte, 
 		return nil, err
 	}
 
-	groupID := multiraft.GroupID(req.GroupID)
-	if statusBody, handled, err := s.handleAuthoritativeRPC(groupID, func(status string, leaderID uint64) ([]byte, error) {
+	slotID := multiraft.SlotID(req.SlotID)
+	if statusBody, handled, err := s.handleAuthoritativeRPC(slotID, func(status string, leaderID uint64) ([]byte, error) {
 		return encodeRuntimeMetaRPCResponse(runtimeMetaRPCResponse{
 			Status:   status,
 			LeaderID: leaderID,
@@ -140,7 +140,7 @@ func (s *Store) handleRuntimeMetaRPC(ctx context.Context, body []byte) ([]byte, 
 
 	switch req.Op {
 	case runtimeMetaRPCGet:
-		meta, err := s.db.ForSlot(uint64(groupID)).GetChannelRuntimeMeta(ctx, req.ChannelID, req.ChannelType)
+		meta, err := s.db.ForSlot(uint64(slotID)).GetChannelRuntimeMeta(ctx, req.ChannelID, req.ChannelType)
 		if errors.Is(err, metadb.ErrNotFound) {
 			return encodeRuntimeMetaRPCResponse(runtimeMetaRPCResponse{Status: rpcStatusNotFound})
 		}
@@ -154,7 +154,7 @@ func (s *Store) handleRuntimeMetaRPC(ctx context.Context, body []byte) ([]byte, 
 	case runtimeMetaRPCBatchGet:
 		out := make([]metadb.ChannelRuntimeMeta, 0, len(req.Keys))
 		for _, key := range req.Keys {
-			meta, err := s.db.ForSlot(uint64(groupID)).GetChannelRuntimeMeta(ctx, key.ChannelID, key.ChannelType)
+			meta, err := s.db.ForSlot(uint64(slotID)).GetChannelRuntimeMeta(ctx, key.ChannelID, key.ChannelType)
 			if errors.Is(err, metadb.ErrNotFound) {
 				continue
 			}
@@ -174,18 +174,18 @@ func (s *Store) handleRuntimeMetaRPC(ctx context.Context, body []byte) ([]byte, 
 		}
 		return encodeRuntimeMetaRPCResponse(runtimeMetaRPCResponse{
 			Status: rpcStatusOK,
-			Metas:  filterChannelRuntimeMetaByGroup(s.cluster, groupID, metas),
+			Metas:  filterChannelRuntimeMetaBySlot(s.cluster, slotID, metas),
 		})
 	default:
 		return nil, fmt.Errorf("metastore: unknown runtime meta rpc op %q", req.Op)
 	}
 }
 
-func (s *Store) batchGetChannelRuntimeMetaAuthoritative(ctx context.Context, groupID multiraft.GroupID, keys []metadb.ConversationKey) (map[metadb.ConversationKey]metadb.ChannelRuntimeMeta, error) {
-	if s.shouldServeGroupLocally(groupID) {
+func (s *Store) batchGetChannelRuntimeMetaAuthoritative(ctx context.Context, slotID multiraft.SlotID, keys []metadb.ConversationKey) (map[metadb.ConversationKey]metadb.ChannelRuntimeMeta, error) {
+	if s.shouldServeSlotLocally(slotID) {
 		out := make(map[metadb.ConversationKey]metadb.ChannelRuntimeMeta, len(keys))
 		for _, key := range keys {
-			meta, err := s.db.ForSlot(uint64(groupID)).GetChannelRuntimeMeta(ctx, key.ChannelID, key.ChannelType)
+			meta, err := s.db.ForSlot(uint64(slotID)).GetChannelRuntimeMeta(ctx, key.ChannelID, key.ChannelType)
 			if errors.Is(err, metadb.ErrNotFound) {
 				continue
 			}
@@ -197,10 +197,10 @@ func (s *Store) batchGetChannelRuntimeMetaAuthoritative(ctx context.Context, gro
 		return out, nil
 	}
 
-	resp, err := s.callRuntimeMetaRPC(ctx, groupID, runtimeMetaRPCRequest{
-		Op:      runtimeMetaRPCBatchGet,
-		GroupID: uint64(groupID),
-		Keys:    keys,
+	resp, err := s.callRuntimeMetaRPC(ctx, slotID, runtimeMetaRPCRequest{
+		Op:     runtimeMetaRPCBatchGet,
+		SlotID: uint64(slotID),
+		Keys:   keys,
 	})
 	if err != nil {
 		return nil, err
@@ -212,10 +212,10 @@ func (s *Store) batchGetChannelRuntimeMetaAuthoritative(ctx context.Context, gro
 	return out, nil
 }
 
-func filterChannelRuntimeMetaByGroup(cluster *raftcluster.Cluster, groupID multiraft.GroupID, metas []metadb.ChannelRuntimeMeta) []metadb.ChannelRuntimeMeta {
+func filterChannelRuntimeMetaBySlot(cluster *raftcluster.Cluster, slotID multiraft.SlotID, metas []metadb.ChannelRuntimeMeta) []metadb.ChannelRuntimeMeta {
 	filtered := make([]metadb.ChannelRuntimeMeta, 0, len(metas))
 	for _, meta := range metas {
-		if cluster.SlotForKey(meta.ChannelID) != groupID {
+		if cluster.SlotForKey(meta.ChannelID) != slotID {
 			continue
 		}
 		filtered = append(filtered, meta)
@@ -223,11 +223,11 @@ func filterChannelRuntimeMetaByGroup(cluster *raftcluster.Cluster, groupID multi
 	return filtered
 }
 
-func (s *Store) singleLocalPeerGroup(groupID multiraft.GroupID) bool {
+func (s *Store) singleLocalPeerSlot(slotID multiraft.SlotID) bool {
 	if s.cluster == nil {
 		return false
 	}
-	peers := s.cluster.PeersForGroup(groupID)
+	peers := s.cluster.PeersForSlot(slotID)
 	return len(peers) == 1 && s.cluster.IsLocal(peers[0])
 }
 

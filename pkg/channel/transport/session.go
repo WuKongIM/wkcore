@@ -135,7 +135,7 @@ func (s *peerSession) sendFetchRequest(env isrnode.Envelope) error {
 	ctx, cancel := context.WithTimeout(context.Background(), s.adapter.rpcTimeout)
 	defer cancel()
 
-	respBody, err := s.adapter.client.RPCService(ctx, uint64(s.peer), fetchRPCShardKey(env.GroupKey), RPCServiceFetch, body)
+	respBody, err := s.adapter.client.RPCService(ctx, uint64(s.peer), fetchRPCShardKey(env.ChannelKey), RPCServiceFetch, body)
 	if err != nil {
 		return err
 	}
@@ -182,7 +182,7 @@ func (s *peerSession) sendFetchBatch(batch []queuedFetchRequest) (isrnode.FetchB
 	ctx, cancel := context.WithTimeout(context.Background(), s.adapter.rpcTimeout)
 	defer cancel()
 
-	shardKey := fetchRPCShardKey(batch[0].env.GroupKey)
+	shardKey := fetchRPCShardKey(batch[0].env.ChannelKey)
 	respBody, err := s.adapter.client.RPCService(ctx, uint64(s.peer), shardKey, RPCServiceFetchBatch, body)
 	if err != nil {
 		return isrnode.FetchBatchResponseEnvelope{}, err
@@ -266,14 +266,14 @@ func (s *peerSession) sendProgressAck(env isrnode.Envelope) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.adapter.rpcTimeout)
 	defer cancel()
-	_, err = s.adapter.client.RPCService(ctx, uint64(s.peer), fetchRPCShardKey(env.GroupKey), RPCServiceProgressAck, body)
+	_, err = s.adapter.client.RPCService(ctx, uint64(s.peer), fetchRPCShardKey(env.ChannelKey), RPCServiceProgressAck, body)
 	return err
 }
 
 func (s *peerSession) deliverFetchResponse(requestID uint64, resp isrnode.FetchResponseEnvelope) {
 	s.adapter.deliver(isrnode.Envelope{
 		Peer:          s.peer,
-		GroupKey:      resp.GroupKey,
+		ChannelKey:    resp.ChannelKey,
 		Epoch:         resp.Epoch,
 		Generation:    resp.Generation,
 		RequestID:     requestID,
@@ -285,7 +285,7 @@ func (s *peerSession) deliverFetchResponse(requestID uint64, resp isrnode.FetchR
 func (s *peerSession) deliverFetchFailure(env isrnode.Envelope, err error) {
 	failed := isrnode.Envelope{
 		Peer:       s.peer,
-		GroupKey:   env.GroupKey,
+		ChannelKey: env.ChannelKey,
 		Epoch:      env.Epoch,
 		Generation: env.Generation,
 		RequestID:  env.RequestID,
@@ -367,15 +367,15 @@ func (s *peerSession) releasePending(bytes int64) {
 	}
 }
 
-func fetchRPCShardKey(groupKey isr.GroupKey) uint64 {
+func fetchRPCShardKey(channelKey isr.ChannelKey) uint64 {
 	const (
 		fnvOffset64 = 14695981039346656037
 		fnvPrime64  = 1099511628211
 	)
 
 	hash := uint64(fnvOffset64)
-	for i := 0; i < len(groupKey); i++ {
-		hash ^= uint64(groupKey[i])
+	for i := 0; i < len(channelKey); i++ {
+		hash ^= uint64(channelKey[i])
 		hash *= fnvPrime64
 	}
 	return hash

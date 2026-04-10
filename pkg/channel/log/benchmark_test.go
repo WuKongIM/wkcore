@@ -130,7 +130,7 @@ func newBenchmarkClusterFixture(tb testing.TB, cfg benchmarkClusterFixtureConfig
 	preloadBenchmarkStore(tb, store, cfg.preloadedMessages, cfg.committedHW, cfg.payloadBytes)
 
 	replica := newChannelLogReplica(tb, store, 1)
-	meta := singleReplicaMeta(store.groupKey, 1, 1)
+	meta := singleReplicaMeta(store.channelKey, 1, 1)
 	if err := replica.ApplyMeta(meta); err != nil {
 		tb.Fatalf("ApplyMeta() error = %v", err)
 	}

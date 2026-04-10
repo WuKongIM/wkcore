@@ -19,7 +19,7 @@ func (c *cluster) Append(ctx context.Context, req AppendRequest) (AppendResult, 
 		ChannelID:   req.ChannelID,
 		ChannelType: req.ChannelType,
 	}
-	groupKey := channelGroupKey(key)
+	channelKey := isrChannelKeyForChannel(key)
 
 	meta, err := c.metaForKey(key)
 	if err != nil {
@@ -38,7 +38,7 @@ func (c *cluster) Append(ctx context.Context, req AppendRequest) (AppendResult, 
 		return AppendResult{}, ErrProtocolUpgradeRequired
 	}
 
-	group, ok := c.cfg.Runtime.Group(groupKey)
+	group, ok := c.cfg.Runtime.Channel(channelKey)
 	if !ok {
 		return AppendResult{}, ErrStaleMeta
 	}
@@ -67,7 +67,7 @@ func (c *cluster) Append(ctx context.Context, req AppendRequest) (AppendResult, 
 			return AppendResult{}, err
 		}
 		if ok {
-			view, err := c.loadMessageViewAtOffset(groupKey, entry.Offset)
+			view, err := c.loadMessageViewAtOffset(channelKey, entry.Offset)
 			if err != nil {
 				return AppendResult{}, err
 			}
@@ -128,8 +128,8 @@ func (c *cluster) metaForKey(key ChannelKey) (ChannelMeta, error) {
 	return meta, nil
 }
 
-func (c *cluster) loadMessageViewAtOffset(groupKey isr.GroupKey, offset uint64) (messageView, error) {
-	records, err := c.cfg.Log.Read(groupKey, offset, 1, math.MaxInt)
+func (c *cluster) loadMessageViewAtOffset(channelKey isr.ChannelKey, offset uint64) (messageView, error) {
+	records, err := c.cfg.Log.Read(channelKey, offset, 1, math.MaxInt)
 	if err != nil {
 		return messageView{}, err
 	}
@@ -139,8 +139,8 @@ func (c *cluster) loadMessageViewAtOffset(groupKey isr.GroupKey, offset uint64) 
 	return decodeMessageView(records[0].Payload)
 }
 
-func (c *cluster) loadMessageAtOffset(groupKey isr.GroupKey, offset uint64) (Message, error) {
-	view, err := c.loadMessageViewAtOffset(groupKey, offset)
+func (c *cluster) loadMessageAtOffset(channelKey isr.ChannelKey, offset uint64) (Message, error) {
+	view, err := c.loadMessageViewAtOffset(channelKey, offset)
 	if err != nil {
 		return Message{}, err
 	}

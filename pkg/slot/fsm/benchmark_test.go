@@ -23,10 +23,10 @@ func BenchmarkApplySingle(b *testing.B) {
 			DeviceLevel: int64(i % 16),
 		}
 		if _, err := sm.Apply(ctx, multiraft.Command{
-			GroupID: 1,
-			Index:   uint64(i + 1),
-			Term:    1,
-			Data:    EncodeUpsertUserCommand(user),
+			SlotID: 1,
+			Index:  uint64(i + 1),
+			Term:   1,
+			Data:   EncodeUpsertUserCommand(user),
 		}); err != nil {
 			b.Fatal(err)
 		}
@@ -58,10 +58,10 @@ func benchmarkApplyBatch(b *testing.B, batchSize int) {
 				DeviceLevel: int64(idx % 16),
 			}
 			cmds[j] = multiraft.Command{
-				GroupID: 1,
-				Index:   uint64(idx + 1),
-				Term:    1,
-				Data:    EncodeUpsertUserCommand(user),
+				SlotID: 1,
+				Index:  uint64(idx + 1),
+				Term:   1,
+				Data:   EncodeUpsertUserCommand(user),
 			}
 		}
 		if _, err := sm.ApplyBatch(ctx, cmds); err != nil {

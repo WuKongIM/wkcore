@@ -138,7 +138,7 @@ func (r *MemoryRegistry) ConnectionsByUID(uid string) []OnlineConn {
 	return out
 }
 
-func (r *MemoryRegistry) ActiveConnectionsByGroup(groupID uint64) []OnlineConn {
+func (r *MemoryRegistry) ActiveConnectionsBySlot(slotID uint64) []OnlineConn {
 	if r == nil {
 		return nil
 	}
@@ -146,7 +146,7 @@ func (r *MemoryRegistry) ActiveConnectionsByGroup(groupID uint64) []OnlineConn {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	conns := r.byGroup[groupID]
+	conns := r.byGroup[slotID]
 	if conns == nil || conns.count == 0 {
 		return nil
 	}
@@ -161,7 +161,7 @@ func (r *MemoryRegistry) ActiveConnectionsByGroup(groupID uint64) []OnlineConn {
 	return out
 }
 
-func (r *MemoryRegistry) ActiveGroups() []GroupSnapshot {
+func (r *MemoryRegistry) ActiveSlots() []SlotSnapshot {
 	if r == nil {
 		return nil
 	}
@@ -169,20 +169,20 @@ func (r *MemoryRegistry) ActiveGroups() []GroupSnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	out := make([]GroupSnapshot, 0, len(r.byGroup))
-	for groupID, bucket := range r.byGroup {
+	out := make([]SlotSnapshot, 0, len(r.byGroup))
+	for slotID, bucket := range r.byGroup {
 		if bucket == nil || bucket.count == 0 {
 			continue
 		}
-		snapshot := GroupSnapshot{
-			GroupID: groupID,
-			Count:   bucket.count,
-			Digest:  bucket.digest,
+		snapshot := SlotSnapshot{
+			SlotID: slotID,
+			Count:  bucket.count,
+			Digest: bucket.digest,
 		}
 		out = append(out, snapshot)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].GroupID < out[j].GroupID
+		return out[i].SlotID < out[j].SlotID
 	})
 	return out
 }
@@ -193,10 +193,10 @@ func (r *MemoryRegistry) addActiveIndexes(conn OnlineConn) {
 	}
 	r.byUID[conn.UID][conn.SessionID] = conn
 
-	bucket, ok := r.byGroup[conn.GroupID]
+	bucket, ok := r.byGroup[conn.SlotID]
 	if !ok || bucket == nil {
 		bucket = &groupBucket{conns: make(map[uint64]OnlineConn)}
-		r.byGroup[conn.GroupID] = bucket
+		r.byGroup[conn.SlotID] = bucket
 	}
 	if bucket.conns == nil {
 		bucket.conns = make(map[uint64]OnlineConn)
@@ -213,13 +213,13 @@ func (r *MemoryRegistry) removeActiveIndexes(conn OnlineConn) {
 			delete(r.byUID, conn.UID)
 		}
 	}
-	if bucket, ok := r.byGroup[conn.GroupID]; ok && bucket != nil {
+	if bucket, ok := r.byGroup[conn.SlotID]; ok && bucket != nil {
 		if _, exists := bucket.conns[conn.SessionID]; exists {
 			delete(bucket.conns, conn.SessionID)
 			bucket.count--
 			bucket.digest ^= routeFingerprint(conn)
 			if bucket.count == 0 {
-				delete(r.byGroup, conn.GroupID)
+				delete(r.byGroup, conn.SlotID)
 			}
 		}
 	}

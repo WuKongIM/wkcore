@@ -20,14 +20,14 @@ func withControllerTimeout(parent context.Context) (context.Context, context.Can
 	return context.WithTimeout(parent, controllerRequestTimeout)
 }
 
-func buildRuntimeView(now time.Time, groupID multiraft.GroupID, status multiraft.Status, peers []multiraft.NodeID) controllermeta.GroupRuntimeView {
+func buildRuntimeView(now time.Time, slotID multiraft.SlotID, status multiraft.Status, peers []multiraft.NodeID) controllermeta.SlotRuntimeView {
 	currentPeers := make([]uint64, 0, len(peers))
 	for _, peer := range peers {
 		currentPeers = append(currentPeers, uint64(peer))
 	}
 
-	view := controllermeta.GroupRuntimeView{
-		GroupID:      uint32(groupID),
+	view := controllermeta.SlotRuntimeView{
+		SlotID:       uint32(slotID),
 		CurrentPeers: currentPeers,
 		LeaderID:     uint64(status.LeaderID),
 		LastReportAt: now,

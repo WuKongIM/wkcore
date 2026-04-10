@@ -6,14 +6,14 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
 )
 
-type fakeGroupHandle struct {
+type fakeChannelHandle struct {
 	state       isr.ReplicaState
 	appendErr   error
 	appendCalls int
 	appendFn    func([]isr.Record) (isr.CommitResult, error)
 }
 
-func (f *fakeGroupHandle) Append(_ context.Context, records []isr.Record) (isr.CommitResult, error) {
+func (f *fakeChannelHandle) Append(_ context.Context, records []isr.Record) (isr.CommitResult, error) {
 	f.appendCalls++
 	if f.appendErr != nil {
 		return isr.CommitResult{}, f.appendErr
@@ -24,19 +24,19 @@ func (f *fakeGroupHandle) Append(_ context.Context, records []isr.Record) (isr.C
 	return isr.CommitResult{}, nil
 }
 
-func (f *fakeGroupHandle) Status() isr.ReplicaState {
+func (f *fakeChannelHandle) Status() isr.ReplicaState {
 	return f.state
 }
 
 type fakeRuntime struct {
-	groups map[isr.GroupKey]*fakeGroupHandle
+	groups map[isr.ChannelKey]*fakeChannelHandle
 }
 
-func (f *fakeRuntime) Group(groupKey isr.GroupKey) (GroupHandle, bool) {
+func (f *fakeRuntime) Channel(channelKey isr.ChannelKey) (ChannelHandle, bool) {
 	if f == nil {
 		return nil, false
 	}
-	group, ok := f.groups[groupKey]
+	group, ok := f.groups[channelKey]
 	return group, ok
 }
 
@@ -45,7 +45,7 @@ type fakeMessageLog struct {
 	readCalls int
 }
 
-func (f *fakeMessageLog) Read(_ isr.GroupKey, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
+func (f *fakeMessageLog) Read(_ isr.ChannelKey, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
 	f.readCalls++
 	if limit <= 0 || fromOffset >= uint64(len(f.records)) {
 		return nil, nil

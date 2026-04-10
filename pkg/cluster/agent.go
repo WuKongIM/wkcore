@@ -7,16 +7,16 @@ import (
 	"time"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
-	groupcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
+	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
 
 type assignmentTaskState struct {
-	assignment controllermeta.GroupAssignment
+	assignment controllermeta.SlotAssignment
 	task       controllermeta.ReconcileTask
 }
 
-type groupAgent struct {
+type slotAgent struct {
 	cluster *Cluster
 	client  controllerAPI
 	cache   *assignmentCache
@@ -33,23 +33,23 @@ type pendingTaskReports struct {
 	m  map[uint32]pendingTaskReport
 }
 
-func (a *groupAgent) HeartbeatOnce(ctx context.Context) error {
+func (a *slotAgent) HeartbeatOnce(ctx context.Context) error {
 	if a == nil || a.cluster == nil || a.client == nil {
 		return ErrNotStarted
 	}
 	now := time.Now()
-	err := a.client.Report(ctx, groupcontrollerReport(a.cluster, now, nil))
+	err := a.client.Report(ctx, slotcontrollerReport(a.cluster, now, nil))
 	if err != nil {
 		return err
 	}
 
-	for _, groupID := range a.cluster.runtime.Groups() {
-		status, err := a.cluster.runtime.Status(groupID)
+	for _, slotID := range a.cluster.runtime.Slots() {
+		status, err := a.cluster.runtime.Status(slotID)
 		if err != nil {
 			continue
 		}
-		view := buildRuntimeView(now, groupID, status, a.cluster.observationPeersForGroup(groupID))
-		err = a.client.Report(ctx, groupcontrollerReport(a.cluster, now, &view))
+		view := buildRuntimeView(now, slotID, status, a.cluster.observationPeersForGroup(slotID))
+		err = a.client.Report(ctx, slotcontrollerReport(a.cluster, now, &view))
 		if err != nil && !isControllerRedirect(err) {
 			return err
 		}
@@ -57,11 +57,11 @@ func (a *groupAgent) HeartbeatOnce(ctx context.Context) error {
 	return nil
 }
 
-func (a *groupAgent) SyncAssignments(ctx context.Context) error {
+func (a *slotAgent) SyncAssignments(ctx context.Context) error {
 	if a == nil || a.client == nil {
 		return ErrNotStarted
 	}
-	var assignments []controllermeta.GroupAssignment
+	var assignments []controllermeta.SlotAssignment
 	err := a.retryControllerCall(ctx, func(attemptCtx context.Context) error {
 		var err error
 		assignments, err = a.client.RefreshAssignments(attemptCtx)
@@ -86,7 +86,7 @@ func (a *groupAgent) SyncAssignments(ctx context.Context) error {
 	return nil
 }
 
-func (a *groupAgent) ApplyAssignments(ctx context.Context) error {
+func (a *slotAgent) ApplyAssignments(ctx context.Context) error {
 	if a == nil || a.cluster == nil || a.client == nil || a.cache == nil {
 		return ErrNotStarted
 	}
@@ -96,7 +96,7 @@ func (a *groupAgent) ApplyAssignments(ctx context.Context) error {
 		return nil
 	}
 	now := time.Now()
-	desiredLocalGroups := make(map[uint32]struct{}, len(assignments))
+	desiredLocalSlots := make(map[uint32]struct{}, len(assignments))
 	nodeByID := make(map[uint64]controllermeta.ClusterNode)
 	if nodes, err := a.listControllerNodes(ctx); err == nil {
 		nodeByID = make(map[uint64]controllermeta.ClusterNode, len(nodes))
@@ -105,10 +105,10 @@ func (a *groupAgent) ApplyAssignments(ctx context.Context) error {
 		}
 	}
 
-	viewByGroup := make(map[uint32]controllermeta.GroupRuntimeView, len(assignments))
+	viewByGroup := make(map[uint32]controllermeta.SlotRuntimeView, len(assignments))
 	if views, err := a.listRuntimeViews(ctx); err == nil {
 		for _, view := range views {
-			viewByGroup[view.GroupID] = view
+			viewByGroup[view.SlotID] = view
 		}
 	}
 
@@ -116,11 +116,11 @@ func (a *groupAgent) ApplyAssignments(ctx context.Context) error {
 		if !assignmentContainsPeer(assignment.DesiredPeers, uint64(a.cluster.cfg.NodeID)) {
 			continue
 		}
-		desiredLocalGroups[assignment.GroupID] = struct{}{}
-		_, hasView := viewByGroup[assignment.GroupID]
-		if err := a.cluster.ensureManagedGroupLocal(
+		desiredLocalSlots[assignment.SlotID] = struct{}{}
+		_, hasView := viewByGroup[assignment.SlotID]
+		if err := a.cluster.ensureManagedSlotLocal(
 			ctx,
-			multiraft.GroupID(assignment.GroupID),
+			multiraft.SlotID(assignment.SlotID),
 			assignment.DesiredPeers,
 			hasView,
 			false,
@@ -131,29 +131,29 @@ func (a *groupAgent) ApplyAssignments(ctx context.Context) error {
 
 	taskByGroup := make(map[uint32]controllermeta.ReconcileTask, len(assignments))
 	for _, assignment := range assignments {
-		if pending, ok := a.pendingTaskReport(assignment.GroupID); ok {
-			taskByGroup[assignment.GroupID] = pending.task
+		if pending, ok := a.pendingTaskReport(assignment.SlotID); ok {
+			taskByGroup[assignment.SlotID] = pending.task
 			continue
 		}
-		task, err := a.getTask(ctx, assignment.GroupID)
+		task, err := a.getTask(ctx, assignment.SlotID)
 		if errors.Is(err, controllermeta.ErrNotFound) {
 			continue
 		}
 		if err != nil {
 			return err
 		}
-		taskByGroup[assignment.GroupID] = task
+		taskByGroup[assignment.SlotID] = task
 	}
 
-	protectedSourceGroups := make(map[uint32]struct{}, len(taskByGroup))
+	protectedSourceSlots := make(map[uint32]struct{}, len(taskByGroup))
 	for _, assignment := range assignments {
-		_, hasView := viewByGroup[assignment.GroupID]
-		task, ok := taskByGroup[assignment.GroupID]
+		_, hasView := viewByGroup[assignment.SlotID]
+		task, ok := taskByGroup[assignment.SlotID]
 		if ok && taskKeepsSourceGroupOpen(task, uint64(a.cluster.cfg.NodeID)) {
-			protectedSourceGroups[assignment.GroupID] = struct{}{}
-			if err := a.cluster.ensureManagedGroupLocal(
+			protectedSourceSlots[assignment.SlotID] = struct{}{}
+			if err := a.cluster.ensureManagedSlotLocal(
 				ctx,
-				multiraft.GroupID(assignment.GroupID),
+				multiraft.SlotID(assignment.SlotID),
 				assignment.DesiredPeers,
 				hasView,
 				false,
@@ -162,32 +162,32 @@ func (a *groupAgent) ApplyAssignments(ctx context.Context) error {
 			}
 		}
 	}
-	for _, groupID := range a.cluster.runtime.Groups() {
-		if _, ok := desiredLocalGroups[uint32(groupID)]; ok {
+	for _, slotID := range a.cluster.runtime.Slots() {
+		if _, ok := desiredLocalSlots[uint32(slotID)]; ok {
 			continue
 		}
-		if _, ok := protectedSourceGroups[uint32(groupID)]; ok {
+		if _, ok := protectedSourceSlots[uint32(slotID)]; ok {
 			continue
 		}
-		if err := a.cluster.runtime.CloseGroup(ctx, groupID); err != nil && !errors.Is(err, multiraft.ErrGroupNotFound) {
+		if err := a.cluster.runtime.CloseSlot(ctx, slotID); err != nil && !errors.Is(err, multiraft.ErrSlotNotFound) {
 			return err
 		}
-		a.cluster.deleteRuntimePeers(groupID)
+		a.cluster.deleteRuntimePeers(slotID)
 	}
 
 	for _, assignment := range assignments {
-		task, ok := taskByGroup[assignment.GroupID]
+		task, ok := taskByGroup[assignment.SlotID]
 		if !ok {
-			a.clearPendingTaskReport(assignment.GroupID)
+			a.clearPendingTaskReport(assignment.SlotID)
 			continue
 		}
-		_, hasView := viewByGroup[assignment.GroupID]
+		_, hasView := viewByGroup[assignment.SlotID]
 		bootstrapAuthorized := task.Kind == controllermeta.TaskKindBootstrap &&
 			reconcileTaskRunnable(now, task)
 		if bootstrapAuthorized {
-			if err := a.cluster.ensureManagedGroupLocal(
+			if err := a.cluster.ensureManagedSlotLocal(
 				ctx,
-				multiraft.GroupID(assignment.GroupID),
+				multiraft.SlotID(assignment.SlotID),
 				assignment.DesiredPeers,
 				hasView,
 				true,
@@ -198,18 +198,18 @@ func (a *groupAgent) ApplyAssignments(ctx context.Context) error {
 		localAssigned := assignmentContainsPeer(assignment.DesiredPeers, uint64(a.cluster.cfg.NodeID))
 		localSourceProtected := taskKeepsSourceGroupOpen(task, uint64(a.cluster.cfg.NodeID))
 		if !localAssigned && !localSourceProtected {
-			a.clearPendingTaskReport(assignment.GroupID)
+			a.clearPendingTaskReport(assignment.SlotID)
 			continue
 		}
-		if pending, ok := a.pendingTaskReport(assignment.GroupID); ok {
+		if pending, ok := a.pendingTaskReport(assignment.SlotID); ok {
 			if !sameReconcileTaskIdentity(pending.task, task) {
-				a.clearPendingTaskReport(assignment.GroupID)
+				a.clearPendingTaskReport(assignment.SlotID)
 			} else {
 				reportErr := a.reportTaskResult(ctx, pending.task, pending.taskErr)
 				if reportErr != nil {
 					return reportErr
 				}
-				a.clearPendingTaskReport(assignment.GroupID)
+				a.clearPendingTaskReport(assignment.SlotID)
 				continue
 			}
 		}
@@ -218,7 +218,7 @@ func (a *groupAgent) ApplyAssignments(ctx context.Context) error {
 		if !runnable || !shouldExecute {
 			continue
 		}
-		freshTask, err := a.getTask(ctx, assignment.GroupID)
+		freshTask, err := a.getTask(ctx, assignment.SlotID)
 		switch {
 		case errors.Is(err, controllermeta.ErrNotFound):
 			continue
@@ -240,15 +240,15 @@ func (a *groupAgent) ApplyAssignments(ctx context.Context) error {
 		})
 		reportErr := a.reportTaskResult(ctx, task, execErr)
 		if reportErr != nil {
-			a.storePendingTaskReport(assignment.GroupID, task, execErr)
+			a.storePendingTaskReport(assignment.SlotID, task, execErr)
 			return reportErr
 		}
-		a.clearPendingTaskReport(assignment.GroupID)
+		a.clearPendingTaskReport(assignment.SlotID)
 	}
 	return nil
 }
 
-func (a *groupAgent) shouldExecuteTask(assignment controllermeta.GroupAssignment, task controllermeta.ReconcileTask, nodes map[uint64]controllermeta.ClusterNode) bool {
+func (a *slotAgent) shouldExecuteTask(assignment controllermeta.SlotAssignment, task controllermeta.ReconcileTask, nodes map[uint64]controllermeta.ClusterNode) bool {
 	if len(assignment.DesiredPeers) == 0 {
 		return false
 	}
@@ -261,7 +261,7 @@ func (a *groupAgent) shouldExecuteTask(assignment controllermeta.GroupAssignment
 		if shouldPreferSourceTaskExecutor(task, nodes) {
 			return false
 		}
-		leaderID, err := a.cluster.currentManagedGroupLeader(multiraft.GroupID(assignment.GroupID))
+		leaderID, err := a.cluster.currentManagedSlotLeader(multiraft.SlotID(assignment.SlotID))
 		if err == nil {
 			return uint64(leaderID) == localNodeID
 		}
@@ -316,7 +316,7 @@ func taskKeepsSourceGroupOpen(task controllermeta.ReconcileTask, localNodeID uin
 	}
 }
 
-func (a *groupAgent) reportTaskResult(ctx context.Context, task controllermeta.ReconcileTask, taskErr error) error {
+func (a *slotAgent) reportTaskResult(ctx context.Context, task controllermeta.ReconcileTask, taskErr error) error {
 	if a == nil || a.cluster == nil || a.client == nil {
 		return ErrNotStarted
 	}
@@ -325,7 +325,7 @@ func (a *groupAgent) reportTaskResult(ctx context.Context, task controllermeta.R
 	})
 }
 
-func (a *groupAgent) listControllerNodes(ctx context.Context) ([]controllermeta.ClusterNode, error) {
+func (a *slotAgent) listControllerNodes(ctx context.Context) ([]controllermeta.ClusterNode, error) {
 	if a == nil || a.client == nil {
 		return nil, ErrNotStarted
 	}
@@ -341,11 +341,11 @@ func (a *groupAgent) listControllerNodes(ctx context.Context) ([]controllermeta.
 	return a.cluster.controllerMeta.ListNodes(ctx)
 }
 
-func (a *groupAgent) listRuntimeViews(ctx context.Context) ([]controllermeta.GroupRuntimeView, error) {
+func (a *slotAgent) listRuntimeViews(ctx context.Context) ([]controllermeta.SlotRuntimeView, error) {
 	if a == nil || a.client == nil {
 		return nil, ErrNotStarted
 	}
-	var views []controllermeta.GroupRuntimeView
+	var views []controllermeta.SlotRuntimeView
 	err := a.retryControllerCall(ctx, func(attemptCtx context.Context) error {
 		var err error
 		views, err = a.client.ListRuntimeViews(attemptCtx)
@@ -357,23 +357,23 @@ func (a *groupAgent) listRuntimeViews(ctx context.Context) ([]controllermeta.Gro
 	return a.cluster.controllerMeta.ListRuntimeViews(ctx)
 }
 
-func (a *groupAgent) getTask(ctx context.Context, groupID uint32) (controllermeta.ReconcileTask, error) {
+func (a *slotAgent) getTask(ctx context.Context, slotID uint32) (controllermeta.ReconcileTask, error) {
 	if a == nil || a.client == nil {
 		return controllermeta.ReconcileTask{}, ErrNotStarted
 	}
 	var task controllermeta.ReconcileTask
 	err := a.retryControllerCall(ctx, func(attemptCtx context.Context) error {
 		var err error
-		task, err = a.client.GetTask(attemptCtx, groupID)
+		task, err = a.client.GetTask(attemptCtx, slotID)
 		return err
 	})
 	if err == nil || !controllerReadFallbackAllowed(err) || a.cluster == nil || a.cluster.controllerMeta == nil {
 		return task, err
 	}
-	return a.cluster.controllerMeta.GetTask(ctx, groupID)
+	return a.cluster.controllerMeta.GetTask(ctx, slotID)
 }
 
-func (a *groupAgent) retryControllerCall(ctx context.Context, fn func(context.Context) error) error {
+func (a *slotAgent) retryControllerCall(ctx context.Context, fn func(context.Context) error) error {
 	if a == nil || a.client == nil {
 		return ErrNotStarted
 	}
@@ -383,7 +383,7 @@ func (a *groupAgent) retryControllerCall(ctx context.Context, fn func(context.Co
 	return fn(ctx)
 }
 
-func (a *groupAgent) pendingTaskReport(groupID uint32) (pendingTaskReport, bool) {
+func (a *slotAgent) pendingTaskReport(slotID uint32) (pendingTaskReport, bool) {
 	if a == nil {
 		return pendingTaskReport{}, false
 	}
@@ -392,11 +392,11 @@ func (a *groupAgent) pendingTaskReport(groupID uint32) (pendingTaskReport, bool)
 	if a.reports.m == nil {
 		return pendingTaskReport{}, false
 	}
-	report, ok := a.reports.m[groupID]
+	report, ok := a.reports.m[slotID]
 	return report, ok
 }
 
-func (a *groupAgent) storePendingTaskReport(groupID uint32, task controllermeta.ReconcileTask, taskErr error) {
+func (a *slotAgent) storePendingTaskReport(slotID uint32, task controllermeta.ReconcileTask, taskErr error) {
 	if a == nil {
 		return
 	}
@@ -405,10 +405,10 @@ func (a *groupAgent) storePendingTaskReport(groupID uint32, task controllermeta.
 	if a.reports.m == nil {
 		a.reports.m = make(map[uint32]pendingTaskReport)
 	}
-	a.reports.m[groupID] = pendingTaskReport{task: task, taskErr: taskErr}
+	a.reports.m[slotID] = pendingTaskReport{task: task, taskErr: taskErr}
 }
 
-func (a *groupAgent) clearPendingTaskReport(groupID uint32) {
+func (a *slotAgent) clearPendingTaskReport(slotID uint32) {
 	if a == nil {
 		return
 	}
@@ -417,11 +417,11 @@ func (a *groupAgent) clearPendingTaskReport(groupID uint32) {
 	if a.reports.m == nil {
 		return
 	}
-	delete(a.reports.m, groupID)
+	delete(a.reports.m, slotID)
 }
 
 func sameReconcileTaskIdentity(left, right controllermeta.ReconcileTask) bool {
-	return left.GroupID == right.GroupID &&
+	return left.SlotID == right.SlotID &&
 		left.Kind == right.Kind &&
 		left.Step == right.Step &&
 		left.SourceNode == right.SourceNode &&
@@ -429,8 +429,8 @@ func sameReconcileTaskIdentity(left, right controllermeta.ReconcileTask) bool {
 		left.Attempt == right.Attempt
 }
 
-func groupcontrollerReport(c *Cluster, now time.Time, view *controllermeta.GroupRuntimeView) groupcontroller.AgentReport {
-	return groupcontroller.AgentReport{
+func slotcontrollerReport(c *Cluster, now time.Time, view *controllermeta.SlotRuntimeView) slotcontroller.AgentReport {
+	return slotcontroller.AgentReport{
 		NodeID:         uint64(c.cfg.NodeID),
 		Addr:           c.controllerReportAddr(),
 		ObservedAt:     now,

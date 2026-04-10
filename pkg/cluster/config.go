@@ -21,15 +21,15 @@ const (
 type Config struct {
 	NodeID             multiraft.NodeID
 	ListenAddr         string
-	GroupCount         uint32
+	SlotCount          uint32
 	ControllerMetaPath string
 	ControllerRaftPath string
 	ControllerReplicaN int
-	GroupReplicaN      int
-	NewStorage         func(groupID multiraft.GroupID) (multiraft.Storage, error)
-	NewStateMachine    func(groupID multiraft.GroupID) (multiraft.StateMachine, error)
+	SlotReplicaN       int
+	NewStorage         func(slotID multiraft.SlotID) (multiraft.Storage, error)
+	NewStateMachine    func(slotID multiraft.SlotID) (multiraft.StateMachine, error)
 	Nodes              []NodeConfig
-	Groups             []GroupConfig
+	Slots              []SlotConfig
 	ForwardTimeout     time.Duration
 	PoolSize           int
 	TickInterval       time.Duration
@@ -44,9 +44,9 @@ type NodeConfig struct {
 	Addr   string
 }
 
-type GroupConfig struct {
-	GroupID multiraft.GroupID
-	Peers   []multiraft.NodeID
+type SlotConfig struct {
+	SlotID multiraft.SlotID
+	Peers  []multiraft.NodeID
 }
 
 func (c *Config) validate() error {
@@ -62,20 +62,20 @@ func (c *Config) validate() error {
 	if c.NewStateMachine == nil {
 		return fmt.Errorf("%w: NewStateMachine must be set", ErrInvalidConfig)
 	}
-	if c.GroupCount == 0 {
-		return fmt.Errorf("%w: GroupCount must be > 0", ErrInvalidConfig)
+	if c.SlotCount == 0 {
+		return fmt.Errorf("%w: SlotCount must be > 0", ErrInvalidConfig)
 	}
 	if c.ControllerReplicaN <= 0 {
 		return fmt.Errorf("%w: ControllerReplicaN must be > 0", ErrInvalidConfig)
 	}
-	if c.GroupReplicaN <= 0 {
-		return fmt.Errorf("%w: GroupReplicaN must be > 0", ErrInvalidConfig)
+	if c.SlotReplicaN <= 0 {
+		return fmt.Errorf("%w: SlotReplicaN must be > 0", ErrInvalidConfig)
 	}
 	if c.ControllerReplicaN > len(c.Nodes) {
 		return fmt.Errorf("%w: ControllerReplicaN=%d exceeds Nodes=%d", ErrInvalidConfig, c.ControllerReplicaN, len(c.Nodes))
 	}
-	if c.GroupReplicaN > len(c.Nodes) {
-		return fmt.Errorf("%w: GroupReplicaN=%d exceeds Nodes=%d", ErrInvalidConfig, c.GroupReplicaN, len(c.Nodes))
+	if c.SlotReplicaN > len(c.Nodes) {
+		return fmt.Errorf("%w: SlotReplicaN=%d exceeds Nodes=%d", ErrInvalidConfig, c.SlotReplicaN, len(c.Nodes))
 	}
 	if (c.ControllerMetaPath == "") != (c.ControllerRaftPath == "") {
 		return fmt.Errorf("%w: ControllerMetaPath and ControllerRaftPath must be set together", ErrInvalidConfig)
@@ -96,40 +96,40 @@ func (c *Config) validate() error {
 		return fmt.Errorf("%w: NodeID %d not found in Nodes", ErrInvalidConfig, c.NodeID)
 	}
 
-	groupSet := make(map[multiraft.GroupID]bool, len(c.Groups))
-	groupSelfFound := false
-	for _, g := range c.Groups {
-		if groupSet[g.GroupID] {
-			return fmt.Errorf("%w: duplicate GroupID %d", ErrInvalidConfig, g.GroupID)
+	slotSet := make(map[multiraft.SlotID]bool, len(c.Slots))
+	slotSelfFound := false
+	for _, g := range c.Slots {
+		if slotSet[g.SlotID] {
+			return fmt.Errorf("%w: duplicate SlotID %d", ErrInvalidConfig, g.SlotID)
 		}
-		if g.GroupID == 0 || uint32(g.GroupID) > c.GroupCount {
-			return fmt.Errorf("%w: GroupID %d exceeds GroupCount=%d", ErrInvalidConfig, g.GroupID, c.GroupCount)
+		if g.SlotID == 0 || uint32(g.SlotID) > c.SlotCount {
+			return fmt.Errorf("%w: SlotID %d exceeds SlotCount=%d", ErrInvalidConfig, g.SlotID, c.SlotCount)
 		}
-		groupSet[g.GroupID] = true
+		slotSet[g.SlotID] = true
 		for _, peer := range g.Peers {
 			if !nodeSet[peer] {
-				return fmt.Errorf("%w: peer %d in group %d not found in Nodes", ErrInvalidConfig, peer, g.GroupID)
+				return fmt.Errorf("%w: peer %d in slot %d not found in Nodes", ErrInvalidConfig, peer, g.SlotID)
 			}
 			if peer == c.NodeID {
-				groupSelfFound = true
+				slotSelfFound = true
 			}
 		}
 	}
-	if len(c.Groups) > 0 && !groupSelfFound {
-		return fmt.Errorf("%w: NodeID %d not found as peer in any group", ErrInvalidConfig, c.NodeID)
+	if len(c.Slots) > 0 && !slotSelfFound {
+		return fmt.Errorf("%w: NodeID %d not found as peer in any slot", ErrInvalidConfig, c.NodeID)
 	}
 	return nil
 }
 
 func (c *Config) applyDefaults() {
-	if c.GroupCount == 0 && len(c.Groups) > 0 {
-		c.GroupCount = uint32(len(c.Groups))
+	if c.SlotCount == 0 && len(c.Slots) > 0 {
+		c.SlotCount = uint32(len(c.Slots))
 	}
 	if c.ControllerReplicaN == 0 {
 		c.ControllerReplicaN = len(c.Nodes)
 	}
-	if c.GroupReplicaN == 0 {
-		c.GroupReplicaN = len(c.Nodes)
+	if c.SlotReplicaN == 0 {
+		c.SlotReplicaN = len(c.Nodes)
 	}
 	if c.ForwardTimeout == 0 {
 		c.ForwardTimeout = defaultForwardTimeout

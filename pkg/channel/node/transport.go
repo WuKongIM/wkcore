@@ -15,9 +15,9 @@ func (r *runtime) handleEnvelope(env Envelope) {
 
 	r.mu.Lock()
 	r.dropExpiredTombstonesLocked(r.cfg.Now())
-	if active, ok := r.groups[env.GroupKey]; ok && active.generation == env.Generation {
+	if active, ok := r.groups[env.ChannelKey]; ok && active.generation == env.Generation {
 		g = active
-	} else if generations, ok := r.tombstones[env.GroupKey]; ok {
+	} else if generations, ok := r.tombstones[env.ChannelKey]; ok {
 		if _, ok := generations[env.Generation]; ok {
 			knownDrop = true
 		}
@@ -26,16 +26,16 @@ func (r *runtime) handleEnvelope(env Envelope) {
 
 	if env.Kind == MessageKindFetchResponse && knownDrop {
 		r.releasePeerInflight(env.Peer)
-		r.releaseGroupInflight(env.GroupKey, env.Peer)
+		r.releaseChannelInflight(env.ChannelKey, env.Peer)
 		r.drainPeerQueue(env.Peer)
 		return
 	}
 	if env.Kind == MessageKindFetchFailure {
 		r.releasePeerInflight(env.Peer)
-		r.releaseGroupInflight(env.GroupKey, env.Peer)
+		r.releaseChannelInflight(env.ChannelKey, env.Peer)
 		if g != nil {
-			r.retryReplication(env.GroupKey, env.Peer, true)
-			r.scheduleFollowerReplication(env.GroupKey, env.Peer)
+			r.retryReplication(env.ChannelKey, env.Peer, true)
+			r.scheduleFollowerReplication(env.ChannelKey, env.Peer)
 		}
 		r.drainPeerQueue(env.Peer)
 		return
@@ -48,7 +48,7 @@ func (r *runtime) handleEnvelope(env Envelope) {
 	if env.Kind == MessageKindFetchResponse {
 		if r.deliverEnvelope(g, env) {
 			r.releasePeerInflight(env.Peer)
-			r.releaseGroupInflight(env.GroupKey, env.Peer)
+			r.releaseChannelInflight(env.ChannelKey, env.Peer)
 			r.drainPeerQueue(env.Peer)
 		}
 		return
@@ -82,7 +82,7 @@ func (r *runtime) deliverEnvelope(g *group, env Envelope) bool {
 
 func (r *runtime) applyFetchResponseEnvelope(g *group, peer isr.NodeID, env FetchResponseEnvelope) error {
 	if err := g.replica.ApplyFetch(context.Background(), isr.ApplyFetchRequest{
-		GroupKey:   env.GroupKey,
+		ChannelKey: env.ChannelKey,
 		Epoch:      env.Epoch,
 		Leader:     peer,
 		TruncateTo: env.TruncateTo,
@@ -98,13 +98,13 @@ func (r *runtime) applyFetchResponseEnvelope(g *group, peer isr.NodeID, env Fetc
 			state := g.Status()
 			if err := r.sendEnvelope(Envelope{
 				Peer:       meta.Leader,
-				GroupKey:   g.id,
+				ChannelKey: g.id,
 				Epoch:      meta.Epoch,
 				Generation: g.generation,
 				RequestID:  r.requestID.Add(1),
 				Kind:       MessageKindProgressAck,
 				ProgressAck: &ProgressAckEnvelope{
-					GroupKey:    g.id,
+					ChannelKey:  g.id,
 					Epoch:       meta.Epoch,
 					Generation:  g.generation,
 					ReplicaID:   r.cfg.LocalNode,
@@ -121,13 +121,13 @@ func (r *runtime) applyFetchResponseEnvelope(g *group, peer isr.NodeID, env Fetc
 		state := g.Status()
 		err := r.sendEnvelope(Envelope{
 			Peer:       meta.Leader,
-			GroupKey:   g.id,
+			ChannelKey: g.id,
 			Epoch:      meta.Epoch,
 			Generation: g.generation,
 			RequestID:  r.requestID.Add(1),
 			Kind:       MessageKindFetchRequest,
 			FetchRequest: &FetchRequestEnvelope{
-				GroupKey:    g.id,
+				ChannelKey:  g.id,
 				Epoch:       meta.Epoch,
 				Generation:  g.generation,
 				ReplicaID:   r.cfg.LocalNode,
@@ -145,7 +145,7 @@ func (r *runtime) applyFetchResponseEnvelope(g *group, peer isr.NodeID, env Fetc
 
 func (r *runtime) applyProgressAckEnvelope(g *group, env ProgressAckEnvelope) error {
 	return g.replica.ApplyProgressAck(context.Background(), isr.ProgressAckRequest{
-		GroupKey:    env.GroupKey,
+		ChannelKey:  env.ChannelKey,
 		Epoch:       env.Epoch,
 		ReplicaID:   env.ReplicaID,
 		MatchOffset: env.MatchOffset,

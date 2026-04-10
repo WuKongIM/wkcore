@@ -15,7 +15,7 @@ const (
 	rpcStatusOK        = "ok"
 	rpcStatusNotLeader = "not_leader"
 	rpcStatusNoLeader  = "no_leader"
-	rpcStatusNoGroup   = "no_group"
+	rpcStatusNoSlot    = "no_group"
 
 	presenceOpRegister        = "register"
 	presenceOpUnregister      = "unregister"
@@ -27,14 +27,14 @@ const (
 )
 
 type presenceRPCRequest struct {
-	Op      string                 `json:"op"`
-	GroupID uint64                 `json:"group_id,omitempty"`
-	UID     string                 `json:"uid,omitempty"`
-	UIDs    []string               `json:"uids,omitempty"`
-	Route   *presence.Route        `json:"route,omitempty"`
-	Routes  []presence.Route       `json:"routes,omitempty"`
-	Action  *presence.RouteAction  `json:"action,omitempty"`
-	Lease   *presence.GatewayLease `json:"lease,omitempty"`
+	Op     string                 `json:"op"`
+	SlotID uint64                 `json:"slot_id,omitempty"`
+	UID    string                 `json:"uid,omitempty"`
+	UIDs   []string               `json:"uids,omitempty"`
+	Route  *presence.Route        `json:"route,omitempty"`
+	Routes []presence.Route       `json:"routes,omitempty"`
+	Action *presence.RouteAction  `json:"action,omitempty"`
+	Lease  *presence.GatewayLease `json:"lease,omitempty"`
 }
 
 type presenceRPCResponse struct {
@@ -81,12 +81,12 @@ func (a *Adapter) handlePresenceRPC(ctx context.Context, body []byte) ([]byte, e
 }
 
 func (a *Adapter) handleRegister(ctx context.Context, req presenceRPCRequest) ([]byte, error) {
-	if body, handled, err := a.handleAuthoritativeRPC(multiraft.GroupID(req.GroupID)); handled || err != nil {
+	if body, handled, err := a.handleAuthoritativeRPC(multiraft.SlotID(req.SlotID)); handled || err != nil {
 		return body, err
 	}
 	result, err := a.presence.RegisterAuthoritative(ctx, presence.RegisterAuthoritativeCommand{
-		GroupID: req.GroupID,
-		Route:   derefRoute(req.Route),
+		SlotID: req.SlotID,
+		Route:  derefRoute(req.Route),
 	})
 	if err != nil {
 		return nil, err
@@ -98,12 +98,12 @@ func (a *Adapter) handleRegister(ctx context.Context, req presenceRPCRequest) ([
 }
 
 func (a *Adapter) handleUnregister(ctx context.Context, req presenceRPCRequest) ([]byte, error) {
-	if body, handled, err := a.handleAuthoritativeRPC(multiraft.GroupID(req.GroupID)); handled || err != nil {
+	if body, handled, err := a.handleAuthoritativeRPC(multiraft.SlotID(req.SlotID)); handled || err != nil {
 		return body, err
 	}
 	err := a.presence.UnregisterAuthoritative(ctx, presence.UnregisterAuthoritativeCommand{
-		GroupID: req.GroupID,
-		Route:   derefRoute(req.Route),
+		SlotID: req.SlotID,
+		Route:  derefRoute(req.Route),
 	})
 	if err != nil {
 		return nil, err
@@ -113,7 +113,7 @@ func (a *Adapter) handleUnregister(ctx context.Context, req presenceRPCRequest) 
 
 func (a *Adapter) handleHeartbeat(ctx context.Context, req presenceRPCRequest) ([]byte, error) {
 	lease := derefLease(req.Lease)
-	if body, handled, err := a.handleAuthoritativeRPC(multiraft.GroupID(lease.GroupID)); handled || err != nil {
+	if body, handled, err := a.handleAuthoritativeRPC(multiraft.SlotID(lease.SlotID)); handled || err != nil {
 		return body, err
 	}
 	result, err := a.presence.HeartbeatAuthoritative(ctx, presence.HeartbeatAuthoritativeCommand{
@@ -130,7 +130,7 @@ func (a *Adapter) handleHeartbeat(ctx context.Context, req presenceRPCRequest) (
 
 func (a *Adapter) handleReplay(ctx context.Context, req presenceRPCRequest) ([]byte, error) {
 	lease := derefLease(req.Lease)
-	if body, handled, err := a.handleAuthoritativeRPC(multiraft.GroupID(lease.GroupID)); handled || err != nil {
+	if body, handled, err := a.handleAuthoritativeRPC(multiraft.SlotID(lease.SlotID)); handled || err != nil {
 		return body, err
 	}
 	err := a.presence.ReplayAuthoritative(ctx, presence.ReplayAuthoritativeCommand{
@@ -144,7 +144,7 @@ func (a *Adapter) handleReplay(ctx context.Context, req presenceRPCRequest) ([]b
 }
 
 func (a *Adapter) handleEndpoints(ctx context.Context, req presenceRPCRequest) ([]byte, error) {
-	if body, handled, err := a.handleAuthoritativeRPC(multiraft.GroupID(req.GroupID)); handled || err != nil {
+	if body, handled, err := a.handleAuthoritativeRPC(multiraft.SlotID(req.SlotID)); handled || err != nil {
 		return body, err
 	}
 	endpoints, err := a.presence.EndpointsByUID(ctx, req.UID)
@@ -158,7 +158,7 @@ func (a *Adapter) handleEndpoints(ctx context.Context, req presenceRPCRequest) (
 }
 
 func (a *Adapter) handleEndpointsByUIDs(ctx context.Context, req presenceRPCRequest) ([]byte, error) {
-	if body, handled, err := a.handleAuthoritativeRPC(multiraft.GroupID(req.GroupID)); handled || err != nil {
+	if body, handled, err := a.handleAuthoritativeRPC(multiraft.SlotID(req.SlotID)); handled || err != nil {
 		return body, err
 	}
 	endpoints, err := a.presence.EndpointsByUIDs(ctx, req.UIDs)
@@ -178,14 +178,14 @@ func (a *Adapter) handleApplyAction(ctx context.Context, req presenceRPCRequest)
 	return encodePresenceResponse(presenceRPCResponse{Status: rpcStatusOK})
 }
 
-func (a *Adapter) handleAuthoritativeRPC(groupID multiraft.GroupID) ([]byte, bool, error) {
-	if a.cluster == nil || groupID == 0 {
+func (a *Adapter) handleAuthoritativeRPC(slotID multiraft.SlotID) ([]byte, bool, error) {
+	if a.cluster == nil || slotID == 0 {
 		return nil, false, nil
 	}
-	leaderID, err := a.cluster.LeaderOf(groupID)
+	leaderID, err := a.cluster.LeaderOf(slotID)
 	switch {
-	case errors.Is(err, raftcluster.ErrGroupNotFound):
-		body, encodeErr := encodePresenceResponse(presenceRPCResponse{Status: rpcStatusNoGroup})
+	case errors.Is(err, raftcluster.ErrSlotNotFound):
+		body, encodeErr := encodePresenceResponse(presenceRPCResponse{Status: rpcStatusNoSlot})
 		return body, true, encodeErr
 	case err != nil:
 		body, encodeErr := encodePresenceResponse(presenceRPCResponse{Status: rpcStatusNoLeader})

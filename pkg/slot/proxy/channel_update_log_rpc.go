@@ -20,7 +20,7 @@ const (
 
 type channelUpdateLogRPCRequest struct {
 	Op      string                    `json:"op"`
-	GroupID uint64                    `json:"group_id"`
+	SlotID  uint64                    `json:"slot_id"`
 	Keys    []metadb.ConversationKey  `json:"keys,omitempty"`
 	Entries []metadb.ChannelUpdateLog `json:"entries,omitempty"`
 }
@@ -44,15 +44,15 @@ func (s *Store) BatchGetChannelUpdateLogs(ctx context.Context, keys []metadb.Con
 		return map[metadb.ConversationKey]metadb.ChannelUpdateLog{}, nil
 	}
 
-	grouped := make(map[multiraft.GroupID][]metadb.ConversationKey, len(keys))
+	grouped := make(map[multiraft.SlotID][]metadb.ConversationKey, len(keys))
 	for _, key := range keys {
-		groupID := s.cluster.SlotForKey(key.ChannelID)
-		grouped[groupID] = append(grouped[groupID], key)
+		slotID := s.cluster.SlotForKey(key.ChannelID)
+		grouped[slotID] = append(grouped[slotID], key)
 	}
 
 	entries := make(map[metadb.ConversationKey]metadb.ChannelUpdateLog, len(keys))
-	for groupID, groupKeys := range grouped {
-		groupEntries, err := s.batchGetChannelUpdateLogsAuthoritative(ctx, groupID, groupKeys)
+	for slotID, groupKeys := range grouped {
+		groupEntries, err := s.batchGetChannelUpdateLogsAuthoritative(ctx, slotID, groupKeys)
 		if err != nil {
 			return nil, err
 		}
@@ -68,23 +68,23 @@ func (s *Store) UpsertChannelUpdateLogs(ctx context.Context, entries []metadb.Ch
 		return nil
 	}
 
-	grouped := make(map[multiraft.GroupID][]metadb.ChannelUpdateLog, len(entries))
+	grouped := make(map[multiraft.SlotID][]metadb.ChannelUpdateLog, len(entries))
 	for _, entry := range entries {
-		groupID := s.cluster.SlotForKey(entry.ChannelID)
-		grouped[groupID] = append(grouped[groupID], entry)
+		slotID := s.cluster.SlotForKey(entry.ChannelID)
+		grouped[slotID] = append(grouped[slotID], entry)
 	}
 
-	for groupID, groupEntries := range grouped {
-		if s.shouldServeGroupLocally(groupID) {
+	for slotID, groupEntries := range grouped {
+		if s.shouldServeSlotLocally(slotID) {
 			cmd := metafsm.EncodeUpsertChannelUpdateLogsCommand(groupEntries)
-			if err := s.cluster.Propose(ctx, groupID, cmd); err != nil {
+			if err := s.cluster.Propose(ctx, slotID, cmd); err != nil {
 				return err
 			}
 			continue
 		}
-		if _, err := s.callChannelUpdateLogRPC(ctx, groupID, channelUpdateLogRPCRequest{
+		if _, err := s.callChannelUpdateLogRPC(ctx, slotID, channelUpdateLogRPCRequest{
 			Op:      channelUpdateLogRPCUpsert,
-			GroupID: uint64(groupID),
+			SlotID:  uint64(slotID),
 			Entries: groupEntries,
 		}); err != nil {
 			return err
@@ -98,24 +98,24 @@ func (s *Store) DeleteChannelUpdateLogs(ctx context.Context, keys []metadb.Conve
 		return nil
 	}
 
-	grouped := make(map[multiraft.GroupID][]metadb.ConversationKey, len(keys))
+	grouped := make(map[multiraft.SlotID][]metadb.ConversationKey, len(keys))
 	for _, key := range keys {
-		groupID := s.cluster.SlotForKey(key.ChannelID)
-		grouped[groupID] = append(grouped[groupID], key)
+		slotID := s.cluster.SlotForKey(key.ChannelID)
+		grouped[slotID] = append(grouped[slotID], key)
 	}
 
-	for groupID, groupKeys := range grouped {
-		if s.shouldServeGroupLocally(groupID) {
+	for slotID, groupKeys := range grouped {
+		if s.shouldServeSlotLocally(slotID) {
 			cmd := metafsm.EncodeDeleteChannelUpdateLogsCommand(groupKeys)
-			if err := s.cluster.Propose(ctx, groupID, cmd); err != nil {
+			if err := s.cluster.Propose(ctx, slotID, cmd); err != nil {
 				return err
 			}
 			continue
 		}
-		if _, err := s.callChannelUpdateLogRPC(ctx, groupID, channelUpdateLogRPCRequest{
-			Op:      channelUpdateLogRPCDelete,
-			GroupID: uint64(groupID),
-			Keys:    groupKeys,
+		if _, err := s.callChannelUpdateLogRPC(ctx, slotID, channelUpdateLogRPCRequest{
+			Op:     channelUpdateLogRPCDelete,
+			SlotID: uint64(slotID),
+			Keys:   groupKeys,
 		}); err != nil {
 			return err
 		}
@@ -123,15 +123,15 @@ func (s *Store) DeleteChannelUpdateLogs(ctx context.Context, keys []metadb.Conve
 	return nil
 }
 
-func (s *Store) batchGetChannelUpdateLogsAuthoritative(ctx context.Context, groupID multiraft.GroupID, keys []metadb.ConversationKey) (map[metadb.ConversationKey]metadb.ChannelUpdateLog, error) {
-	if s.shouldServeGroupLocally(groupID) {
-		return s.batchGetChannelUpdateLogsLocal(ctx, uint64(groupID), keys)
+func (s *Store) batchGetChannelUpdateLogsAuthoritative(ctx context.Context, slotID multiraft.SlotID, keys []metadb.ConversationKey) (map[metadb.ConversationKey]metadb.ChannelUpdateLog, error) {
+	if s.shouldServeSlotLocally(slotID) {
+		return s.batchGetChannelUpdateLogsLocal(ctx, uint64(slotID), keys)
 	}
 
-	resp, err := s.callChannelUpdateLogRPC(ctx, groupID, channelUpdateLogRPCRequest{
-		Op:      channelUpdateLogRPCBatchGet,
-		GroupID: uint64(groupID),
-		Keys:    keys,
+	resp, err := s.callChannelUpdateLogRPC(ctx, slotID, channelUpdateLogRPCRequest{
+		Op:     channelUpdateLogRPCBatchGet,
+		SlotID: uint64(slotID),
+		Keys:   keys,
 	})
 	if err != nil {
 		return nil, err
@@ -145,12 +145,12 @@ func (s *Store) batchGetChannelUpdateLogsAuthoritative(ctx context.Context, grou
 	return entries, nil
 }
 
-func (s *Store) callChannelUpdateLogRPC(ctx context.Context, groupID multiraft.GroupID, req channelUpdateLogRPCRequest) (channelUpdateLogRPCResponse, error) {
+func (s *Store) callChannelUpdateLogRPC(ctx context.Context, slotID multiraft.SlotID, req channelUpdateLogRPCRequest) (channelUpdateLogRPCResponse, error) {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return channelUpdateLogRPCResponse{}, err
 	}
-	return callAuthoritativeRPC(ctx, s, groupID, channelUpdateLogRPCServiceID, payload, decodeChannelUpdateLogRPCResponse)
+	return callAuthoritativeRPC(ctx, s, slotID, channelUpdateLogRPCServiceID, payload, decodeChannelUpdateLogRPCResponse)
 }
 
 func (s *Store) handleChannelUpdateLogRPC(ctx context.Context, body []byte) ([]byte, error) {
@@ -159,8 +159,8 @@ func (s *Store) handleChannelUpdateLogRPC(ctx context.Context, body []byte) ([]b
 		return nil, err
 	}
 
-	groupID := multiraft.GroupID(req.GroupID)
-	if statusBody, handled, err := s.handleAuthoritativeRPC(groupID, func(status string, leaderID uint64) ([]byte, error) {
+	slotID := multiraft.SlotID(req.SlotID)
+	if statusBody, handled, err := s.handleAuthoritativeRPC(slotID, func(status string, leaderID uint64) ([]byte, error) {
 		return encodeChannelUpdateLogRPCResponse(channelUpdateLogRPCResponse{
 			Status:   status,
 			LeaderID: leaderID,
@@ -171,7 +171,7 @@ func (s *Store) handleChannelUpdateLogRPC(ctx context.Context, body []byte) ([]b
 
 	switch req.Op {
 	case channelUpdateLogRPCBatchGet:
-		entriesByKey, err := s.batchGetChannelUpdateLogsLocal(ctx, uint64(groupID), req.Keys)
+		entriesByKey, err := s.batchGetChannelUpdateLogsLocal(ctx, uint64(slotID), req.Keys)
 		if err != nil {
 			return nil, err
 		}
@@ -185,13 +185,13 @@ func (s *Store) handleChannelUpdateLogRPC(ctx context.Context, body []byte) ([]b
 		})
 	case channelUpdateLogRPCUpsert:
 		cmd := metafsm.EncodeUpsertChannelUpdateLogsCommand(req.Entries)
-		if err := s.cluster.Propose(ctx, groupID, cmd); err != nil {
+		if err := s.cluster.Propose(ctx, slotID, cmd); err != nil {
 			return nil, err
 		}
 		return encodeChannelUpdateLogRPCResponse(channelUpdateLogRPCResponse{Status: rpcStatusOK})
 	case channelUpdateLogRPCDelete:
 		cmd := metafsm.EncodeDeleteChannelUpdateLogsCommand(req.Keys)
-		if err := s.cluster.Propose(ctx, groupID, cmd); err != nil {
+		if err := s.cluster.Propose(ctx, slotID, cmd); err != nil {
 			return nil, err
 		}
 		return encodeChannelUpdateLogRPCResponse(channelUpdateLogRPCResponse{Status: rpcStatusOK})

@@ -8,23 +8,23 @@ import (
 )
 
 func (a *App) HeartbeatOnce(ctx context.Context) error {
-	groups := a.online.ActiveGroups()
+	groups := a.online.ActiveSlots()
 	var err error
-	for _, group := range groups {
-		if heartbeatErr := a.heartbeatGroup(ctx, group); heartbeatErr != nil {
+	for _, slot := range groups {
+		if heartbeatErr := a.heartbeatGroup(ctx, slot); heartbeatErr != nil {
 			err = errors.Join(err, heartbeatErr)
 		}
 	}
 	return err
 }
 
-func (a *App) heartbeatGroup(ctx context.Context, group online.GroupSnapshot) error {
+func (a *App) heartbeatGroup(ctx context.Context, slot online.SlotSnapshot) error {
 	lease := GatewayLease{
-		GroupID:        group.GroupID,
+		SlotID:         slot.SlotID,
 		GatewayNodeID:  a.localNodeID,
 		GatewayBootID:  a.gatewayBootID,
-		RouteCount:     group.Count,
-		RouteDigest:    group.Digest,
+		RouteCount:     slot.Count,
+		RouteDigest:    slot.Digest,
 		LeaseUntilUnix: a.now().Add(a.leaseTTL).Unix(),
 	}
 
@@ -39,7 +39,7 @@ func (a *App) heartbeatGroup(ctx context.Context, group online.GroupSnapshot) er
 	}
 
 	routes := make([]Route, 0)
-	for _, conn := range a.online.ActiveConnectionsByGroup(group.GroupID) {
+	for _, conn := range a.online.ActiveConnectionsBySlot(slot.SlotID) {
 		routes = append(routes, a.routeFromConn(conn))
 	}
 	return a.authority.ReplayAuthoritative(ctx, ReplayAuthoritativeCommand{

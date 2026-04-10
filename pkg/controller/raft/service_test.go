@@ -15,9 +15,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
-	groupcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
-	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
+	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/transport"
 	raft "go.etcd.io/raft/v3"
 )
@@ -126,7 +126,7 @@ func TestServiceProposeReturnsRunLoopErrorAfterExit(t *testing.T) {
 		err:       sentinel,
 	}
 
-	err := service.Propose(context.Background(), groupcontroller.Command{})
+	err := service.Propose(context.Background(), slotcontroller.Command{})
 	require.ErrorIs(t, err, sentinel)
 }
 
@@ -178,7 +178,7 @@ type testNode struct {
 	pool     *transport.Pool
 	logDB    *raftstorage.DB
 	meta     *controllermeta.Store
-	sm       *groupcontroller.StateMachine
+	sm       *slotcontroller.StateMachine
 	service  *Service
 	allPeers []Peer
 }
@@ -254,7 +254,7 @@ func (e *testEnv) startNodeErr(t *testing.T, nodeID uint64, peers []Peer) error 
 	require.NoError(t, err)
 	node.meta, err = controllermeta.Open(filepath.Join(node.dir, "controller-meta"))
 	require.NoError(t, err)
-	node.sm = groupcontroller.NewStateMachine(node.meta, groupcontroller.StateMachineConfig{})
+	node.sm = slotcontroller.NewStateMachine(node.meta, slotcontroller.StateMachineConfig{})
 
 	node.service = &Service{cfg: Config{
 		NodeID:         nodeID,

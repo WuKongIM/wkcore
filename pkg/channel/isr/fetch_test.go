@@ -11,7 +11,7 @@ func TestFetchRejectsInvalidBudget(t *testing.T) {
 	r := newLeaderReplica(t)
 
 	_, err := r.Fetch(context.Background(), FetchRequest{
-		GroupKey:    "group-10",
+		ChannelKey:  "group-10",
 		Epoch:       7,
 		ReplicaID:   2,
 		FetchOffset: 0,
@@ -23,11 +23,11 @@ func TestFetchRejectsInvalidBudget(t *testing.T) {
 	}
 }
 
-func TestFetchRejectsMismatchedGroupKey(t *testing.T) {
+func TestFetchRejectsMismatchedChannelKey(t *testing.T) {
 	r := newLeaderReplica(t)
 
 	_, err := r.Fetch(context.Background(), FetchRequest{
-		GroupKey:    "group-other",
+		ChannelKey:  "group-other",
 		Epoch:       7,
 		ReplicaID:   2,
 		FetchOffset: 0,
@@ -43,7 +43,7 @@ func TestFetchReturnsTruncateToWhenOffsetEpochDiverges(t *testing.T) {
 	env := newFetchEnvWithHistory(t)
 
 	result, err := env.replica.Fetch(context.Background(), FetchRequest{
-		GroupKey:    "group-10",
+		ChannelKey:  "group-10",
 		Epoch:       7,
 		ReplicaID:   2,
 		FetchOffset: 5,
@@ -63,7 +63,7 @@ func TestFetchReturnsSnapshotRequiredWhenFollowerFallsBehindLogStart(t *testing.
 	env.replica.state.LogStartOffset = 4
 
 	_, err := env.replica.Fetch(context.Background(), FetchRequest{
-		GroupKey:    "group-10",
+		ChannelKey:  "group-10",
 		Epoch:       7,
 		ReplicaID:   2,
 		FetchOffset: 3,
@@ -79,7 +79,7 @@ func TestFetchUpdatesLeaderProgressFromFollowerAck(t *testing.T) {
 	env := newFetchEnvWithHistory(t)
 
 	_, err := env.replica.Fetch(context.Background(), FetchRequest{
-		GroupKey:    "group-10",
+		ChannelKey:  "group-10",
 		Epoch:       7,
 		ReplicaID:   2,
 		FetchOffset: 5,
@@ -102,7 +102,7 @@ func TestFetchDoesNotHoldReplicaLockAcrossLogRead(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		_, err := env.replica.Fetch(context.Background(), FetchRequest{
-			GroupKey:    "group-10",
+			ChannelKey:  "group-10",
 			Epoch:       7,
 			ReplicaID:   2,
 			FetchOffset: 0,
@@ -140,7 +140,7 @@ func TestFetchDoesNotHoldReplicaLockAcrossCheckpointStore(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		_, err := env.replica.Fetch(context.Background(), FetchRequest{
-			GroupKey:    "group-10",
+			ChannelKey:  "group-10",
 			Epoch:       7,
 			ReplicaID:   2,
 			FetchOffset: 6,

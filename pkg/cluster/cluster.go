@@ -11,7 +11,7 @@ import (
 	"time"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
-	groupcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
+	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
 	controllerraft "github.com/WuKongIM/WuKongIM/pkg/controller/raft"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
@@ -32,13 +32,13 @@ type Cluster struct {
 	discovery         *StaticDiscovery
 	controllerMeta    *controllermeta.Store
 	controllerRaftDB  *raftstorage.DB
-	controllerSM      *groupcontroller.StateMachine
+	controllerSM      *slotcontroller.StateMachine
 	controller        *controllerraft.Service
 	controllerClient  controllerAPI
-	agent             *groupAgent
+	agent             *slotAgent
 	assignments       *assignmentCache
 	runtimePeersMu    sync.RWMutex
-	runtimePeers      map[multiraft.GroupID][]multiraft.NodeID
+	runtimePeers      map[multiraft.SlotID][]multiraft.NodeID
 	observationStop   chan struct{}
 	observationDone   chan struct{}
 	observationCancel context.CancelFunc
@@ -53,9 +53,9 @@ func NewCluster(cfg Config) (*Cluster, error) {
 	return &Cluster{
 		cfg:          cfg,
 		rpcMux:       transport.NewRPCMux(),
-		router:       NewRouter(cfg.GroupCount, cfg.NodeID, nil),
+		router:       NewRouter(cfg.SlotCount, cfg.NodeID, nil),
 		assignments:  newAssignmentCache(),
-		runtimePeers: make(map[multiraft.GroupID][]multiraft.NodeID),
+		runtimePeers: make(map[multiraft.SlotID][]multiraft.NodeID),
 	}, nil
 }
 
@@ -77,7 +77,7 @@ func (c *Cluster) Start() error {
 	}
 	c.startControllerClient()
 	c.startObservationLoop()
-	if err := c.seedLegacyGroupsIfConfigured(); err != nil {
+	if err := c.seedLegacySlotsIfConfigured(); err != nil {
 		c.Stop()
 		return err
 	}
@@ -89,7 +89,7 @@ func (c *Cluster) startServer() error {
 	c.server.Handle(msgTypeRaft, c.handleRaftMessage)
 	c.rpcMux.Handle(rpcServiceForward, c.handleForwardRPC)
 	c.rpcMux.Handle(rpcServiceController, c.handleControllerRPC)
-	c.rpcMux.Handle(rpcServiceManagedGroup, c.handleManagedGroupRPC)
+	c.rpcMux.Handle(rpcServiceManagedSlot, c.handleManagedSlotRPC)
 	c.server.HandleRPCMux(c.rpcMux)
 	if err := c.server.Start(c.cfg.ListenAddr); err != nil {
 		return fmt.Errorf("start server: %w", err)
@@ -130,7 +130,7 @@ func (c *Cluster) startControllerRaftIfLocalPeer() error {
 		})
 	}
 
-	sm := groupcontroller.NewStateMachine(meta, groupcontroller.StateMachineConfig{})
+	sm := slotcontroller.NewStateMachine(meta, slotcontroller.StateMachineConfig{})
 	service := controllerraft.NewService(controllerraft.Config{
 		NodeID:         uint64(c.cfg.NodeID),
 		Peers:          controllerPeers,
@@ -171,7 +171,7 @@ func (c *Cluster) startMultiraftRuntime() error {
 	}
 
 	if c.router == nil {
-		c.router = NewRouter(c.cfg.GroupCount, c.cfg.NodeID, c.runtime)
+		c.router = NewRouter(c.cfg.SlotCount, c.cfg.NodeID, c.runtime)
 	} else {
 		c.router.runtime = c.runtime
 	}
@@ -184,7 +184,7 @@ func (c *Cluster) startControllerClient() {
 	}
 	client := newControllerClient(c, c.cfg.DerivedControllerNodes(), c.assignments)
 	c.controllerClient = client
-	c.agent = &groupAgent{
+	c.agent = &slotAgent{
 		cluster: c,
 		client:  client,
 		cache:   c.assignments,
@@ -216,30 +216,30 @@ func (c *Cluster) startObservationLoop() {
 	}()
 }
 
-func (c *Cluster) seedLegacyGroupsIfConfigured() error {
+func (c *Cluster) seedLegacySlotsIfConfigured() error {
 	if c.cfg.ControllerEnabled() {
 		return nil
 	}
 	ctx := context.Background()
-	for _, g := range c.cfg.Groups {
-		if err := c.openOrBootstrapGroup(ctx, g); err != nil {
-			return fmt.Errorf("open group %d: %w", g.GroupID, err)
+	for _, g := range c.cfg.Slots {
+		if err := c.openOrBootstrapSlot(ctx, g); err != nil {
+			return fmt.Errorf("open slot %d: %w", g.SlotID, err)
 		}
 	}
 	return nil
 }
 
-func (c *Cluster) openOrBootstrapGroup(ctx context.Context, g GroupConfig) error {
-	storage, err := c.cfg.NewStorage(g.GroupID)
+func (c *Cluster) openOrBootstrapSlot(ctx context.Context, g SlotConfig) error {
+	storage, err := c.cfg.NewStorage(g.SlotID)
 	if err != nil {
-		return fmt.Errorf("create storage for group %d: %w", g.GroupID, err)
+		return fmt.Errorf("create storage for slot %d: %w", g.SlotID, err)
 	}
-	sm, err := c.cfg.NewStateMachine(g.GroupID)
+	sm, err := c.cfg.NewStateMachine(g.SlotID)
 	if err != nil {
-		return fmt.Errorf("create state machine for group %d: %w", g.GroupID, err)
+		return fmt.Errorf("create state machine for slot %d: %w", g.SlotID, err)
 	}
-	opts := multiraft.GroupOptions{
-		ID:           g.GroupID,
+	opts := multiraft.SlotOptions{
+		ID:           g.SlotID,
 		Storage:      storage,
 		StateMachine: sm,
 	}
@@ -249,19 +249,19 @@ func (c *Cluster) openOrBootstrapGroup(ctx context.Context, g GroupConfig) error
 		return err
 	}
 	if !raft.IsEmptyHardState(initialState.HardState) {
-		c.setRuntimePeers(g.GroupID, nodeIDsFromUint64s(initialState.ConfState.Voters))
-		if err := c.runtime.OpenGroup(ctx, opts); err != nil {
-			c.deleteRuntimePeers(g.GroupID)
+		c.setRuntimePeers(g.SlotID, nodeIDsFromUint64s(initialState.ConfState.Voters))
+		if err := c.runtime.OpenSlot(ctx, opts); err != nil {
+			c.deleteRuntimePeers(g.SlotID)
 			return err
 		}
 		return nil
 	}
-	c.setRuntimePeers(g.GroupID, g.Peers)
-	if err := c.runtime.BootstrapGroup(ctx, multiraft.BootstrapGroupRequest{
-		Group:  opts,
+	c.setRuntimePeers(g.SlotID, g.Peers)
+	if err := c.runtime.BootstrapSlot(ctx, multiraft.BootstrapSlotRequest{
+		Slot:   opts,
 		Voters: g.Peers,
 	}); err != nil {
-		c.deleteRuntimePeers(g.GroupID)
+		c.deleteRuntimePeers(g.SlotID)
 		return err
 	}
 	return nil
@@ -334,9 +334,9 @@ func (c *Cluster) controllerTickOnce(ctx context.Context) {
 	}
 
 	tickCtx, cancel := withControllerTimeout(ctx)
-	_ = c.controller.Propose(tickCtx, groupcontroller.Command{
-		Kind:    groupcontroller.CommandKindEvaluateTimeouts,
-		Advance: &groupcontroller.TaskAdvance{Now: time.Now()},
+	_ = c.controller.Propose(tickCtx, slotcontroller.Command{
+		Kind:    slotcontroller.CommandKindEvaluateTimeouts,
+		Advance: &slotcontroller.TaskAdvance{Now: time.Now()},
 	})
 	cancel()
 
@@ -344,62 +344,62 @@ func (c *Cluster) controllerTickOnce(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	planner := groupcontroller.NewPlanner(groupcontroller.PlannerConfig{
-		GroupCount: c.cfg.GroupCount,
-		ReplicaN:   c.cfg.GroupReplicaN,
+	planner := slotcontroller.NewPlanner(slotcontroller.PlannerConfig{
+		SlotCount: c.cfg.SlotCount,
+		ReplicaN:  c.cfg.SlotReplicaN,
 	})
 	decision, err := planner.NextDecision(ctx, state)
-	if err != nil || decision.GroupID == 0 || decision.Task == nil {
+	if err != nil || decision.SlotID == 0 || decision.Task == nil {
 		return
 	}
-	if _, exists := state.Tasks[decision.GroupID]; exists {
+	if _, exists := state.Tasks[decision.SlotID]; exists {
 		return
 	}
 
 	proposeCtx, cancel := withControllerTimeout(ctx)
-	_ = c.controller.Propose(proposeCtx, groupcontroller.Command{
-		Kind:       groupcontroller.CommandKindAssignmentTaskUpdate,
+	_ = c.controller.Propose(proposeCtx, slotcontroller.Command{
+		Kind:       slotcontroller.CommandKindAssignmentTaskUpdate,
 		Assignment: &decision.Assignment,
 		Task:       decision.Task,
 	})
 	cancel()
 }
 
-func (c *Cluster) snapshotPlannerState(ctx context.Context) (groupcontroller.PlannerState, error) {
+func (c *Cluster) snapshotPlannerState(ctx context.Context) (slotcontroller.PlannerState, error) {
 	nodes, err := c.controllerMeta.ListNodes(ctx)
 	if err != nil {
-		return groupcontroller.PlannerState{}, err
+		return slotcontroller.PlannerState{}, err
 	}
 	assignments, err := c.controllerMeta.ListAssignments(ctx)
 	if err != nil {
-		return groupcontroller.PlannerState{}, err
+		return slotcontroller.PlannerState{}, err
 	}
 	views, err := c.controllerMeta.ListRuntimeViews(ctx)
 	if err != nil {
-		return groupcontroller.PlannerState{}, err
+		return slotcontroller.PlannerState{}, err
 	}
 	tasks, err := c.controllerMeta.ListTasks(ctx)
 	if err != nil {
-		return groupcontroller.PlannerState{}, err
+		return slotcontroller.PlannerState{}, err
 	}
-	state := groupcontroller.PlannerState{
+	state := slotcontroller.PlannerState{
 		Now:         time.Now(),
 		Nodes:       make(map[uint64]controllermeta.ClusterNode, len(nodes)),
-		Assignments: make(map[uint32]controllermeta.GroupAssignment, len(assignments)),
-		Runtime:     make(map[uint32]controllermeta.GroupRuntimeView, len(views)),
+		Assignments: make(map[uint32]controllermeta.SlotAssignment, len(assignments)),
+		Runtime:     make(map[uint32]controllermeta.SlotRuntimeView, len(views)),
 		Tasks:       make(map[uint32]controllermeta.ReconcileTask, len(tasks)),
 	}
 	for _, node := range nodes {
 		state.Nodes[node.NodeID] = node
 	}
 	for _, assignment := range assignments {
-		state.Assignments[assignment.GroupID] = assignment
+		state.Assignments[assignment.SlotID] = assignment
 	}
 	for _, view := range views {
-		state.Runtime[view.GroupID] = view
+		state.Runtime[view.SlotID] = view
 	}
 	for _, task := range tasks {
-		state.Tasks[task.GroupID] = task
+		state.Tasks[task.SlotID] = task
 	}
 	return state, nil
 }
@@ -409,7 +409,7 @@ func (c *Cluster) handleRaftMessage(_ net.Conn, body []byte) {
 	if c.runtime == nil {
 		return
 	}
-	groupID, data, err := decodeRaftBody(body)
+	slotID, data, err := decodeRaftBody(body)
 	if err != nil {
 		return
 	}
@@ -418,13 +418,13 @@ func (c *Cluster) handleRaftMessage(_ net.Conn, body []byte) {
 		return
 	}
 	_ = c.runtime.Step(context.Background(), multiraft.Envelope{
-		GroupID: multiraft.GroupID(groupID),
+		SlotID:  multiraft.SlotID(slotID),
 		Message: msg,
 	})
 }
 
-// Propose submits a command to the specified group, automatically handling leader forwarding.
-func (c *Cluster) Propose(ctx context.Context, groupID multiraft.GroupID, cmd []byte) error {
+// Propose submits a command to the specified slot, automatically handling leader forwarding.
+func (c *Cluster) Propose(ctx context.Context, slotID multiraft.SlotID, cmd []byte) error {
 	if c.stopped.Load() {
 		return transport.ErrStopped
 	}
@@ -442,19 +442,19 @@ func (c *Cluster) Propose(ctx context.Context, groupID multiraft.GroupID, cmd []
 				return ctx.Err()
 			}
 		}
-		leaderID, err := c.router.LeaderOf(groupID)
+		leaderID, err := c.router.LeaderOf(slotID)
 		if err != nil {
 			return err
 		}
 		if c.router.IsLocal(leaderID) {
-			future, err := c.runtime.Propose(ctx, groupID, cmd)
+			future, err := c.runtime.Propose(ctx, slotID, cmd)
 			if err != nil {
 				return err
 			}
 			_, err = future.Wait(ctx)
 			return err
 		}
-		err = c.forwardToLeader(ctx, leaderID, groupID, cmd)
+		err = c.forwardToLeader(ctx, leaderID, slotID, cmd)
 		if errors.Is(err, ErrNotLeader) {
 			continue
 		}
@@ -463,17 +463,17 @@ func (c *Cluster) Propose(ctx context.Context, groupID multiraft.GroupID, cmd []
 	return ErrLeaderNotStable
 }
 
-// SlotForKey maps a key to a raft group via CRC32 hashing.
-func (c *Cluster) SlotForKey(key string) multiraft.GroupID {
+// SlotForKey maps a key to a raft slot via CRC32 hashing.
+func (c *Cluster) SlotForKey(key string) multiraft.SlotID {
 	return c.router.SlotForKey(key)
 }
 
-// LeaderOf returns the current leader of the specified group.
-func (c *Cluster) LeaderOf(groupID multiraft.GroupID) (multiraft.NodeID, error) {
+// LeaderOf returns the current leader of the specified slot.
+func (c *Cluster) LeaderOf(slotID multiraft.SlotID) (multiraft.NodeID, error) {
 	if c == nil || c.router == nil {
 		return 0, ErrNotStarted
 	}
-	return c.router.LeaderOf(groupID)
+	return c.router.LeaderOf(slotID)
 }
 
 // IsLocal reports whether the given node is the local node.
@@ -503,26 +503,26 @@ func (c *Cluster) Discovery() Discovery {
 }
 
 // RPCService issues an RPC request to the given node using the shared cluster transport.
-func (c *Cluster) RPCService(ctx context.Context, nodeID multiraft.NodeID, groupID multiraft.GroupID, serviceID uint8, payload []byte) ([]byte, error) {
+func (c *Cluster) RPCService(ctx context.Context, nodeID multiraft.NodeID, slotID multiraft.SlotID, serviceID uint8, payload []byte) ([]byte, error) {
 	if c.stopped.Load() {
 		return nil, transport.ErrStopped
 	}
 	if c.fwdClient == nil {
 		return nil, ErrNotStarted
 	}
-	return c.fwdClient.RPCService(ctx, uint64(nodeID), uint64(groupID), serviceID, payload)
+	return c.fwdClient.RPCService(ctx, uint64(nodeID), uint64(slotID), serviceID, payload)
 }
 
-// GroupIDs returns the configured control-plane group ids.
-func (c *Cluster) GroupIDs() []multiraft.GroupID {
-	groupIDs := make([]multiraft.GroupID, 0, c.cfg.GroupCount)
-	for groupID := uint32(1); groupID <= c.cfg.GroupCount; groupID++ {
-		groupIDs = append(groupIDs, multiraft.GroupID(groupID))
+// SlotIDs returns the configured control-plane slot ids.
+func (c *Cluster) SlotIDs() []multiraft.SlotID {
+	slotIDs := make([]multiraft.SlotID, 0, c.cfg.SlotCount)
+	for slotID := uint32(1); slotID <= c.cfg.SlotCount; slotID++ {
+		slotIDs = append(slotIDs, multiraft.SlotID(slotID))
 	}
-	return groupIDs
+	return slotIDs
 }
 
-func (c *Cluster) WaitForManagedGroupsReady(ctx context.Context) error {
+func (c *Cluster) WaitForManagedSlotsReady(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
@@ -535,7 +535,7 @@ func (c *Cluster) WaitForManagedGroupsReady(ctx context.Context) error {
 
 	var lastErr error
 	for {
-		ready, err := c.managedGroupsReady(ctx)
+		ready, err := c.managedSlotsReady(ctx)
 		if ready {
 			return nil
 		}
@@ -554,18 +554,18 @@ func (c *Cluster) WaitForManagedGroupsReady(ctx context.Context) error {
 	}
 }
 
-// PeersForGroup returns the configured peers for a control-plane group.
-func (c *Cluster) PeersForGroup(groupID multiraft.GroupID) []multiraft.NodeID {
-	if peers, ok := c.assignments.PeersForGroup(groupID); ok {
+// PeersForSlot returns the configured peers for a control-plane slot.
+func (c *Cluster) PeersForSlot(slotID multiraft.SlotID) []multiraft.NodeID {
+	if peers, ok := c.assignments.PeersForSlot(slotID); ok {
 		return peers
 	}
-	peers, _ := c.legacyPeersForGroup(groupID)
+	peers, _ := c.legacyPeersForGroup(slotID)
 	return peers
 }
 
-func (c *Cluster) ListObservedRuntimeViews(ctx context.Context) ([]controllermeta.GroupRuntimeView, error) {
+func (c *Cluster) ListObservedRuntimeViews(ctx context.Context) ([]controllermeta.SlotRuntimeView, error) {
 	if c.controllerClient != nil {
-		var views []controllermeta.GroupRuntimeView
+		var views []controllermeta.SlotRuntimeView
 		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
 			var err error
 			views, err = c.controllerClient.ListRuntimeViews(attemptCtx)
@@ -584,9 +584,9 @@ func (c *Cluster) ListObservedRuntimeViews(ctx context.Context) ([]controllermet
 	return nil, ErrNotStarted
 }
 
-func (c *Cluster) ListGroupAssignments(ctx context.Context) ([]controllermeta.GroupAssignment, error) {
+func (c *Cluster) ListSlotAssignments(ctx context.Context) ([]controllermeta.SlotAssignment, error) {
 	if c.controllerClient != nil {
-		var assignments []controllermeta.GroupAssignment
+		var assignments []controllermeta.SlotAssignment
 		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
 			var err error
 			assignments, err = c.controllerClient.RefreshAssignments(attemptCtx)
@@ -615,50 +615,50 @@ func controllerCommandRetryAllowed(err error) bool {
 		errors.Is(err, context.DeadlineExceeded)
 }
 
-func (c *Cluster) ListCachedAssignments() []controllermeta.GroupAssignment {
+func (c *Cluster) ListCachedAssignments() []controllermeta.SlotAssignment {
 	if c.assignments == nil {
 		return nil
 	}
 	return c.assignments.Snapshot()
 }
 
-func (c *Cluster) observationPeersForGroup(groupID multiraft.GroupID) []multiraft.NodeID {
-	if peers, ok := c.getRuntimePeers(groupID); ok {
+func (c *Cluster) observationPeersForGroup(slotID multiraft.SlotID) []multiraft.NodeID {
+	if peers, ok := c.getRuntimePeers(slotID); ok {
 		return peers
 	}
-	peers, _ := c.legacyPeersForGroup(groupID)
+	peers, _ := c.legacyPeersForGroup(slotID)
 	return peers
 }
 
-func (c *Cluster) legacyPeersForGroup(groupID multiraft.GroupID) ([]multiraft.NodeID, bool) {
-	for _, group := range c.cfg.Groups {
-		if group.GroupID != groupID {
+func (c *Cluster) legacyPeersForGroup(slotID multiraft.SlotID) ([]multiraft.NodeID, bool) {
+	for _, slot := range c.cfg.Slots {
+		if slot.SlotID != slotID {
 			continue
 		}
-		return append([]multiraft.NodeID(nil), group.Peers...), true
+		return append([]multiraft.NodeID(nil), slot.Peers...), true
 	}
 	return nil, false
 }
 
-func (c *Cluster) managedGroupsReady(ctx context.Context) (bool, error) {
-	groupIDs := c.GroupIDs()
-	if len(groupIDs) == 0 {
+func (c *Cluster) managedSlotsReady(ctx context.Context) (bool, error) {
+	slotIDs := c.SlotIDs()
+	if len(slotIDs) == 0 {
 		return true, nil
 	}
 	if c.controllerClient == nil {
-		for _, groupID := range groupIDs {
-			if _, err := c.LeaderOf(groupID); err != nil {
+		for _, slotID := range slotIDs {
+			if _, err := c.LeaderOf(slotID); err != nil {
 				return false, err
 			}
 		}
 		return true, nil
 	}
 
-	assignments, err := c.ListGroupAssignments(ctx)
+	assignments, err := c.ListSlotAssignments(ctx)
 	if err != nil {
 		return false, err
 	}
-	if len(assignments) != len(groupIDs) {
+	if len(assignments) != len(slotIDs) {
 		return false, nil
 	}
 
@@ -667,35 +667,35 @@ func (c *Cluster) managedGroupsReady(ctx context.Context) (bool, error) {
 		if len(assignment.DesiredPeers) == 0 {
 			return false, nil
 		}
-		assignmentByGroup[assignment.GroupID] = struct{}{}
+		assignmentByGroup[assignment.SlotID] = struct{}{}
 	}
-	for _, groupID := range groupIDs {
-		if _, ok := assignmentByGroup[uint32(groupID)]; !ok {
+	for _, slotID := range slotIDs {
+		if _, ok := assignmentByGroup[uint32(slotID)]; !ok {
 			return false, nil
 		}
 	}
 
-	for _, groupID := range c.localAssignedGroupIDs(assignments) {
-		if _, err := c.LeaderOf(groupID); err != nil {
+	for _, slotID := range c.localAssignedSlotIDs(assignments) {
+		if _, err := c.LeaderOf(slotID); err != nil {
 			return false, err
 		}
 	}
 	return true, nil
 }
 
-func (c *Cluster) localAssignedGroupIDs(assignments []controllermeta.GroupAssignment) []multiraft.GroupID {
+func (c *Cluster) localAssignedSlotIDs(assignments []controllermeta.SlotAssignment) []multiraft.SlotID {
 	if c == nil {
 		return nil
 	}
 
 	localNodeID := uint64(c.cfg.NodeID)
-	groupIDs := make([]multiraft.GroupID, 0, len(assignments))
+	slotIDs := make([]multiraft.SlotID, 0, len(assignments))
 	for _, assignment := range assignments {
 		if assignmentContainsPeer(assignment.DesiredPeers, localNodeID) {
-			groupIDs = append(groupIDs, multiraft.GroupID(assignment.GroupID))
+			slotIDs = append(slotIDs, multiraft.SlotID(assignment.SlotID))
 		}
 	}
-	return groupIDs
+	return slotIDs
 }
 
 func (c *Cluster) controllerReportAddr() string {
@@ -705,23 +705,23 @@ func (c *Cluster) controllerReportAddr() string {
 	return c.cfg.ListenAddr
 }
 
-func (c *Cluster) setRuntimePeers(groupID multiraft.GroupID, peers []multiraft.NodeID) {
+func (c *Cluster) setRuntimePeers(slotID multiraft.SlotID, peers []multiraft.NodeID) {
 	if c == nil {
 		return
 	}
 
 	c.runtimePeersMu.Lock()
-	c.runtimePeers[groupID] = append([]multiraft.NodeID(nil), peers...)
+	c.runtimePeers[slotID] = append([]multiraft.NodeID(nil), peers...)
 	c.runtimePeersMu.Unlock()
 }
 
-func (c *Cluster) getRuntimePeers(groupID multiraft.GroupID) ([]multiraft.NodeID, bool) {
+func (c *Cluster) getRuntimePeers(slotID multiraft.SlotID) ([]multiraft.NodeID, bool) {
 	if c == nil {
 		return nil, false
 	}
 
 	c.runtimePeersMu.RLock()
-	peers, ok := c.runtimePeers[groupID]
+	peers, ok := c.runtimePeers[slotID]
 	c.runtimePeersMu.RUnlock()
 	if !ok {
 		return nil, false
@@ -729,13 +729,13 @@ func (c *Cluster) getRuntimePeers(groupID multiraft.GroupID) ([]multiraft.NodeID
 	return append([]multiraft.NodeID(nil), peers...), true
 }
 
-func (c *Cluster) deleteRuntimePeers(groupID multiraft.GroupID) {
+func (c *Cluster) deleteRuntimePeers(slotID multiraft.SlotID) {
 	if c == nil {
 		return
 	}
 
 	c.runtimePeersMu.Lock()
-	delete(c.runtimePeers, groupID)
+	delete(c.runtimePeers, slotID)
 	c.runtimePeersMu.Unlock()
 }
 
@@ -773,8 +773,8 @@ func (c *Cluster) handleControllerRPC(ctx context.Context, body []byte) ([]byte,
 		}
 		proposeCtx, cancel := withControllerTimeout(ctx)
 		defer cancel()
-		if err := c.controller.Propose(proposeCtx, groupcontroller.Command{
-			Kind:   groupcontroller.CommandKindNodeHeartbeat,
+		if err := c.controller.Propose(proposeCtx, slotcontroller.Command{
+			Kind:   slotcontroller.CommandKindNodeHeartbeat,
 			Report: req.Report,
 		}); err != nil {
 			if errors.Is(err, controllerraft.ErrNotLeader) {
@@ -790,8 +790,8 @@ func (c *Cluster) handleControllerRPC(ctx context.Context, body []byte) ([]byte,
 		if req.Advance == nil {
 			return nil, ErrInvalidConfig
 		}
-		advance := &groupcontroller.TaskAdvance{
-			GroupID: req.Advance.GroupID,
+		advance := &slotcontroller.TaskAdvance{
+			SlotID:  req.Advance.SlotID,
 			Attempt: req.Advance.Attempt,
 			Now:     req.Advance.Now,
 		}
@@ -800,8 +800,8 @@ func (c *Cluster) handleControllerRPC(ctx context.Context, body []byte) ([]byte,
 		}
 		proposeCtx, cancel := withControllerTimeout(ctx)
 		defer cancel()
-		if err := c.controller.Propose(proposeCtx, groupcontroller.Command{
-			Kind:    groupcontroller.CommandKindTaskResult,
+		if err := c.controller.Propose(proposeCtx, slotcontroller.Command{
+			Kind:    slotcontroller.CommandKindTaskResult,
 			Advance: advance,
 		}); err != nil {
 			if errors.Is(err, controllerraft.ErrNotLeader) {
@@ -846,8 +846,8 @@ func (c *Cluster) handleControllerRPC(ctx context.Context, body []byte) ([]byte,
 		}
 		proposeCtx, cancel := withControllerTimeout(ctx)
 		defer cancel()
-		if err := c.controller.Propose(proposeCtx, groupcontroller.Command{
-			Kind: groupcontroller.CommandKindOperatorRequest,
+		if err := c.controller.Propose(proposeCtx, slotcontroller.Command{
+			Kind: slotcontroller.CommandKindOperatorRequest,
 			Op:   req.Op,
 		}); err != nil {
 			if errors.Is(err, controllerraft.ErrNotLeader) {
@@ -860,7 +860,7 @@ func (c *Cluster) handleControllerRPC(ctx context.Context, body []byte) ([]byte,
 		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
 			return marshalRedirect()
 		}
-		task, err := c.controllerMeta.GetTask(ctx, req.GroupID)
+		task, err := c.controllerMeta.GetTask(ctx, req.SlotID)
 		if errors.Is(err, controllermeta.ErrNotFound) {
 			return json.Marshal(controllerRPCResponse{NotFound: true})
 		}
@@ -872,7 +872,7 @@ func (c *Cluster) handleControllerRPC(ctx context.Context, body []byte) ([]byte,
 		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
 			return marshalRedirect()
 		}
-		if err := c.forceReconcileOnLeader(ctx, req.GroupID); err != nil {
+		if err := c.forceReconcileOnLeader(ctx, req.SlotID); err != nil {
 			return nil, err
 		}
 		return json.Marshal(controllerRPCResponse{})

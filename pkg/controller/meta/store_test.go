@@ -17,14 +17,14 @@ func TestStoreAssignmentAndTaskRoundTrip(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{
-		GroupID:        7,
+	require.NoError(t, store.UpsertAssignment(ctx, SlotAssignment{
+		SlotID:         7,
 		DesiredPeers:   []uint64{3, 1, 2, 2},
 		ConfigEpoch:    11,
 		BalanceVersion: 3,
 	}))
 	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{
-		GroupID:    7,
+		SlotID:     7,
 		Kind:       TaskKindRepair,
 		Step:       TaskStepAddLearner,
 		SourceNode: 4,
@@ -55,9 +55,9 @@ func TestStoreSnapshotRoundTrip(t *testing.T) {
 		LastHeartbeatAt: time.Unix(11, 0),
 		CapacityWeight:  1,
 	}))
-	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{GroupID: 1, DesiredPeers: []uint64{1, 2, 3}, ConfigEpoch: 1}))
-	require.NoError(t, store.UpsertRuntimeView(ctx, GroupRuntimeView{
-		GroupID:             1,
+	require.NoError(t, store.UpsertAssignment(ctx, SlotAssignment{SlotID: 1, DesiredPeers: []uint64{1, 2, 3}, ConfigEpoch: 1}))
+	require.NoError(t, store.UpsertRuntimeView(ctx, SlotRuntimeView{
+		SlotID:              1,
 		CurrentPeers:        []uint64{1, 2, 3},
 		LeaderID:            2,
 		HasQuorum:           true,
@@ -111,24 +111,24 @@ func TestStoreListsControllerStateForPlannerQueries(t *testing.T) {
 		LastHeartbeatAt: time.Unix(20, 0),
 		CapacityWeight:  1,
 	}))
-	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{GroupID: 2, DesiredPeers: []uint64{2, 3, 1}, ConfigEpoch: 3}))
-	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{GroupID: 1, DesiredPeers: []uint64{1, 2, 3}, ConfigEpoch: 2}))
-	require.NoError(t, store.UpsertRuntimeView(ctx, GroupRuntimeView{
-		GroupID:             2,
+	require.NoError(t, store.UpsertAssignment(ctx, SlotAssignment{SlotID: 2, DesiredPeers: []uint64{2, 3, 1}, ConfigEpoch: 3}))
+	require.NoError(t, store.UpsertAssignment(ctx, SlotAssignment{SlotID: 1, DesiredPeers: []uint64{1, 2, 3}, ConfigEpoch: 2}))
+	require.NoError(t, store.UpsertRuntimeView(ctx, SlotRuntimeView{
+		SlotID:              2,
 		CurrentPeers:        []uint64{3, 2, 1},
 		HasQuorum:           false,
 		ObservedConfigEpoch: 3,
 		LastReportAt:        time.Unix(22, 0),
 	}))
-	require.NoError(t, store.UpsertRuntimeView(ctx, GroupRuntimeView{
-		GroupID:             1,
+	require.NoError(t, store.UpsertRuntimeView(ctx, SlotRuntimeView{
+		SlotID:              1,
 		CurrentPeers:        []uint64{1, 2, 3},
 		HasQuorum:           true,
 		ObservedConfigEpoch: 2,
 		LastReportAt:        time.Unix(21, 0),
 	}))
-	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{GroupID: 2, Kind: TaskKindRebalance, Step: TaskStepTransferLeader}))
-	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{GroupID: 1, Kind: TaskKindRepair, Step: TaskStepAddLearner}))
+	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{SlotID: 2, Kind: TaskKindRebalance, Step: TaskStepTransferLeader}))
+	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{SlotID: 1, Kind: TaskKindRepair, Step: TaskStepAddLearner}))
 
 	nodes, err := store.ListNodes(ctx)
 	require.NoError(t, err)
@@ -141,15 +141,15 @@ func TestStoreListsControllerStateForPlannerQueries(t *testing.T) {
 	assignments, err := store.ListAssignments(ctx)
 	require.NoError(t, err)
 	require.Len(t, assignments, 2)
-	require.Equal(t, uint32(1), assignments[0].GroupID)
-	require.Equal(t, uint32(2), assignments[1].GroupID)
+	require.Equal(t, uint32(1), assignments[0].SlotID)
+	require.Equal(t, uint32(2), assignments[1].SlotID)
 	require.Equal(t, []uint64{1, 2, 3}, assignments[1].DesiredPeers)
 
 	views, err := store.ListRuntimeViews(ctx)
 	require.NoError(t, err)
 	require.Len(t, views, 2)
-	require.Equal(t, uint32(1), views[0].GroupID)
-	require.Equal(t, uint32(2), views[1].GroupID)
+	require.Equal(t, uint32(1), views[0].SlotID)
+	require.Equal(t, uint32(2), views[1].SlotID)
 	require.Equal(t, uint64(2), views[0].ObservedConfigEpoch)
 	require.Equal(t, time.Unix(21, 0), views[0].LastReportAt)
 	require.Equal(t, []uint64{1, 2, 3}, views[1].CurrentPeers)
@@ -157,8 +157,8 @@ func TestStoreListsControllerStateForPlannerQueries(t *testing.T) {
 	tasks, err := store.ListTasks(ctx)
 	require.NoError(t, err)
 	require.Len(t, tasks, 2)
-	require.Equal(t, uint32(1), tasks[0].GroupID)
-	require.Equal(t, uint32(2), tasks[1].GroupID)
+	require.Equal(t, uint32(1), tasks[0].SlotID)
+	require.Equal(t, uint32(2), tasks[1].SlotID)
 }
 
 func TestStoreControllerMembershipRoundTrip(t *testing.T) {
@@ -187,18 +187,18 @@ func TestStoreDeleteOperations(t *testing.T) {
 	require.NoError(t, store.UpsertControllerMembership(ctx, ControllerMembership{
 		Peers: []uint64{1, 2, 3},
 	}))
-	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{
-		GroupID:      1,
+	require.NoError(t, store.UpsertAssignment(ctx, SlotAssignment{
+		SlotID:       1,
 		DesiredPeers: []uint64{1, 2, 3},
 	}))
-	require.NoError(t, store.UpsertRuntimeView(ctx, GroupRuntimeView{
-		GroupID:      1,
+	require.NoError(t, store.UpsertRuntimeView(ctx, SlotRuntimeView{
+		SlotID:       1,
 		CurrentPeers: []uint64{1, 2, 3},
 	}))
 	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{
-		GroupID: 1,
-		Kind:    TaskKindRepair,
-		Step:    TaskStepAddLearner,
+		SlotID: 1,
+		Kind:   TaskKindRepair,
+		Step:   TaskStepAddLearner,
 	}))
 
 	require.NoError(t, store.DeleteNode(ctx, 1))
@@ -277,9 +277,9 @@ func TestImportSnapshotRejectsInvalidSemanticValues(t *testing.T) {
 	validTask := snapshotEntry{
 		Key: encodeGroupKey(recordPrefixTask, 1),
 		Value: encodeReconcileTask(ReconcileTask{
-			GroupID: 1,
-			Kind:    TaskKindRepair,
-			Step:    TaskStepAddLearner,
+			SlotID: 1,
+			Kind:   TaskKindRepair,
+			Step:   TaskStepAddLearner,
 		}),
 	}
 
@@ -316,9 +316,9 @@ func TestImportSnapshotRejectsInvalidSemanticValues(t *testing.T) {
 			entry: snapshotEntry{
 				Key: encodeGroupKey(recordPrefixTask, 1),
 				Value: encodeReconcileTask(ReconcileTask{
-					GroupID: 1,
-					Kind:    TaskKindUnknown,
-					Step:    TaskStepAddLearner,
+					SlotID: 1,
+					Kind:   TaskKindUnknown,
+					Step:   TaskStepAddLearner,
 				}),
 			},
 		},
@@ -350,8 +350,8 @@ func TestDecodeRejectsInvalidPersistedEnums(t *testing.T) {
 	_, err := decodeClusterNode(encodeNodeKey(1), nodeValue)
 	require.ErrorIs(t, err, ErrCorruptValue)
 
-	viewValue := encodeGroupRuntimeView(GroupRuntimeView{
-		GroupID:      1,
+	viewValue := encodeGroupRuntimeView(SlotRuntimeView{
+		SlotID:       1,
 		CurrentPeers: []uint64{1, 2, 3},
 		HasQuorum:    true,
 	})
@@ -360,9 +360,9 @@ func TestDecodeRejectsInvalidPersistedEnums(t *testing.T) {
 	require.ErrorIs(t, err, ErrCorruptValue)
 
 	taskValue := encodeReconcileTask(ReconcileTask{
-		GroupID: 1,
-		Kind:    TaskKindRepair,
-		Step:    TaskStepAddLearner,
+		SlotID: 1,
+		Kind:   TaskKindRepair,
+		Step:   TaskStepAddLearner,
 	})
 	taskValue[1] = 99
 	_, err = decodeReconcileTask(encodeGroupKey(recordPrefixTask, 1), taskValue)
@@ -382,16 +382,16 @@ func TestUpsertRejectsUnknownEnums(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidArgument)
 
 	err = store.UpsertTask(ctx, ReconcileTask{
-		GroupID: 1,
-		Kind:    TaskKindUnknown,
-		Step:    TaskStepAddLearner,
+		SlotID: 1,
+		Kind:   TaskKindUnknown,
+		Step:   TaskStepAddLearner,
 	})
 	require.ErrorIs(t, err, ErrInvalidArgument)
 
 	err = store.UpsertTask(ctx, ReconcileTask{
-		GroupID: 1,
-		Kind:    TaskKindRepair,
-		Step:    TaskStepUnknown,
+		SlotID: 1,
+		Kind:   TaskKindRepair,
+		Step:   TaskStepUnknown,
 	})
 	require.ErrorIs(t, err, ErrInvalidArgument)
 }
@@ -401,18 +401,18 @@ func TestUpsertTaskRejectsInconsistentTaskState(t *testing.T) {
 	ctx := context.Background()
 
 	err := store.UpsertTask(ctx, ReconcileTask{
-		GroupID: 1,
-		Kind:    TaskKindRepair,
-		Step:    TaskStepAddLearner,
-		Status:  TaskStatusRetrying,
+		SlotID: 1,
+		Kind:   TaskKindRepair,
+		Step:   TaskStepAddLearner,
+		Status: TaskStatusRetrying,
 	})
 	require.ErrorIs(t, err, ErrInvalidArgument)
 
 	err = store.UpsertTask(ctx, ReconcileTask{
-		GroupID: 1,
-		Kind:    TaskKindRepair,
-		Step:    TaskStepAddLearner,
-		Status:  TaskStatusFailed,
+		SlotID: 1,
+		Kind:   TaskKindRepair,
+		Step:   TaskStepAddLearner,
+		Status: TaskStatusFailed,
 	})
 	require.ErrorIs(t, err, ErrInvalidArgument)
 }
@@ -421,14 +421,14 @@ func TestStoreUpsertAssignmentTaskIsAtomic(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
-	err := store.UpsertAssignmentTask(ctx, GroupAssignment{
-		GroupID:      3,
+	err := store.UpsertAssignmentTask(ctx, SlotAssignment{
+		SlotID:       3,
 		DesiredPeers: []uint64{1, 2, 3},
 		ConfigEpoch:  2,
 	}, ReconcileTask{
-		GroupID: 3,
-		Kind:    TaskKindRepair,
-		Step:    TaskStepUnknown,
+		SlotID: 3,
+		Kind:   TaskKindRepair,
+		Step:   TaskStepUnknown,
 	})
 	require.ErrorIs(t, err, ErrInvalidArgument)
 
@@ -443,14 +443,14 @@ func TestUpsertRejectsInvalidPeerSets(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
-	err := store.UpsertAssignment(ctx, GroupAssignment{
-		GroupID:      1,
+	err := store.UpsertAssignment(ctx, SlotAssignment{
+		SlotID:       1,
 		DesiredPeers: []uint64{0, 1, 2},
 	})
 	require.ErrorIs(t, err, ErrInvalidArgument)
 
-	err = store.UpsertRuntimeView(ctx, GroupRuntimeView{
-		GroupID:      1,
+	err = store.UpsertRuntimeView(ctx, SlotRuntimeView{
+		SlotID:       1,
 		CurrentPeers: []uint64{0, 2, 3},
 	})
 	require.ErrorIs(t, err, ErrInvalidArgument)
@@ -463,15 +463,15 @@ func TestUpsertRejectsInvalidRuntimeViewState(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
-	err := store.UpsertRuntimeView(ctx, GroupRuntimeView{
-		GroupID:      1,
+	err := store.UpsertRuntimeView(ctx, SlotRuntimeView{
+		SlotID:       1,
 		CurrentPeers: []uint64{1, 2, 3},
 		LeaderID:     9,
 	})
 	require.ErrorIs(t, err, ErrInvalidArgument)
 
-	err = store.UpsertRuntimeView(ctx, GroupRuntimeView{
-		GroupID:       1,
+	err = store.UpsertRuntimeView(ctx, SlotRuntimeView{
+		SlotID:        1,
 		CurrentPeers:  []uint64{1, 2, 3},
 		HealthyVoters: 4,
 	})
@@ -482,12 +482,12 @@ func TestStoreCanonicalizesPeerOrdering(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{
-		GroupID:      9,
+	require.NoError(t, store.UpsertAssignment(ctx, SlotAssignment{
+		SlotID:       9,
 		DesiredPeers: []uint64{3, 1, 2, 2},
 	}))
-	require.NoError(t, store.UpsertRuntimeView(ctx, GroupRuntimeView{
-		GroupID:      9,
+	require.NoError(t, store.UpsertRuntimeView(ctx, SlotRuntimeView{
+		SlotID:       9,
 		CurrentPeers: []uint64{5, 3, 5, 4},
 	}))
 
@@ -506,12 +506,12 @@ func TestStoreListMethodsReturnDeterministicOrder(t *testing.T) {
 
 	require.NoError(t, store.UpsertNode(ctx, ClusterNode{NodeID: 9, Addr: "127.0.0.1:7009", Status: NodeStatusAlive, CapacityWeight: 1}))
 	require.NoError(t, store.UpsertNode(ctx, ClusterNode{NodeID: 3, Addr: "127.0.0.1:7003", Status: NodeStatusDraining, CapacityWeight: 1}))
-	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{GroupID: 8, DesiredPeers: []uint64{8, 9, 10}}))
-	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{GroupID: 2, DesiredPeers: []uint64{2, 3, 4}}))
-	require.NoError(t, store.UpsertRuntimeView(ctx, GroupRuntimeView{GroupID: 7, CurrentPeers: []uint64{7, 8, 9}}))
-	require.NoError(t, store.UpsertRuntimeView(ctx, GroupRuntimeView{GroupID: 1, CurrentPeers: []uint64{1, 2, 3}}))
-	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{GroupID: 5, Kind: TaskKindRepair, Step: TaskStepAddLearner}))
-	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{GroupID: 4, Kind: TaskKindRebalance, Step: TaskStepTransferLeader}))
+	require.NoError(t, store.UpsertAssignment(ctx, SlotAssignment{SlotID: 8, DesiredPeers: []uint64{8, 9, 10}}))
+	require.NoError(t, store.UpsertAssignment(ctx, SlotAssignment{SlotID: 2, DesiredPeers: []uint64{2, 3, 4}}))
+	require.NoError(t, store.UpsertRuntimeView(ctx, SlotRuntimeView{SlotID: 7, CurrentPeers: []uint64{7, 8, 9}}))
+	require.NoError(t, store.UpsertRuntimeView(ctx, SlotRuntimeView{SlotID: 1, CurrentPeers: []uint64{1, 2, 3}}))
+	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{SlotID: 5, Kind: TaskKindRepair, Step: TaskStepAddLearner}))
+	require.NoError(t, store.UpsertTask(ctx, ReconcileTask{SlotID: 4, Kind: TaskKindRebalance, Step: TaskStepTransferLeader}))
 
 	nodes, err := store.ListNodes(ctx)
 	require.NoError(t, err)
@@ -522,20 +522,20 @@ func TestStoreListMethodsReturnDeterministicOrder(t *testing.T) {
 	assignments, err := store.ListAssignments(ctx)
 	require.NoError(t, err)
 	require.Len(t, assignments, 2)
-	require.Equal(t, uint32(2), assignments[0].GroupID)
-	require.Equal(t, uint32(8), assignments[1].GroupID)
+	require.Equal(t, uint32(2), assignments[0].SlotID)
+	require.Equal(t, uint32(8), assignments[1].SlotID)
 
 	views, err := store.ListRuntimeViews(ctx)
 	require.NoError(t, err)
 	require.Len(t, views, 2)
-	require.Equal(t, uint32(1), views[0].GroupID)
-	require.Equal(t, uint32(7), views[1].GroupID)
+	require.Equal(t, uint32(1), views[0].SlotID)
+	require.Equal(t, uint32(7), views[1].SlotID)
 
 	tasks, err := store.ListTasks(ctx)
 	require.NoError(t, err)
 	require.Len(t, tasks, 2)
-	require.Equal(t, uint32(4), tasks[0].GroupID)
-	require.Equal(t, uint32(5), tasks[1].GroupID)
+	require.Equal(t, uint32(4), tasks[0].SlotID)
+	require.Equal(t, uint32(5), tasks[1].SlotID)
 }
 
 func TestImportSnapshotRejectsInvalidPeerSets(t *testing.T) {
@@ -551,8 +551,8 @@ func TestImportSnapshotRejectsInvalidPeerSets(t *testing.T) {
 			entries: []snapshotEntry{
 				{
 					Key: encodeGroupKey(recordPrefixAssignment, 1),
-					Value: encodeGroupAssignment(GroupAssignment{
-						GroupID:      1,
+					Value: encodeGroupAssignment(SlotAssignment{
+						SlotID:       1,
 						DesiredPeers: []uint64{0, 1, 2},
 					}),
 				},
@@ -589,8 +589,8 @@ func TestImportSnapshotRejectsInvalidRuntimeViewState(t *testing.T) {
 			name: "leader not in peers",
 			entry: snapshotEntry{
 				Key: encodeGroupKey(recordPrefixRuntimeView, 1),
-				Value: encodeGroupRuntimeView(GroupRuntimeView{
-					GroupID:      1,
+				Value: encodeGroupRuntimeView(SlotRuntimeView{
+					SlotID:       1,
 					CurrentPeers: []uint64{1, 2, 3},
 					LeaderID:     9,
 				}),
@@ -600,8 +600,8 @@ func TestImportSnapshotRejectsInvalidRuntimeViewState(t *testing.T) {
 			name: "healthy voters exceed peers",
 			entry: snapshotEntry{
 				Key: encodeGroupKey(recordPrefixRuntimeView, 1),
-				Value: encodeGroupRuntimeView(GroupRuntimeView{
-					GroupID:       1,
+				Value: encodeGroupRuntimeView(SlotRuntimeView{
+					SlotID:        1,
 					CurrentPeers:  []uint64{1, 2, 3},
 					HealthyVoters: 4,
 				}),
@@ -650,16 +650,16 @@ func TestImportSnapshotHonorsCancellation(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, store.UpsertAssignment(ctx, GroupAssignment{
-		GroupID:      1,
+	require.NoError(t, store.UpsertAssignment(ctx, SlotAssignment{
+		SlotID:       1,
 		DesiredPeers: []uint64{1, 2, 3},
 	}))
 
 	snap := encodeSnapshot([]snapshotEntry{
 		{
 			Key: encodeGroupKey(recordPrefixAssignment, 2),
-			Value: encodeGroupAssignment(GroupAssignment{
-				GroupID:      2,
+			Value: encodeGroupAssignment(SlotAssignment{
+				SlotID:       2,
 				DesiredPeers: []uint64{2, 3, 4},
 			}),
 		},
@@ -763,11 +763,11 @@ func TestStoreRejectsOperationsAfterClose(t *testing.T) {
 		{"GetAssignment", func() error { _, err := store.GetAssignment(ctx, 0); return err }},
 		{"DeleteAssignment", func() error { return store.DeleteAssignment(ctx, 0) }},
 		{"ListAssignments", func() error { _, err := store.ListAssignments(ctx); return err }},
-		{"UpsertAssignment", func() error { return store.UpsertAssignment(ctx, GroupAssignment{}) }},
+		{"UpsertAssignment", func() error { return store.UpsertAssignment(ctx, SlotAssignment{}) }},
 		{"GetRuntimeView", func() error { _, err := store.GetRuntimeView(ctx, 0); return err }},
 		{"DeleteRuntimeView", func() error { return store.DeleteRuntimeView(ctx, 0) }},
 		{"ListRuntimeViews", func() error { _, err := store.ListRuntimeViews(ctx); return err }},
-		{"UpsertRuntimeView", func() error { return store.UpsertRuntimeView(ctx, GroupRuntimeView{}) }},
+		{"UpsertRuntimeView", func() error { return store.UpsertRuntimeView(ctx, SlotRuntimeView{}) }},
 		{"GetControllerMembership", func() error { _, err := store.GetControllerMembership(ctx); return err }},
 		{"DeleteControllerMembership", func() error { return store.DeleteControllerMembership(ctx) }},
 		{"UpsertControllerMembership", func() error { return store.UpsertControllerMembership(ctx, ControllerMembership{}) }},

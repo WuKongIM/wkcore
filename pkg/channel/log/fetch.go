@@ -9,7 +9,7 @@ func (c *cluster) Fetch(_ context.Context, req FetchRequest) (FetchResult, error
 	if req.MaxBytes <= 0 {
 		return FetchResult{}, ErrInvalidFetchBudget
 	}
-	groupKey := channelGroupKey(req.Key)
+	channelKey := isrChannelKeyForChannel(req.Key)
 
 	meta, err := c.metaForKey(req.Key)
 	if err != nil {
@@ -25,7 +25,7 @@ func (c *cluster) Fetch(_ context.Context, req FetchRequest) (FetchResult, error
 		return FetchResult{}, ErrChannelNotFound
 	}
 
-	group, ok := c.cfg.Runtime.Group(groupKey)
+	group, ok := c.cfg.Runtime.Channel(channelKey)
 	if !ok {
 		return FetchResult{}, ErrStaleMeta
 	}
@@ -47,7 +47,7 @@ func (c *cluster) Fetch(_ context.Context, req FetchRequest) (FetchResult, error
 	}
 
 	fromOffset := startSeq - 1
-	records, err := c.cfg.Log.Read(groupKey, fromOffset, req.Limit, req.MaxBytes)
+	records, err := c.cfg.Log.Read(channelKey, fromOffset, req.Limit, req.MaxBytes)
 	if err != nil {
 		return FetchResult{}, err
 	}

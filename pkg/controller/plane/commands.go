@@ -30,7 +30,7 @@ type AgentReport struct {
 	Addr           string
 	ObservedAt     time.Time
 	CapacityWeight int
-	Runtime        *controllermeta.GroupRuntimeView
+	Runtime        *controllermeta.SlotRuntimeView
 }
 
 type OperatorRequest struct {
@@ -39,7 +39,7 @@ type OperatorRequest struct {
 }
 
 type TaskAdvance struct {
-	GroupID uint32
+	SlotID  uint32
 	Attempt uint32
 	Now     time.Time
 	Err     error
@@ -50,6 +50,6 @@ type Command struct {
 	Report     *AgentReport
 	Op         *OperatorRequest
 	Advance    *TaskAdvance
-	Assignment *controllermeta.GroupAssignment
+	Assignment *controllermeta.SlotAssignment
 	Task       *controllermeta.ReconcileTask
 }

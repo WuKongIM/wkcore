@@ -28,7 +28,7 @@ func TestStoreApplyFetchPublishesLEOOnlyAfterCoordinatorCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StateStoreFactory().ForChannel() error = %v", err)
 	}
-	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), store, db, store.key, state, store.groupKey)
+	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), store, db, store.key, state, store.channelKey)
 	if err != nil {
 		t.Fatalf("newCheckpointBridge() error = %v", err)
 	}
@@ -90,7 +90,7 @@ func TestISRBridgeLEODoesNotBlockWhileCoordinatorSyncIsInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StateStoreFactory().ForChannel() error = %v", err)
 	}
-	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), store, db, store.key, state, store.groupKey)
+	checkpoints, err := newCheckpointBridge(store.isrCheckpointStore(), store, db, store.key, state, store.channelKey)
 	if err != nil {
 		t.Fatalf("newCheckpointBridge() error = %v", err)
 	}

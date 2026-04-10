@@ -19,11 +19,11 @@ func TestHandleRuntimeMetaRPCBeforeClusterStartReturnsNoLeader(t *testing.T) {
 	cluster, err := raftcluster.NewCluster(raftcluster.Config{
 		NodeID:             1,
 		ListenAddr:         "127.0.0.1:9090",
-		GroupCount:         1,
+		SlotCount:          1,
 		ControllerReplicaN: 1,
-		GroupReplicaN:      1,
-		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
-			return raftDB.ForGroup(uint64(groupID)), nil
+		SlotReplicaN:       1,
+		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
+			return raftDB.ForGroup(uint64(slotID)), nil
 		},
 		NewStateMachine: metafsm.NewStateMachineFactory(db),
 		Nodes: []raftcluster.NodeConfig{{
@@ -35,8 +35,8 @@ func TestHandleRuntimeMetaRPCBeforeClusterStartReturnsNoLeader(t *testing.T) {
 
 	store := New(cluster, db)
 	body, err := json.Marshal(runtimeMetaRPCRequest{
-		Op:      runtimeMetaRPCList,
-		GroupID: 1,
+		Op:     runtimeMetaRPCList,
+		SlotID: 1,
 	})
 	require.NoError(t, err)
 

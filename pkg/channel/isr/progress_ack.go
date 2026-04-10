@@ -13,7 +13,7 @@ func (r *replica) ApplyProgressAck(_ context.Context, req ProgressAckRequest) er
 		r.mu.Unlock()
 		return ErrNotLeader
 	}
-	if req.GroupKey != "" && req.GroupKey != r.state.GroupKey {
+	if req.ChannelKey != "" && req.ChannelKey != r.state.ChannelKey {
 		r.mu.Unlock()
 		return ErrStaleMeta
 	}

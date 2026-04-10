@@ -33,7 +33,7 @@ func TestSendReturnsUnsupportedChannelType(t *testing.T) {
 
 	result, err := app.Send(context.Background(), SendCommand{
 		FromUID:     "u1",
-		ChannelID:   "group-1",
+		ChannelID:   "slot-1",
 		ChannelType: 99,
 		ClientSeq:   12,
 		ClientMsgNo: "m3",
@@ -576,11 +576,11 @@ func (f *fakeRegistry) ConnectionsByUID(uid string) []online.OnlineConn {
 	return out
 }
 
-func (f *fakeRegistry) ActiveConnectionsByGroup(uint64) []online.OnlineConn {
+func (f *fakeRegistry) ActiveConnectionsBySlot(uint64) []online.OnlineConn {
 	return nil
 }
 
-func (f *fakeRegistry) ActiveGroups() []online.GroupSnapshot {
+func (f *fakeRegistry) ActiveSlots() []online.SlotSnapshot {
 	return nil
 }
 

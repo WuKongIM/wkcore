@@ -10,9 +10,9 @@ import (
 
 const rpcServiceForward uint8 = 1
 
-func (c *Cluster) forwardToLeader(ctx context.Context, leaderID multiraft.NodeID, groupID multiraft.GroupID, cmd []byte) error {
-	payload := encodeForwardPayload(uint64(groupID), cmd)
-	resp, err := c.fwdClient.RPCService(ctx, uint64(leaderID), uint64(groupID), rpcServiceForward, payload)
+func (c *Cluster) forwardToLeader(ctx context.Context, leaderID multiraft.NodeID, slotID multiraft.SlotID, cmd []byte) error {
+	payload := encodeForwardPayload(uint64(slotID), cmd)
+	resp, err := c.fwdClient.RPCService(ctx, uint64(leaderID), uint64(slotID), rpcServiceForward, payload)
 	if err != nil {
 		return err
 	}
@@ -27,8 +27,8 @@ func (c *Cluster) forwardToLeader(ctx context.Context, leaderID multiraft.NodeID
 		return ErrNotLeader
 	case errCodeTimeout:
 		return transport.ErrTimeout
-	case errCodeNoGroup:
-		return ErrGroupNotFound
+	case errCodeNoSlot:
+		return ErrSlotNotFound
 	default:
 		return fmt.Errorf("unknown forward error code: %d", errCode)
 	}
@@ -36,18 +36,18 @@ func (c *Cluster) forwardToLeader(ctx context.Context, leaderID multiraft.NodeID
 
 // handleForwardRPC is the server-side RPC handler for forwarded proposals.
 func (c *Cluster) handleForwardRPC(ctx context.Context, body []byte) ([]byte, error) {
-	groupID, cmd, err := decodeForwardPayload(body)
+	slotID, cmd, err := decodeForwardPayload(body)
 	if err != nil {
-		return encodeForwardResp(errCodeNoGroup, nil), nil
+		return encodeForwardResp(errCodeNoSlot, nil), nil
 	}
 	if c.stopped.Load() {
 		return encodeForwardResp(errCodeTimeout, nil), nil
 	}
-	_, err = c.runtime.Status(multiraft.GroupID(groupID))
+	_, err = c.runtime.Status(multiraft.SlotID(slotID))
 	if err != nil {
-		return encodeForwardResp(errCodeNoGroup, nil), nil
+		return encodeForwardResp(errCodeNoSlot, nil), nil
 	}
-	future, err := c.runtime.Propose(ctx, multiraft.GroupID(groupID), cmd)
+	future, err := c.runtime.Propose(ctx, multiraft.SlotID(slotID), cmd)
 	if err != nil {
 		return encodeForwardResp(errCodeNotLeader, nil), nil
 	}

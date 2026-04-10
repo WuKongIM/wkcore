@@ -22,7 +22,7 @@ func TestRegistryRegisterStoresDeviceIDGroupAndActiveState(t *testing.T) {
 		SessionID:   11,
 		UID:         "u1",
 		DeviceID:    "d1",
-		GroupID:     7,
+		SlotID:      7,
 		State:       LocalRouteStateActive,
 		DeviceFlag:  frame.APP,
 		DeviceLevel: frame.DeviceLevelMaster,
@@ -41,9 +41,9 @@ func TestRegistryRegisterStoresDeviceIDGroupAndActiveState(t *testing.T) {
 	require.Len(t, connections, 1)
 	require.Equal(t, conn, connections[0])
 
-	groups := reg.ActiveGroups()
+	groups := reg.ActiveSlots()
 	require.Len(t, groups, 1)
-	require.Equal(t, uint64(7), groups[0].GroupID)
+	require.Equal(t, uint64(7), groups[0].SlotID)
 	require.Equal(t, 1, groups[0].Count)
 	require.NotZero(t, groups[0].Digest)
 }
@@ -158,20 +158,20 @@ func TestRegistryMarkClosingRemovesRouteFromUIDDeliveryAndBucketDigest(t *testin
 		SessionID:   11,
 		UID:         "u1",
 		DeviceID:    "d1",
-		GroupID:     1,
+		SlotID:      1,
 		State:       LocalRouteStateActive,
 		DeviceFlag:  frame.APP,
 		DeviceLevel: frame.DeviceLevelMaster,
 		Session:     session.New(session.Config{ID: 11, Listener: "tcp"}),
 	}))
 
-	before := reg.ActiveGroups()
+	before := reg.ActiveSlots()
 	conn, ok := reg.MarkClosing(11)
 	require.True(t, ok)
 	require.Equal(t, LocalRouteStateClosing, conn.State)
 	require.Empty(t, reg.ConnectionsByUID("u1"))
 	require.NotEmpty(t, before)
-	require.Empty(t, reg.ActiveGroups())
+	require.Empty(t, reg.ActiveSlots())
 }
 
 func TestRegistryMarkClosingUpdatesOnlyOccupiedGroupSnapshots(t *testing.T) {
@@ -180,7 +180,7 @@ func TestRegistryMarkClosingUpdatesOnlyOccupiedGroupSnapshots(t *testing.T) {
 		SessionID:   11,
 		UID:         "u1",
 		DeviceID:    "d1",
-		GroupID:     1,
+		SlotID:      1,
 		State:       LocalRouteStateActive,
 		DeviceFlag:  frame.APP,
 		DeviceLevel: frame.DeviceLevelMaster,
@@ -190,14 +190,14 @@ func TestRegistryMarkClosingUpdatesOnlyOccupiedGroupSnapshots(t *testing.T) {
 		SessionID:   12,
 		UID:         "u1",
 		DeviceID:    "d2",
-		GroupID:     1,
+		SlotID:      1,
 		State:       LocalRouteStateActive,
 		DeviceFlag:  frame.WEB,
 		DeviceLevel: frame.DeviceLevelSlave,
 		Session:     session.New(session.Config{ID: 12, Listener: "ws"}),
 	}))
 
-	before := reg.ActiveGroups()
+	before := reg.ActiveSlots()
 	require.Len(t, before, 1)
 	require.Equal(t, 2, before[0].Count)
 
@@ -205,9 +205,9 @@ func TestRegistryMarkClosingUpdatesOnlyOccupiedGroupSnapshots(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, LocalRouteStateClosing, conn.State)
 
-	after := reg.ActiveGroups()
+	after := reg.ActiveSlots()
 	require.Len(t, after, 1)
-	require.Equal(t, uint64(1), after[0].GroupID)
+	require.Equal(t, uint64(1), after[0].SlotID)
 	require.Equal(t, 1, after[0].Count)
 	require.NotEqual(t, before[0].Digest, after[0].Digest)
 }
@@ -219,7 +219,7 @@ func TestRegistryActiveConnectionsByGroupReturnsOnlyActiveRoutes(t *testing.T) {
 		SessionID:   11,
 		UID:         "u1",
 		DeviceID:    "d1",
-		GroupID:     3,
+		SlotID:      3,
 		State:       LocalRouteStateActive,
 		DeviceFlag:  frame.APP,
 		DeviceLevel: frame.DeviceLevelMaster,
@@ -229,7 +229,7 @@ func TestRegistryActiveConnectionsByGroupReturnsOnlyActiveRoutes(t *testing.T) {
 		SessionID:   12,
 		UID:         "u1",
 		DeviceID:    "d2",
-		GroupID:     3,
+		SlotID:      3,
 		State:       LocalRouteStateClosing,
 		DeviceFlag:  frame.WEB,
 		DeviceLevel: frame.DeviceLevelSlave,
@@ -239,7 +239,7 @@ func TestRegistryActiveConnectionsByGroupReturnsOnlyActiveRoutes(t *testing.T) {
 	require.NoError(t, reg.Register(active))
 	require.NoError(t, reg.Register(closing))
 
-	conns := reg.ActiveConnectionsByGroup(3)
+	conns := reg.ActiveConnectionsBySlot(3)
 	require.Len(t, conns, 1)
 	require.Equal(t, active, conns[0])
 }

@@ -40,8 +40,8 @@ type snapshotState struct {
 	mu            sync.Mutex
 	inflight      int
 	maxConcurrent int
-	waiting       []isr.GroupKey
-	waitingSet    map[isr.GroupKey]struct{}
+	waiting       []isr.ChannelKey
+	waitingSet    map[isr.ChannelKey]struct{}
 }
 
 func (s *snapshotState) begin(limit int) bool {
@@ -66,29 +66,29 @@ func (s *snapshotState) finish() {
 	}
 }
 
-func (s *snapshotState) wait(groupKey isr.GroupKey) {
+func (s *snapshotState) wait(channelKey isr.ChannelKey) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.waitingSet == nil {
-		s.waitingSet = make(map[isr.GroupKey]struct{})
+		s.waitingSet = make(map[isr.ChannelKey]struct{})
 	}
-	if _, exists := s.waitingSet[groupKey]; exists {
+	if _, exists := s.waitingSet[channelKey]; exists {
 		return
 	}
-	s.waiting = append(s.waiting, groupKey)
-	s.waitingSet[groupKey] = struct{}{}
+	s.waiting = append(s.waiting, channelKey)
+	s.waitingSet[channelKey] = struct{}{}
 }
 
-func (s *snapshotState) popWaiter() (isr.GroupKey, bool) {
+func (s *snapshotState) popWaiter() (isr.ChannelKey, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.waiting) == 0 {
 		return "", false
 	}
-	groupKey := s.waiting[0]
+	channelKey := s.waiting[0]
 	s.waiting = s.waiting[1:]
-	delete(s.waitingSet, groupKey)
-	return groupKey, true
+	delete(s.waitingSet, channelKey)
+	return channelKey, true
 }
 
 func (s *snapshotState) maxObserved() int {
@@ -103,54 +103,54 @@ func (s *snapshotState) waitingCount() int {
 	return len(s.waiting)
 }
 
-func (r *runtime) queueSnapshot(groupKey isr.GroupKey) {
-	r.queueSnapshotChunk(groupKey, 0)
+func (r *runtime) queueSnapshot(channelKey isr.ChannelKey) {
+	r.queueSnapshotChunk(channelKey, 0)
 }
 
-func (r *runtime) queueSnapshotChunk(groupKey isr.GroupKey, bytes int64) {
+func (r *runtime) queueSnapshotChunk(channelKey isr.ChannelKey, bytes int64) {
 	r.mu.RLock()
-	g, ok := r.groups[groupKey]
+	g, ok := r.groups[channelKey]
 	r.mu.RUnlock()
 	if !ok {
 		return
 	}
 	g.enqueueSnapshot(bytes)
 	g.markSnapshot()
-	r.enqueueScheduler(groupKey)
+	r.enqueueScheduler(channelKey)
 }
 
-func (r *runtime) processSnapshot(groupKey isr.GroupKey) {
+func (r *runtime) processSnapshot(channelKey isr.ChannelKey) {
 	r.mu.RLock()
-	g, ok := r.groups[groupKey]
+	g, ok := r.groups[channelKey]
 	r.mu.RUnlock()
 	if !ok {
 		return
 	}
 
 	if !r.snapshots.begin(r.cfg.Limits.MaxSnapshotInflight) {
-		r.snapshots.wait(groupKey)
+		r.snapshots.wait(channelKey)
 		return
 	}
 
 	bytes := g.drainSnapshotBytes()
 	r.snapshotThrottle.Wait(bytes)
-	r.completeSnapshot(groupKey)
+	r.completeSnapshot(channelKey)
 }
 
 func (r *runtime) maxSnapshotConcurrent() int {
 	return r.snapshots.maxObserved()
 }
 
-func (r *runtime) completeSnapshot(groupKey isr.GroupKey) {
+func (r *runtime) completeSnapshot(channelKey isr.ChannelKey) {
 	r.snapshots.finish()
-	if nextGroupKey, ok := r.snapshots.popWaiter(); ok {
+	if nextChannelKey, ok := r.snapshots.popWaiter(); ok {
 		r.mu.RLock()
-		g, exists := r.groups[nextGroupKey]
+		g, exists := r.groups[nextChannelKey]
 		r.mu.RUnlock()
 		if exists {
 			g.markSnapshot()
 		}
-		r.enqueueScheduler(nextGroupKey)
+		r.enqueueScheduler(nextChannelKey)
 	}
 }
 

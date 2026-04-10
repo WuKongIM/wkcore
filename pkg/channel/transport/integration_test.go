@@ -55,7 +55,7 @@ func TestAdapterRoundTripsFetchRequestAndResponse(t *testing.T) {
 		FetchService: fetchServiceFunc(func(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
 			truncateTo := uint64(8)
 			return isrnode.FetchResponseEnvelope{
-				GroupKey:   req.GroupKey,
+				ChannelKey: req.ChannelKey,
 				Epoch:      req.Epoch + 1,
 				Generation: req.Generation,
 				TruncateTo: &truncateTo,
@@ -81,13 +81,13 @@ func TestAdapterRoundTripsFetchRequestAndResponse(t *testing.T) {
 
 	err = session.Send(isrnode.Envelope{
 		Peer:       2,
-		GroupKey:   isr.GroupKey("g1"),
+		ChannelKey: isr.ChannelKey("g1"),
 		Epoch:      3,
 		Generation: 7,
 		RequestID:  9,
 		Kind:       isrnode.MessageKindFetchRequest,
 		FetchRequest: &isrnode.FetchRequestEnvelope{
-			GroupKey:    isr.GroupKey("g1"),
+			ChannelKey:  isr.ChannelKey("g1"),
 			Epoch:       3,
 			Generation:  7,
 			ReplicaID:   1,

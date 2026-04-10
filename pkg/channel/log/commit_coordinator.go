@@ -14,10 +14,10 @@ const (
 )
 
 type commitRequest struct {
-	groupKey isr.GroupKey
-	build    func(*pebble.Batch) error
-	publish  func() error
-	done     chan error
+	channelKey isr.ChannelKey
+	build      func(*pebble.Batch) error
+	publish    func() error
+	done       chan error
 }
 
 type commitCoordinator struct {

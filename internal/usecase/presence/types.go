@@ -29,7 +29,7 @@ type RouteAction struct {
 }
 
 type GatewayLease struct {
-	GroupID        uint64
+	SlotID         uint64
 	GatewayNodeID  uint64
 	GatewayBootID  uint64
 	RouteCount     int
@@ -38,8 +38,8 @@ type GatewayLease struct {
 }
 
 type RegisterAuthoritativeCommand struct {
-	GroupID uint64
-	Route   Route
+	SlotID uint64
+	Route  Route
 }
 
 type RegisterAuthoritativeResult struct {
@@ -47,8 +47,8 @@ type RegisterAuthoritativeResult struct {
 }
 
 type UnregisterAuthoritativeCommand struct {
-	GroupID uint64
-	Route   Route
+	SlotID uint64
+	Route  Route
 }
 
 type HeartbeatAuthoritativeCommand struct {

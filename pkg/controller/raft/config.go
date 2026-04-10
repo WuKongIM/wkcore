@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"slices"
 
-	groupcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
+	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
 	"github.com/WuKongIM/WuKongIM/pkg/transport"
 )
@@ -19,7 +19,7 @@ type Config struct {
 	Peers          []Peer
 	AllowBootstrap bool
 	LogDB          *raftstorage.DB
-	StateMachine   *groupcontroller.StateMachine
+	StateMachine   *slotcontroller.StateMachine
 	Server         *transport.Server
 	RPCMux         *transport.RPCMux
 	Pool           *transport.Pool

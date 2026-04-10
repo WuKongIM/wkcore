@@ -120,11 +120,11 @@ func (f *fakeLogStore) Sync() error {
 }
 
 type fakeCheckpointStore struct {
-	mu         sync.Mutex
-	checkpoint Checkpoint
-	loadErr    error
-	stored     []Checkpoint
-	calls      *callLog
+	mu            sync.Mutex
+	checkpoint    Checkpoint
+	loadErr       error
+	stored        []Checkpoint
+	calls         *callLog
 	storeStarted  chan struct{}
 	storeContinue chan struct{}
 }
@@ -352,11 +352,11 @@ func cloneSnapshot(snap Snapshot) Snapshot {
 }
 
 type fakeApplyFetchStore struct {
-	calls      int
-	leo        uint64
-	lastReq    ApplyFetchStoreRequest
-	returnErr  error
-	returnLEO  uint64
+	calls     int
+	leo       uint64
+	lastReq   ApplyFetchStoreRequest
+	returnErr error
+	returnLEO uint64
 }
 
 func (f *fakeApplyFetchStore) StoreApplyFetch(req ApplyFetchStoreRequest) (uint64, error) {
@@ -479,13 +479,13 @@ func newFollowerEnv(t testing.TB) *testEnv {
 	return env
 }
 
-func activeMeta(epoch uint64, leader NodeID) GroupMeta {
+func activeMeta(epoch uint64, leader NodeID) ChannelMeta {
 	return activeMetaWithMinISR(epoch, leader, 2)
 }
 
-func activeMetaWithMinISR(epoch uint64, leader NodeID, minISR int) GroupMeta {
-	return GroupMeta{
-		GroupKey:   "group-10",
+func activeMetaWithMinISR(epoch uint64, leader NodeID, minISR int) ChannelMeta {
+	return ChannelMeta{
+		ChannelKey: "group-10",
 		Epoch:      epoch,
 		Leader:     leader,
 		Replicas:   []NodeID{1, 2, 3},
@@ -495,7 +495,7 @@ func activeMetaWithMinISR(epoch uint64, leader NodeID, minISR int) GroupMeta {
 	}
 }
 
-func (r *replica) mustApplyMeta(t testing.TB, meta GroupMeta) {
+func (r *replica) mustApplyMeta(t testing.TB, meta ChannelMeta) {
 	t.Helper()
 	if err := r.ApplyMeta(meta); err != nil {
 		t.Fatalf("ApplyMeta() error = %v", err)
@@ -552,7 +552,7 @@ func (c *threeReplicaCluster) replicateOnce(t testing.TB, follower *replica) {
 	t.Helper()
 
 	req := FetchRequest{
-		GroupKey:    c.leader.state.GroupKey,
+		ChannelKey:  c.leader.state.ChannelKey,
 		Epoch:       c.leader.state.Epoch,
 		ReplicaID:   follower.localNode,
 		FetchOffset: follower.state.LEO,
@@ -564,7 +564,7 @@ func (c *threeReplicaCluster) replicateOnce(t testing.TB, follower *replica) {
 		t.Fatalf("Fetch() error = %v", err)
 	}
 	if err := follower.ApplyFetch(context.Background(), ApplyFetchRequest{
-		GroupKey:   req.GroupKey,
+		ChannelKey: req.ChannelKey,
 		Epoch:      result.Epoch,
 		Leader:     c.leader.localNode,
 		TruncateTo: result.TruncateTo,
@@ -577,7 +577,7 @@ func (c *threeReplicaCluster) replicateOnce(t testing.TB, follower *replica) {
 		t.Fatal("follower LEO did not advance after ApplyFetch")
 	}
 	_, err = c.leader.Fetch(context.Background(), FetchRequest{
-		GroupKey:    req.GroupKey,
+		ChannelKey:  req.ChannelKey,
 		Epoch:       result.Epoch,
 		ReplicaID:   follower.localNode,
 		FetchOffset: follower.state.LEO,

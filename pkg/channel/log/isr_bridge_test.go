@@ -22,7 +22,7 @@ func TestStoreBridgesReplicaAppendAndRecoverCommittedLog(t *testing.T) {
 	store := db.ForChannel(key)
 
 	replica := newStoreReplica(t, store, 1)
-	meta := singleReplicaMeta(store.groupKey, 7, 1)
+	meta := singleReplicaMeta(store.channelKey, 7, 1)
 	if err := replica.ApplyMeta(meta); err != nil {
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}
@@ -92,7 +92,7 @@ func TestStoreBridgesReplicaApplyFetchAndRecoverFollowerState(t *testing.T) {
 	store := db.ForChannel(key)
 
 	replica := newChannelLogReplica(t, store, 2)
-	meta := followerMeta(store.groupKey, 7, 1, 2)
+	meta := followerMeta(store.channelKey, 7, 1, 2)
 	if err := replica.ApplyMeta(meta); err != nil {
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}
@@ -101,9 +101,9 @@ func TestStoreBridgesReplicaApplyFetchAndRecoverFollowerState(t *testing.T) {
 	}
 
 	if err := replica.ApplyFetch(context.Background(), isr.ApplyFetchRequest{
-		GroupKey: meta.GroupKey,
-		Epoch:    meta.Epoch,
-		Leader:   meta.Leader,
+		ChannelKey: meta.ChannelKey,
+		Epoch:      meta.Epoch,
+		Leader:     meta.Leader,
 		Records: []isr.Record{
 			mustStoredRecord(t, 1, "one"),
 			mustStoredRecord(t, 2, "two"),
@@ -166,7 +166,7 @@ func TestStoreReplicaApplyFetchUsesSingleDurableCommit(t *testing.T) {
 	key := ChannelKey{ChannelID: "c1", ChannelType: 1}
 	store := db.ForChannel(key)
 	replica := newChannelLogReplica(t, store, 2)
-	meta := followerMeta(store.groupKey, 7, 1, 2)
+	meta := followerMeta(store.channelKey, 7, 1, 2)
 	if err := replica.ApplyMeta(meta); err != nil {
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}
@@ -176,9 +176,9 @@ func TestStoreReplicaApplyFetchUsesSingleDurableCommit(t *testing.T) {
 
 	before := store.durableCommitCount.Load()
 	if err := replica.ApplyFetch(context.Background(), isr.ApplyFetchRequest{
-		GroupKey: meta.GroupKey,
-		Epoch:    meta.Epoch,
-		Leader:   meta.Leader,
+		ChannelKey: meta.ChannelKey,
+		Epoch:      meta.Epoch,
+		Leader:     meta.Leader,
 		Records: []isr.Record{
 			mustStoredRecord(t, 1, "one"),
 			mustStoredRecord(t, 2, "two"),
@@ -212,7 +212,7 @@ func TestChannelLogReplicaAppendUsesSingleDurableSync(t *testing.T) {
 	key := ChannelKey{ChannelID: "c1", ChannelType: 1}
 	store := db.ForChannel(key)
 	replica := newChannelLogReplica(t, store, 1)
-	meta := singleReplicaMeta(store.groupKey, 7, 1)
+	meta := singleReplicaMeta(store.channelKey, 7, 1)
 	if err := replica.ApplyMeta(meta); err != nil {
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}
@@ -242,7 +242,7 @@ func TestStoreBridgesReplicaInstallSnapshotPersistsPayloadAndOffsets(t *testing.
 	store := db.ForChannel(key)
 
 	replica := newStoreReplica(t, store, 1)
-	meta := singleReplicaMeta(store.groupKey, 7, 1)
+	meta := singleReplicaMeta(store.channelKey, 7, 1)
 	if err := replica.ApplyMeta(meta); err != nil {
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}
@@ -258,10 +258,10 @@ func TestStoreBridgesReplicaInstallSnapshotPersistsPayloadAndOffsets(t *testing.
 	}
 
 	snap := isr.Snapshot{
-		GroupKey:  meta.GroupKey,
-		Epoch:     9,
-		EndOffset: 3,
-		Payload:   []byte("snapshot"),
+		ChannelKey: meta.ChannelKey,
+		Epoch:      9,
+		EndOffset:  3,
+		Payload:    []byte("snapshot"),
 	}
 	if err := replica.InstallSnapshot(context.Background(), snap); err != nil {
 		t.Fatalf("InstallSnapshot() error = %v", err)
@@ -420,9 +420,9 @@ func mustStoredRecord(t testing.TB, messageID uint64, payload string) isr.Record
 	}
 }
 
-func singleReplicaMeta(groupKey isr.GroupKey, epoch uint64, leader isr.NodeID) isr.GroupMeta {
-	return isr.GroupMeta{
-		GroupKey:   groupKey,
+func singleReplicaMeta(channelKey isr.ChannelKey, epoch uint64, leader isr.NodeID) isr.ChannelMeta {
+	return isr.ChannelMeta{
+		ChannelKey: channelKey,
 		Epoch:      epoch,
 		Leader:     leader,
 		Replicas:   []isr.NodeID{leader},
@@ -432,9 +432,9 @@ func singleReplicaMeta(groupKey isr.GroupKey, epoch uint64, leader isr.NodeID) i
 	}
 }
 
-func followerMeta(groupKey isr.GroupKey, epoch uint64, leader, localNode isr.NodeID) isr.GroupMeta {
-	return isr.GroupMeta{
-		GroupKey:   groupKey,
+func followerMeta(channelKey isr.ChannelKey, epoch uint64, leader, localNode isr.NodeID) isr.ChannelMeta {
+	return isr.ChannelMeta{
+		ChannelKey: channelKey,
 		Epoch:      epoch,
 		Leader:     leader,
 		Replicas:   []isr.NodeID{leader, localNode},

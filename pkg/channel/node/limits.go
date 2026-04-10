@@ -9,7 +9,7 @@ import (
 type peerRequestState struct {
 	mu       sync.Mutex
 	inflight map[isr.NodeID]int
-	groups   map[groupPeerKey]struct{}
+	groups   map[channelPeerKey]struct{}
 	queued   map[isr.NodeID]*peerEnvelopeQueue
 }
 
@@ -18,15 +18,15 @@ type peerEnvelopeQueue struct {
 	head  int
 }
 
-type groupPeerKey struct {
-	groupKey isr.GroupKey
-	peer     isr.NodeID
+type channelPeerKey struct {
+	channelKey isr.ChannelKey
+	peer       isr.NodeID
 }
 
 func newPeerRequestState() peerRequestState {
 	return peerRequestState{
 		inflight: make(map[isr.NodeID]int),
-		groups:   make(map[groupPeerKey]struct{}),
+		groups:   make(map[channelPeerKey]struct{}),
 		queued:   make(map[isr.NodeID]*peerEnvelopeQueue),
 	}
 }
@@ -52,11 +52,11 @@ func (s *peerRequestState) enqueue(env Envelope) {
 	queue.enqueue(env)
 }
 
-func (s *peerRequestState) tryAcquireGroup(groupKey isr.GroupKey, peer isr.NodeID) bool {
+func (s *peerRequestState) tryAcquireChannel(channelKey isr.ChannelKey, peer isr.NodeID) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	key := groupPeerKey{groupKey: groupKey, peer: peer}
+	key := channelPeerKey{channelKey: channelKey, peer: peer}
 	if _, ok := s.groups[key]; ok {
 		return false
 	}
@@ -82,10 +82,10 @@ func (s *peerRequestState) release(peer isr.NodeID) {
 	}
 }
 
-func (s *peerRequestState) releaseGroup(groupKey isr.GroupKey, peer isr.NodeID) {
+func (s *peerRequestState) releaseChannel(channelKey isr.ChannelKey, peer isr.NodeID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.groups, groupPeerKey{groupKey: groupKey, peer: peer})
+	delete(s.groups, channelPeerKey{channelKey: channelKey, peer: peer})
 }
 
 func (s *peerRequestState) popQueued(peer isr.NodeID) (Envelope, bool) {
@@ -110,7 +110,7 @@ func (s *peerRequestState) queueLocked(peer isr.NodeID) *peerEnvelopeQueue {
 func (q *peerEnvelopeQueue) enqueue(env Envelope) {
 	if env.Kind == MessageKindFetchRequest {
 		for i := q.head; i < len(q.items); i++ {
-			if q.items[i].Kind == MessageKindFetchRequest && q.items[i].GroupKey == env.GroupKey {
+			if q.items[i].Kind == MessageKindFetchRequest && q.items[i].ChannelKey == env.ChannelKey {
 				q.items[i] = env
 				return
 			}

@@ -5,13 +5,13 @@ import "context"
 func (a *App) RegisterAuthoritative(ctx context.Context, cmd RegisterAuthoritativeCommand) (RegisterAuthoritativeResult, error) {
 	_ = ctx
 	return RegisterAuthoritativeResult{
-		Actions: a.dir.register(cmd.GroupID, cmd.Route, a.now().Unix()),
+		Actions: a.dir.register(cmd.SlotID, cmd.Route, a.now().Unix()),
 	}, nil
 }
 
 func (a *App) UnregisterAuthoritative(ctx context.Context, cmd UnregisterAuthoritativeCommand) error {
 	_ = ctx
-	a.dir.unregister(cmd.GroupID, cmd.Route, a.now().Unix())
+	a.dir.unregister(cmd.SlotID, cmd.Route, a.now().Unix())
 	return nil
 }
 

@@ -29,9 +29,9 @@ func TestWorkerSendsOneHeartbeatPerNonEmptyGroupBucket(t *testing.T) {
 
 	require.NoError(t, app.HeartbeatOnce(context.Background()))
 	require.Len(t, authority.heartbeatCalls, 2)
-	require.Equal(t, uint64(1), authority.heartbeatCalls[0].Lease.GroupID)
+	require.Equal(t, uint64(1), authority.heartbeatCalls[0].Lease.SlotID)
 	require.Equal(t, 2, authority.heartbeatCalls[0].Lease.RouteCount)
-	require.Equal(t, uint64(2), authority.heartbeatCalls[1].Lease.GroupID)
+	require.Equal(t, uint64(2), authority.heartbeatCalls[1].Lease.SlotID)
 	require.Equal(t, 1, authority.heartbeatCalls[1].Lease.RouteCount)
 }
 
@@ -70,7 +70,7 @@ func TestWorkerContinuesAfterSingleGroupHeartbeatError(t *testing.T) {
 	mustRegisterTestConn(t, onlineReg, 11, "u1", "d1", 1)
 	mustRegisterTestConn(t, onlineReg, 21, "u2", "d2", 2)
 
-	heartbeatErr := errors.New("group-1 heartbeat failed")
+	heartbeatErr := errors.New("slot-1 heartbeat failed")
 	authority := &fakeAuthorityClient{
 		heartbeatErrBySlot: map[uint64]error{
 			1: heartbeatErr,
@@ -87,11 +87,11 @@ func TestWorkerContinuesAfterSingleGroupHeartbeatError(t *testing.T) {
 	err := app.HeartbeatOnce(context.Background())
 	require.ErrorIs(t, err, heartbeatErr)
 	require.Len(t, authority.heartbeatCalls, 2)
-	require.Equal(t, uint64(1), authority.heartbeatCalls[0].Lease.GroupID)
-	require.Equal(t, uint64(2), authority.heartbeatCalls[1].Lease.GroupID)
+	require.Equal(t, uint64(1), authority.heartbeatCalls[0].Lease.SlotID)
+	require.Equal(t, uint64(2), authority.heartbeatCalls[1].Lease.SlotID)
 }
 
-func mustRegisterTestConn(t *testing.T, reg online.Registry, sessionID uint64, uid, deviceID string, groupID uint64) {
+func mustRegisterTestConn(t *testing.T, reg online.Registry, sessionID uint64, uid, deviceID string, slotID uint64) {
 	t.Helper()
 
 	require.NoError(t, reg.Register(online.OnlineConn{
@@ -100,7 +100,7 @@ func mustRegisterTestConn(t *testing.T, reg online.Registry, sessionID uint64, u
 		DeviceID:    deviceID,
 		DeviceFlag:  frame.APP,
 		DeviceLevel: frame.DeviceLevelMaster,
-		GroupID:     groupID,
+		SlotID:      slotID,
 		State:       online.LocalRouteStateActive,
 		Listener:    "tcp",
 		ConnectedAt: time.Unix(200, 0),

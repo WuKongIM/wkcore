@@ -43,17 +43,17 @@ func (a *App) Activate(ctx context.Context, cmd ActivateCommand) error {
 		return err
 	}
 
-	groupID := a.router.SlotForKey(conn.UID)
+	slotID := a.router.SlotForKey(conn.UID)
 	result, err := a.authority.RegisterAuthoritative(ctx, RegisterAuthoritativeCommand{
-		GroupID: groupID,
-		Route:   a.routeFromConn(conn),
+		SlotID: slotID,
+		Route:  a.routeFromConn(conn),
 	})
 	if err != nil {
 		a.online.Unregister(conn.SessionID)
 		return err
 	}
 	if err := a.dispatchActions(ctx, result.Actions); err != nil {
-		a.bestEffortUnregister(ctx, groupID, conn)
+		a.bestEffortUnregister(ctx, slotID, conn)
 		a.online.Unregister(conn.SessionID)
 		return err
 	}
@@ -77,11 +77,11 @@ func (a *App) Deactivate(ctx context.Context, cmd DeactivateCommand) error {
 	if uid == "" {
 		return nil
 	}
-	groupID := conn.GroupID
-	if groupID == 0 {
-		groupID = a.router.SlotForKey(uid)
+	slotID := conn.SlotID
+	if slotID == 0 {
+		slotID = a.router.SlotForKey(uid)
 	}
-	a.bestEffortUnregister(ctx, groupID, conn)
+	a.bestEffortUnregister(ctx, slotID, conn)
 	return nil
 }
 
@@ -123,10 +123,10 @@ func (a *App) dispatchActions(ctx context.Context, actions []RouteAction) error 
 	return nil
 }
 
-func (a *App) bestEffortUnregister(ctx context.Context, groupID uint64, conn online.OnlineConn) {
+func (a *App) bestEffortUnregister(ctx context.Context, slotID uint64, conn online.OnlineConn) {
 	_ = a.authority.UnregisterAuthoritative(ctx, UnregisterAuthoritativeCommand{
-		GroupID: groupID,
-		Route:   a.routeFromConn(conn),
+		SlotID: slotID,
+		Route:  a.routeFromConn(conn),
 	})
 }
 
@@ -139,9 +139,9 @@ func (a *App) localConnFromActivate(cmd ActivateCommand) online.OnlineConn {
 	if connectedAt.IsZero() {
 		connectedAt = a.now()
 	}
-	groupID := uint64(0)
+	slotID := uint64(0)
 	if a.router != nil {
-		groupID = a.router.SlotForKey(cmd.UID)
+		slotID = a.router.SlotForKey(cmd.UID)
 	}
 	return online.OnlineConn{
 		SessionID:   cmd.Session.ID(),
@@ -149,7 +149,7 @@ func (a *App) localConnFromActivate(cmd ActivateCommand) online.OnlineConn {
 		DeviceID:    cmd.DeviceID,
 		DeviceFlag:  cmd.DeviceFlag,
 		DeviceLevel: cmd.DeviceLevel,
-		GroupID:     groupID,
+		SlotID:      slotID,
 		State:       online.LocalRouteStateActive,
 		Listener:    listener,
 		ConnectedAt: connectedAt,

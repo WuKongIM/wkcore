@@ -16,7 +16,7 @@ type Conn struct {
 	DeviceID    string
 	DeviceFlag  frame.DeviceFlag
 	DeviceLevel frame.DeviceLevel
-	GroupID     uint64
+	SlotID      uint64
 	State       LocalRouteState
 	Listener    string
 	ConnectedAt time.Time
@@ -33,10 +33,10 @@ const (
 	LocalRouteStateClosing
 )
 
-type GroupSnapshot struct {
-	GroupID uint64
-	Count   int
-	Digest  uint64
+type SlotSnapshot struct {
+	SlotID uint64
+	Count  int
+	Digest uint64
 }
 
 type Registry interface {
@@ -45,8 +45,8 @@ type Registry interface {
 	MarkClosing(sessionID uint64) (OnlineConn, bool)
 	Connection(sessionID uint64) (OnlineConn, bool)
 	ConnectionsByUID(uid string) []OnlineConn
-	ActiveConnectionsByGroup(groupID uint64) []OnlineConn
-	ActiveGroups() []GroupSnapshot
+	ActiveConnectionsBySlot(slotID uint64) []OnlineConn
+	ActiveSlots() []SlotSnapshot
 }
 
 type Delivery interface {

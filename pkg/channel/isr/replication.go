@@ -16,7 +16,7 @@ func (r *replica) ApplyFetch(_ context.Context, req ApplyFetchRequest) error {
 		r.mu.Unlock()
 		return ErrNotLeader
 	}
-	if r.state.GroupKey != "" && req.GroupKey != r.state.GroupKey {
+	if r.state.ChannelKey != "" && req.ChannelKey != r.state.ChannelKey {
 		r.mu.Unlock()
 		return ErrStaleMeta
 	}

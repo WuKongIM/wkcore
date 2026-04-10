@@ -19,7 +19,7 @@ func TestActivateRegistersLocalRouteAndRollsBackWhenAuthorityRegisterFails(t *te
 		LocalNodeID:     1,
 		GatewayBootID:   101,
 		Online:          onlineReg,
-		Router:          fakeRouter{groupID: 1},
+		Router:          fakeRouter{slotID: 1},
 		AuthorityClient: authority,
 	})
 
@@ -58,7 +58,7 @@ func TestActivateRollsBackNewRouteWhenRouteActionAckFails(t *testing.T) {
 		LocalNodeID:      1,
 		GatewayBootID:    101,
 		Online:           onlineReg,
-		Router:           fakeRouter{groupID: 1},
+		Router:           fakeRouter{slotID: 1},
 		AuthorityClient:  authority,
 		ActionDispatcher: dispatcher,
 	})
@@ -89,7 +89,7 @@ func TestDeactivateRemovesLocalRouteAndBestEffortUnregistersAuthority(t *testing
 		DeviceID:    "d1",
 		DeviceFlag:  frame.APP,
 		DeviceLevel: frame.DeviceLevelMaster,
-		GroupID:     1,
+		SlotID:      1,
 		State:       online.LocalRouteStateActive,
 		Listener:    "tcp",
 		ConnectedAt: time.Unix(200, 0),
@@ -101,7 +101,7 @@ func TestDeactivateRemovesLocalRouteAndBestEffortUnregistersAuthority(t *testing
 		LocalNodeID:     1,
 		GatewayBootID:   101,
 		Online:          onlineReg,
-		Router:          fakeRouter{groupID: 1},
+		Router:          fakeRouter{slotID: 1},
 		AuthorityClient: authority,
 	})
 
@@ -125,7 +125,7 @@ func TestApplyRouteActionMarksRouteClosingBeforeAck(t *testing.T) {
 		DeviceID:    "d1",
 		DeviceFlag:  frame.APP,
 		DeviceLevel: frame.DeviceLevelMaster,
-		GroupID:     1,
+		SlotID:      1,
 		State:       online.LocalRouteStateActive,
 		Listener:    "tcp",
 		ConnectedAt: time.Unix(200, 0),
@@ -162,7 +162,7 @@ func TestApplyRouteActionRejectsMismatchedActiveRoute(t *testing.T) {
 		DeviceID:    "d1",
 		DeviceFlag:  frame.APP,
 		DeviceLevel: frame.DeviceLevelMaster,
-		GroupID:     1,
+		SlotID:      1,
 		State:       online.LocalRouteStateActive,
 		Listener:    "tcp",
 		ConnectedAt: time.Unix(200, 0),
@@ -190,15 +190,15 @@ func TestApplyRouteActionRejectsMismatchedActiveRoute(t *testing.T) {
 }
 
 type fakeRouter struct {
-	groupID uint64
-	byKey   map[string]uint64
+	slotID uint64
+	byKey  map[string]uint64
 }
 
 func (f fakeRouter) SlotForKey(key string) uint64 {
-	if groupID, ok := f.byKey[key]; ok {
-		return groupID
+	if slotID, ok := f.byKey[key]; ok {
+		return slotID
 	}
-	return f.groupID
+	return f.slotID
 }
 
 type fakeAuthorityClient struct {
@@ -234,10 +234,10 @@ func (f *fakeAuthorityClient) HeartbeatAuthoritative(_ context.Context, cmd Hear
 	if f.heartbeatErr != nil {
 		return HeartbeatAuthoritativeResult{}, f.heartbeatErr
 	}
-	if err, ok := f.heartbeatErrBySlot[cmd.Lease.GroupID]; ok {
+	if err, ok := f.heartbeatErrBySlot[cmd.Lease.SlotID]; ok {
 		return HeartbeatAuthoritativeResult{}, err
 	}
-	if result, ok := f.heartbeatBySlot[cmd.Lease.GroupID]; ok {
+	if result, ok := f.heartbeatBySlot[cmd.Lease.SlotID]; ok {
 		return result, nil
 	}
 	return HeartbeatAuthoritativeResult{}, nil

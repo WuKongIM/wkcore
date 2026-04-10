@@ -301,11 +301,11 @@ func (c ClusterConfig) runtimeConfig(storage StorageConfig, db *metadb.DB, raftD
 	return raftcluster.Config{
 		NodeID:             multiraft.NodeID(nodeID),
 		ListenAddr:         c.ListenAddr,
-		GroupCount:         c.GroupCount,
+		SlotCount:          c.SlotCount,
 		ControllerMetaPath: storage.ControllerMetaPath,
 		ControllerRaftPath: storage.ControllerRaftPath,
 		ControllerReplicaN: c.ControllerReplicaN,
-		GroupReplicaN:      c.GroupReplicaN,
+		SlotReplicaN:       c.SlotReplicaN,
 		NewStorage:         newStorageFactory(raftDB),
 		NewStateMachine:    metafsm.NewStateMachineFactory(db),
 		Nodes:              c.runtimeNodes(),
@@ -636,9 +636,9 @@ func loadRecentConversationMessages(ctx context.Context, cluster channellog.Clus
 	return append([]channellog.Message(nil), fetch.Messages...), nil
 }
 
-func newStorageFactory(raftDB *raftstorage.DB) func(groupID multiraft.GroupID) (multiraft.Storage, error) {
-	return func(groupID multiraft.GroupID) (multiraft.Storage, error) {
-		return raftDB.ForGroup(uint64(groupID)), nil
+func newStorageFactory(raftDB *raftstorage.DB) func(slotID multiraft.SlotID) (multiraft.Storage, error) {
+	return func(slotID multiraft.SlotID) (multiraft.Storage, error) {
+		return raftDB.ForGroup(uint64(slotID)), nil
 	}
 }
 

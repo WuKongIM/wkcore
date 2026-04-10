@@ -22,7 +22,7 @@ func TestApplyProgressAckAdvancesHWWithoutFollowUpFetch(t *testing.T) {
 
 	replicateFollowerAndAck := func(follower *replica) {
 		fetch, err := env.leader.Fetch(context.Background(), FetchRequest{
-			GroupKey:    env.leader.state.GroupKey,
+			ChannelKey:  env.leader.state.ChannelKey,
 			Epoch:       env.leader.state.Epoch,
 			ReplicaID:   follower.localNode,
 			FetchOffset: follower.state.LEO,
@@ -33,7 +33,7 @@ func TestApplyProgressAckAdvancesHWWithoutFollowUpFetch(t *testing.T) {
 			t.Fatalf("Fetch() error = %v", err)
 		}
 		if err := follower.ApplyFetch(context.Background(), ApplyFetchRequest{
-			GroupKey:   env.leader.state.GroupKey,
+			ChannelKey: env.leader.state.ChannelKey,
 			Epoch:      fetch.Epoch,
 			Leader:     env.leader.localNode,
 			TruncateTo: fetch.TruncateTo,
@@ -43,7 +43,7 @@ func TestApplyProgressAckAdvancesHWWithoutFollowUpFetch(t *testing.T) {
 			t.Fatalf("ApplyFetch() error = %v", err)
 		}
 		if err := env.leader.ApplyProgressAck(context.Background(), ProgressAckRequest{
-			GroupKey:    env.leader.state.GroupKey,
+			ChannelKey:  env.leader.state.ChannelKey,
 			Epoch:       env.leader.state.Epoch,
 			ReplicaID:   follower.localNode,
 			MatchOffset: follower.state.LEO,
@@ -82,7 +82,7 @@ func TestApplyProgressAckIgnoresStaleEpoch(t *testing.T) {
 	env := newFetchEnvWithHistory(t)
 
 	err := env.replica.ApplyProgressAck(context.Background(), ProgressAckRequest{
-		GroupKey:    "group-10",
+		ChannelKey:  "group-10",
 		Epoch:       6,
 		ReplicaID:   2,
 		MatchOffset: 5,
@@ -99,7 +99,7 @@ func TestApplyProgressAckPreservesMonotonicReplicaProgress(t *testing.T) {
 	env := newFetchEnvWithHistory(t)
 
 	if err := env.replica.ApplyProgressAck(context.Background(), ProgressAckRequest{
-		GroupKey:    "group-10",
+		ChannelKey:  "group-10",
 		Epoch:       7,
 		ReplicaID:   2,
 		MatchOffset: 5,
@@ -107,7 +107,7 @@ func TestApplyProgressAckPreservesMonotonicReplicaProgress(t *testing.T) {
 		t.Fatalf("ApplyProgressAck(first) error = %v", err)
 	}
 	if err := env.replica.ApplyProgressAck(context.Background(), ProgressAckRequest{
-		GroupKey:    "group-10",
+		ChannelKey:  "group-10",
 		Epoch:       7,
 		ReplicaID:   2,
 		MatchOffset: 3,

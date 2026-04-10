@@ -17,27 +17,27 @@ import (
 
 func TestMemoryBackedGroupAppliesProposalToWKDB(t *testing.T) {
 	ctx := context.Background()
-	groupID := multiraft.GroupID(51)
+	slotID := multiraft.SlotID(51)
 	db := openTestDB(t)
 	rt := newStartedRuntime(t)
 
-	if err := rt.BootstrapGroup(ctx, multiraft.BootstrapGroupRequest{
-		Group: multiraft.GroupOptions{
-			ID:           groupID,
+	if err := rt.BootstrapSlot(ctx, multiraft.BootstrapSlotRequest{
+		Slot: multiraft.SlotOptions{
+			ID:           slotID,
 			Storage:      raftstorage.NewMemory(),
-			StateMachine: mustNewStateMachine(t, db, uint64(groupID)),
+			StateMachine: mustNewStateMachine(t, db, uint64(slotID)),
 		},
 		Voters: []multiraft.NodeID{1},
 	}); err != nil {
-		t.Fatalf("BootstrapGroup() error = %v", err)
+		t.Fatalf("BootstrapSlot() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
-		st, err := rt.Status(groupID)
+		st, err := rt.Status(slotID)
 		return err == nil && st.Role == multiraft.RoleLeader
-	}, "group become leader")
+	}, "slot become leader")
 
-	fut, err := rt.Propose(ctx, groupID, metafsm.EncodeUpsertUserCommand(metadb.User{
+	fut, err := rt.Propose(ctx, slotID, metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:         "u1",
 		Token:       "t1",
 		DeviceFlag:  1,
@@ -51,7 +51,7 @@ func TestMemoryBackedGroupAppliesProposalToWKDB(t *testing.T) {
 		t.Fatalf("Wait() error = %v", err)
 	}
 
-	got, err := db.ForSlot(uint64(groupID)).GetUser(ctx, "u1")
+	got, err := db.ForSlot(uint64(slotID)).GetUser(ctx, "u1")
 	if err != nil {
 		t.Fatalf("GetUser() error = %v", err)
 	}
@@ -62,27 +62,27 @@ func TestMemoryBackedGroupAppliesProposalToWKDB(t *testing.T) {
 
 func TestMemoryBackedGroupDoesNotRecoverDeletedSlotDataAfterOpenGroup(t *testing.T) {
 	ctx := context.Background()
-	groupID := multiraft.GroupID(51)
+	slotID := multiraft.SlotID(51)
 	db := openTestDB(t)
 
 	rt := newStartedRuntime(t)
-	if err := rt.BootstrapGroup(ctx, multiraft.BootstrapGroupRequest{
-		Group: multiraft.GroupOptions{
-			ID:           groupID,
+	if err := rt.BootstrapSlot(ctx, multiraft.BootstrapSlotRequest{
+		Slot: multiraft.SlotOptions{
+			ID:           slotID,
 			Storage:      raftstorage.NewMemory(),
-			StateMachine: mustNewStateMachine(t, db, uint64(groupID)),
+			StateMachine: mustNewStateMachine(t, db, uint64(slotID)),
 		},
 		Voters: []multiraft.NodeID{1},
 	}); err != nil {
-		t.Fatalf("BootstrapGroup() error = %v", err)
+		t.Fatalf("BootstrapSlot() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
-		st, err := rt.Status(groupID)
+		st, err := rt.Status(slotID)
 		return err == nil && st.Role == multiraft.RoleLeader
-	}, "group become leader")
+	}, "slot become leader")
 
-	fut, err := rt.Propose(ctx, groupID, metafsm.EncodeUpsertUserCommand(metadb.User{
+	fut, err := rt.Propose(ctx, slotID, metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "t1",
 	}))
@@ -97,23 +97,23 @@ func TestMemoryBackedGroupDoesNotRecoverDeletedSlotDataAfterOpenGroup(t *testing
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	if err := db.DeleteSlotData(ctx, uint64(groupID)); err != nil {
+	if err := db.DeleteSlotData(ctx, uint64(slotID)); err != nil {
 		t.Fatalf("DeleteSlotData() error = %v", err)
 	}
-	if _, err := db.ForSlot(uint64(groupID)).GetUser(ctx, "u1"); !errors.Is(err, metadb.ErrNotFound) {
+	if _, err := db.ForSlot(uint64(slotID)).GetUser(ctx, "u1"); !errors.Is(err, metadb.ErrNotFound) {
 		t.Fatalf("GetUser() after delete err = %v, want ErrNotFound", err)
 	}
 
 	reopenRT := newStartedRuntime(t)
-	if err := reopenRT.OpenGroup(ctx, multiraft.GroupOptions{
-		ID:           groupID,
+	if err := reopenRT.OpenSlot(ctx, multiraft.SlotOptions{
+		ID:           slotID,
 		Storage:      raftstorage.NewMemory(),
-		StateMachine: mustNewStateMachine(t, db, uint64(groupID)),
+		StateMachine: mustNewStateMachine(t, db, uint64(slotID)),
 	}); err != nil {
-		t.Fatalf("OpenGroup() error = %v", err)
+		t.Fatalf("OpenSlot() error = %v", err)
 	}
 
-	_, err = db.ForSlot(uint64(groupID)).GetUser(ctx, "u1")
+	_, err = db.ForSlot(uint64(slotID)).GetUser(ctx, "u1")
 	if !errors.Is(err, metadb.ErrNotFound) {
 		t.Fatalf("GetUser() after reopen err = %v, want ErrNotFound", err)
 	}
@@ -121,28 +121,28 @@ func TestMemoryBackedGroupDoesNotRecoverDeletedSlotDataAfterOpenGroup(t *testing
 
 func TestMemoryBackedGroupReopensWithRecoveredMembership(t *testing.T) {
 	ctx := context.Background()
-	groupID := multiraft.GroupID(52)
+	slotID := multiraft.SlotID(52)
 	db := openTestDB(t)
 	store := raftstorage.NewMemory()
 
 	rt := newStartedRuntime(t)
-	if err := rt.BootstrapGroup(ctx, multiraft.BootstrapGroupRequest{
-		Group: multiraft.GroupOptions{
-			ID:           groupID,
+	if err := rt.BootstrapSlot(ctx, multiraft.BootstrapSlotRequest{
+		Slot: multiraft.SlotOptions{
+			ID:           slotID,
 			Storage:      store,
-			StateMachine: mustNewStateMachine(t, db, uint64(groupID)),
+			StateMachine: mustNewStateMachine(t, db, uint64(slotID)),
 		},
 		Voters: []multiraft.NodeID{1},
 	}); err != nil {
-		t.Fatalf("BootstrapGroup() error = %v", err)
+		t.Fatalf("BootstrapSlot() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
-		st, err := rt.Status(groupID)
+		st, err := rt.Status(slotID)
 		return err == nil && st.Role == multiraft.RoleLeader
-	}, "group become leader")
+	}, "slot become leader")
 
-	fut, err := rt.Propose(ctx, groupID, metafsm.EncodeUpsertUserCommand(metadb.User{
+	fut, err := rt.Propose(ctx, slotID, metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "before-reopen",
 	}))
@@ -158,20 +158,20 @@ func TestMemoryBackedGroupReopensWithRecoveredMembership(t *testing.T) {
 	}
 
 	reopenRT := newStartedRuntime(t)
-	if err := reopenRT.OpenGroup(ctx, multiraft.GroupOptions{
-		ID:           groupID,
+	if err := reopenRT.OpenSlot(ctx, multiraft.SlotOptions{
+		ID:           slotID,
 		Storage:      store,
-		StateMachine: mustNewStateMachine(t, db, uint64(groupID)),
+		StateMachine: mustNewStateMachine(t, db, uint64(slotID)),
 	}); err != nil {
-		t.Fatalf("OpenGroup() error = %v", err)
+		t.Fatalf("OpenSlot() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
-		st, err := reopenRT.Status(groupID)
+		st, err := reopenRT.Status(slotID)
 		return err == nil && st.Role == multiraft.RoleLeader
-	}, "reopened group become leader")
+	}, "reopened slot become leader")
 
-	fut, err = reopenRT.Propose(ctx, groupID, metafsm.EncodeUpsertUserCommand(metadb.User{
+	fut, err = reopenRT.Propose(ctx, slotID, metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "after-reopen",
 	}))
@@ -182,7 +182,7 @@ func TestMemoryBackedGroupReopensWithRecoveredMembership(t *testing.T) {
 		t.Fatalf("Wait(after reopen) error = %v", err)
 	}
 
-	got, err := db.ForSlot(uint64(groupID)).GetUser(ctx, "u1")
+	got, err := db.ForSlot(uint64(slotID)).GetUser(ctx, "u1")
 	if err != nil {
 		t.Fatalf("GetUser() error = %v", err)
 	}
@@ -193,7 +193,7 @@ func TestMemoryBackedGroupReopensWithRecoveredMembership(t *testing.T) {
 
 func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 	ctx := context.Background()
-	groupID := multiraft.GroupID(61)
+	slotID := multiraft.SlotID(61)
 	root := t.TempDir()
 	bizPath := filepath.Join(root, "biz")
 	raftPath := filepath.Join(root, "raft")
@@ -202,23 +202,23 @@ func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 	raftDB := openTestRaftDBAt(t, raftPath)
 
 	rt := newStartedRuntime(t)
-	if err := rt.BootstrapGroup(ctx, multiraft.BootstrapGroupRequest{
-		Group: multiraft.GroupOptions{
-			ID:           groupID,
-			Storage:      raftDB.ForGroup(uint64(groupID)),
-			StateMachine: mustNewStateMachine(t, bizDB, uint64(groupID)),
+	if err := rt.BootstrapSlot(ctx, multiraft.BootstrapSlotRequest{
+		Slot: multiraft.SlotOptions{
+			ID:           slotID,
+			Storage:      raftDB.ForGroup(uint64(slotID)),
+			StateMachine: mustNewStateMachine(t, bizDB, uint64(slotID)),
 		},
 		Voters: []multiraft.NodeID{1},
 	}); err != nil {
-		t.Fatalf("BootstrapGroup() error = %v", err)
+		t.Fatalf("BootstrapSlot() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
-		st, err := rt.Status(groupID)
+		st, err := rt.Status(slotID)
 		return err == nil && st.Role == multiraft.RoleLeader
-	}, "group become leader")
+	}, "slot become leader")
 
-	fut, err := rt.Propose(ctx, groupID, metafsm.EncodeUpsertUserCommand(metadb.User{
+	fut, err := rt.Propose(ctx, slotID, metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "before-reopen",
 	}))
@@ -242,20 +242,20 @@ func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 	reopenedBizDB := openTestDBAt(t, bizPath)
 	reopenedRaftDB := openTestRaftDBAt(t, raftPath)
 	reopenRT := newStartedRuntime(t)
-	if err := reopenRT.OpenGroup(ctx, multiraft.GroupOptions{
-		ID:           groupID,
-		Storage:      reopenedRaftDB.ForGroup(uint64(groupID)),
-		StateMachine: mustNewStateMachine(t, reopenedBizDB, uint64(groupID)),
+	if err := reopenRT.OpenSlot(ctx, multiraft.SlotOptions{
+		ID:           slotID,
+		Storage:      reopenedRaftDB.ForGroup(uint64(slotID)),
+		StateMachine: mustNewStateMachine(t, reopenedBizDB, uint64(slotID)),
 	}); err != nil {
-		t.Fatalf("OpenGroup() error = %v", err)
+		t.Fatalf("OpenSlot() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
-		st, err := reopenRT.Status(groupID)
+		st, err := reopenRT.Status(slotID)
 		return err == nil && st.Role == multiraft.RoleLeader
-	}, "reopened group become leader")
+	}, "reopened slot become leader")
 
-	fut, err = reopenRT.Propose(ctx, groupID, metafsm.EncodeUpsertUserCommand(metadb.User{
+	fut, err = reopenRT.Propose(ctx, slotID, metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "after-reopen",
 	}))
@@ -266,7 +266,7 @@ func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 		t.Fatalf("Wait(after reopen) error = %v", err)
 	}
 
-	got, err := reopenedBizDB.ForSlot(uint64(groupID)).GetUser(ctx, "u1")
+	got, err := reopenedBizDB.ForSlot(uint64(slotID)).GetUser(ctx, "u1")
 	if err != nil {
 		t.Fatalf("GetUser() error = %v", err)
 	}
@@ -284,17 +284,17 @@ func TestStoreUpsertAndGetChannelRuntimeMeta(t *testing.T) {
 	cluster, err := raftcluster.NewCluster(raftcluster.Config{
 		NodeID:             1,
 		ListenAddr:         "127.0.0.1:0",
-		GroupCount:         1,
+		SlotCount:          1,
 		ControllerReplicaN: 1,
-		GroupReplicaN:      1,
-		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
-			return raftDB.ForGroup(uint64(groupID)), nil
+		SlotReplicaN:       1,
+		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
+			return raftDB.ForGroup(uint64(slotID)), nil
 		},
 		NewStateMachine: metafsm.NewStateMachineFactory(bizDB),
 		Nodes:           []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
-		Groups: []raftcluster.GroupConfig{{
-			GroupID: 1,
-			Peers:   []multiraft.NodeID{1},
+		Slots: []raftcluster.SlotConfig{{
+			SlotID: 1,
+			Peers:  []multiraft.NodeID{1},
 		}},
 	})
 	if err != nil {
@@ -351,17 +351,17 @@ func TestStoreCreateUserAndUpsertDevice(t *testing.T) {
 	cluster, err := raftcluster.NewCluster(raftcluster.Config{
 		NodeID:             1,
 		ListenAddr:         "127.0.0.1:0",
-		GroupCount:         1,
+		SlotCount:          1,
 		ControllerReplicaN: 1,
-		GroupReplicaN:      1,
-		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
-			return raftDB.ForGroup(uint64(groupID)), nil
+		SlotReplicaN:       1,
+		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
+			return raftDB.ForGroup(uint64(slotID)), nil
 		},
 		NewStateMachine: metafsm.NewStateMachineFactory(bizDB),
 		Nodes:           []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
-		Groups: []raftcluster.GroupConfig{{
-			GroupID: 1,
-			Peers:   []multiraft.NodeID{1},
+		Slots: []raftcluster.SlotConfig{{
+			SlotID: 1,
+			Peers:  []multiraft.NodeID{1},
 		}},
 	})
 	require.NoError(t, err)
@@ -409,17 +409,17 @@ func TestStoreListChannelRuntimeMeta(t *testing.T) {
 	cluster, err := raftcluster.NewCluster(raftcluster.Config{
 		NodeID:             1,
 		ListenAddr:         "127.0.0.1:0",
-		GroupCount:         2,
+		SlotCount:          2,
 		ControllerReplicaN: 1,
-		GroupReplicaN:      1,
-		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
-			return raftDB.ForGroup(uint64(groupID)), nil
+		SlotReplicaN:       1,
+		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
+			return raftDB.ForGroup(uint64(slotID)), nil
 		},
 		NewStateMachine: metafsm.NewStateMachineFactory(bizDB),
 		Nodes:           []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
-		Groups: []raftcluster.GroupConfig{
-			{GroupID: 1, Peers: []multiraft.NodeID{1}},
-			{GroupID: 2, Peers: []multiraft.NodeID{1}},
+		Slots: []raftcluster.SlotConfig{
+			{SlotID: 1, Peers: []multiraft.NodeID{1}},
+			{SlotID: 2, Peers: []multiraft.NodeID{1}},
 		},
 	})
 	require.NoError(t, err)
@@ -824,7 +824,7 @@ func TestStoreTouchUserConversationActiveAtGroupsByUIDSlot(t *testing.T) {
 
 func TestPebbleBackedGroupDoesNotRecoverDeletedBusinessStateWithoutSnapshot(t *testing.T) {
 	ctx := context.Background()
-	groupID := multiraft.GroupID(62)
+	slotID := multiraft.SlotID(62)
 	root := t.TempDir()
 	bizPath := filepath.Join(root, "biz")
 	raftPath := filepath.Join(root, "raft")
@@ -833,23 +833,23 @@ func TestPebbleBackedGroupDoesNotRecoverDeletedBusinessStateWithoutSnapshot(t *t
 	raftDB := openTestRaftDBAt(t, raftPath)
 
 	rt := newStartedRuntime(t)
-	if err := rt.BootstrapGroup(ctx, multiraft.BootstrapGroupRequest{
-		Group: multiraft.GroupOptions{
-			ID:           groupID,
-			Storage:      raftDB.ForGroup(uint64(groupID)),
-			StateMachine: mustNewStateMachine(t, bizDB, uint64(groupID)),
+	if err := rt.BootstrapSlot(ctx, multiraft.BootstrapSlotRequest{
+		Slot: multiraft.SlotOptions{
+			ID:           slotID,
+			Storage:      raftDB.ForGroup(uint64(slotID)),
+			StateMachine: mustNewStateMachine(t, bizDB, uint64(slotID)),
 		},
 		Voters: []multiraft.NodeID{1},
 	}); err != nil {
-		t.Fatalf("BootstrapGroup() error = %v", err)
+		t.Fatalf("BootstrapSlot() error = %v", err)
 	}
 
 	waitForCondition(t, func() bool {
-		st, err := rt.Status(groupID)
+		st, err := rt.Status(slotID)
 		return err == nil && st.Role == multiraft.RoleLeader
-	}, "group become leader")
+	}, "slot become leader")
 
-	fut, err := rt.Propose(ctx, groupID, metafsm.EncodeUpsertUserCommand(metadb.User{
+	fut, err := rt.Propose(ctx, slotID, metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "t1",
 	}))
@@ -873,23 +873,23 @@ func TestPebbleBackedGroupDoesNotRecoverDeletedBusinessStateWithoutSnapshot(t *t
 	reopenedBizDB := openTestDBAt(t, bizPath)
 	reopenedRaftDB := openTestRaftDBAt(t, raftPath)
 
-	if err := reopenedBizDB.DeleteSlotData(ctx, uint64(groupID)); err != nil {
+	if err := reopenedBizDB.DeleteSlotData(ctx, uint64(slotID)); err != nil {
 		t.Fatalf("DeleteSlotData() error = %v", err)
 	}
-	if _, err := reopenedBizDB.ForSlot(uint64(groupID)).GetUser(ctx, "u1"); !errors.Is(err, metadb.ErrNotFound) {
+	if _, err := reopenedBizDB.ForSlot(uint64(slotID)).GetUser(ctx, "u1"); !errors.Is(err, metadb.ErrNotFound) {
 		t.Fatalf("GetUser() after delete err = %v, want ErrNotFound", err)
 	}
 
 	reopenRT := newStartedRuntime(t)
-	if err := reopenRT.OpenGroup(ctx, multiraft.GroupOptions{
-		ID:           groupID,
-		Storage:      reopenedRaftDB.ForGroup(uint64(groupID)),
-		StateMachine: mustNewStateMachine(t, reopenedBizDB, uint64(groupID)),
+	if err := reopenRT.OpenSlot(ctx, multiraft.SlotOptions{
+		ID:           slotID,
+		Storage:      reopenedRaftDB.ForGroup(uint64(slotID)),
+		StateMachine: mustNewStateMachine(t, reopenedBizDB, uint64(slotID)),
 	}); err != nil {
-		t.Fatalf("OpenGroup() error = %v", err)
+		t.Fatalf("OpenSlot() error = %v", err)
 	}
 
-	if _, err := reopenedBizDB.ForSlot(uint64(groupID)).GetUser(ctx, "u1"); !errors.Is(err, metadb.ErrNotFound) {
+	if _, err := reopenedBizDB.ForSlot(uint64(slotID)).GetUser(ctx, "u1"); !errors.Is(err, metadb.ErrNotFound) {
 		t.Fatalf("GetUser() after reopen err = %v, want ErrNotFound", err)
 	}
 }

@@ -51,7 +51,7 @@ func (c *cluster) Status(key ChannelKey) (ChannelRuntimeStatus, error) {
 		return ChannelRuntimeStatus{}, ErrStaleMeta
 	}
 
-	group, ok := c.cfg.Runtime.Group(channelGroupKey(key))
+	group, ok := c.cfg.Runtime.Channel(isrChannelKeyForChannel(key))
 	if !ok {
 		return ChannelRuntimeStatus{}, ErrStaleMeta
 	}

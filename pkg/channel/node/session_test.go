@@ -10,8 +10,8 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
 )
 
-func testGroupKey(groupID uint64) isr.GroupKey {
-	return isr.GroupKey("group-" + strconv.FormatUint(groupID, 10))
+func testChannelKey(groupID uint64) isr.ChannelKey {
+	return isr.ChannelKey("group-" + strconv.FormatUint(groupID, 10))
 }
 
 func TestManyGroupsToSamePeerReuseOneSession(t *testing.T) {
@@ -19,8 +19,8 @@ func TestManyGroupsToSamePeerReuseOneSession(t *testing.T) {
 	mustEnsureLocal(t, env.runtime, testMetaLocal(21, 1, 1, []isr.NodeID{1, 2}))
 	mustEnsureLocal(t, env.runtime, testMetaLocal(22, 1, 1, []isr.NodeID{1, 2}))
 
-	env.runtime.enqueueReplication(testGroupKey(21), 2)
-	env.runtime.enqueueReplication(testGroupKey(22), 2)
+	env.runtime.enqueueReplication(testChannelKey(21), 2)
+	env.runtime.enqueueReplication(testChannelKey(22), 2)
 	env.runtime.runScheduler()
 
 	if got := env.sessions.createdFor(2); got != 1 {
@@ -39,7 +39,7 @@ func TestReplicationRequestPopulatesFetchRequestEnvelope(t *testing.T) {
 	replica.state.OffsetEpoch = 4
 	replica.mu.Unlock()
 
-	env.runtime.enqueueReplication(testGroupKey(27), 2)
+	env.runtime.enqueueReplication(testChannelKey(27), 2)
 	env.runtime.runScheduler()
 
 	session := env.sessions.session(2)
@@ -52,8 +52,8 @@ func TestReplicationRequestPopulatesFetchRequestEnvelope(t *testing.T) {
 	if session.last.FetchRequest == nil {
 		t.Fatal("expected fetch request payload")
 	}
-	if session.last.FetchRequest.GroupKey != testGroupKey(27) {
-		t.Fatalf("FetchRequest.GroupKey = %q, want %q", session.last.FetchRequest.GroupKey, testGroupKey(27))
+	if session.last.FetchRequest.ChannelKey != testChannelKey(27) {
+		t.Fatalf("FetchRequest.ChannelKey = %q, want %q", session.last.FetchRequest.ChannelKey, testChannelKey(27))
 	}
 	if session.last.FetchRequest.ReplicaID != 1 {
 		t.Fatalf("FetchRequest.ReplicaID = %d, want 1", session.last.FetchRequest.ReplicaID)
@@ -69,7 +69,7 @@ func TestReplicationRequestPopulatesFetchRequestEnvelope(t *testing.T) {
 	}
 }
 
-func TestReplicationRequestUsesReplicaOffsetEpochInsteadOfGroupMetaEpoch(t *testing.T) {
+func TestReplicationRequestUsesReplicaOffsetEpochInsteadOfChannelMetaEpoch(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(271, 4, 1, []isr.NodeID{1, 2}))
 
@@ -80,7 +80,7 @@ func TestReplicationRequestUsesReplicaOffsetEpochInsteadOfGroupMetaEpoch(t *test
 	replica.state.OffsetEpoch = 3
 	replica.mu.Unlock()
 
-	env.runtime.enqueueReplication(testGroupKey(271), 2)
+	env.runtime.enqueueReplication(testChannelKey(271), 2)
 	env.runtime.runScheduler()
 
 	session := env.sessions.session(2)
@@ -109,7 +109,7 @@ func TestReplicationRequestUsesPeerSessionBatchingWhenAccepted(t *testing.T) {
 	session := env.sessions.session(2)
 	session.setTryBatch(true)
 
-	env.runtime.enqueueReplication(testGroupKey(2711), 2)
+	env.runtime.enqueueReplication(testChannelKey(2711), 2)
 	env.runtime.runScheduler()
 
 	if got := session.sendCount(); got != 0 {
@@ -144,8 +144,8 @@ func TestQueuedReplicationRecomputesReplicaProgressBetweenSends(t *testing.T) {
 		replica.state.LEO = 7
 	}
 
-	env.runtime.enqueueReplication(testGroupKey(272), 2)
-	env.runtime.enqueueReplication(testGroupKey(272), 2)
+	env.runtime.enqueueReplication(testChannelKey(272), 2)
+	env.runtime.enqueueReplication(testChannelKey(272), 2)
 	env.runtime.runScheduler()
 
 	if got := session.sendCount(); got != 1 {
@@ -159,7 +159,7 @@ func TestQueuedReplicationRecomputesReplicaProgressBetweenSends(t *testing.T) {
 	}
 
 	env.runtime.releasePeerInflight(2)
-	env.runtime.releaseGroupInflight(testGroupKey(272), 2)
+	env.runtime.releaseChannelInflight(testChannelKey(272), 2)
 	env.runtime.drainPeerQueue(2)
 
 	if got := session.sendCount(); got != 2 {
@@ -183,8 +183,8 @@ func TestQueuedReplicationRecomputesReplicaProgressAfterInflightQueueing(t *test
 	replica.state.OffsetEpoch = 4
 	replica.mu.Unlock()
 
-	env.runtime.enqueueReplication(testGroupKey(273), 2)
-	env.runtime.enqueueReplication(testGroupKey(273), 2)
+	env.runtime.enqueueReplication(testChannelKey(273), 2)
+	env.runtime.enqueueReplication(testChannelKey(273), 2)
 	env.runtime.runScheduler()
 
 	session := env.sessions.session(2)
@@ -203,7 +203,7 @@ func TestQueuedReplicationRecomputesReplicaProgressAfterInflightQueueing(t *test
 	replica.mu.Unlock()
 
 	env.runtime.releasePeerInflight(2)
-	env.runtime.releaseGroupInflight(testGroupKey(273), 2)
+	env.runtime.releaseChannelInflight(testChannelKey(273), 2)
 	env.runtime.drainPeerQueue(2)
 
 	if got := session.sendCount(); got != 2 {
@@ -227,9 +227,9 @@ func TestQueuedReplicationCoalescesSameGroupRequestsWhileInflight(t *testing.T) 
 	replica.state.OffsetEpoch = 4
 	replica.mu.Unlock()
 
-	env.runtime.enqueueReplication(testGroupKey(2731), 2)
-	env.runtime.enqueueReplication(testGroupKey(2731), 2)
-	env.runtime.enqueueReplication(testGroupKey(2731), 2)
+	env.runtime.enqueueReplication(testChannelKey(2731), 2)
+	env.runtime.enqueueReplication(testChannelKey(2731), 2)
+	env.runtime.enqueueReplication(testChannelKey(2731), 2)
 	env.runtime.runScheduler()
 
 	session := env.sessions.session(2)
@@ -254,8 +254,8 @@ func TestConcurrentPeerInflightStillSerializesSameGroupReplication(t *testing.T)
 	replica.state.OffsetEpoch = 4
 	replica.mu.Unlock()
 
-	env.runtime.enqueueReplication(testGroupKey(274), 2)
-	env.runtime.enqueueReplication(testGroupKey(274), 2)
+	env.runtime.enqueueReplication(testChannelKey(274), 2)
+	env.runtime.enqueueReplication(testChannelKey(274), 2)
 	env.runtime.runScheduler()
 
 	session := env.sessions.session(2)
@@ -275,7 +275,7 @@ func TestConcurrentPeerInflightStillSerializesSameGroupReplication(t *testing.T)
 
 	env.transport.deliver(Envelope{
 		Peer:       2,
-		GroupKey:   testGroupKey(274),
+		ChannelKey: testChannelKey(274),
 		Generation: 1,
 		Epoch:      4,
 		Kind:       MessageKindFetchResponse,
@@ -301,7 +301,7 @@ func TestReplicationSendErrorRetriesOnceWithoutNewWork(t *testing.T) {
 	session := env.sessions.session(2)
 	session.enqueueSendErrors(context.DeadlineExceeded)
 
-	env.runtime.enqueueReplication(testGroupKey(28), 2)
+	env.runtime.enqueueReplication(testChannelKey(28), 2)
 	env.runtime.runScheduler()
 
 	if got := session.sendCount(); got != 2 {
@@ -318,7 +318,7 @@ func TestReplicationSendErrorKeepsRetryingUntilSuccessWithoutNewWork(t *testing.
 	session := env.sessions.session(2)
 	session.enqueueSendErrors(context.DeadlineExceeded, context.DeadlineExceeded)
 
-	env.runtime.enqueueReplication(testGroupKey(29), 2)
+	env.runtime.enqueueReplication(testChannelKey(29), 2)
 	env.runtime.runScheduler()
 
 	deadline := time.Now().Add(250 * time.Millisecond)
@@ -342,7 +342,7 @@ func TestReplicationRetryIntervalUsesConfigOverride(t *testing.T) {
 	session := env.sessions.session(2)
 	session.enqueueSendErrors(context.DeadlineExceeded, context.DeadlineExceeded)
 
-	env.runtime.enqueueReplication(testGroupKey(30), 2)
+	env.runtime.enqueueReplication(testChannelKey(30), 2)
 	env.runtime.runScheduler()
 
 	time.Sleep(30 * time.Millisecond)
@@ -359,14 +359,14 @@ func TestScheduleFollowerReplicationCoalescesPendingDelayedRetry(t *testing.T) {
 
 	env.runtime.runScheduler()
 
-	groupKey := testGroupKey(301)
-	env.runtime.scheduleFollowerReplication(groupKey, 2)
-	env.runtime.scheduleFollowerReplication(groupKey, 2)
-	env.runtime.scheduleFollowerReplication(groupKey, 2)
+	channelKey := testChannelKey(301)
+	env.runtime.scheduleFollowerReplication(channelKey, 2)
+	env.runtime.scheduleFollowerReplication(channelKey, 2)
+	env.runtime.scheduleFollowerReplication(channelKey, 2)
 
 	deadline := time.Now().Add(250 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if got := queuedReplicationPeers(env.runtime.groups[groupKey]); got > 0 {
+		if got := queuedReplicationPeers(env.runtime.groups[channelKey]); got > 0 {
 			if got != 1 {
 				t.Fatalf("expected one delayed retry to be queued, got %d", got)
 			}
@@ -393,7 +393,7 @@ func TestDelayedFollowerRetrySkipsStaleLeaderAfterMetaChange(t *testing.T) {
 		t.Fatalf("expected initial fetch to old leader, got %d sends", got)
 	}
 
-	env.runtime.scheduleFollowerReplication(testGroupKey(302), 2)
+	env.runtime.scheduleFollowerReplication(testChannelKey(302), 2)
 	if err := env.runtime.ApplyMeta(testMetaLocal(302, 5, 3, []isr.NodeID{1, 2, 3})); err != nil {
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}
@@ -418,7 +418,7 @@ func TestDelayedFollowerRetrySkipsStaleLeaderAfterMetaChange(t *testing.T) {
 	}
 }
 
-func TestApplyMetaFailureLeavesCachedGroupMetaUnchanged(t *testing.T) {
+func TestApplyMetaFailureLeavesCachedChannelMetaUnchanged(t *testing.T) {
 	env := newSessionTestEnv(t)
 	initial := testMetaLocal(31, 1, 2, []isr.NodeID{1, 2})
 	mustEnsureLocal(t, env.runtime, initial)
@@ -431,7 +431,7 @@ func TestApplyMetaFailureLeavesCachedGroupMetaUnchanged(t *testing.T) {
 		t.Fatal("expected ApplyMeta to fail")
 	}
 
-	meta := env.runtime.groups[testGroupKey(31)].metaSnapshot()
+	meta := env.runtime.groups[testChannelKey(31)].metaSnapshot()
 	if meta.Epoch != initial.Epoch || meta.Leader != initial.Leader {
 		t.Fatalf("cached meta changed on failure: %+v", meta)
 	}
@@ -444,7 +444,7 @@ func TestInboundEnvelopeDemuxRequiresMatchingGeneration(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(23, 1, 1, []isr.NodeID{1, 2}))
 
-	env.transport.deliver(Envelope{GroupKey: testGroupKey(23), Generation: 99, Epoch: 1, Kind: MessageKindFetchResponse})
+	env.transport.deliver(Envelope{ChannelKey: testChannelKey(23), Generation: 99, Epoch: 1, Kind: MessageKindFetchResponse})
 	if env.factory.replicas[0].applyFetchCalls != 0 {
 		t.Fatalf("unexpected apply fetch on generation mismatch")
 	}
@@ -456,7 +456,7 @@ func TestFetchResponseDropsStaleEpoch(t *testing.T) {
 
 	env.transport.deliver(Envelope{
 		Peer:          2,
-		GroupKey:      testGroupKey(24),
+		ChannelKey:    testChannelKey(24),
 		Generation:    1,
 		Epoch:         2,
 		Kind:          MessageKindFetchResponse,
@@ -474,7 +474,7 @@ func TestFetchResponseDecodesPayloadIntoApplyFetch(t *testing.T) {
 	truncateTo := uint64(7)
 	env.transport.deliver(Envelope{
 		Peer:       2,
-		GroupKey:   testGroupKey(25),
+		ChannelKey: testChannelKey(25),
 		Generation: 1,
 		Epoch:      4,
 		Kind:       MessageKindFetchResponse,
@@ -507,7 +507,7 @@ func TestFetchResponseSendsProgressAckAfterApplyFetch(t *testing.T) {
 	env.factory.replicas[0].state.LEO = 9
 	env.transport.deliver(Envelope{
 		Peer:       2,
-		GroupKey:   testGroupKey(250),
+		ChannelKey: testChannelKey(250),
 		Generation: 1,
 		Epoch:      4,
 		Kind:       MessageKindFetchResponse,
@@ -552,7 +552,7 @@ func TestNonEmptyFetchResponseQueuesImmediateFollowerRefetch(t *testing.T) {
 
 	env.transport.deliver(Envelope{
 		Peer:       2,
-		GroupKey:   testGroupKey(251),
+		ChannelKey: testChannelKey(251),
 		Generation: 1,
 		Epoch:      4,
 		Kind:       MessageKindFetchResponse,
@@ -568,8 +568,8 @@ func TestNonEmptyFetchResponseQueuesImmediateFollowerRefetch(t *testing.T) {
 	if session.last.Kind != MessageKindFetchRequest {
 		t.Fatalf("last kind = %v, want fetch request", session.last.Kind)
 	}
-	if session.last.GroupKey != testGroupKey(251) {
-		t.Fatalf("last group = %q, want %q", session.last.GroupKey, testGroupKey(251))
+	if session.last.ChannelKey != testChannelKey(251) {
+		t.Fatalf("last group = %q, want %q", session.last.ChannelKey, testChannelKey(251))
 	}
 }
 
@@ -579,12 +579,12 @@ func TestProgressAckEnvelopeRequiresMatchingGeneration(t *testing.T) {
 
 	env.transport.deliver(Envelope{
 		Peer:       2,
-		GroupKey:   testGroupKey(253),
+		ChannelKey: testChannelKey(253),
 		Generation: 99,
 		Epoch:      4,
 		Kind:       MessageKindProgressAck,
 		ProgressAck: &ProgressAckEnvelope{
-			GroupKey:    testGroupKey(253),
+			ChannelKey:  testChannelKey(253),
 			Epoch:       4,
 			Generation:  99,
 			ReplicaID:   2,
@@ -603,12 +603,12 @@ func TestLeaderAppliesProgressAckWithoutWaitingForNextFetch(t *testing.T) {
 
 	env.transport.deliver(Envelope{
 		Peer:       2,
-		GroupKey:   testGroupKey(254),
+		ChannelKey: testChannelKey(254),
 		Generation: 1,
 		Epoch:      4,
 		Kind:       MessageKindProgressAck,
 		ProgressAck: &ProgressAckEnvelope{
-			GroupKey:    testGroupKey(254),
+			ChannelKey:  testChannelKey(254),
 			Epoch:       4,
 			Generation:  1,
 			ReplicaID:   2,
@@ -643,7 +643,7 @@ func TestFetchFailureEnvelopeReleasesInflightAndRetriesReplication(t *testing.T)
 
 	env.transport.deliver(Envelope{
 		Peer:       2,
-		GroupKey:   testGroupKey(255),
+		ChannelKey: testChannelKey(255),
 		Generation: 1,
 		Epoch:      4,
 		Kind:       MessageKindFetchFailure,
@@ -675,7 +675,7 @@ func TestEmptyFetchResponseUsesRetryIntervalBeforeFollowerRefetch(t *testing.T) 
 
 	env.transport.deliver(Envelope{
 		Peer:       2,
-		GroupKey:   testGroupKey(252),
+		ChannelKey: testChannelKey(252),
 		Generation: 1,
 		Epoch:      4,
 		Kind:       MessageKindFetchResponse,
@@ -715,7 +715,7 @@ func TestServeFetchReturnsReplicaFetchResult(t *testing.T) {
 	}
 
 	resp, err := env.runtime.ServeFetch(context.Background(), FetchRequestEnvelope{
-		GroupKey:    testGroupKey(26),
+		ChannelKey:  testChannelKey(26),
 		Epoch:       5,
 		Generation:  1,
 		ReplicaID:   2,
@@ -730,10 +730,10 @@ func TestServeFetchReturnsReplicaFetchResult(t *testing.T) {
 		t.Fatalf("expected replica.Fetch to be called once")
 	}
 	gotReq := env.factory.replicas[0].lastFetch
-	if gotReq.GroupKey != testGroupKey(26) || gotReq.FetchOffset != 7 || gotReq.OffsetEpoch != 4 || gotReq.MaxBytes != 1024 {
+	if gotReq.ChannelKey != testChannelKey(26) || gotReq.FetchOffset != 7 || gotReq.OffsetEpoch != 4 || gotReq.MaxBytes != 1024 {
 		t.Fatalf("unexpected fetch request: %+v", gotReq)
 	}
-	if resp.GroupKey != testGroupKey(26) || resp.Epoch != 5 || resp.Generation != 1 {
+	if resp.ChannelKey != testChannelKey(26) || resp.Epoch != 5 || resp.Generation != 1 {
 		t.Fatalf("unexpected response envelope metadata: %+v", resp)
 	}
 	if resp.TruncateTo == nil || *resp.TruncateTo != truncateTo {
@@ -787,14 +787,14 @@ func newSessionTestEnv(t *testing.T) *sessionTestEnv {
 	}
 }
 
-func testMetaLocal(groupID, epoch uint64, leader isr.NodeID, replicas []isr.NodeID) isr.GroupMeta {
-	return isr.GroupMeta{
-		GroupKey: testGroupKey(groupID),
-		Epoch:    epoch,
-		Leader:   leader,
-		Replicas: append([]isr.NodeID(nil), replicas...),
-		ISR:      append([]isr.NodeID(nil), replicas...),
-		MinISR:   1,
+func testMetaLocal(groupID, epoch uint64, leader isr.NodeID, replicas []isr.NodeID) isr.ChannelMeta {
+	return isr.ChannelMeta{
+		ChannelKey: testChannelKey(groupID),
+		Epoch:      epoch,
+		Leader:     leader,
+		Replicas:   append([]isr.NodeID(nil), replicas...),
+		ISR:        append([]isr.NodeID(nil), replicas...),
+		MinISR:     1,
 	}
 }
 
@@ -808,32 +808,32 @@ func queuedReplicationPeers(g *group) int {
 	}
 }
 
-func mustEnsureLocal(t *testing.T, rt *runtime, meta isr.GroupMeta) {
+func mustEnsureLocal(t *testing.T, rt *runtime, meta isr.ChannelMeta) {
 	t.Helper()
-	if err := rt.EnsureGroup(meta); err != nil {
-		t.Fatalf("EnsureGroup(%q) error = %v", meta.GroupKey, err)
+	if err := rt.EnsureChannel(meta); err != nil {
+		t.Fatalf("EnsureChannel(%q) error = %v", meta.ChannelKey, err)
 	}
 }
 
 type sessionGenerationStore struct {
 	mu     sync.Mutex
-	values map[isr.GroupKey]uint64
+	values map[isr.ChannelKey]uint64
 }
 
 func newSessionGenerationStore() *sessionGenerationStore {
-	return &sessionGenerationStore{values: make(map[isr.GroupKey]uint64)}
+	return &sessionGenerationStore{values: make(map[isr.ChannelKey]uint64)}
 }
 
-func (s *sessionGenerationStore) Load(groupKey isr.GroupKey) (uint64, error) {
+func (s *sessionGenerationStore) Load(channelKey isr.ChannelKey) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.values[groupKey], nil
+	return s.values[channelKey], nil
 }
 
-func (s *sessionGenerationStore) Store(groupKey isr.GroupKey, generation uint64) error {
+func (s *sessionGenerationStore) Store(channelKey isr.ChannelKey, generation uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.values[groupKey] = generation
+	s.values[channelKey] = generation
 	return nil
 }
 
@@ -846,12 +846,12 @@ func newSessionReplicaFactory() *sessionReplicaFactory {
 	return &sessionReplicaFactory{}
 }
 
-func (f *sessionReplicaFactory) New(cfg GroupConfig) (isr.Replica, error) {
+func (f *sessionReplicaFactory) New(cfg ChannelConfig) (isr.Replica, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	replica := &sessionReplica{
 		state: isr.ReplicaState{
-			GroupKey:    cfg.GroupKey,
+			ChannelKey:  cfg.ChannelKey,
 			Role:        isr.RoleLeader,
 			Epoch:       cfg.Meta.Epoch,
 			OffsetEpoch: cfg.Meta.Epoch,
@@ -880,38 +880,38 @@ type sessionReplica struct {
 	becomeFollowErr       error
 }
 
-func (r *sessionReplica) ApplyMeta(meta isr.GroupMeta) error {
+func (r *sessionReplica) ApplyMeta(meta isr.ChannelMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.applyMetaErr != nil {
 		return r.applyMetaErr
 	}
-	r.state.GroupKey = meta.GroupKey
+	r.state.ChannelKey = meta.ChannelKey
 	r.state.Epoch = meta.Epoch
 	r.state.Leader = meta.Leader
 	return nil
 }
 
-func (r *sessionReplica) BecomeLeader(meta isr.GroupMeta) error {
+func (r *sessionReplica) BecomeLeader(meta isr.ChannelMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.becomeLeaderErr != nil {
 		return r.becomeLeaderErr
 	}
-	r.state.GroupKey = meta.GroupKey
+	r.state.ChannelKey = meta.ChannelKey
 	r.state.Epoch = meta.Epoch
 	r.state.Leader = meta.Leader
 	r.state.Role = isr.RoleLeader
 	return nil
 }
 
-func (r *sessionReplica) BecomeFollower(meta isr.GroupMeta) error {
+func (r *sessionReplica) BecomeFollower(meta isr.ChannelMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.becomeFollowErr != nil {
 		return r.becomeFollowErr
 	}
-	r.state.GroupKey = meta.GroupKey
+	r.state.ChannelKey = meta.ChannelKey
 	r.state.Epoch = meta.Epoch
 	r.state.Leader = meta.Leader
 	r.state.Role = isr.RoleFollower

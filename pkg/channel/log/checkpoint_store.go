@@ -11,7 +11,7 @@ func (s *Store) loadCheckpoint() (isr.Checkpoint, error) {
 	if err := s.validate(); err != nil {
 		return isr.Checkpoint{}, err
 	}
-	value, closer, err := s.db.db.Get(encodeCheckpointKey(s.groupKey))
+	value, closer, err := s.db.db.Get(encodeCheckpointKey(s.channelKey))
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {
 			return isr.Checkpoint{}, isr.ErrEmptyState
@@ -26,7 +26,7 @@ func (s *Store) storeCheckpoint(checkpoint isr.Checkpoint) error {
 	if err := s.validate(); err != nil {
 		return err
 	}
-	if err := s.db.db.Set(encodeCheckpointKey(s.groupKey), encodeCheckpoint(checkpoint), pebble.Sync); err != nil {
+	if err := s.db.db.Set(encodeCheckpointKey(s.channelKey), encodeCheckpoint(checkpoint), pebble.Sync); err != nil {
 		return err
 	}
 	s.recordDurableCommit()
@@ -37,7 +37,7 @@ func (s *Store) writeCheckpoint(writeBatch *pebble.Batch, checkpoint isr.Checkpo
 	if err := s.validate(); err != nil {
 		return err
 	}
-	return writeBatch.Set(encodeCheckpointKey(s.groupKey), encodeCheckpoint(checkpoint), pebble.NoSync)
+	return writeBatch.Set(encodeCheckpointKey(s.channelKey), encodeCheckpoint(checkpoint), pebble.NoSync)
 }
 
 func (s *Store) storeCheckpointAndMaybeDeleteSnapshot(checkpoint isr.Checkpoint, deleteSnapshot bool) error {
@@ -48,11 +48,11 @@ func (s *Store) storeCheckpointAndMaybeDeleteSnapshot(checkpoint isr.Checkpoint,
 	batch := s.db.db.NewBatch()
 	defer batch.Close()
 
-	if err := batch.Set(encodeCheckpointKey(s.groupKey), encodeCheckpoint(checkpoint), pebble.NoSync); err != nil {
+	if err := batch.Set(encodeCheckpointKey(s.channelKey), encodeCheckpoint(checkpoint), pebble.NoSync); err != nil {
 		return err
 	}
 	if deleteSnapshot {
-		if err := batch.Delete(encodeSnapshotKey(s.groupKey), pebble.NoSync); err != nil {
+		if err := batch.Delete(encodeSnapshotKey(s.channelKey), pebble.NoSync); err != nil {
 			return err
 		}
 	}

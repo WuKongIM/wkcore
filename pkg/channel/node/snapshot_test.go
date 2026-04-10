@@ -14,8 +14,8 @@ func TestSnapshotTasksRespectMaxSnapshotInflight(t *testing.T) {
 	mustEnsureLocal(t, env.runtime, testMetaLocal(61, 1, 1, []isr.NodeID{1, 2}))
 	mustEnsureLocal(t, env.runtime, testMetaLocal(62, 1, 1, []isr.NodeID{1, 2}))
 
-	env.runtime.queueSnapshot(testGroupKey(61))
-	env.runtime.queueSnapshot(testGroupKey(62))
+	env.runtime.queueSnapshot(testChannelKey(61))
+	env.runtime.queueSnapshot(testChannelKey(62))
 	env.runtime.runScheduler()
 
 	if got := env.runtime.maxSnapshotConcurrent(); got != 1 {
@@ -30,7 +30,7 @@ func TestRecoveryBandwidthLimiterThrottlesSnapshotChunks(t *testing.T) {
 	mustEnsureLocal(t, env.runtime, testMetaLocal(63, 1, 1, []isr.NodeID{1, 2}))
 
 	startedAt := env.clock.Now()
-	env.runtime.queueSnapshotChunk(testGroupKey(63), 256)
+	env.runtime.queueSnapshotChunk(testChannelKey(63), 256)
 	env.runtime.runScheduler()
 	if env.clock.Now().Sub(startedAt) < time.Second {
 		t.Fatalf("expected throttling delay")
@@ -47,8 +47,8 @@ func TestSnapshotTaskRequeuesWhenInflightLimitReached(t *testing.T) {
 	if !env.runtime.snapshots.begin(1) {
 		t.Fatalf("expected to reserve one inflight snapshot")
 	}
-	env.runtime.queueSnapshot(testGroupKey(64))
-	env.runtime.queueSnapshot(testGroupKey(65))
+	env.runtime.queueSnapshot(testChannelKey(64))
+	env.runtime.queueSnapshot(testChannelKey(65))
 	env.runtime.runScheduler()
 	if got := env.runtime.queuedSnapshotGroups(); got != 2 {
 		t.Fatalf("expected two waiting snapshots, got %d", got)
@@ -72,9 +72,9 @@ func TestSnapshotWaitingQueueIsFIFO(t *testing.T) {
 	if !env.runtime.snapshots.begin(1) {
 		t.Fatalf("expected to reserve one inflight snapshot")
 	}
-	env.runtime.queueSnapshotChunk(testGroupKey(66), 101)
-	env.runtime.queueSnapshotChunk(testGroupKey(67), 102)
-	env.runtime.queueSnapshotChunk(testGroupKey(68), 103)
+	env.runtime.queueSnapshotChunk(testChannelKey(66), 101)
+	env.runtime.queueSnapshotChunk(testChannelKey(67), 102)
+	env.runtime.queueSnapshotChunk(testChannelKey(68), 103)
 	env.runtime.runScheduler()
 
 	env.runtime.completeSnapshot("")

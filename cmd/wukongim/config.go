@@ -75,11 +75,17 @@ func readConfig(path string) (*viper.Viper, bool, []string, error) {
 }
 
 func buildAppConfig(v *viper.Viper) (app.Config, error) {
+	if raw := strings.TrimSpace(stringValue(v, "WK_CLUSTER_GROUP_COUNT")); raw != "" {
+		return app.Config{}, fmt.Errorf("%w: WK_CLUSTER_GROUP_COUNT is no longer supported; use WK_CLUSTER_SLOT_COUNT", app.ErrInvalidConfig)
+	}
+	if raw := strings.TrimSpace(stringValue(v, "WK_CLUSTER_GROUP_REPLICA_N")); raw != "" {
+		return app.Config{}, fmt.Errorf("%w: WK_CLUSTER_GROUP_REPLICA_N is no longer supported; use WK_CLUSTER_SLOT_REPLICA_N", app.ErrInvalidConfig)
+	}
 	nodeID, err := parseUint64(v, "WK_NODE_ID")
 	if err != nil {
 		return app.Config{}, err
 	}
-	groupCount, err := parseUint32(v, "WK_CLUSTER_GROUP_COUNT")
+	slotCount, err := parseUint32(v, "WK_CLUSTER_SLOT_COUNT")
 	if err != nil {
 		return app.Config{}, err
 	}
@@ -119,7 +125,7 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 	if err != nil {
 		return app.Config{}, err
 	}
-	groupReplicaN, err := parseInt(v, "WK_CLUSTER_GROUP_REPLICA_N")
+	slotReplicaN, err := parseInt(v, "WK_CLUSTER_SLOT_REPLICA_N")
 	if err != nil {
 		return app.Config{}, err
 	}
@@ -133,7 +139,7 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 		return app.Config{}, err
 	}
 	if raw := strings.TrimSpace(stringValue(v, "WK_CLUSTER_GROUPS")); raw != "" {
-		return app.Config{}, fmt.Errorf("%w: WK_CLUSTER_GROUPS is no longer supported; remove static group peers and keep WK_CLUSTER_GROUP_COUNT only", app.ErrInvalidConfig)
+		return app.Config{}, fmt.Errorf("%w: WK_CLUSTER_GROUPS is no longer supported; remove static slot peers and keep WK_CLUSTER_SLOT_COUNT only", app.ErrInvalidConfig)
 	}
 	listeners, err := parseListeners(v)
 	if err != nil {
@@ -187,10 +193,10 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 		},
 		Cluster: app.ClusterConfig{
 			ListenAddr:          stringValue(v, "WK_CLUSTER_LISTEN_ADDR"),
-			GroupCount:          groupCount,
+			SlotCount:           slotCount,
 			Nodes:               nodes,
 			ControllerReplicaN:  controllerReplicaN,
-			GroupReplicaN:       groupReplicaN,
+			SlotReplicaN:        slotReplicaN,
 			ForwardTimeout:      forwardTimeout,
 			PoolSize:            poolSize,
 			TickInterval:        tickInterval,

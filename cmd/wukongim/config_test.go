@@ -38,7 +38,7 @@ func TestLoadConfigParsesConfFileIntoAppConfig(t *testing.T) {
 		"WK_NODE_NAME=node-1",
 		"WK_NODE_DATA_DIR="+dataDir,
 		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
-		"WK_CLUSTER_GROUP_COUNT=1",
+		"WK_CLUSTER_SLOT_COUNT=1",
 		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
 		`WK_GATEWAY_LISTENERS=[{"name":"tcp-wkproto","network":"tcp","address":"127.0.0.1:5100","transport":"stdnet","protocol":"wkproto"}]`,
 		"WK_API_LISTEN_ADDR=127.0.0.1:8080",
@@ -52,7 +52,7 @@ func TestLoadConfigParsesConfFileIntoAppConfig(t *testing.T) {
 	require.Equal(t, "127.0.0.1:7000", cfg.Cluster.ListenAddr)
 	require.Equal(t, "127.0.0.1:8080", cfg.API.ListenAddr)
 	require.Len(t, cfg.Cluster.Nodes, 1)
-	require.Empty(t, cfg.Cluster.Groups)
+	require.Empty(t, cfg.Cluster.Slots)
 	require.Len(t, cfg.Gateway.Listeners, 1)
 }
 
@@ -62,7 +62,7 @@ func TestLoadConfigUsesBuiltInDefaultsWhenOptionalConfKeysAreMissing(t *testing.
 		"WK_NODE_ID=1",
 		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
 		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
-		"WK_CLUSTER_GROUP_COUNT=1",
+		"WK_CLUSTER_SLOT_COUNT=1",
 		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
 	)
 
@@ -78,7 +78,7 @@ func TestLoadConfigPrefersEnvironmentVariablesOverConfValues(t *testing.T) {
 		"WK_NODE_ID=1",
 		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
 		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
-		"WK_CLUSTER_GROUP_COUNT=1",
+		"WK_CLUSTER_SLOT_COUNT=1",
 		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
 		"WK_API_LISTEN_ADDR=127.0.0.1:8080",
 	)
@@ -97,7 +97,7 @@ func TestLoadConfigUsesDefaultSearchPathsWhenFlagPathIsEmpty(t *testing.T) {
 		"WK_NODE_ID=1",
 		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
 		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
-		"WK_CLUSTER_GROUP_COUNT=1",
+		"WK_CLUSTER_SLOT_COUNT=1",
 		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
 	)
 	chdirForTest(t, dir)
@@ -114,7 +114,7 @@ func TestLoadConfigAcceptsEnvironmentOnlyConfigurationWhenNoFileExists(t *testin
 	t.Setenv("WK_NODE_ID", "1")
 	t.Setenv("WK_NODE_DATA_DIR", filepath.Join(dir, "node-1"))
 	t.Setenv("WK_CLUSTER_LISTEN_ADDR", "127.0.0.1:7000")
-	t.Setenv("WK_CLUSTER_GROUP_COUNT", "1")
+	t.Setenv("WK_CLUSTER_SLOT_COUNT", "1")
 	t.Setenv("WK_CLUSTER_NODES", `[{"id":1,"addr":"127.0.0.1:7000"}]`)
 
 	cfg, err := loadConfig("")
@@ -138,13 +138,42 @@ func TestLoadConfigRejectsLegacyClusterGroupsKey(t *testing.T) {
 		"WK_NODE_ID=1",
 		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
 		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
-		"WK_CLUSTER_GROUP_COUNT=1",
+		"WK_CLUSTER_SLOT_COUNT=1",
 		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
 		`WK_CLUSTER_GROUPS=[{"id":1,"peers":[1]}]`,
 	)
 
 	_, err := loadConfig(configPath)
 	require.ErrorContains(t, err, "WK_CLUSTER_GROUPS")
+}
+
+func TestLoadConfigRejectsLegacyClusterGroupCountKey(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_CLUSTER_GROUP_COUNT=1",
+		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
+	)
+
+	_, err := loadConfig(configPath)
+	require.ErrorContains(t, err, "WK_CLUSTER_GROUP_COUNT")
+}
+
+func TestLoadConfigRejectsLegacyClusterGroupReplicaNKey(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_CLUSTER_SLOT_COUNT=1",
+		"WK_CLUSTER_GROUP_REPLICA_N=3",
+		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
+	)
+
+	_, err := loadConfig(configPath)
+	require.ErrorContains(t, err, "WK_CLUSTER_GROUP_REPLICA_N")
 }
 
 func TestLoadConfigParsesDataPlaneRPCTimeoutFromConf(t *testing.T) {
@@ -154,7 +183,7 @@ func TestLoadConfigParsesDataPlaneRPCTimeoutFromConf(t *testing.T) {
 		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
 		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
 		"WK_CLUSTER_DATA_PLANE_RPC_TIMEOUT=250ms",
-		"WK_CLUSTER_GROUP_COUNT=1",
+		"WK_CLUSTER_SLOT_COUNT=1",
 		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
 	)
 
@@ -163,7 +192,7 @@ func TestLoadConfigParsesDataPlaneRPCTimeoutFromConf(t *testing.T) {
 	require.Equal(t, 250*time.Millisecond, cfg.Cluster.DataPlaneRPCTimeout)
 }
 
-func TestBuildAppConfigParsesAutomaticGroupManagementKeys(t *testing.T) {
+func TestBuildAppConfigParsesAutomaticSlotManagementKeys(t *testing.T) {
 	dir := t.TempDir()
 	configPath := writeConf(t, dir, "wukongim.conf",
 		"WK_NODE_ID=1",
@@ -171,19 +200,19 @@ func TestBuildAppConfigParsesAutomaticGroupManagementKeys(t *testing.T) {
 		"WK_STORAGE_CONTROLLER_META_PATH="+filepath.Join(dir, "controller-meta"),
 		"WK_STORAGE_CONTROLLER_RAFT_PATH="+filepath.Join(dir, "controller-raft"),
 		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
-		"WK_CLUSTER_GROUP_COUNT=1",
+		"WK_CLUSTER_SLOT_COUNT=1",
 		"WK_CLUSTER_CONTROLLER_REPLICA_N=3",
-		"WK_CLUSTER_GROUP_REPLICA_N=3",
+		"WK_CLUSTER_SLOT_REPLICA_N=3",
 		`WK_CLUSTER_NODES=[{"id":3,"addr":"127.0.0.1:7002"},{"id":1,"addr":"127.0.0.1:7000"},{"id":2,"addr":"127.0.0.1:7001"}]`,
 	)
 
 	cfg, err := loadConfig(configPath)
 	require.NoError(t, err)
 	require.Equal(t, 3, cfg.Cluster.ControllerReplicaN)
-	require.Equal(t, 3, cfg.Cluster.GroupReplicaN)
+	require.Equal(t, 3, cfg.Cluster.SlotReplicaN)
 	require.Equal(t, filepath.Join(dir, "controller-meta"), cfg.Storage.ControllerMetaPath)
 	require.Equal(t, filepath.Join(dir, "controller-raft"), cfg.Storage.ControllerRaftPath)
-	require.Empty(t, cfg.Cluster.Groups)
+	require.Empty(t, cfg.Cluster.Slots)
 }
 
 func TestLoadConfigParsesGatewayAsyncSendDispatchFromConf(t *testing.T) {
@@ -192,7 +221,7 @@ func TestLoadConfigParsesGatewayAsyncSendDispatchFromConf(t *testing.T) {
 		"WK_NODE_ID=1",
 		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
 		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
-		"WK_CLUSTER_GROUP_COUNT=1",
+		"WK_CLUSTER_SLOT_COUNT=1",
 		"WK_GATEWAY_DEFAULT_SESSION_ASYNC_SEND_DISPATCH=true",
 		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
 	)

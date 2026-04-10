@@ -21,7 +21,7 @@ const (
 )
 
 type PlannerConfig struct {
-	GroupCount             uint32
+	SlotCount              uint32
 	ReplicaN               int
 	RebalanceSkewThreshold int
 	MaxTaskAttempts        int
@@ -31,14 +31,14 @@ type PlannerConfig struct {
 type PlannerState struct {
 	Now         time.Time
 	Nodes       map[uint64]controllermeta.ClusterNode
-	Assignments map[uint32]controllermeta.GroupAssignment
-	Runtime     map[uint32]controllermeta.GroupRuntimeView
+	Assignments map[uint32]controllermeta.SlotAssignment
+	Runtime     map[uint32]controllermeta.SlotRuntimeView
 	Tasks       map[uint32]controllermeta.ReconcileTask
 }
 
 type Decision struct {
-	GroupID    uint32
-	Assignment controllermeta.GroupAssignment
+	SlotID     uint32
+	Assignment controllermeta.SlotAssignment
 	Task       *controllermeta.ReconcileTask
 	Degraded   bool
 }

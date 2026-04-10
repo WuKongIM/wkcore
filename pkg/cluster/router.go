@@ -7,32 +7,32 @@ import (
 )
 
 type Router struct {
-	groupCount uint32
-	runtime    *multiraft.Runtime
-	localNode  multiraft.NodeID
+	slotCount uint32
+	runtime   *multiraft.Runtime
+	localNode multiraft.NodeID
 }
 
-func NewRouter(groupCount uint32, localNode multiraft.NodeID, runtime *multiraft.Runtime) *Router {
+func NewRouter(slotCount uint32, localNode multiraft.NodeID, runtime *multiraft.Runtime) *Router {
 	return &Router{
-		groupCount: groupCount,
-		runtime:    runtime,
-		localNode:  localNode,
+		slotCount: slotCount,
+		runtime:   runtime,
+		localNode: localNode,
 	}
 }
 
-// SlotForKey maps a key to a raft group via CRC32 hashing.
-// NOTE: The mapping is deterministic for a given groupCount but will change
-// if groupCount changes (no consistent hashing). All nodes must use the same
-// groupCount for correct routing.
-func (r *Router) SlotForKey(key string) multiraft.GroupID {
-	return multiraft.GroupID(crc32.ChecksumIEEE([]byte(key))%r.groupCount + 1)
+// SlotForKey maps a key to a raft slot via CRC32 hashing.
+// NOTE: The mapping is deterministic for a given slotCount but will change
+// if slotCount changes (no consistent hashing). All nodes must use the same
+// slotCount for correct routing.
+func (r *Router) SlotForKey(key string) multiraft.SlotID {
+	return multiraft.SlotID(crc32.ChecksumIEEE([]byte(key))%r.slotCount + 1)
 }
 
-func (r *Router) LeaderOf(groupID multiraft.GroupID) (multiraft.NodeID, error) {
+func (r *Router) LeaderOf(slotID multiraft.SlotID) (multiraft.NodeID, error) {
 	if r == nil || r.runtime == nil {
 		return 0, ErrNotStarted
 	}
-	status, err := r.runtime.Status(groupID)
+	status, err := r.runtime.Status(slotID)
 	if err != nil {
 		return 0, err
 	}

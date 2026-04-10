@@ -11,10 +11,10 @@ var _ FetchService = (*runtime)(nil)
 func (r *runtime) ServeFetch(ctx context.Context, req FetchRequestEnvelope) (FetchResponseEnvelope, error) {
 	r.mu.Lock()
 	r.dropExpiredTombstonesLocked(r.cfg.Now())
-	g, ok := r.groupLocked(req.GroupKey)
+	g, ok := r.channelLocked(req.ChannelKey)
 	r.mu.Unlock()
 	if !ok {
-		return FetchResponseEnvelope{}, ErrGroupNotFound
+		return FetchResponseEnvelope{}, ErrChannelNotFound
 	}
 	if g.generation != req.Generation {
 		return FetchResponseEnvelope{}, ErrGenerationMismatch
@@ -26,7 +26,7 @@ func (r *runtime) ServeFetch(ctx context.Context, req FetchRequestEnvelope) (Fet
 	}
 
 	fetchReq := isr.FetchRequest{
-		GroupKey:    req.GroupKey,
+		ChannelKey:  req.ChannelKey,
 		Epoch:       req.Epoch,
 		ReplicaID:   req.ReplicaID,
 		FetchOffset: req.FetchOffset,
@@ -38,7 +38,7 @@ func (r *runtime) ServeFetch(ctx context.Context, req FetchRequestEnvelope) (Fet
 		return FetchResponseEnvelope{}, err
 	}
 	return FetchResponseEnvelope{
-		GroupKey:   req.GroupKey,
+		ChannelKey: req.ChannelKey,
 		Epoch:      result.Epoch,
 		Generation: req.Generation,
 		TruncateTo: result.TruncateTo,

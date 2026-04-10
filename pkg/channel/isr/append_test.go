@@ -270,7 +270,7 @@ func TestFetchSkipsUnsyncedLeaderRecordsWhileAppendSyncInProgress(t *testing.T) 
 	fetchDone := make(chan fetchResult, 1)
 	go func() {
 		result, err := env.replica.Fetch(context.Background(), FetchRequest{
-			GroupKey:    "group-10",
+			ChannelKey:  "group-10",
 			Epoch:       7,
 			ReplicaID:   2,
 			FetchOffset: env.replica.state.LEO,

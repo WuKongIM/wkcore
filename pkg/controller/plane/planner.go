@@ -19,17 +19,17 @@ func NewPlanner(cfg PlannerConfig) *Planner {
 	return &Planner{cfg: cfg}
 }
 
-func (p *Planner) ReconcileGroup(_ context.Context, state PlannerState, groupID uint32) (Decision, error) {
-	decision := Decision{GroupID: groupID}
+func (p *Planner) ReconcileSlot(_ context.Context, state PlannerState, slotID uint32) (Decision, error) {
+	decision := Decision{SlotID: slotID}
 
-	assignment, hasAssignment := state.Assignments[groupID]
-	view, hasView := state.Runtime[groupID]
+	assignment, hasAssignment := state.Assignments[slotID]
+	view, hasView := state.Runtime[slotID]
 	if hasView && !view.HasQuorum {
 		decision.Degraded = true
 		decision.Assignment = assignment
 		return decision, nil
 	}
-	if task, ok := state.Tasks[groupID]; ok {
+	if task, ok := state.Tasks[slotID]; ok {
 		decision.Assignment = assignment
 		if task.Status == controllermeta.TaskStatusFailed {
 			return decision, nil
@@ -44,13 +44,13 @@ func (p *Planner) ReconcileGroup(_ context.Context, state PlannerState, groupID 
 		if len(peers) < p.cfg.ReplicaN {
 			return decision, nil
 		}
-		decision.Assignment = controllermeta.GroupAssignment{
-			GroupID:      groupID,
+		decision.Assignment = controllermeta.SlotAssignment{
+			SlotID:       slotID,
 			DesiredPeers: peers,
 			ConfigEpoch:  1,
 		}
 		decision.Task = &controllermeta.ReconcileTask{
-			GroupID:    groupID,
+			SlotID:     slotID,
 			Kind:       controllermeta.TaskKindBootstrap,
 			Step:       controllermeta.TaskStepAddLearner,
 			TargetNode: peers[0],
@@ -74,14 +74,14 @@ func (p *Planner) ReconcileGroup(_ context.Context, state PlannerState, groupID 
 	}
 
 	desiredPeers := replacePeer(assignment.DesiredPeers, deadOrDraining, target)
-	decision.Assignment = controllermeta.GroupAssignment{
-		GroupID:        assignment.GroupID,
+	decision.Assignment = controllermeta.SlotAssignment{
+		SlotID:         assignment.SlotID,
 		DesiredPeers:   desiredPeers,
 		ConfigEpoch:    assignment.ConfigEpoch + 1,
 		BalanceVersion: assignment.BalanceVersion,
 	}
 	decision.Task = &controllermeta.ReconcileTask{
-		GroupID:    groupID,
+		SlotID:     slotID,
 		Kind:       controllermeta.TaskKindRepair,
 		Step:       controllermeta.TaskStepAddLearner,
 		SourceNode: deadOrDraining,
@@ -91,8 +91,8 @@ func (p *Planner) ReconcileGroup(_ context.Context, state PlannerState, groupID 
 }
 
 func (p *Planner) NextDecision(ctx context.Context, state PlannerState) (Decision, error) {
-	for groupID := uint32(1); groupID <= p.cfg.GroupCount; groupID++ {
-		decision, err := p.ReconcileGroup(ctx, state, groupID)
+	for slotID := uint32(1); slotID <= p.cfg.SlotCount; slotID++ {
+		decision, err := p.ReconcileSlot(ctx, state, slotID)
 		if err != nil {
 			return Decision{}, err
 		}
@@ -105,16 +105,16 @@ func (p *Planner) NextDecision(ctx context.Context, state PlannerState) (Decisio
 }
 
 func (p *Planner) nextRebalanceDecision(state PlannerState) Decision {
-	loads := groupLoads(state.Assignments)
+	loads := slotLoads(state.Assignments)
 	minNode, minLoad, maxNode, maxLoad := loadExtremes(state, loads)
 	if minNode == 0 || maxNode == 0 || maxLoad-minLoad < p.cfg.RebalanceSkewThreshold {
 		return Decision{}
 	}
 
-	candidates := make([]controllermeta.GroupAssignment, 0, len(state.Assignments))
+	candidates := make([]controllermeta.SlotAssignment, 0, len(state.Assignments))
 	for _, assignment := range state.Assignments {
 		if containsPeer(assignment.DesiredPeers, maxNode) && !containsPeer(assignment.DesiredPeers, minNode) {
-			if _, ok := state.Runtime[assignment.GroupID]; !ok {
+			if _, ok := state.Runtime[assignment.SlotID]; !ok {
 				continue
 			}
 			candidates = append(candidates, assignment)
@@ -122,20 +122,20 @@ func (p *Planner) nextRebalanceDecision(state PlannerState) Decision {
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].BalanceVersion == candidates[j].BalanceVersion {
-			return candidates[i].GroupID < candidates[j].GroupID
+			return candidates[i].SlotID < candidates[j].SlotID
 		}
 		return candidates[i].BalanceVersion < candidates[j].BalanceVersion
 	})
 	for _, assignment := range candidates {
-		if view, ok := state.Runtime[assignment.GroupID]; ok && !view.HasQuorum {
+		if view, ok := state.Runtime[assignment.SlotID]; ok && !view.HasQuorum {
 			continue
 		}
-		if task, ok := state.Tasks[assignment.GroupID]; ok {
+		if task, ok := state.Tasks[assignment.SlotID]; ok {
 			if task.Status == controllermeta.TaskStatusFailed || !taskRunnable(state.Now, task) {
 				continue
 			}
 			decision := Decision{
-				GroupID:    assignment.GroupID,
+				SlotID:     assignment.SlotID,
 				Assignment: assignment,
 				Task:       &task,
 			}
@@ -145,16 +145,16 @@ func (p *Planner) nextRebalanceDecision(state PlannerState) Decision {
 			continue
 		}
 		decision := Decision{
-			GroupID: assignment.GroupID,
-			Assignment: controllermeta.GroupAssignment{
-				GroupID:        assignment.GroupID,
+			SlotID: assignment.SlotID,
+			Assignment: controllermeta.SlotAssignment{
+				SlotID:         assignment.SlotID,
 				DesiredPeers:   replacePeer(assignment.DesiredPeers, maxNode, minNode),
 				ConfigEpoch:    assignment.ConfigEpoch + 1,
 				BalanceVersion: assignment.BalanceVersion + 1,
 			},
 		}
 		decision.Task = &controllermeta.ReconcileTask{
-			GroupID:    assignment.GroupID,
+			SlotID:     assignment.SlotID,
 			Kind:       controllermeta.TaskKindRebalance,
 			Step:       controllermeta.TaskStepAddLearner,
 			SourceNode: maxNode,
@@ -166,7 +166,7 @@ func (p *Planner) nextRebalanceDecision(state PlannerState) Decision {
 }
 
 func (p *Planner) selectBootstrapPeers(state PlannerState) []uint64 {
-	loads := groupLoads(state.Assignments)
+	loads := slotLoads(state.Assignments)
 	type candidate struct {
 		nodeID uint64
 		load   int
@@ -207,7 +207,7 @@ func (p *Planner) firstPeerNeedingRepair(state PlannerState, peers []uint64) uin
 }
 
 func (p *Planner) selectRepairTarget(state PlannerState, peers []uint64) uint64 {
-	loads := groupLoads(state.Assignments)
+	loads := slotLoads(state.Assignments)
 	type candidate struct {
 		nodeID uint64
 		load   int
@@ -234,7 +234,7 @@ func (p *Planner) selectRepairTarget(state PlannerState, peers []uint64) uint64 
 	return candidates[0].nodeID
 }
 
-func groupLoads(assignments map[uint32]controllermeta.GroupAssignment) map[uint64]int {
+func slotLoads(assignments map[uint32]controllermeta.SlotAssignment) map[uint64]int {
 	loads := make(map[uint64]int)
 	for _, assignment := range assignments {
 		for _, peer := range assignment.DesiredPeers {

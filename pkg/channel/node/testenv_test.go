@@ -65,53 +65,53 @@ func newTestEnvWithOptions(t *testing.T, opts ...testEnvOption) *testEnv {
 	}
 }
 
-func withMaxGroups(n int) testEnvOption {
+func withMaxChannels(n int) testEnvOption {
 	return func(cfg *isrnode.Config) {
-		cfg.Limits.MaxGroups = n
+		cfg.Limits.MaxChannels = n
 	}
 }
 
-func testGroupKey(groupID uint64) isr.GroupKey {
-	return isr.GroupKey("group-" + strconv.FormatUint(groupID, 10))
+func testChannelKey(groupID uint64) isr.ChannelKey {
+	return isr.ChannelKey("group-" + strconv.FormatUint(groupID, 10))
 }
 
-func testMeta(groupID, epoch uint64, leader isr.NodeID, replicas []isr.NodeID) isr.GroupMeta {
-	return isr.GroupMeta{
-		GroupKey: testGroupKey(groupID),
-		Epoch:    epoch,
-		Leader:   leader,
-		Replicas: append([]isr.NodeID(nil), replicas...),
-		ISR:      append([]isr.NodeID(nil), replicas...),
-		MinISR:   1,
+func testMeta(groupID, epoch uint64, leader isr.NodeID, replicas []isr.NodeID) isr.ChannelMeta {
+	return isr.ChannelMeta{
+		ChannelKey: testChannelKey(groupID),
+		Epoch:      epoch,
+		Leader:     leader,
+		Replicas:   append([]isr.NodeID(nil), replicas...),
+		ISR:        append([]isr.NodeID(nil), replicas...),
+		MinISR:     1,
 	}
 }
 
-func mustEnsure(t *testing.T, rt isrnode.Runtime, meta isr.GroupMeta) {
+func mustEnsure(t *testing.T, rt isrnode.Runtime, meta isr.ChannelMeta) {
 	t.Helper()
-	if err := rt.EnsureGroup(meta); err != nil {
-		t.Fatalf("EnsureGroup(%q) error = %v", meta.GroupKey, err)
+	if err := rt.EnsureChannel(meta); err != nil {
+		t.Fatalf("EnsureChannel(%q) error = %v", meta.ChannelKey, err)
 	}
 }
 
 func mustRemove(t *testing.T, rt isrnode.Runtime, groupID uint64) {
 	t.Helper()
-	groupKey := testGroupKey(groupID)
-	if err := rt.RemoveGroup(groupKey); err != nil {
-		t.Fatalf("RemoveGroup(%q) error = %v", groupKey, err)
+	channelKey := testChannelKey(groupID)
+	if err := rt.RemoveChannel(channelKey); err != nil {
+		t.Fatalf("RemoveChannel(%q) error = %v", channelKey, err)
 	}
 }
 
-func mustGroup(t *testing.T, rt isrnode.Runtime, groupID uint64) isrnode.GroupHandle {
+func mustChannel(t *testing.T, rt isrnode.Runtime, groupID uint64) isrnode.ChannelHandle {
 	t.Helper()
-	groupKey := testGroupKey(groupID)
-	group, ok := rt.Group(groupKey)
+	channelKey := testChannelKey(groupID)
+	group, ok := rt.Channel(channelKey)
 	if !ok {
-		t.Fatalf("Group(%q) not found", groupKey)
+		t.Fatalf("Channel(%q) not found", channelKey)
 	}
 	return group
 }
 
-func fencedLeaderMeta(groupID uint64) isr.GroupMeta {
+func fencedLeaderMeta(groupID uint64) isr.ChannelMeta {
 	meta := testMeta(groupID, 1, 1, []isr.NodeID{1, 2})
 	meta.LeaseUntil = time.Unix(1699999999, 0)
 	return meta
@@ -119,35 +119,35 @@ func fencedLeaderMeta(groupID uint64) isr.GroupMeta {
 
 type fakeGenerationStore struct {
 	mu     sync.Mutex
-	values map[isr.GroupKey]uint64
-	stored map[isr.GroupKey]uint64
+	values map[isr.ChannelKey]uint64
+	stored map[isr.ChannelKey]uint64
 }
 
 func newFakeGenerationStore() *fakeGenerationStore {
 	return &fakeGenerationStore{
-		values: make(map[isr.GroupKey]uint64),
-		stored: make(map[isr.GroupKey]uint64),
+		values: make(map[isr.ChannelKey]uint64),
+		stored: make(map[isr.ChannelKey]uint64),
 	}
 }
 
-func (s *fakeGenerationStore) Load(groupKey isr.GroupKey) (uint64, error) {
+func (s *fakeGenerationStore) Load(channelKey isr.ChannelKey) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.values[groupKey], nil
+	return s.values[channelKey], nil
 }
 
-func (s *fakeGenerationStore) Store(groupKey isr.GroupKey, generation uint64) error {
+func (s *fakeGenerationStore) Store(channelKey isr.ChannelKey, generation uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.values[groupKey] = generation
-	s.stored[groupKey] = generation
+	s.values[channelKey] = generation
+	s.stored[channelKey] = generation
 	return nil
 }
 
 type createdReplica struct {
-	groupKey   isr.GroupKey
+	channelKey isr.ChannelKey
 	generation uint64
-	meta       isr.GroupMeta
+	meta       isr.ChannelMeta
 }
 
 type fakeReplicaFactory struct {
@@ -160,20 +160,20 @@ func newFakeReplicaFactory() *fakeReplicaFactory {
 	return &fakeReplicaFactory{}
 }
 
-func (f *fakeReplicaFactory) New(cfg isrnode.GroupConfig) (isr.Replica, error) {
+func (f *fakeReplicaFactory) New(cfg isrnode.ChannelConfig) (isr.Replica, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	replica := &fakeReplica{
 		state: isr.ReplicaState{
-			GroupKey: cfg.GroupKey,
-			Epoch:    cfg.Meta.Epoch,
-			Leader:   cfg.Meta.Leader,
-			Role:     isr.RoleFollower,
+			ChannelKey: cfg.ChannelKey,
+			Epoch:      cfg.Meta.Epoch,
+			Leader:     cfg.Meta.Leader,
+			Role:       isr.RoleFollower,
 		},
 	}
 	f.created = append(f.created, createdReplica{
-		groupKey:   cfg.GroupKey,
+		channelKey: cfg.ChannelKey,
 		generation: cfg.Generation,
 		meta:       cfg.Meta,
 	})
@@ -187,39 +187,39 @@ type fakeReplica struct {
 	appendErr       error
 	fetchErr        error
 	fetchResult     isr.FetchResult
-	metaCalls       []isr.GroupMeta
+	metaCalls       []isr.ChannelMeta
 	appendCalls     int
 	applyFetchCalls int
 	fetchCalls      int
 	tombstoned      bool
 }
 
-func (r *fakeReplica) ApplyMeta(meta isr.GroupMeta) error {
+func (r *fakeReplica) ApplyMeta(meta isr.ChannelMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.metaCalls = append(r.metaCalls, meta)
-	r.state.GroupKey = meta.GroupKey
+	r.state.ChannelKey = meta.ChannelKey
 	r.state.Epoch = meta.Epoch
 	r.state.Leader = meta.Leader
 	return nil
 }
 
-func (r *fakeReplica) BecomeLeader(meta isr.GroupMeta) error {
+func (r *fakeReplica) BecomeLeader(meta isr.ChannelMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.metaCalls = append(r.metaCalls, meta)
-	r.state.GroupKey = meta.GroupKey
+	r.state.ChannelKey = meta.ChannelKey
 	r.state.Epoch = meta.Epoch
 	r.state.Leader = meta.Leader
 	r.state.Role = isr.RoleLeader
 	return nil
 }
 
-func (r *fakeReplica) BecomeFollower(meta isr.GroupMeta) error {
+func (r *fakeReplica) BecomeFollower(meta isr.ChannelMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.metaCalls = append(r.metaCalls, meta)
-	r.state.GroupKey = meta.GroupKey
+	r.state.ChannelKey = meta.ChannelKey
 	r.state.Epoch = meta.Epoch
 	r.state.Leader = meta.Leader
 	r.state.Role = isr.RoleFollower

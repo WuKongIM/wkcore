@@ -18,7 +18,7 @@ func TestPushBatchRPCRejectsBootMismatchAndClosingRoutes(t *testing.T) {
 	require.NoError(t, reg.Register(online.OnlineConn{
 		SessionID:   10,
 		UID:         "u2",
-		GroupID:     1,
+		SlotID:      1,
 		State:       online.LocalRouteStateActive,
 		Listener:    "tcp",
 		DeviceFlag:  frame.APP,
@@ -28,7 +28,7 @@ func TestPushBatchRPCRejectsBootMismatchAndClosingRoutes(t *testing.T) {
 	require.NoError(t, reg.Register(online.OnlineConn{
 		SessionID:   11,
 		UID:         "u2",
-		GroupID:     1,
+		SlotID:      1,
 		State:       online.LocalRouteStateActive,
 		Listener:    "tcp",
 		DeviceFlag:  frame.APP,

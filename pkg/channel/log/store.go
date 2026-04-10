@@ -8,9 +8,9 @@ import (
 )
 
 type Store struct {
-	db       *DB
-	key      ChannelKey
-	groupKey isr.GroupKey
+	db         *DB
+	key        ChannelKey
+	channelKey isr.ChannelKey
 
 	writeMu   sync.Mutex
 	mu        sync.Mutex

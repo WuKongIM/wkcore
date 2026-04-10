@@ -166,11 +166,11 @@ func (sm *StateMachine) applyTimeoutEvaluation(ctx context.Context, now time.Tim
 }
 
 func (sm *StateMachine) applyTaskResult(ctx context.Context, advance TaskAdvance) error {
-	if advance.GroupID == 0 {
+	if advance.SlotID == 0 {
 		return controllermeta.ErrInvalidArgument
 	}
 
-	task, err := sm.store.GetTask(ctx, advance.GroupID)
+	task, err := sm.store.GetTask(ctx, advance.SlotID)
 	if errors.Is(err, controllermeta.ErrNotFound) {
 		return nil
 	}
@@ -181,7 +181,7 @@ func (sm *StateMachine) applyTaskResult(ctx context.Context, advance TaskAdvance
 		return nil
 	}
 	if advance.Err == nil {
-		return sm.store.DeleteTask(ctx, advance.GroupID)
+		return sm.store.DeleteTask(ctx, advance.SlotID)
 	}
 
 	task.Attempt++
@@ -197,7 +197,7 @@ func (sm *StateMachine) applyTaskResult(ctx context.Context, advance TaskAdvance
 	return sm.store.UpsertTask(ctx, task)
 }
 
-func (sm *StateMachine) applyAssignmentTaskUpdate(ctx context.Context, assignment *controllermeta.GroupAssignment, task *controllermeta.ReconcileTask) error {
+func (sm *StateMachine) applyAssignmentTaskUpdate(ctx context.Context, assignment *controllermeta.SlotAssignment, task *controllermeta.ReconcileTask) error {
 	if task != nil && task.Kind == controllermeta.TaskKindRepair {
 		obsolete, err := sm.repairTaskObsolete(ctx, *task)
 		if err != nil {

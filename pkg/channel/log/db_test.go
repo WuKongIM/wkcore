@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestOpenCreatesDBAndForChannelBindsDerivedGroupKey(t *testing.T) {
+func TestOpenCreatesDBAndForChannelBindsDerivedChannelKey(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "store"))
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
@@ -20,8 +20,8 @@ func TestOpenCreatesDBAndForChannelBindsDerivedGroupKey(t *testing.T) {
 	if store.key != key {
 		t.Fatalf("Store.key = %+v, want %+v", store.key, key)
 	}
-	if store.groupKey != channelGroupKey(key) {
-		t.Fatalf("Store.groupKey = %q, want %q", store.groupKey, channelGroupKey(key))
+	if store.channelKey != isrChannelKeyForChannel(key) {
+		t.Fatalf("Store.channelKey = %q, want %q", store.channelKey, isrChannelKeyForChannel(key))
 	}
 }
 

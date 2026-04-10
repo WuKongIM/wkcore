@@ -36,7 +36,7 @@ func (s *stateStore) PutIdempotency(key IdempotencyKey, entry IdempotencyEntry) 
 		return err
 	}
 	if err := s.store.db.db.Set(
-		encodeIdempotencyKey(s.store.groupKey, key),
+		encodeIdempotencyKey(s.store.channelKey, key),
 		encodeIdempotencyEntry(entry),
 		pebble.Sync,
 	); err != nil {
@@ -51,7 +51,7 @@ func (s *stateStore) GetIdempotency(key IdempotencyKey) (IdempotencyEntry, bool,
 		return IdempotencyEntry{}, false, err
 	}
 
-	value, closer, err := s.store.db.db.Get(encodeIdempotencyKey(s.store.groupKey, key))
+	value, closer, err := s.store.db.db.Get(encodeIdempotencyKey(s.store.channelKey, key))
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {
 			return IdempotencyEntry{}, false, nil
@@ -72,7 +72,7 @@ func (s *stateStore) Snapshot(offset uint64) ([]byte, error) {
 		return nil, err
 	}
 
-	prefix := encodeIdempotencyPrefix(s.store.groupKey)
+	prefix := encodeIdempotencyPrefix(s.store.channelKey)
 	iter, err := s.store.db.db.NewIter(&pebble.IterOptions{
 		LowerBound: prefix,
 		UpperBound: keyUpperBound(prefix),
@@ -117,7 +117,7 @@ func (s *stateStore) Restore(snapshot []byte) error {
 		return err
 	}
 
-	prefix := encodeIdempotencyPrefix(s.store.groupKey)
+	prefix := encodeIdempotencyPrefix(s.store.channelKey)
 	batch := s.store.db.db.NewBatch()
 	defer batch.Close()
 
@@ -132,7 +132,7 @@ func (s *stateStore) Restore(snapshot []byte) error {
 			ClientMsgNo: entry.ClientMsgNo,
 		}
 		if err := batch.Set(
-			encodeIdempotencyKey(s.store.groupKey, key),
+			encodeIdempotencyKey(s.store.channelKey, key),
 			encodeIdempotencyEntry(entry.Entry),
 			pebble.NoSync,
 		); err != nil {
@@ -176,7 +176,7 @@ func (s *stateStore) CommitCommittedWithCheckpoint(checkpoint isr.Checkpoint, ba
 		return err
 	}
 	if err := writeBatch.Set(
-		encodeCheckpointKey(s.store.groupKey),
+		encodeCheckpointKey(s.store.channelKey),
 		encodeCheckpoint(checkpoint),
 		pebble.NoSync,
 	); err != nil {
@@ -225,7 +225,7 @@ func (s *stateStore) writeCommitted(writeBatch *pebble.Batch, checkpoint isr.Che
 			return ErrInvalidArgument
 		}
 		if err := writeBatch.Set(
-			encodeIdempotencyKey(s.store.groupKey, message.key),
+			encodeIdempotencyKey(s.store.channelKey, message.key),
 			encodeIdempotencyEntry(message.entry),
 			pebble.NoSync,
 		); err != nil {

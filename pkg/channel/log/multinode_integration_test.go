@@ -177,8 +177,8 @@ func TestFollowerRestartCatchesUpAfterLeaderProgress(t *testing.T) {
 
 type threeNodeChannelHarness struct {
 	key         ChannelKey
-	channelMeta ChannelMeta
-	groupMeta   isr.GroupMeta
+	meta        ChannelMeta
+	runtimeMeta isr.ChannelMeta
 	addrs       map[uint64]string
 	specs       map[NodeID]channelNodeSpec
 	nodes       map[NodeID]*threeNodeChannelNode
@@ -225,8 +225,8 @@ func newThreeNodeChannelHarnessWithMinISR(t *testing.T, minISR int) *threeNodeCh
 			MessageSeqFormat: MessageSeqFormatLegacyU32,
 		},
 	}
-	groupMeta := isr.GroupMeta{
-		GroupKey:   GroupKeyForChannel(key),
+	runtimeMeta := isr.ChannelMeta{
+		ChannelKey: ISRChannelKeyForChannel(key),
 		Epoch:      channelMeta.LeaderEpoch,
 		Leader:     isr.NodeID(channelMeta.Leader),
 		Replicas:   []isr.NodeID{1, 2, 3},
@@ -237,8 +237,8 @@ func newThreeNodeChannelHarnessWithMinISR(t *testing.T, minISR int) *threeNodeCh
 
 	harness := &threeNodeChannelHarness{
 		key:         key,
-		channelMeta: channelMeta,
-		groupMeta:   groupMeta,
+		meta:        channelMeta,
+		runtimeMeta: runtimeMeta,
 		addrs:       addrs,
 		specs:       make(map[NodeID]channelNodeSpec, 3),
 		nodes:       make(map[NodeID]*threeNodeChannelNode, 3),
@@ -250,7 +250,7 @@ func newThreeNodeChannelHarnessWithMinISR(t *testing.T, minISR int) *threeNodeCh
 		harness.specs[id] = channelNodeSpec{dir: dir}
 
 		node := newThreeNodeChannelNode(t, id, addrs, dir, key)
-		require.NoError(t, node.runtime.EnsureGroup(groupMeta))
+		require.NoError(t, node.runtime.EnsureChannel(runtimeMeta))
 		require.NoError(t, node.cluster.ApplyMeta(channelMeta))
 		harness.nodes[node.id] = node
 		if node.id == channelMeta.Leader {
@@ -354,7 +354,7 @@ func (h *threeNodeChannelHarness) stopNode(t *testing.T, nodeID NodeID) {
 	node := h.nodes[nodeID]
 	require.NotNil(t, node, "node %d is not running", nodeID)
 	if node.runtime != nil {
-		require.NoError(t, node.runtime.RemoveGroup(h.groupMeta.GroupKey))
+		require.NoError(t, node.runtime.RemoveChannel(h.runtimeMeta.ChannelKey))
 	}
 	node.close(t)
 	h.nodes[nodeID] = nil
@@ -372,11 +372,11 @@ func (h *threeNodeChannelHarness) restartNode(t *testing.T, nodeID NodeID) *thre
 	require.True(t, ok, "missing spec for node %d", nodeID)
 
 	node := newThreeNodeChannelNode(t, nodeID, h.addrs, spec.dir, h.key)
-	require.NoError(t, node.runtime.EnsureGroup(h.groupMeta))
-	require.NoError(t, node.cluster.ApplyMeta(h.channelMeta))
+	require.NoError(t, node.runtime.EnsureChannel(h.runtimeMeta))
+	require.NoError(t, node.cluster.ApplyMeta(h.meta))
 
 	h.nodes[nodeID] = node
-	if node.id == h.channelMeta.Leader {
+	if node.id == h.meta.Leader {
 		h.leader = node
 	}
 	return node
@@ -411,7 +411,7 @@ type singleChannelReplicaFactory struct {
 	localNode isr.NodeID
 }
 
-func (f singleChannelReplicaFactory) New(cfg isrnode.GroupConfig) (isr.Replica, error) {
+func (f singleChannelReplicaFactory) New(cfg isrnode.ChannelConfig) (isr.Replica, error) {
 	return NewReplica(f.db.ForChannel(f.key), f.localNode, func() time.Time {
 		return time.Now()
 	})
@@ -419,23 +419,23 @@ func (f singleChannelReplicaFactory) New(cfg isrnode.GroupConfig) (isr.Replica, 
 
 type testGenerationStore struct {
 	mu     sync.Mutex
-	values map[isr.GroupKey]uint64
+	values map[isr.ChannelKey]uint64
 }
 
 func newTestGenerationStore() *testGenerationStore {
-	return &testGenerationStore{values: make(map[isr.GroupKey]uint64)}
+	return &testGenerationStore{values: make(map[isr.ChannelKey]uint64)}
 }
 
-func (s *testGenerationStore) Load(groupKey isr.GroupKey) (uint64, error) {
+func (s *testGenerationStore) Load(channelKey isr.ChannelKey) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.values[groupKey], nil
+	return s.values[channelKey], nil
 }
 
-func (s *testGenerationStore) Store(groupKey isr.GroupKey, generation uint64) error {
+func (s *testGenerationStore) Store(channelKey isr.ChannelKey, generation uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.values[groupKey] = generation
+	s.values[channelKey] = generation
 	return nil
 }
 
@@ -515,23 +515,23 @@ type testChannelLogRuntime struct {
 	runtime isrnode.Runtime
 }
 
-func (r testChannelLogRuntime) Group(groupKey isr.GroupKey) (GroupHandle, bool) {
-	group, ok := r.runtime.Group(groupKey)
+func (r testChannelLogRuntime) Channel(channelKey isr.ChannelKey) (ChannelHandle, bool) {
+	group, ok := r.runtime.Channel(channelKey)
 	if !ok {
 		return nil, false
 	}
-	return testGroupHandle{group: group}, true
+	return testChannelHandle{group: group}, true
 }
 
-type testGroupHandle struct {
-	group isrnode.GroupHandle
+type testChannelHandle struct {
+	group isrnode.ChannelHandle
 }
 
-func (h testGroupHandle) Append(ctx context.Context, records []isr.Record) (isr.CommitResult, error) {
+func (h testChannelHandle) Append(ctx context.Context, records []isr.Record) (isr.CommitResult, error) {
 	return h.group.Append(ctx, records)
 }
 
-func (h testGroupHandle) Status() isr.ReplicaState {
+func (h testChannelHandle) Status() isr.ReplicaState {
 	return h.group.Status()
 }
 

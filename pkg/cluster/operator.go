@@ -7,7 +7,7 @@ import (
 	"time"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
-	groupcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
+	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
 	controllerraft "github.com/WuKongIM/WuKongIM/pkg/controller/raft"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
@@ -32,8 +32,8 @@ func (c *Cluster) MarkNodeDraining(ctx context.Context, nodeID uint64) error {
 		return ErrNotStarted
 	}
 	return c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
-		return c.controllerClient.Operator(attemptCtx, groupcontroller.OperatorRequest{
-			Kind:   groupcontroller.OperatorMarkNodeDraining,
+		return c.controllerClient.Operator(attemptCtx, slotcontroller.OperatorRequest{
+			Kind:   slotcontroller.OperatorMarkNodeDraining,
 			NodeID: nodeID,
 		})
 	})
@@ -44,19 +44,19 @@ func (c *Cluster) ResumeNode(ctx context.Context, nodeID uint64) error {
 		return ErrNotStarted
 	}
 	return c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
-		return c.controllerClient.Operator(attemptCtx, groupcontroller.OperatorRequest{
-			Kind:   groupcontroller.OperatorResumeNode,
+		return c.controllerClient.Operator(attemptCtx, slotcontroller.OperatorRequest{
+			Kind:   slotcontroller.OperatorResumeNode,
 			NodeID: nodeID,
 		})
 	})
 }
 
-func (c *Cluster) GetReconcileTask(ctx context.Context, groupID uint32) (controllermeta.ReconcileTask, error) {
+func (c *Cluster) GetReconcileTask(ctx context.Context, slotID uint32) (controllermeta.ReconcileTask, error) {
 	if c.controllerClient != nil {
 		var task controllermeta.ReconcileTask
 		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
 			var err error
-			task, err = c.controllerClient.GetTask(attemptCtx, groupID)
+			task, err = c.controllerClient.GetTask(attemptCtx, slotID)
 			return err
 		})
 		if err == nil {
@@ -67,70 +67,70 @@ func (c *Cluster) GetReconcileTask(ctx context.Context, groupID uint32) (control
 		}
 	}
 	if c.controllerMeta != nil {
-		return c.controllerMeta.GetTask(ctx, groupID)
+		return c.controllerMeta.GetTask(ctx, slotID)
 	}
 	return controllermeta.ReconcileTask{}, ErrNotStarted
 }
 
-func (c *Cluster) ForceReconcile(ctx context.Context, groupID uint32) error {
+func (c *Cluster) ForceReconcile(ctx context.Context, slotID uint32) error {
 	if c.controllerClient != nil {
 		return c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
-			return c.controllerClient.ForceReconcile(attemptCtx, groupID)
+			return c.controllerClient.ForceReconcile(attemptCtx, slotID)
 		})
 	}
 	if c.controller != nil && c.controller.LeaderID() == uint64(c.cfg.NodeID) {
-		return c.forceReconcileOnLeader(ctx, groupID)
+		return c.forceReconcileOnLeader(ctx, slotID)
 	}
 	return ErrNotStarted
 }
 
-func (c *Cluster) TransferGroupLeader(ctx context.Context, groupID uint32, nodeID multiraft.NodeID) error {
-	return c.transferGroupLeadership(ctx, multiraft.GroupID(groupID), nodeID)
+func (c *Cluster) TransferSlotLeader(ctx context.Context, slotID uint32, nodeID multiraft.NodeID) error {
+	return c.transferSlotLeadership(ctx, multiraft.SlotID(slotID), nodeID)
 }
 
-func (c *Cluster) RecoverGroup(ctx context.Context, groupID uint32, strategy RecoverStrategy) error {
+func (c *Cluster) RecoverSlot(ctx context.Context, slotID uint32, strategy RecoverStrategy) error {
 	if strategy != RecoverStrategyLatestLiveReplica {
 		return ErrInvalidConfig
 	}
 
-	assignments, err := c.ListGroupAssignments(ctx)
+	assignments, err := c.ListSlotAssignments(ctx)
 	if err != nil {
 		return err
 	}
 
 	var peers []uint64
 	for _, assignment := range assignments {
-		if assignment.GroupID == groupID {
+		if assignment.SlotID == slotID {
 			peers = assignment.DesiredPeers
 			break
 		}
 	}
 
 	if len(peers) == 0 {
-		return ErrGroupNotFound
+		return ErrSlotNotFound
 	}
 
 	reachable := 0
 	for _, peer := range peers {
 		if multiraft.NodeID(peer) == c.cfg.NodeID {
-			if _, err := c.runtime.Status(multiraft.GroupID(groupID)); err == nil {
+			if _, err := c.runtime.Status(multiraft.SlotID(slotID)); err == nil {
 				reachable++
 			}
 			continue
 		}
 
-		body, err := json.Marshal(managedGroupRPCRequest{
-			Kind:    managedGroupRPCStatus,
-			GroupID: groupID,
+		body, err := json.Marshal(managedSlotRPCRequest{
+			Kind:   managedSlotRPCStatus,
+			SlotID: slotID,
 		})
 		if err != nil {
 			return err
 		}
-		respBody, err := c.RPCService(ctx, multiraft.NodeID(peer), multiraft.GroupID(groupID), rpcServiceManagedGroup, body)
+		respBody, err := c.RPCService(ctx, multiraft.NodeID(peer), multiraft.SlotID(slotID), rpcServiceManagedSlot, body)
 		if err != nil {
 			continue
 		}
-		if decodeManagedGroupResponse(respBody) == nil {
+		if decodeManagedSlotResponse(respBody) == nil {
 			reachable++
 		}
 	}
@@ -140,14 +140,14 @@ func (c *Cluster) RecoverGroup(ctx context.Context, groupID uint32, strategy Rec
 	return nil
 }
 
-func (c *Cluster) forceReconcileOnLeader(ctx context.Context, groupID uint32) error {
+func (c *Cluster) forceReconcileOnLeader(ctx context.Context, slotID uint32) error {
 	if c.controller == nil || c.controllerMeta == nil {
 		return ErrNotStarted
 	}
 
 	now := time.Now()
-	assignment, assignmentErr := c.controllerMeta.GetAssignment(ctx, groupID)
-	task, taskErr := c.controllerMeta.GetTask(ctx, groupID)
+	assignment, assignmentErr := c.controllerMeta.GetAssignment(ctx, slotID)
+	task, taskErr := c.controllerMeta.GetTask(ctx, slotID)
 
 	switch {
 	case taskErr == nil:
@@ -155,8 +155,8 @@ func (c *Cluster) forceReconcileOnLeader(ctx context.Context, groupID uint32) er
 		task.NextRunAt = now
 		proposeCtx, cancel := withControllerTimeout(ctx)
 		defer cancel()
-		if err := c.controller.Propose(proposeCtx, groupcontroller.Command{
-			Kind:       groupcontroller.CommandKindAssignmentTaskUpdate,
+		if err := c.controller.Propose(proposeCtx, slotcontroller.Command{
+			Kind:       slotcontroller.CommandKindAssignmentTaskUpdate,
 			Assignment: &assignment,
 			Task:       &task,
 		}); err != nil {
@@ -174,11 +174,11 @@ func (c *Cluster) forceReconcileOnLeader(ctx context.Context, groupID uint32) er
 	if err != nil {
 		return err
 	}
-	planner := groupcontroller.NewPlanner(groupcontroller.PlannerConfig{
-		GroupCount: c.cfg.GroupCount,
-		ReplicaN:   c.cfg.GroupReplicaN,
+	planner := slotcontroller.NewPlanner(slotcontroller.PlannerConfig{
+		SlotCount: c.cfg.SlotCount,
+		ReplicaN:  c.cfg.SlotReplicaN,
 	})
-	decision, err := planner.ReconcileGroup(ctx, state, groupID)
+	decision, err := planner.ReconcileSlot(ctx, state, slotID)
 	if err != nil {
 		return err
 	}
@@ -194,8 +194,8 @@ func (c *Cluster) forceReconcileOnLeader(ctx context.Context, groupID uint32) er
 
 	proposeCtx, cancel := withControllerTimeout(ctx)
 	defer cancel()
-	if err := c.controller.Propose(proposeCtx, groupcontroller.Command{
-		Kind:       groupcontroller.CommandKindAssignmentTaskUpdate,
+	if err := c.controller.Propose(proposeCtx, slotcontroller.Command{
+		Kind:       slotcontroller.CommandKindAssignmentTaskUpdate,
 		Assignment: &decision.Assignment,
 		Task:       decision.Task,
 	}); err != nil {

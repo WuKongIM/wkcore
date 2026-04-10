@@ -126,7 +126,7 @@ func (a *Adapter) handleProgressAckRPC(ctx context.Context, body []byte) ([]byte
 	}
 	a.deliver(isrnode.Envelope{
 		Peer:        ack.ReplicaID,
-		GroupKey:    ack.GroupKey,
+		ChannelKey:  ack.ChannelKey,
 		Epoch:       ack.Epoch,
 		Generation:  ack.Generation,
 		Kind:        isrnode.MessageKindProgressAck,

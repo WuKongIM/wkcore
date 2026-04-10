@@ -11,10 +11,10 @@ func TestInstallSnapshotPersistsPayloadBeforeCheckpoint(t *testing.T) {
 	env := newFollowerEnv(t)
 	env.log.leo = 8
 	snap := Snapshot{
-		GroupKey:  "group-10",
-		Epoch:     7,
-		EndOffset: 8,
-		Payload:   []byte("snap"),
+		ChannelKey: "group-10",
+		Epoch:      7,
+		EndOffset:  8,
+		Payload:    []byte("snap"),
 	}
 
 	if err := env.replica.InstallSnapshot(context.Background(), snap); err != nil {
@@ -33,9 +33,9 @@ func TestInstallSnapshotRejectsLogStoreBehindSnapshotEndOffset(t *testing.T) {
 	env.log.leo = 5
 
 	err := env.replica.InstallSnapshot(context.Background(), Snapshot{
-		GroupKey:  "group-10",
-		Epoch:     7,
-		EndOffset: 8,
+		ChannelKey: "group-10",
+		Epoch:      7,
+		EndOffset:  8,
 	})
 	if !errors.Is(err, ErrCorruptState) {
 		t.Fatalf("expected ErrCorruptState, got %v", err)
@@ -46,10 +46,10 @@ func TestNewReplicaRecoversInstalledSnapshotOffsets(t *testing.T) {
 	env := newFollowerEnv(t)
 	env.log.leo = 8
 	snap := Snapshot{
-		GroupKey:  "group-10",
-		Epoch:     7,
-		EndOffset: 8,
-		Payload:   []byte("snap"),
+		ChannelKey: "group-10",
+		Epoch:      7,
+		EndOffset:  8,
+		Payload:    []byte("snap"),
 	}
 
 	if err := env.replica.InstallSnapshot(context.Background(), snap); err != nil {

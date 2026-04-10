@@ -11,7 +11,7 @@ import (
 	"time"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
-	groupcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
+	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
@@ -55,7 +55,7 @@ type Service struct {
 
 type proposalRequest struct {
 	ctx  context.Context
-	cmd  groupcontroller.Command
+	cmd  slotcontroller.Command
 	resp chan error
 }
 
@@ -74,30 +74,30 @@ type loadedMemoryStorage struct {
 }
 
 type commandEnvelope struct {
-	Kind       groupcontroller.CommandKind           `json:"kind"`
-	Report     *groupcontroller.AgentReport          `json:"report,omitempty"`
-	Op         *groupcontroller.OperatorRequest      `json:"op,omitempty"`
-	Advance    *taskAdvanceEnvelope                  `json:"advance,omitempty"`
-	Assignment *groupcontrollerAssignmentEnvelope    `json:"assignment,omitempty"`
-	Task       *groupcontrollerReconcileTaskEnvelope `json:"task,omitempty"`
+	Kind       slotcontroller.CommandKind           `json:"kind"`
+	Report     *slotcontroller.AgentReport          `json:"report,omitempty"`
+	Op         *slotcontroller.OperatorRequest      `json:"op,omitempty"`
+	Advance    *taskAdvanceEnvelope                 `json:"advance,omitempty"`
+	Assignment *slotcontrollerAssignmentEnvelope    `json:"assignment,omitempty"`
+	Task       *slotcontrollerReconcileTaskEnvelope `json:"task,omitempty"`
 }
 
 type taskAdvanceEnvelope struct {
-	GroupID uint32    `json:"group_id"`
+	SlotID  uint32    `json:"slot_id"`
 	Attempt uint32    `json:"attempt,omitempty"`
 	Now     time.Time `json:"now"`
 	Err     string    `json:"err,omitempty"`
 }
 
-type groupcontrollerAssignmentEnvelope struct {
-	GroupID        uint32   `json:"group_id"`
+type slotcontrollerAssignmentEnvelope struct {
+	SlotID         uint32   `json:"slot_id"`
 	DesiredPeers   []uint64 `json:"desired_peers,omitempty"`
 	ConfigEpoch    uint64   `json:"config_epoch,omitempty"`
 	BalanceVersion uint64   `json:"balance_version,omitempty"`
 }
 
-type groupcontrollerReconcileTaskEnvelope struct {
-	GroupID    uint32                    `json:"group_id"`
+type slotcontrollerReconcileTaskEnvelope struct {
+	SlotID     uint32                    `json:"slot_id"`
 	Kind       controllermeta.TaskKind   `json:"kind"`
 	Step       controllermeta.TaskStep   `json:"step"`
 	SourceNode uint64                    `json:"source_node,omitempty"`
@@ -213,7 +213,7 @@ func (s *Service) LeaderID() uint64 {
 	return s.leaderID.Load()
 }
 
-func (s *Service) Propose(ctx context.Context, cmd groupcontroller.Command) error {
+func (s *Service) Propose(ctx context.Context, cmd slotcontroller.Command) error {
 	s.mu.Lock()
 	if !s.started {
 		s.mu.Unlock()
@@ -563,7 +563,7 @@ func (s *loadedMemoryStorage) ApplySnapshot(snapshot raftpb.Snapshot) error {
 	return nil
 }
 
-func encodeCommand(cmd groupcontroller.Command) ([]byte, error) {
+func encodeCommand(cmd slotcontroller.Command) ([]byte, error) {
 	envelope := commandEnvelope{
 		Kind:   cmd.Kind,
 		Report: cmd.Report,
@@ -571,7 +571,7 @@ func encodeCommand(cmd groupcontroller.Command) ([]byte, error) {
 	}
 	if cmd.Advance != nil {
 		envelope.Advance = &taskAdvanceEnvelope{
-			GroupID: cmd.Advance.GroupID,
+			SlotID:  cmd.Advance.SlotID,
 			Attempt: cmd.Advance.Attempt,
 			Now:     cmd.Advance.Now,
 		}
@@ -580,16 +580,16 @@ func encodeCommand(cmd groupcontroller.Command) ([]byte, error) {
 		}
 	}
 	if cmd.Assignment != nil {
-		envelope.Assignment = &groupcontrollerAssignmentEnvelope{
-			GroupID:        cmd.Assignment.GroupID,
+		envelope.Assignment = &slotcontrollerAssignmentEnvelope{
+			SlotID:         cmd.Assignment.SlotID,
 			DesiredPeers:   append([]uint64(nil), cmd.Assignment.DesiredPeers...),
 			ConfigEpoch:    cmd.Assignment.ConfigEpoch,
 			BalanceVersion: cmd.Assignment.BalanceVersion,
 		}
 	}
 	if cmd.Task != nil {
-		envelope.Task = &groupcontrollerReconcileTaskEnvelope{
-			GroupID:    cmd.Task.GroupID,
+		envelope.Task = &slotcontrollerReconcileTaskEnvelope{
+			SlotID:     cmd.Task.SlotID,
 			Kind:       cmd.Task.Kind,
 			Step:       cmd.Task.Step,
 			SourceNode: cmd.Task.SourceNode,
@@ -603,19 +603,19 @@ func encodeCommand(cmd groupcontroller.Command) ([]byte, error) {
 	return json.Marshal(envelope)
 }
 
-func decodeCommand(data []byte) (groupcontroller.Command, error) {
+func decodeCommand(data []byte) (slotcontroller.Command, error) {
 	var envelope commandEnvelope
 	if err := json.Unmarshal(data, &envelope); err != nil {
-		return groupcontroller.Command{}, err
+		return slotcontroller.Command{}, err
 	}
-	cmd := groupcontroller.Command{
+	cmd := slotcontroller.Command{
 		Kind:   envelope.Kind,
 		Report: envelope.Report,
 		Op:     envelope.Op,
 	}
 	if envelope.Advance != nil {
-		advance := &groupcontroller.TaskAdvance{
-			GroupID: envelope.Advance.GroupID,
+		advance := &slotcontroller.TaskAdvance{
+			SlotID:  envelope.Advance.SlotID,
 			Attempt: envelope.Advance.Attempt,
 			Now:     envelope.Advance.Now,
 		}
@@ -625,8 +625,8 @@ func decodeCommand(data []byte) (groupcontroller.Command, error) {
 		cmd.Advance = advance
 	}
 	if envelope.Assignment != nil {
-		cmd.Assignment = &controllermeta.GroupAssignment{
-			GroupID:        envelope.Assignment.GroupID,
+		cmd.Assignment = &controllermeta.SlotAssignment{
+			SlotID:         envelope.Assignment.SlotID,
 			DesiredPeers:   append([]uint64(nil), envelope.Assignment.DesiredPeers...),
 			ConfigEpoch:    envelope.Assignment.ConfigEpoch,
 			BalanceVersion: envelope.Assignment.BalanceVersion,
@@ -634,7 +634,7 @@ func decodeCommand(data []byte) (groupcontroller.Command, error) {
 	}
 	if envelope.Task != nil {
 		cmd.Task = &controllermeta.ReconcileTask{
-			GroupID:    envelope.Task.GroupID,
+			SlotID:     envelope.Task.SlotID,
 			Kind:       envelope.Task.Kind,
 			Step:       envelope.Task.Step,
 			SourceNode: envelope.Task.SourceNode,

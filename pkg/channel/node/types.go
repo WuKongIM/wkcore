@@ -35,7 +35,7 @@ type BackpressureState struct {
 
 type Envelope struct {
 	Peer       isr.NodeID
-	GroupKey   isr.GroupKey
+	ChannelKey isr.ChannelKey
 	Epoch      uint64
 	Generation uint64
 	RequestID  uint64
@@ -52,21 +52,21 @@ type TombstonePolicy struct {
 }
 
 type Limits struct {
-	MaxGroups                 int
+	MaxChannels               int
 	MaxFetchInflightPeer      int
 	MaxSnapshotInflight       int
 	MaxRecoveryBytesPerSecond int64
 }
 
-type GroupHandle interface {
-	ID() isr.GroupKey
-	Meta() isr.GroupMeta
+type ChannelHandle interface {
+	ID() isr.ChannelKey
+	Meta() isr.ChannelMeta
 	Status() isr.ReplicaState
 	Append(ctx context.Context, records []isr.Record) (isr.CommitResult, error)
 }
 
 type FetchRequestEnvelope struct {
-	GroupKey    isr.GroupKey
+	ChannelKey  isr.ChannelKey
 	Epoch       uint64
 	Generation  uint64
 	ReplicaID   isr.NodeID
@@ -76,7 +76,7 @@ type FetchRequestEnvelope struct {
 }
 
 type FetchResponseEnvelope struct {
-	GroupKey   isr.GroupKey
+	ChannelKey isr.ChannelKey
 	Epoch      uint64
 	Generation uint64
 	TruncateTo *uint64
@@ -104,7 +104,7 @@ type FetchBatchResponseItem struct {
 }
 
 type ProgressAckEnvelope struct {
-	GroupKey    isr.GroupKey
+	ChannelKey  isr.ChannelKey
 	Epoch       uint64
 	Generation  uint64
 	ReplicaID   isr.NodeID
@@ -117,25 +117,25 @@ type FetchService interface {
 
 type Runtime interface {
 	FetchService
-	EnsureGroup(meta isr.GroupMeta) error
-	RemoveGroup(groupKey isr.GroupKey) error
-	ApplyMeta(meta isr.GroupMeta) error
-	Group(groupKey isr.GroupKey) (GroupHandle, bool)
+	EnsureChannel(meta isr.ChannelMeta) error
+	RemoveChannel(channelKey isr.ChannelKey) error
+	ApplyMeta(meta isr.ChannelMeta) error
+	Channel(channelKey isr.ChannelKey) (ChannelHandle, bool)
 }
 
-type GroupConfig struct {
-	GroupKey   isr.GroupKey
+type ChannelConfig struct {
+	ChannelKey isr.ChannelKey
 	Generation uint64
-	Meta       isr.GroupMeta
+	Meta       isr.ChannelMeta
 }
 
 type ReplicaFactory interface {
-	New(cfg GroupConfig) (isr.Replica, error)
+	New(cfg ChannelConfig) (isr.Replica, error)
 }
 
 type GenerationStore interface {
-	Load(groupKey isr.GroupKey) (uint64, error)
-	Store(groupKey isr.GroupKey, generation uint64) error
+	Load(channelKey isr.ChannelKey) (uint64, error)
+	Store(channelKey isr.ChannelKey, generation uint64) error
 }
 
 type Transport interface {

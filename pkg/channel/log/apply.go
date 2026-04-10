@@ -30,28 +30,28 @@ type batchCheckpointStateStore interface {
 }
 
 type checkpointBridge struct {
-	base     isr.CheckpointStore
-	store    *Store
-	log      MessageLog
-	key      ChannelKey
-	state    ChannelStateStore
-	groupKey isr.GroupKey
-	prevHW   uint64
+	base       isr.CheckpointStore
+	store      *Store
+	log        MessageLog
+	key        ChannelKey
+	state      ChannelStateStore
+	channelKey isr.ChannelKey
+	prevHW     uint64
 }
 
-func newCheckpointBridge(base isr.CheckpointStore, store *Store, log MessageLog, key ChannelKey, state ChannelStateStore, groupKey isr.GroupKey) (*checkpointBridge, error) {
+func newCheckpointBridge(base isr.CheckpointStore, store *Store, log MessageLog, key ChannelKey, state ChannelStateStore, channelKey isr.ChannelKey) (*checkpointBridge, error) {
 	checkpoint, err := base.Load()
 	if err != nil && !errors.Is(err, isr.ErrEmptyState) {
 		return nil, err
 	}
 	return &checkpointBridge{
-		base:     base,
-		store:    store,
-		log:      log,
-		key:      key,
-		state:    state,
-		groupKey: groupKey,
-		prevHW:   checkpoint.HW,
+		base:       base,
+		store:      store,
+		log:        log,
+		key:        key,
+		state:      state,
+		channelKey: channelKey,
+		prevHW:     checkpoint.HW,
 	}, nil
 }
 
@@ -68,7 +68,7 @@ func (b *checkpointBridge) Store(checkpoint isr.Checkpoint) error {
 		if coordinator := b.store.commitCoordinator(); coordinator != nil {
 			if len(batch) == 0 || canBuildCheckpointState(b.state) {
 				if err := coordinator.submit(commitRequest{
-					groupKey: b.groupKey,
+					channelKey: b.channelKey,
 					build: func(writeBatch *pebble.Batch) error {
 						if len(batch) > 0 {
 							store := b.state.(batchCheckpointStateStore)
@@ -128,7 +128,7 @@ func (b *checkpointBridge) readCommittedBatch(nextHW uint64) ([]appliedMessage, 
 		return nil, nil
 	}
 
-	records, err := b.log.Read(b.groupKey, b.prevHW, int(nextHW-b.prevHW), math.MaxInt)
+	records, err := b.log.Read(b.channelKey, b.prevHW, int(nextHW-b.prevHW), math.MaxInt)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +194,7 @@ func (b *checkpointBridge) readCommittedBatchForApplyFetch(base uint64, req isr.
 
 	existingUpper := minUint64(nextHW, base)
 	if existingUpper > b.prevHW {
-		records, err := b.log.Read(b.groupKey, b.prevHW, int(existingUpper-b.prevHW), math.MaxInt)
+		records, err := b.log.Read(b.channelKey, b.prevHW, int(existingUpper-b.prevHW), math.MaxInt)
 		if err != nil {
 			return nil, err
 		}

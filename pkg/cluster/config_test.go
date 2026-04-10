@@ -14,17 +14,17 @@ func TestConfigValidate_Valid(t *testing.T) {
 	}
 }
 
-func TestConfigValidate_GroupCountZero(t *testing.T) {
+func TestConfigValidate_SlotCountZero(t *testing.T) {
 	cfg := validTestConfig()
-	cfg.GroupCount = 0
+	cfg.SlotCount = 0
 	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
 	}
 }
 
-func TestConfigValidate_AllowsLegacyGroupsBelowGroupCount(t *testing.T) {
+func TestConfigValidate_AllowsLegacySlotsBelowSlotCount(t *testing.T) {
 	cfg := validTestConfig()
-	cfg.GroupCount = 5
+	cfg.SlotCount = 5
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestConfigValidate_AllowsLegacyGroupsBelowGroupCount(t *testing.T) {
 
 func TestConfigValidate_PeerNotInNodes(t *testing.T) {
 	cfg := validTestConfig()
-	cfg.Groups[0].Peers = append(cfg.Groups[0].Peers, 99)
+	cfg.Slots[0].Peers = append(cfg.Slots[0].Peers, 99)
 	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
 	}
@@ -113,40 +113,40 @@ func TestConfigValidate_DuplicateNodeID(t *testing.T) {
 	}
 }
 
-func TestConfigValidate_DuplicateGroupID(t *testing.T) {
+func TestConfigValidate_DuplicateSlotID(t *testing.T) {
 	cfg := validTestConfig()
-	cfg.GroupCount = 2
-	cfg.Groups = append(cfg.Groups, GroupConfig{GroupID: 1, Peers: []multiraft.NodeID{1, 2, 3}})
+	cfg.SlotCount = 2
+	cfg.Slots = append(cfg.Slots, SlotConfig{SlotID: 1, Peers: []multiraft.NodeID{1, 2, 3}})
 	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
 	}
 }
 
-func TestConfigValidateAllowsControllerConfigWithLegacyGroups(t *testing.T) {
+func TestConfigValidateAllowsControllerConfigWithLegacySlots(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.ControllerReplicaN = 3
-	cfg.GroupReplicaN = 3
+	cfg.SlotReplicaN = 3
 
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestConfigValidateAllowsNilGroupsWithExplicitGroupCount(t *testing.T) {
+func TestConfigValidateAllowsNilSlotsWithExplicitSlotCount(t *testing.T) {
 	cfg := validTestConfig()
-	cfg.Groups = nil
+	cfg.Slots = nil
 	cfg.ControllerReplicaN = 3
-	cfg.GroupReplicaN = 3
+	cfg.SlotReplicaN = 3
 
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestConfigValidateRejectsLocalNodeMissingWithLegacyGroups(t *testing.T) {
+func TestConfigValidateRejectsLocalNodeMissingWithLegacySlots(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.ControllerReplicaN = 3
-	cfg.GroupReplicaN = 3
+	cfg.SlotReplicaN = 3
 	cfg.NodeID = 99
 
 	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
@@ -185,15 +185,15 @@ func validTestConfig() Config {
 	return Config{
 		NodeID:             1,
 		ListenAddr:         ":9001",
-		GroupCount:         1,
+		SlotCount:          1,
 		ControllerMetaPath: "/tmp/controller-meta",
 		ControllerRaftPath: "/tmp/controller-raft",
 		ControllerReplicaN: 3,
-		GroupReplicaN:      3,
-		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
+		SlotReplicaN:       3,
+		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
 			return nil, nil
 		},
-		NewStateMachine: func(groupID multiraft.GroupID) (multiraft.StateMachine, error) {
+		NewStateMachine: func(slotID multiraft.SlotID) (multiraft.StateMachine, error) {
 			return nil, nil
 		},
 		Nodes: []NodeConfig{
@@ -201,8 +201,8 @@ func validTestConfig() Config {
 			{NodeID: 2, Addr: "127.0.0.1:9002"},
 			{NodeID: 3, Addr: "127.0.0.1:9003"},
 		},
-		Groups: []GroupConfig{
-			{GroupID: 1, Peers: []multiraft.NodeID{1, 2, 3}},
+		Slots: []SlotConfig{
+			{SlotID: 1, Peers: []multiraft.NodeID{1, 2, 3}},
 		},
 	}
 }

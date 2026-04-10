@@ -28,7 +28,7 @@ type replica struct {
 	mu sync.RWMutex
 
 	advanceMu sync.Mutex
-	appendMu sync.Mutex
+	appendMu  sync.Mutex
 
 	localNode NodeID
 
@@ -39,7 +39,7 @@ type replica struct {
 	snapshots   SnapshotApplier
 	now         func() time.Time
 
-	meta         GroupMeta
+	meta         ChannelMeta
 	state        ReplicaState
 	progress     map[NodeID]uint64
 	waiters      []*appendWaiter
@@ -117,7 +117,7 @@ func effectiveAppendGroupCommitMaxBytes(configured int) int {
 	return 64 * 1024
 }
 
-func (r *replica) ApplyMeta(meta GroupMeta) error {
+func (r *replica) ApplyMeta(meta ChannelMeta) error {
 	r.appendMu.Lock()
 	defer r.appendMu.Unlock()
 	r.mu.Lock()
@@ -129,7 +129,7 @@ func (r *replica) ApplyMeta(meta GroupMeta) error {
 	return r.applyMetaLocked(meta)
 }
 
-func (r *replica) BecomeLeader(meta GroupMeta) error {
+func (r *replica) BecomeLeader(meta ChannelMeta) error {
 	r.appendMu.Lock()
 	defer r.appendMu.Unlock()
 	r.mu.Lock()
@@ -183,7 +183,7 @@ func (r *replica) BecomeLeader(meta GroupMeta) error {
 	return nil
 }
 
-func (r *replica) BecomeFollower(meta GroupMeta) error {
+func (r *replica) BecomeFollower(meta ChannelMeta) error {
 	r.appendMu.Lock()
 	defer r.appendMu.Unlock()
 	r.mu.Lock()

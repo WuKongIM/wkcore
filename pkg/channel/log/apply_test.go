@@ -37,7 +37,7 @@ func TestCheckpointBridgeReplaysCommittedRecordsIntoIdempotencyState(t *testing.
 			},
 		},
 	}
-	bridge, err := newCheckpointBridge(&memoryCheckpointStore{}, nil, log, key, store, channelGroupKey(key))
+	bridge, err := newCheckpointBridge(&memoryCheckpointStore{}, nil, log, key, store, isrChannelKeyForChannel(key))
 	if err != nil {
 		t.Fatalf("newCheckpointBridge() error = %v", err)
 	}
@@ -83,7 +83,7 @@ func TestCheckpointBridgeUsesAtomicCheckpointCommitWhenSupported(t *testing.T) {
 	}
 	base := &failingCheckpointStore{err: errors.New("checkpoint should not be called")}
 
-	bridge, err := newCheckpointBridge(base, nil, log, key, state, channelGroupKey(key))
+	bridge, err := newCheckpointBridge(base, nil, log, key, state, isrChannelKeyForChannel(key))
 	if err != nil {
 		t.Fatalf("newCheckpointBridge() error = %v", err)
 	}
@@ -135,7 +135,7 @@ func TestCheckpointBridgeSkipsMessagesWithoutClientMsgNo(t *testing.T) {
 		},
 	}
 
-	bridge, err := newCheckpointBridge(&memoryCheckpointStore{}, nil, log, key, store, channelGroupKey(key))
+	bridge, err := newCheckpointBridge(&memoryCheckpointStore{}, nil, log, key, store, isrChannelKeyForChannel(key))
 	if err != nil {
 		t.Fatalf("newCheckpointBridge() error = %v", err)
 	}
@@ -162,10 +162,10 @@ func TestSnapshotBridgeRestoresStateBeforeServingRecoveredReads(t *testing.T) {
 	bridge := newSnapshotBridge(base, store)
 
 	if err := bridge.InstallSnapshot(context.Background(), isr.Snapshot{
-		GroupKey:  channelGroupKey(ChannelKey{ChannelID: "c1", ChannelType: 1}),
-		Epoch:     4,
-		EndOffset: 9,
-		Payload:   []byte("snapshot"),
+		ChannelKey: isrChannelKeyForChannel(ChannelKey{ChannelID: "c1", ChannelType: 1}),
+		Epoch:      4,
+		EndOffset:  9,
+		Payload:    []byte("snapshot"),
 	}); err != nil {
 		t.Fatalf("InstallSnapshot() error = %v", err)
 	}

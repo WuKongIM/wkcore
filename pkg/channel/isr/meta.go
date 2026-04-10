@@ -1,6 +1,6 @@
 package isr
 
-func (r *replica) applyMetaLocked(meta GroupMeta) error {
+func (r *replica) applyMetaLocked(meta ChannelMeta) error {
 	normalized, err := normalizeMeta(meta)
 	if err != nil {
 		return err
@@ -12,9 +12,9 @@ func (r *replica) applyMetaLocked(meta GroupMeta) error {
 	return nil
 }
 
-func (r *replica) validateMetaLocked(normalized GroupMeta) error {
+func (r *replica) validateMetaLocked(normalized ChannelMeta) error {
 	switch {
-	case r.state.GroupKey != "" && normalized.GroupKey != r.state.GroupKey:
+	case r.state.ChannelKey != "" && normalized.ChannelKey != r.state.ChannelKey:
 		return ErrInvalidMeta
 	case normalized.Epoch < r.state.Epoch:
 		return ErrStaleMeta
@@ -24,38 +24,38 @@ func (r *replica) validateMetaLocked(normalized GroupMeta) error {
 	return nil
 }
 
-func (r *replica) commitMetaLocked(normalized GroupMeta) {
+func (r *replica) commitMetaLocked(normalized ChannelMeta) {
 	r.meta = normalized
-	r.state.GroupKey = normalized.GroupKey
+	r.state.ChannelKey = normalized.ChannelKey
 	r.state.Epoch = normalized.Epoch
 	r.state.Leader = normalized.Leader
 }
 
-func normalizeMeta(meta GroupMeta) (GroupMeta, error) {
+func normalizeMeta(meta ChannelMeta) (ChannelMeta, error) {
 	meta.Replicas = dedupeNodeIDs(meta.Replicas)
 	meta.ISR = dedupeNodeIDs(meta.ISR)
 
-	if meta.GroupKey == "" {
-		return GroupMeta{}, ErrInvalidMeta
+	if meta.ChannelKey == "" {
+		return ChannelMeta{}, ErrInvalidMeta
 	}
 	if len(meta.Replicas) == 0 {
-		return GroupMeta{}, ErrInvalidMeta
+		return ChannelMeta{}, ErrInvalidMeta
 	}
 	if meta.Leader == 0 {
-		return GroupMeta{}, ErrInvalidMeta
+		return ChannelMeta{}, ErrInvalidMeta
 	}
 	if meta.MinISR < 1 || meta.MinISR > len(meta.Replicas) {
-		return GroupMeta{}, ErrInvalidMeta
+		return ChannelMeta{}, ErrInvalidMeta
 	}
 	if !containsNode(meta.Replicas, meta.Leader) {
-		return GroupMeta{}, ErrInvalidMeta
+		return ChannelMeta{}, ErrInvalidMeta
 	}
 	if !containsNode(meta.ISR, meta.Leader) {
-		return GroupMeta{}, ErrInvalidMeta
+		return ChannelMeta{}, ErrInvalidMeta
 	}
 	for _, id := range meta.ISR {
 		if !containsNode(meta.Replicas, id) {
-			return GroupMeta{}, ErrInvalidMeta
+			return ChannelMeta{}, ErrInvalidMeta
 		}
 	}
 

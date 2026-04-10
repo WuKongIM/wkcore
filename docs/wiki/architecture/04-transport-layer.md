@@ -1,7 +1,7 @@
 # Transport · 集群网络层
 
 > 横向贯穿三层的统一集群通信基础设施
-> 所有节点间通信（Controller / Group / Channel）共享同一套 Transport
+> 所有节点间通信（Controller / Slot / Channel）共享同一套 Transport
 
 ## 1. 概述
 
@@ -299,7 +299,7 @@ server.Handle(2, handleControllerRaftMessage) // Controller Raft 消息
 rpcMux := nodetransport.NewRPCMux()
 rpcMux.Handle(1, handleForwardRPC)            // 请求转发
 rpcMux.Handle(14, handleControllerRPC)        // Controller 操作
-rpcMux.Handle(20, handleManagedGroupRPC)      // Group 管理
+rpcMux.Handle(20, handleManagedSlotRPC)       // Slot 管理
 server.HandleRPCMux(rpcMux)
 ```
 
@@ -309,9 +309,9 @@ server.HandleRPCMux(rpcMux)
 | ------------ | ------------ | ------- | ------------------------- | ----------- |
 | Controller   | 单向消息     | msgType=2 | Raft 协议消息           | Protobuf    |
 | Controller   | RPC          | service=14 | 心跳/任务/查询         | JSON        |
-| Group        | 单向消息     | msgType=1 | MultiRaft 协议消息       | Protobuf    |
-| Group        | RPC          | service=1 | 请求转发到 Leader        | 自定义二进制 |
-| Group        | RPC          | service=20 | Group 配置/状态查询     | JSON        |
+| Slot         | 单向消息     | msgType=1 | MultiRaft 协议消息       | Protobuf    |
+| Slot         | RPC          | service=1 | 请求转发到 Leader        | 自定义二进制 |
+| Slot         | RPC          | service=20 | Slot 配置/状态查询      | JSON        |
 | Channel      | （通过 isrnode transport） | ISR 复制消息 | FetchReq/Resp/Ack | 自定义      |
 
 ### 8.3 连接池使用
@@ -330,18 +330,18 @@ fwdClient := nodetransport.NewClient(raftPool)    // RPC 客户端
 ### 9.1 MultiRaft 消息
 
 ```
-Node A (Group G1 Leader)                   Node B (Group G1 Follower)
+Node A (Slot S1 Leader)                    Node B (Slot S1 Follower)
     │                                          │
     │ rawNode.Ready() → messages               │
     │                                          │
     │ raftTransport.Send(batch)                │
-    │   body = [groupID:8][raftMsg:N]          │
-    │   client.Send(nodeB, groupID, 1, body)   │
+    │   body = [slotID:8][raftMsg:N]           │
+    │   client.Send(nodeB, slotID, 1, body)    │
     │ ──────────[msgType=1]──────────────────▸ │
     │                                          │
     │                            handleRaftMessage(conn, body)
-    │                              decode(body) → groupID, msg
-    │                              runtime.Step(groupID, msg)
+    │                              decode(body) → slotID, msg
+    │                              runtime.Step(slotID, msg)
 ```
 
 ### 9.2 Controller RPC
@@ -373,7 +373,7 @@ Node A (Non-Leader for G5)                 Node B (Leader for G5)
     │ ──────────[RPC, service=1]─────────────▸ │
     │                                          │
     │                            handleForwardRPC(ctx, body)
-    │                              decode → groupID, cmd
+    │                              decode → slotID, cmd
     │                              runtime.Propose(G5, cmd)
     │                              ... Raft 共识 ...
     │                                          │
@@ -410,7 +410,7 @@ _ = t.client.Send(nodeID, shardKey, msgTypeRaft, body)
 | 0       | 成功        | 解析 data 返回       |
 | 1       | NotLeader   | 重新发现 Leader      |
 | 2       | Timeout     | 重试或返回错误       |
-| 3       | NoGroup     | 返回 GroupNotFound   |
+| 3       | NoSlot      | 返回 SlotNotFound    |
 
 ## 11. 性能特性
 

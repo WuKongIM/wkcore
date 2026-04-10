@@ -21,10 +21,10 @@ func (t *raftTransport) Send(ctx context.Context, batch []multiraft.Envelope) er
 		if err != nil {
 			return err
 		}
-		body := encodeRaftBody(uint64(env.GroupID), data)
+		body := encodeRaftBody(uint64(env.SlotID), data)
 		// Individual send failures are silently skipped — the raft layer
 		// handles retransmission. Only context cancellation is propagated.
-		_ = t.client.Send(uint64(env.Message.To), uint64(env.GroupID), msgTypeRaft, body)
+		_ = t.client.Send(uint64(env.Message.To), uint64(env.SlotID), msgTypeRaft, body)
 	}
 	return nil
 }

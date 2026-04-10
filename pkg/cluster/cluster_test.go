@@ -31,9 +31,9 @@ type testNode struct {
 	dir                string
 	listenAddr         string
 	nodes              []raftcluster.NodeConfig
-	groups             []raftcluster.GroupConfig
-	groupCount         int
-	groupReplicaN      int
+	slots              []raftcluster.SlotConfig
+	slotCount          int
+	slotReplicaN       int
 	controllerReplicaN int
 	withController     bool
 }
@@ -47,7 +47,7 @@ const (
 	testClusterPoolSize       = 1
 	testLeaderPollInterval    = 50 * time.Millisecond
 	testLeaderConfirmations   = 4
-	testManagedGroupProbeWait = 300 * time.Millisecond
+	testManagedSlotProbeWait  = 300 * time.Millisecond
 )
 
 func testClusterTimingConfig() raftcluster.Config {
@@ -86,9 +86,9 @@ func newStartedTestNode(
 	nodeID multiraft.NodeID,
 	listenAddr string,
 	nodes []raftcluster.NodeConfig,
-	groups []raftcluster.GroupConfig,
-	groupCount int,
-	groupReplicaN int,
+	slots []raftcluster.SlotConfig,
+	slotCount int,
+	slotReplicaN int,
 	controllerReplicaN int,
 	withController bool,
 ) *testNode {
@@ -114,15 +114,15 @@ func newStartedTestNode(
 	cfg := raftcluster.Config{
 		NodeID:             nodeID,
 		ListenAddr:         listenAddr,
-		GroupCount:         uint32(groupCount),
-		GroupReplicaN:      groupReplicaN,
+		SlotCount:          uint32(slotCount),
+		SlotReplicaN:       slotReplicaN,
 		ControllerReplicaN: controllerReplicaN,
-		NewStorage: func(groupID multiraft.GroupID) (multiraft.Storage, error) {
-			return raftDB.ForGroup(uint64(groupID)), nil
+		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
+			return raftDB.ForGroup(uint64(slotID)), nil
 		},
 		NewStateMachine:    metafsm.NewStateMachineFactory(db),
 		Nodes:              append([]raftcluster.NodeConfig(nil), nodes...),
-		Groups:             append([]raftcluster.GroupConfig(nil), groups...),
+		Slots:              append([]raftcluster.SlotConfig(nil), slots...),
 		ControllerMetaPath: controllerMetaPath,
 		ControllerRaftPath: controllerRaftPath,
 		TickInterval:       testClusterTickInterval,
@@ -154,9 +154,9 @@ func newStartedTestNode(
 		dir:                dir,
 		listenAddr:         listenAddr,
 		nodes:              append([]raftcluster.NodeConfig(nil), nodes...),
-		groups:             append([]raftcluster.GroupConfig(nil), groups...),
-		groupCount:         groupCount,
-		groupReplicaN:      groupReplicaN,
+		slots:              append([]raftcluster.SlotConfig(nil), slots...),
+		slotCount:          slotCount,
+		slotReplicaN:       slotReplicaN,
 		controllerReplicaN: controllerReplicaN,
 		withController:     withController,
 	}
@@ -182,12 +182,12 @@ func TestStableLeaderWithinUsesShortConfirmationWindow(t *testing.T) {
 	require.Less(t, time.Since(start), time.Second)
 }
 
-func TestWaitForManagedGroupsSettledReturnsQuicklyAfterAssignmentsExist(t *testing.T) {
+func TestWaitForManagedSlotsSettledReturnsQuicklyAfterAssignmentsExist(t *testing.T) {
 	nodes := startThreeNodesWithControllerWithSettle(t, 4, 3, false)
 	waitForControllerAssignments(t, nodes, 4)
 
 	start := time.Now()
-	waitForManagedGroupsSettled(t, nodes, 4)
+	waitForManagedSlotsSettled(t, nodes, 4)
 
 	require.Less(t, time.Since(start), 2*time.Second)
 }
@@ -201,25 +201,25 @@ func TestStopNodesReturnsWithoutFixedThreeSecondDelay(t *testing.T) {
 	require.Less(t, time.Since(start), time.Second)
 }
 
-func startSingleNode(t testing.TB, groupCount int) *testNode {
+func startSingleNode(t testing.TB, slotCount int) *testNode {
 	t.Helper()
 	dir := t.TempDir()
 
-	groups := make([]raftcluster.GroupConfig, groupCount)
-	for i := range groupCount {
-		groups[i] = raftcluster.GroupConfig{
-			GroupID: multiraft.GroupID(i + 1),
-			Peers:   []multiraft.NodeID{1},
+	slots := make([]raftcluster.SlotConfig, slotCount)
+	for i := range slotCount {
+		slots[i] = raftcluster.SlotConfig{
+			SlotID: multiraft.SlotID(i + 1),
+			Peers:  []multiraft.NodeID{1},
 		}
 	}
 
 	nodes := []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}}
-	node := newStartedTestNode(t, dir, 1, "127.0.0.1:0", nodes, groups, groupCount, 1, 1, false)
+	node := newStartedTestNode(t, dir, 1, "127.0.0.1:0", nodes, slots, slotCount, 1, 1, false)
 	t.Cleanup(func() { stopNodes([]*testNode{node}) })
 	return node
 }
 
-func startThreeNodes(t testing.TB, groupCount int) []*testNode {
+func startThreeNodes(t testing.TB, slotCount int) []*testNode {
 	t.Helper()
 
 	listeners := make([]net.Listener, 3)
@@ -240,11 +240,11 @@ func startThreeNodes(t testing.TB, groupCount int) []*testNode {
 		listeners[i].Close()
 	}
 
-	groups := make([]raftcluster.GroupConfig, groupCount)
-	for i := range groupCount {
-		groups[i] = raftcluster.GroupConfig{
-			GroupID: multiraft.GroupID(i + 1),
-			Peers:   []multiraft.NodeID{1, 2, 3},
+	slots := make([]raftcluster.SlotConfig, slotCount)
+	for i := range slotCount {
+		slots[i] = raftcluster.SlotConfig{
+			SlotID: multiraft.SlotID(i + 1),
+			Peers:  []multiraft.NodeID{1, 2, 3},
 		}
 	}
 
@@ -258,8 +258,8 @@ func startThreeNodes(t testing.TB, groupCount int) []*testNode {
 			multiraft.NodeID(i+1),
 			nodes[i].Addr,
 			nodes,
-			groups,
-			groupCount,
+			slots,
+			slotCount,
 			3,
 			3,
 			false,
@@ -270,29 +270,29 @@ func startThreeNodes(t testing.TB, groupCount int) []*testNode {
 	return testNodes
 }
 
-func startSingleNodeWithController(t testing.TB, groupCount int, legacyGroupCount int) *testNode {
+func startSingleNodeWithController(t testing.TB, slotCount int, legacySlotCount int) *testNode {
 	t.Helper()
 	dir := t.TempDir()
 
-	groups := make([]raftcluster.GroupConfig, legacyGroupCount)
-	for i := range legacyGroupCount {
-		groups[i] = raftcluster.GroupConfig{
-			GroupID: multiraft.GroupID(i + 1),
-			Peers:   []multiraft.NodeID{1},
+	slots := make([]raftcluster.SlotConfig, legacySlotCount)
+	for i := range legacySlotCount {
+		slots[i] = raftcluster.SlotConfig{
+			SlotID: multiraft.SlotID(i + 1),
+			Peers:  []multiraft.NodeID{1},
 		}
 	}
 
 	nodes := []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}}
-	node := newStartedTestNode(t, dir, 1, "127.0.0.1:0", nodes, groups, groupCount, 1, 1, true)
+	node := newStartedTestNode(t, dir, 1, "127.0.0.1:0", nodes, slots, slotCount, 1, 1, true)
 	t.Cleanup(func() { stopNodes([]*testNode{node}) })
 	return node
 }
 
-func startThreeNodesWithController(t testing.TB, groupCount int, legacyReplicaN int) []*testNode {
-	return startThreeNodesWithControllerWithSettle(t, groupCount, legacyReplicaN, true)
+func startThreeNodesWithController(t testing.TB, slotCount int, legacyReplicaN int) []*testNode {
+	return startThreeNodesWithControllerWithSettle(t, slotCount, legacyReplicaN, true)
 }
 
-func startThreeNodesWithControllerWithSettle(t testing.TB, groupCount int, legacyReplicaN int, settle bool) []*testNode {
+func startThreeNodesWithControllerWithSettle(t testing.TB, slotCount int, legacyReplicaN int, settle bool) []*testNode {
 	t.Helper()
 
 	listeners := make([]net.Listener, 3)
@@ -324,7 +324,7 @@ func startThreeNodesWithControllerWithSettle(t testing.TB, groupCount int, legac
 			nodes[i].Addr,
 			nodes,
 			nil,
-			groupCount,
+			slotCount,
 			legacyReplicaN,
 			3,
 			true,
@@ -332,12 +332,12 @@ func startThreeNodesWithControllerWithSettle(t testing.TB, groupCount int, legac
 	}
 	t.Cleanup(func() { stopNodes(testNodes) })
 	if settle {
-		waitForManagedGroupsSettled(t, testNodes, groupCount)
+		waitForManagedSlotsSettled(t, testNodes, slotCount)
 	}
 	return testNodes
 }
 
-func startFourNodesWithController(t testing.TB, groupCount int, replicaN int) []*testNode {
+func startFourNodesWithController(t testing.TB, slotCount int, replicaN int) []*testNode {
 	t.Helper()
 
 	listeners := make([]net.Listener, 4)
@@ -369,18 +369,18 @@ func startFourNodesWithController(t testing.TB, groupCount int, replicaN int) []
 			nodes[i].Addr,
 			nodes,
 			nil,
-			groupCount,
+			slotCount,
 			replicaN,
 			3,
 			true,
 		)
 	}
 	t.Cleanup(func() { stopNodes(testNodes) })
-	waitForManagedGroupsSettled(t, testNodes, groupCount)
+	waitForManagedSlotsSettled(t, testNodes, slotCount)
 	return testNodes
 }
 
-func startThreeOfFourNodesWithController(t testing.TB, groupCount int, replicaN int) []*testNode {
+func startThreeOfFourNodesWithController(t testing.TB, slotCount int, replicaN int) []*testNode {
 	t.Helper()
 
 	listeners := make([]net.Listener, 4)
@@ -413,7 +413,7 @@ func startThreeOfFourNodesWithController(t testing.TB, groupCount int, replicaN 
 				nodes[i].Addr,
 				nodes,
 				nil,
-				groupCount,
+				slotCount,
 				replicaN,
 				3,
 				true,
@@ -425,23 +425,23 @@ func startThreeOfFourNodesWithController(t testing.TB, groupCount int, replicaN 
 			dir:                dir,
 			listenAddr:         nodes[i].Addr,
 			nodes:              append([]raftcluster.NodeConfig(nil), nodes...),
-			groupCount:         groupCount,
-			groupReplicaN:      replicaN,
+			slotCount:          slotCount,
+			slotReplicaN:       replicaN,
 			controllerReplicaN: 3,
 			withController:     true,
 		}
 	}
 	t.Cleanup(func() { stopNodes(testNodes) })
-	waitForManagedGroupsSettled(t, testNodes[:3], groupCount)
+	waitForManagedSlotsSettled(t, testNodes[:3], slotCount)
 	return testNodes
 }
 
-func startFourNodesWithInjectedRepairFailure(t testing.TB, groupCount int, replicaN int) []*testNode {
+func startFourNodesWithInjectedRepairFailure(t testing.TB, slotCount int, replicaN int) []*testNode {
 	t.Helper()
-	nodes := startFourNodesWithController(t, groupCount, replicaN)
+	nodes := startFourNodesWithController(t, slotCount, replicaN)
 	waitForStableLeader(t, assignedNodesForGroup(t, nodes, 1), 1)
-	restore := raftcluster.SetManagedGroupExecutionTestHook(func(groupID uint32, task controllermeta.ReconcileTask) error {
-		if groupID == 1 && task.Kind == controllermeta.TaskKindRepair {
+	restore := raftcluster.SetManagedSlotExecutionTestHook(func(slotID uint32, task controllermeta.ReconcileTask) error {
+		if slotID == 1 && task.Kind == controllermeta.TaskKindRepair {
 			return errors.New("injected repair failure")
 		}
 		return nil
@@ -461,9 +461,9 @@ func startFourNodesWithInjectedRepairFailure(t testing.TB, groupCount int, repli
 	return nodes
 }
 
-func startFourNodesWithPermanentRepairFailure(t testing.TB, groupCount int, replicaN int) []*testNode {
+func startFourNodesWithPermanentRepairFailure(t testing.TB, slotCount int, replicaN int) []*testNode {
 	t.Helper()
-	return startFourNodesWithInjectedRepairFailure(t, groupCount, replicaN)
+	return startFourNodesWithInjectedRepairFailure(t, slotCount, replicaN)
 }
 
 func stopNodes(nodes []*testNode) {
@@ -481,15 +481,15 @@ func stopNodes(nodes []*testNode) {
 	}
 }
 
-func waitForControllerAssignments(t testing.TB, nodes []*testNode, groupCount int) {
+func waitForControllerAssignments(t testing.TB, nodes []*testNode, slotCount int) {
 	t.Helper()
 	require.Eventually(t, func() bool {
 		for _, node := range nodes {
 			if node == nil || node.cluster == nil {
 				continue
 			}
-			assignments, err := node.cluster.ListGroupAssignments(context.Background())
-			if err == nil && len(assignments) == groupCount {
+			assignments, err := node.cluster.ListSlotAssignments(context.Background())
+			if err == nil && len(assignments) == slotCount {
 				return true
 			}
 		}
@@ -497,13 +497,13 @@ func waitForControllerAssignments(t testing.TB, nodes []*testNode, groupCount in
 	}, 20*time.Second, 100*time.Millisecond)
 }
 
-func waitForManagedGroupsSettled(t testing.TB, nodes []*testNode, groupCount int) {
+func waitForManagedSlotsSettled(t testing.TB, nodes []*testNode, slotCount int) {
 	t.Helper()
-	waitForControllerAssignments(t, nodes, groupCount)
+	waitForControllerAssignments(t, nodes, slotCount)
 
 	require.Eventually(t, func() bool {
-		assignments, ok := loadAssignments(nodes, groupCount)
-		if !ok || len(assignments) != groupCount {
+		assignments, ok := loadAssignments(nodes, slotCount)
+		if !ok || len(assignments) != slotCount {
 			return false
 		}
 
@@ -519,18 +519,18 @@ func waitForManagedGroupsSettled(t testing.TB, nodes []*testNode, groupCount int
 		}
 
 		for _, assignment := range assignments {
-			groupNodes := make([]*testNode, 0, len(assignment.DesiredPeers))
+			slotNodes := make([]*testNode, 0, len(assignment.DesiredPeers))
 			for _, peer := range assignment.DesiredPeers {
 				idx := int(peer) - 1
 				if idx < 0 || idx >= len(nodes) || nodes[idx] == nil || nodes[idx].cluster == nil {
 					return false
 				}
-				groupNodes = append(groupNodes, nodes[idx])
+				slotNodes = append(slotNodes, nodes[idx])
 			}
-			if _, err := stableLeaderWithin(groupNodes, uint64(assignment.GroupID), testManagedGroupProbeWait); err != nil {
+			if _, err := stableLeaderWithin(slotNodes, uint64(assignment.SlotID), testManagedSlotProbeWait); err != nil {
 				return false
 			}
-			if _, err := probe.cluster.GetReconcileTask(context.Background(), assignment.GroupID); err == nil {
+			if _, err := probe.cluster.GetReconcileTask(context.Background(), assignment.SlotID); err == nil {
 				return false
 			} else if !errors.Is(err, controllermeta.ErrNotFound) {
 				return false
@@ -540,12 +540,12 @@ func waitForManagedGroupsSettled(t testing.TB, nodes []*testNode, groupCount int
 	}, 30*time.Second, 100*time.Millisecond)
 }
 
-func snapshotAssignments(t testing.TB, nodes []*testNode, groupCount int) []controllermeta.GroupAssignment {
+func snapshotAssignments(t testing.TB, nodes []*testNode, slotCount int) []controllermeta.SlotAssignment {
 	t.Helper()
 
-	var snapshot []controllermeta.GroupAssignment
+	var snapshot []controllermeta.SlotAssignment
 	require.Eventually(t, func() bool {
-		assignments, ok := loadAssignments(nodes, groupCount)
+		assignments, ok := loadAssignments(nodes, slotCount)
 		if ok {
 			snapshot = assignments
 			return true
@@ -555,20 +555,20 @@ func snapshotAssignments(t testing.TB, nodes []*testNode, groupCount int) []cont
 	return snapshot
 }
 
-func loadAssignments(nodes []*testNode, groupCount int) ([]controllermeta.GroupAssignment, bool) {
+func loadAssignments(nodes []*testNode, slotCount int) ([]controllermeta.SlotAssignment, bool) {
 	for _, node := range nodes {
 		if node == nil || node.cluster == nil {
 			continue
 		}
-		assignments, err := node.cluster.ListGroupAssignments(context.Background())
-		if err == nil && len(assignments) == groupCount {
+		assignments, err := node.cluster.ListSlotAssignments(context.Background())
+		if err == nil && len(assignments) == slotCount {
 			return assignments, true
 		}
 	}
 	return nil, false
 }
 
-func assignmentsContainPeer(assignments []controllermeta.GroupAssignment, peer uint64) bool {
+func assignmentsContainPeer(assignments []controllermeta.SlotAssignment, peer uint64) bool {
 	for _, assignment := range assignments {
 		for _, candidate := range assignment.DesiredPeers {
 			if candidate == peer {
@@ -579,7 +579,7 @@ func assignmentsContainPeer(assignments []controllermeta.GroupAssignment, peer u
 	return false
 }
 
-func groupAssignedToPeerAndController(assignments []controllermeta.GroupAssignment, peer, controllerLeader uint64) uint32 {
+func slotAssignedToPeerAndController(assignments []controllermeta.SlotAssignment, peer, controllerLeader uint64) uint32 {
 	for _, assignment := range assignments {
 		hasPeer := false
 		hasControllerLeader := false
@@ -592,13 +592,13 @@ func groupAssignedToPeerAndController(assignments []controllermeta.GroupAssignme
 			}
 		}
 		if hasPeer && hasControllerLeader {
-			return assignment.GroupID
+			return assignment.SlotID
 		}
 	}
 	return 0
 }
 
-func groupForControllerLeader(assignments []controllermeta.GroupAssignment, controllerLeader uint64) (uint32, uint64) {
+func slotForControllerLeader(assignments []controllermeta.SlotAssignment, controllerLeader uint64) (uint32, uint64) {
 	for _, assignment := range assignments {
 		hasLeader := false
 		var sourceNode uint64
@@ -612,7 +612,7 @@ func groupForControllerLeader(assignments []controllermeta.GroupAssignment, cont
 			}
 		}
 		if hasLeader && sourceNode != 0 {
-			return assignment.GroupID, sourceNode
+			return assignment.SlotID, sourceNode
 		}
 	}
 	return 0, 0
@@ -650,7 +650,7 @@ func waitForControllerLeader(t testing.TB, nodes []*testNode) uint64 {
 				respBody, err := node.cluster.RPCService(
 					context.Background(),
 					peer.NodeID,
-					multiraft.GroupID(^uint32(0)),
+					multiraft.SlotID(^uint32(0)),
 					14,
 					payload,
 				)
@@ -695,7 +695,7 @@ func currentControllerLeaderNode(nodes []*testNode) (*testNode, bool) {
 			respBody, err := node.cluster.RPCService(
 				context.Background(),
 				peer.NodeID,
-				multiraft.GroupID(^uint32(0)),
+				multiraft.SlotID(^uint32(0)),
 				14,
 				payload,
 			)
@@ -748,19 +748,19 @@ func requireControllerCommand(t testing.TB, nodes []*testNode, fn func(*raftclus
 	}, 15*time.Second, 200*time.Millisecond, "last controller command error: %v", lastErr)
 }
 
-func assignedNodesForGroup(t testing.TB, nodes []*testNode, groupID uint32) []*testNode {
+func assignedNodesForGroup(t testing.TB, nodes []*testNode, slotID uint32) []*testNode {
 	t.Helper()
 
 	for _, node := range nodes {
 		if node == nil || node.cluster == nil {
 			continue
 		}
-		assignments, err := node.cluster.ListGroupAssignments(context.Background())
+		assignments, err := node.cluster.ListSlotAssignments(context.Background())
 		if err != nil {
 			continue
 		}
 		for _, assignment := range assignments {
-			if assignment.GroupID != groupID {
+			if assignment.SlotID != slotID {
 				continue
 			}
 			assigned := make([]*testNode, 0, len(assignment.DesiredPeers))
@@ -775,24 +775,24 @@ func assignedNodesForGroup(t testing.TB, nodes []*testNode, groupID uint32) []*t
 		}
 	}
 
-	t.Fatalf("no assignment found for group %d", groupID)
+	t.Fatalf("no assignment found for slot %d", slotID)
 	return nil
 }
 
-func waitForLeader(t testing.TB, c *raftcluster.Cluster, groupID uint64) {
+func waitForLeader(t testing.TB, c *raftcluster.Cluster, slotID uint64) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		_, err := c.LeaderOf(multiraft.GroupID(groupID))
+		_, err := c.LeaderOf(multiraft.SlotID(slotID))
 		if err == nil {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("no leader elected for group %d", groupID)
+	t.Fatalf("no leader elected for slot %d", slotID)
 }
 
-func stableLeaderWithin(testNodes []*testNode, groupID uint64, timeout time.Duration) (multiraft.NodeID, error) {
+func stableLeaderWithin(testNodes []*testNode, slotID uint64, timeout time.Duration) (multiraft.NodeID, error) {
 	deadline := time.Now().Add(timeout)
 	var stableLeader multiraft.NodeID
 	stableCount := 0
@@ -804,7 +804,7 @@ func stableLeaderWithin(testNodes []*testNode, groupID uint64, timeout time.Dura
 			if n == nil || n.cluster == nil {
 				continue
 			}
-			lid, err := n.cluster.LeaderOf(multiraft.GroupID(groupID))
+			lid, err := n.cluster.LeaderOf(multiraft.SlotID(slotID))
 			if err != nil {
 				allAgree = false
 				break
@@ -832,35 +832,35 @@ func stableLeaderWithin(testNodes []*testNode, groupID uint64, timeout time.Dura
 		}
 		time.Sleep(testLeaderPollInterval)
 	}
-	return 0, fmt.Errorf("no stable leader for group %d", groupID)
+	return 0, fmt.Errorf("no stable leader for slot %d", slotID)
 }
 
-func waitForStableLeader(t testing.TB, testNodes []*testNode, groupID uint64) multiraft.NodeID {
+func waitForStableLeader(t testing.TB, testNodes []*testNode, slotID uint64) multiraft.NodeID {
 	t.Helper()
-	leaderID, err := stableLeaderWithin(testNodes, groupID, 20*time.Second)
+	leaderID, err := stableLeaderWithin(testNodes, slotID, 20*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return leaderID
 }
 
-func waitForAllStableLeaders(t testing.TB, testNodes []*testNode, groupCount int) map[uint64]multiraft.NodeID {
+func waitForAllStableLeaders(t testing.TB, testNodes []*testNode, slotCount int) map[uint64]multiraft.NodeID {
 	t.Helper()
 	type result struct {
-		groupID  uint64
+		slotID   uint64
 		leaderID multiraft.NodeID
 	}
-	results := make(chan result, groupCount)
-	for g := 1; g <= groupCount; g++ {
+	results := make(chan result, slotCount)
+	for g := 1; g <= slotCount; g++ {
 		go func(gid uint64) {
 			lid := waitForStableLeader(t, testNodes, gid)
 			results <- result{gid, lid}
 		}(uint64(g))
 	}
-	leaders := make(map[uint64]multiraft.NodeID, groupCount)
-	for range groupCount {
+	leaders := make(map[uint64]multiraft.NodeID, slotCount)
+	for range slotCount {
 		r := <-results
-		leaders[r.groupID] = r.leaderID
+		leaders[r.slotID] = r.leaderID
 	}
 	return leaders
 }
@@ -877,8 +877,8 @@ func restartNode(t testing.TB, nodes []*testNode, idx int) *testNode {
 	dir := old.dir
 	listenAddr := old.listenAddr
 	clusterNodes := append([]raftcluster.NodeConfig(nil), old.nodes...)
-	groups := append([]raftcluster.GroupConfig(nil), old.groups...)
-	groupCount := old.groupCount
+	slots := append([]raftcluster.SlotConfig(nil), old.slots...)
+	slotCount := old.slotCount
 
 	old.stop()
 
@@ -888,9 +888,9 @@ func restartNode(t testing.TB, nodes []*testNode, idx int) *testNode {
 		nodeID,
 		listenAddr,
 		clusterNodes,
-		groups,
-		groupCount,
-		old.groupReplicaN,
+		slots,
+		slotCount,
+		old.slotReplicaN,
 		old.controllerReplicaN,
 		old.withController,
 	)
@@ -1011,19 +1011,19 @@ func waitForChannelVisibleOnNodes(t testing.TB, nodes []*testNode, channelID str
 // 	}, 40*time.Second, 100*time.Millisecond)
 // }
 
-// func TestClusterGroupIDsNoLongerDependOnStaticGroupConfig(t *testing.T) {
+// func TestClusterGroupIDsNoLongerDependOnStaticSlotConfig(t *testing.T) {
 // 	node := startSingleNodeWithController(t, 8, 1)
 // 	defer node.stop()
 
-// 	require.Equal(t, []multiraft.GroupID{1, 2, 3, 4, 5, 6, 7, 8}, node.cluster.GroupIDs())
+// 	require.Equal(t, []multiraft.SlotID{1, 2, 3, 4, 5, 6, 7, 8}, node.cluster.SlotIDs())
 // }
 
-// func TestClusterBootstrapsManagedGroupsFromControllerAssignments(t *testing.T) {
+// func TestClusterBootstrapsManagedSlotsFromControllerAssignments(t *testing.T) {
 // 	nodes := startThreeNodesWithController(t, 4, 3)
 // 	defer stopNodes(nodes)
 
-// 	for groupID := 1; groupID <= 4; groupID++ {
-// 		waitForStableLeader(t, nodes, uint64(groupID))
+// 	for slotID := 1; slotID <= 4; slotID++ {
+// 		waitForStableLeader(t, nodes, uint64(slotID))
 // 	}
 // }
 
@@ -1040,17 +1040,17 @@ func waitForChannelVisibleOnNodes(t testing.TB, nodes []*testNode, channelID str
 // 	}, 10*time.Second, 100*time.Millisecond)
 // }
 
-// func TestClusterListGroupAssignmentsReflectsControllerState(t *testing.T) {
+// func TestClusterListSlotAssignmentsReflectsControllerState(t *testing.T) {
 // 	nodes := startFourNodesWithController(t, 2, 3)
 // 	defer stopNodes(nodes)
 
-// 	assignments, err := nodes[0].cluster.ListGroupAssignments(context.Background())
+// 	assignments, err := nodes[0].cluster.ListSlotAssignments(context.Background())
 // 	require.NoError(t, err)
 // 	require.Len(t, assignments, 2)
 // 	require.Len(t, assignments[0].DesiredPeers, 3)
 // }
 
-// func TestClusterTransferGroupLeaderDelegatesToManagedGroup(t *testing.T) {
+// func TestClusterTransferSlotLeaderDelegatesToManagedSlot(t *testing.T) {
 // 	nodes := startThreeNodesWithController(t, 1, 3)
 // 	defer stopNodes(nodes)
 
@@ -1060,7 +1060,7 @@ func waitForChannelVisibleOnNodes(t testing.TB, nodes []*testNode, channelID str
 // 		target = 2
 // 	}
 
-// 	require.NoError(t, nodes[0].cluster.TransferGroupLeader(context.Background(), 1, target))
+// 	require.NoError(t, nodes[0].cluster.TransferSlotLeader(context.Background(), 1, target))
 // 	require.Eventually(t, func() bool {
 // 		leader, err := nodes[0].cluster.LeaderOf(1)
 // 		return err == nil && leader == target
@@ -1073,7 +1073,7 @@ func waitForChannelVisibleOnNodes(t testing.TB, nodes []*testNode, channelID str
 
 // 	require.NoError(t, nodes[0].cluster.MarkNodeDraining(context.Background(), 1))
 // 	require.Eventually(t, func() bool {
-// 		assignments, err := nodes[0].cluster.ListGroupAssignments(context.Background())
+// 		assignments, err := nodes[0].cluster.ListSlotAssignments(context.Background())
 // 		if err != nil {
 // 			return false
 // 		}
@@ -1098,8 +1098,8 @@ func waitForChannelVisibleOnNodes(t testing.TB, nodes []*testNode, channelID str
 // 	}
 
 // 	execCh := make(chan execution, 8)
-// 	restore := raftcluster.SetManagedGroupExecutionTestHook(func(groupID uint32, task controllermeta.ReconcileTask) error {
-// 		if groupID == 1 && task.Kind == controllermeta.TaskKindRepair {
+// 	restore := raftcluster.SetManagedSlotExecutionTestHook(func(slotID uint32, task controllermeta.ReconcileTask) error {
+// 		if slotID == 1 && task.Kind == controllermeta.TaskKindRepair {
 // 			select {
 // 			case execCh <- execution{at: time.Now(), attempt: task.Attempt}:
 // 			default:
@@ -1175,7 +1175,7 @@ func waitForChannelVisibleOnNodes(t testing.TB, nodes []*testNode, channelID str
 // 	}, 60*time.Second, 200*time.Millisecond)
 // }
 
-// func TestClusterRecoverGroupReturnsManualRecoveryErrorWhenQuorumLost(t *testing.T) {
+// func TestClusterRecoverSlotReturnsManualRecoveryErrorWhenQuorumLost(t *testing.T) {
 // 	nodes := startThreeNodesWithController(t, 1, 3)
 // 	defer stopNodes(nodes)
 
@@ -1183,7 +1183,7 @@ func waitForChannelVisibleOnNodes(t testing.TB, nodes []*testNode, channelID str
 // 	nodes[1].stop()
 // 	nodes[2].stop()
 
-// 	err := nodes[0].cluster.RecoverGroup(context.Background(), 1, raftcluster.RecoverStrategyLatestLiveReplica)
+// 	err := nodes[0].cluster.RecoverSlot(context.Background(), 1, raftcluster.RecoverStrategyLatestLiveReplica)
 // 	require.ErrorIs(t, err, raftcluster.ErrManualRecoveryRequired)
 // }
 
@@ -1236,15 +1236,15 @@ func waitForChannelVisibleOnNodes(t testing.TB, nodes []*testNode, channelID str
 
 // 	controllerLeader := waitForControllerLeader(t, nodes)
 // 	assignments := snapshotAssignments(t, nodes, 2)
-// 	groupID, sourceNode := groupForControllerLeader(assignments, controllerLeader)
-// 	require.NotZero(t, groupID)
+// 	slotID, sourceNode := slotForControllerLeader(assignments, controllerLeader)
+// 	require.NotZero(t, slotID)
 // 	require.NotZero(t, sourceNode)
 
 // 	var failRepair atomic.Bool
 // 	failRepair.Store(true)
 // 	var repairExecCount atomic.Int32
-// 	restore := raftcluster.SetManagedGroupExecutionTestHook(func(taskGroupID uint32, task controllermeta.ReconcileTask) error {
-// 		if failRepair.Load() && taskGroupID == groupID && task.Kind == controllermeta.TaskKindRepair {
+// 	restore := raftcluster.SetManagedSlotExecutionTestHook(func(taskGroupID uint32, task controllermeta.ReconcileTask) error {
+// 		if failRepair.Load() && taskGroupID == slotID && task.Kind == controllermeta.TaskKindRepair {
 // 			repairExecCount.Add(1)
 // 			return errors.New("injected repair failure")
 // 		}
@@ -1260,10 +1260,10 @@ func waitForChannelVisibleOnNodes(t testing.TB, nodes []*testNode, channelID str
 // 		if !ok {
 // 			return false
 // 		}
-// 		if err := controller.cluster.ForceReconcile(context.Background(), groupID); err != nil {
+// 		if err := controller.cluster.ForceReconcile(context.Background(), slotID); err != nil {
 // 			return false
 // 		}
-// 		_, err := controller.cluster.GetReconcileTask(context.Background(), groupID)
+// 		_, err := controller.cluster.GetReconcileTask(context.Background(), slotID)
 // 		return err == nil
 // 	}, 10*time.Second, 200*time.Millisecond)
 // 	require.Eventually(t, func() bool {
@@ -1279,7 +1279,7 @@ func waitForChannelVisibleOnNodes(t testing.TB, nodes []*testNode, channelID str
 // 			return false
 // 		}
 // 		for _, assignment := range assignments {
-// 			if assignment.GroupID == groupID {
+// 			if assignment.SlotID == slotID {
 // 				for _, peer := range assignment.DesiredPeers {
 // 					if peer == sourceNode {
 // 						return false

@@ -110,10 +110,10 @@ func TestStateMachineApplyUpsertsUserAndChannel(t *testing.T) {
 	sm := mustNewStateMachine(t, db, 11)
 
 	result, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   1,
-		Term:    1,
-		Data:    EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t1", DeviceFlag: 1, DeviceLevel: 2}),
+		SlotID: 11,
+		Index:  1,
+		Term:   1,
+		Data:   EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t1", DeviceFlag: 1, DeviceLevel: 2}),
 	})
 	if err != nil {
 		t.Fatalf("Apply(user create) error = %v", err)
@@ -123,10 +123,10 @@ func TestStateMachineApplyUpsertsUserAndChannel(t *testing.T) {
 	}
 
 	if _, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   2,
-		Term:    1,
-		Data:    EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t2", DeviceFlag: 5, DeviceLevel: 9}),
+		SlotID: 11,
+		Index:  2,
+		Term:   1,
+		Data:   EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t2", DeviceFlag: 5, DeviceLevel: 9}),
 	}); err != nil {
 		t.Fatalf("Apply(user update) error = %v", err)
 	}
@@ -140,19 +140,19 @@ func TestStateMachineApplyUpsertsUserAndChannel(t *testing.T) {
 	}
 
 	if _, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   3,
-		Term:    1,
-		Data:    EncodeUpsertChannelCommand(metadb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 1}),
+		SlotID: 11,
+		Index:  3,
+		Term:   1,
+		Data:   EncodeUpsertChannelCommand(metadb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 1}),
 	}); err != nil {
 		t.Fatalf("Apply(channel create) error = %v", err)
 	}
 
 	if _, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   4,
-		Term:    1,
-		Data:    EncodeUpsertChannelCommand(metadb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 9}),
+		SlotID: 11,
+		Index:  4,
+		Term:   1,
+		Data:   EncodeUpsertChannelCommand(metadb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 9}),
 	}); err != nil {
 		t.Fatalf("Apply(channel update) error = %v", err)
 	}
@@ -186,10 +186,10 @@ func TestStateMachineApplyUpsertsAndDeletesChannelRuntimeMeta(t *testing.T) {
 	}
 
 	result, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   1,
-		Term:    1,
-		Data:    EncodeUpsertChannelRuntimeMetaCommand(meta),
+		SlotID: 11,
+		Index:  1,
+		Term:   1,
+		Data:   EncodeUpsertChannelRuntimeMetaCommand(meta),
 	})
 	if err != nil {
 		t.Fatalf("Apply(upsert runtime meta) error = %v", err)
@@ -210,10 +210,10 @@ func TestStateMachineApplyUpsertsAndDeletesChannelRuntimeMeta(t *testing.T) {
 	}
 
 	if _, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   2,
-		Term:    1,
-		Data:    EncodeDeleteChannelRuntimeMetaCommand(meta.ChannelID, meta.ChannelType),
+		SlotID: 11,
+		Index:  2,
+		Term:   1,
+		Data:   EncodeDeleteChannelRuntimeMetaCommand(meta.ChannelID, meta.ChannelType),
 	}); err != nil {
 		t.Fatalf("Apply(delete runtime meta) error = %v", err)
 	}
@@ -230,10 +230,10 @@ func TestStateMachineAppliesAddAndRemoveSubscribers(t *testing.T) {
 	sm := mustNewStateMachine(t, db, 11)
 
 	result, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   1,
-		Term:    1,
-		Data:    encodeTestAddSubscribersCommand("group-1", 2, []string{"u3", "u1", "u2"}),
+		SlotID: 11,
+		Index:  1,
+		Term:   1,
+		Data:   encodeTestAddSubscribersCommand("slot-1", 2, []string{"u3", "u1", "u2"}),
 	})
 	if err != nil {
 		t.Fatalf("Apply(add subscribers) error = %v", err)
@@ -249,7 +249,7 @@ func TestStateMachineAppliesAddAndRemoveSubscribers(t *testing.T) {
 		t.Fatalf("subscriber shard store methods missing")
 	}
 
-	got, _, done, err := shard.ListSubscribersPage(ctx, "group-1", 2, "", 10)
+	got, _, done, err := shard.ListSubscribersPage(ctx, "slot-1", 2, "", 10)
 	if err != nil {
 		t.Fatalf("ListSubscribersPage() after add error = %v", err)
 	}
@@ -261,15 +261,15 @@ func TestStateMachineAppliesAddAndRemoveSubscribers(t *testing.T) {
 	}
 
 	if _, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   2,
-		Term:    1,
-		Data:    encodeTestRemoveSubscribersCommand("group-1", 2, []string{"u2"}),
+		SlotID: 11,
+		Index:  2,
+		Term:   1,
+		Data:   encodeTestRemoveSubscribersCommand("slot-1", 2, []string{"u2"}),
 	}); err != nil {
 		t.Fatalf("Apply(remove subscribers) error = %v", err)
 	}
 
-	got, _, done, err = shard.ListSubscribersPage(ctx, "group-1", 2, "", 10)
+	got, _, done, err = shard.ListSubscribersPage(ctx, "slot-1", 2, "", 10)
 	if err != nil {
 		t.Fatalf("ListSubscribersPage() after remove error = %v", err)
 	}
@@ -287,10 +287,10 @@ func TestStateMachineApplyCreateUserAndUpsertDevice(t *testing.T) {
 	sm := mustNewStateMachine(t, db, 11)
 
 	result, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   1,
-		Term:    1,
-		Data:    EncodeCreateUserCommand(metadb.User{UID: "u1", Token: "create-token", DeviceFlag: 1, DeviceLevel: 2}),
+		SlotID: 11,
+		Index:  1,
+		Term:   1,
+		Data:   EncodeCreateUserCommand(metadb.User{UID: "u1", Token: "create-token", DeviceFlag: 1, DeviceLevel: 2}),
 	})
 	if err != nil {
 		t.Fatalf("Apply(create user) error = %v", err)
@@ -308,10 +308,10 @@ func TestStateMachineApplyCreateUserAndUpsertDevice(t *testing.T) {
 	}
 
 	if _, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   2,
-		Term:    1,
-		Data:    EncodeCreateUserCommand(metadb.User{UID: "u1", Token: "overwrite-attempt", DeviceFlag: 9, DeviceLevel: 9}),
+		SlotID: 11,
+		Index:  2,
+		Term:   1,
+		Data:   EncodeCreateUserCommand(metadb.User{UID: "u1", Token: "overwrite-attempt", DeviceFlag: 9, DeviceLevel: 9}),
 	}); err != nil {
 		t.Fatalf("Apply(duplicate create user) error = %v", err)
 	}
@@ -325,10 +325,10 @@ func TestStateMachineApplyCreateUserAndUpsertDevice(t *testing.T) {
 	}
 
 	if _, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   3,
-		Term:    1,
-		Data:    EncodeUpsertDeviceCommand(metadb.Device{UID: "u1", DeviceFlag: 1, Token: "app-token", DeviceLevel: 5}),
+		SlotID: 11,
+		Index:  3,
+		Term:   1,
+		Data:   EncodeUpsertDeviceCommand(metadb.Device{UID: "u1", DeviceFlag: 1, Token: "app-token", DeviceLevel: 5}),
 	}); err != nil {
 		t.Fatalf("Apply(upsert device) error = %v", err)
 	}
@@ -353,10 +353,10 @@ func TestStateMachineRejectsIncompleteChannelRuntimeMetaCommand(t *testing.T) {
 	cmd = appendInt64TLVField(cmd, tagRuntimeMetaChannelType, 1)
 
 	_, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   1,
-		Term:    1,
-		Data:    cmd,
+		SlotID: 11,
+		Index:  1,
+		Term:   1,
+		Data:   cmd,
 	})
 	if !errors.Is(err, metadb.ErrCorruptValue) {
 		t.Fatalf("Apply(incomplete runtime meta) err = %v, want ErrCorruptValue", err)
@@ -373,10 +373,10 @@ func TestStateMachineRejectsIncompleteDeleteChannelRuntimeMetaCommand(t *testing
 	cmd = appendStringTLVField(cmd, tagRuntimeMetaChannelID, "partial-delete")
 
 	_, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   1,
-		Term:    1,
-		Data:    cmd,
+		SlotID: 11,
+		Index:  1,
+		Term:   1,
+		Data:   cmd,
 	})
 	if !errors.Is(err, metadb.ErrCorruptValue) {
 		t.Fatalf("Apply(incomplete delete runtime meta) err = %v, want ErrCorruptValue", err)
@@ -415,10 +415,10 @@ func TestStateMachineRejectsDeleteChannelRuntimeMetaWithEmptyChannelID(t *testin
 	sm := mustNewStateMachine(t, db, 11)
 
 	_, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   1,
-		Term:    1,
-		Data:    EncodeDeleteChannelRuntimeMetaCommand("", 1),
+		SlotID: 11,
+		Index:  1,
+		Term:   1,
+		Data:   EncodeDeleteChannelRuntimeMetaCommand("", 1),
 	})
 	if !errors.Is(err, metadb.ErrInvalidArgument) {
 		t.Fatalf("Apply(delete runtime meta with empty channel id) err = %v, want ErrInvalidArgument", err)
@@ -431,18 +431,18 @@ func TestStateMachineSnapshotRestoreRoundTrip(t *testing.T) {
 	sm := mustNewStateMachine(t, db, 11)
 
 	if _, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   1,
-		Term:    1,
-		Data:    EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t1", DeviceFlag: 1, DeviceLevel: 2}),
+		SlotID: 11,
+		Index:  1,
+		Term:   1,
+		Data:   EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t1", DeviceFlag: 1, DeviceLevel: 2}),
 	}); err != nil {
 		t.Fatalf("Apply(user) error = %v", err)
 	}
 	if _, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   2,
-		Term:    1,
-		Data:    EncodeUpsertChannelCommand(metadb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 1}),
+		SlotID: 11,
+		Index:  2,
+		Term:   1,
+		Data:   EncodeUpsertChannelCommand(metadb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 1}),
 	}); err != nil {
 		t.Fatalf("Apply(channel) error = %v", err)
 	}
@@ -484,10 +484,10 @@ func TestStateMachineSnapshotIsSlotScoped(t *testing.T) {
 	sm := mustNewStateMachine(t, db, 11)
 
 	if _, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   1,
-		Term:    1,
-		Data:    EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "slot11"}),
+		SlotID: 11,
+		Index:  1,
+		Term:   1,
+		Data:   EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "slot11"}),
 	}); err != nil {
 		t.Fatalf("Apply(slot11) error = %v", err)
 	}
@@ -540,10 +540,10 @@ func TestStateMachineSnapshotRestoreIncludesChannelRuntimeMeta(t *testing.T) {
 	}
 
 	if _, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   1,
-		Term:    1,
-		Data:    EncodeUpsertChannelRuntimeMetaCommand(meta),
+		SlotID: 11,
+		Index:  1,
+		Term:   1,
+		Data:   EncodeUpsertChannelRuntimeMetaCommand(meta),
 	}); err != nil {
 		t.Fatalf("Apply(runtime meta) error = %v", err)
 	}
@@ -572,16 +572,16 @@ func TestStateMachineSnapshotRestoreIncludesChannelRuntimeMeta(t *testing.T) {
 	}
 }
 
-func TestStateMachineRejectsMismatchedGroupID(t *testing.T) {
+func TestStateMachineRejectsMismatchedSlotID(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	sm := mustNewStateMachine(t, db, 11)
 
 	_, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 12,
-		Index:   1,
-		Term:    1,
-		Data:    EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t1"}),
+		SlotID: 12,
+		Index:  1,
+		Term:   1,
+		Data:   EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t1"}),
 	})
 	if !errors.Is(err, metadb.ErrInvalidArgument) {
 		t.Fatalf("Apply() err = %v, want ErrInvalidArgument", err)
@@ -594,10 +594,10 @@ func TestStateMachineRejectsTruncatedCommand(t *testing.T) {
 	sm := mustNewStateMachine(t, db, 11)
 
 	_, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   1,
-		Term:    1,
-		Data:    []byte{0x01}, // only version byte, missing cmdType
+		SlotID: 11,
+		Index:  1,
+		Term:   1,
+		Data:   []byte{0x01}, // only version byte, missing cmdType
 	})
 	if !errors.Is(err, metadb.ErrCorruptValue) {
 		t.Fatalf("Apply(truncated) err = %v, want ErrCorruptValue", err)
@@ -610,10 +610,10 @@ func TestStateMachineRejectsUnknownCommand(t *testing.T) {
 	sm := mustNewStateMachine(t, db, 11)
 
 	_, err := sm.Apply(ctx, multiraft.Command{
-		GroupID: 11,
-		Index:   1,
-		Term:    1,
-		Data:    []byte{commandVersion, 0xFF}, // valid header, unknown command type
+		SlotID: 11,
+		Index:  1,
+		Term:   1,
+		Data:   []byte{commandVersion, 0xFF}, // valid header, unknown command type
 	})
 	if !errors.Is(err, metadb.ErrInvalidArgument) {
 		t.Fatalf("Apply(unknown) err = %v, want ErrInvalidArgument", err)
@@ -647,9 +647,9 @@ func TestApplyBatchUpsertsMultipleCommands(t *testing.T) {
 	bsm := sm.(multiraft.BatchStateMachine)
 
 	cmds := []multiraft.Command{
-		{GroupID: 11, Index: 1, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t1", DeviceFlag: 1, DeviceLevel: 2})},
-		{GroupID: 11, Index: 2, Term: 1, Data: EncodeUpsertChannelCommand(metadb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 3})},
-		{GroupID: 11, Index: 3, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u2", Token: "t2", DeviceFlag: 4, DeviceLevel: 5})},
+		{SlotID: 11, Index: 1, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t1", DeviceFlag: 1, DeviceLevel: 2})},
+		{SlotID: 11, Index: 2, Term: 1, Data: EncodeUpsertChannelCommand(metadb.Channel{ChannelID: "c1", ChannelType: 1, Ban: 3})},
+		{SlotID: 11, Index: 3, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u2", Token: "t2", DeviceFlag: 4, DeviceLevel: 5})},
 	}
 
 	results, err := bsm.ApplyBatch(ctx, cmds)
@@ -691,15 +691,15 @@ func TestApplyBatchUpsertsMultipleCommands(t *testing.T) {
 	}
 }
 
-func TestApplyBatchRejectsOnMismatchedGroupID(t *testing.T) {
+func TestApplyBatchRejectsOnMismatchedSlotID(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	sm := mustNewStateMachine(t, db, 11)
 	bsm := sm.(multiraft.BatchStateMachine)
 
 	cmds := []multiraft.Command{
-		{GroupID: 11, Index: 1, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t1"})},
-		{GroupID: 99, Index: 2, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u2", Token: "t2"})},
+		{SlotID: 11, Index: 1, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u1", Token: "t1"})},
+		{SlotID: 99, Index: 2, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u2", Token: "t2"})},
 	}
 
 	_, err := bsm.ApplyBatch(ctx, cmds)
@@ -716,8 +716,8 @@ func TestApplyBatchAtomicity(t *testing.T) {
 
 	// First command is valid, second has invalid data — the whole batch should fail.
 	cmds := []multiraft.Command{
-		{GroupID: 11, Index: 1, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u-atomic", Token: "t1"})},
-		{GroupID: 11, Index: 2, Term: 1, Data: []byte{commandVersion, 0xFF}}, // unknown type
+		{SlotID: 11, Index: 1, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u-atomic", Token: "t1"})},
+		{SlotID: 11, Index: 2, Term: 1, Data: []byte{commandVersion, 0xFF}}, // unknown type
 	}
 
 	_, err := bsm.ApplyBatch(ctx, cmds)
@@ -741,8 +741,8 @@ func TestApplyBatchCreateUserPreservesFirstWriteWithinBatch(t *testing.T) {
 	}
 
 	cmds := []multiraft.Command{
-		{GroupID: 11, Index: 1, Term: 1, Data: EncodeCreateUserCommand(metadb.User{UID: "u-atomic", Token: "first"})},
-		{GroupID: 11, Index: 2, Term: 1, Data: EncodeCreateUserCommand(metadb.User{UID: "u-atomic", Token: "second"})},
+		{SlotID: 11, Index: 1, Term: 1, Data: EncodeCreateUserCommand(metadb.User{UID: "u-atomic", Token: "first"})},
+		{SlotID: 11, Index: 2, Term: 1, Data: EncodeCreateUserCommand(metadb.User{UID: "u-atomic", Token: "second"})},
 	}
 
 	results, err := bsm.ApplyBatch(ctx, cmds)
@@ -771,8 +771,8 @@ func TestApplyBatchCreateUserDoesNotOverwritePriorUpsertWithinBatch(t *testing.T
 	}
 
 	cmds := []multiraft.Command{
-		{GroupID: 11, Index: 1, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u-upsert", Token: "upserted", DeviceFlag: 7, DeviceLevel: 8})},
-		{GroupID: 11, Index: 2, Term: 1, Data: EncodeCreateUserCommand(metadb.User{UID: "u-upsert", Token: "created", DeviceFlag: 1, DeviceLevel: 2})},
+		{SlotID: 11, Index: 1, Term: 1, Data: EncodeUpsertUserCommand(metadb.User{UID: "u-upsert", Token: "upserted", DeviceFlag: 7, DeviceLevel: 8})},
+		{SlotID: 11, Index: 2, Term: 1, Data: EncodeCreateUserCommand(metadb.User{UID: "u-upsert", Token: "created", DeviceFlag: 1, DeviceLevel: 2})},
 	}
 
 	_, err := bsm.ApplyBatch(ctx, cmds)
@@ -811,9 +811,9 @@ func TestApplyBatchTouchUserConversationActiveAtPreservesUpdatedAt(t *testing.T)
 
 	cmds := []multiraft.Command{
 		{
-			GroupID: 11,
-			Index:   1,
-			Term:    1,
+			SlotID: 11,
+			Index:  1,
+			Term:   1,
 			Data: EncodeTouchUserConversationActiveAtCommand([]metadb.UserConversationActivePatch{
 				{UID: "u1", ChannelID: "g1", ChannelType: 2, ActiveAt: 300},
 			}),
@@ -853,9 +853,9 @@ func TestApplyBatchUpsertChannelUpdateLogs(t *testing.T) {
 
 	cmds := []multiraft.Command{
 		{
-			GroupID: 11,
-			Index:   1,
-			Term:    1,
+			SlotID: 11,
+			Index:  1,
+			Term:   1,
 			Data: EncodeUpsertChannelUpdateLogsCommand([]metadb.ChannelUpdateLog{
 				{ChannelID: "g1", ChannelType: 2, UpdatedAt: 100, LastMsgSeq: 10, LastClientMsgNo: "c1", LastMsgAt: 200},
 				{ChannelID: "g1", ChannelType: 2, UpdatedAt: 110, LastMsgSeq: 11, LastClientMsgNo: "c2", LastMsgAt: 210},
@@ -968,7 +968,7 @@ func TestApplyBatch_DeleteChannel(t *testing.T) {
 	createCmd := EncodeUpsertChannelCommand(metadb.Channel{
 		ChannelID: "ch1", ChannelType: 1, Ban: 0,
 	})
-	_, err := sm.Apply(ctx, multiraft.Command{GroupID: 1, Data: createCmd})
+	_, err := sm.Apply(ctx, multiraft.Command{SlotID: 1, Data: createCmd})
 	if err != nil {
 		t.Fatalf("Apply upsert: %v", err)
 	}
@@ -983,14 +983,14 @@ func TestApplyBatch_DeleteChannel(t *testing.T) {
 	}
 
 	addSubscribersCmd := EncodeAddSubscribersCommand("ch1", 1, []string{"u2", "u3"})
-	_, err = sm.Apply(ctx, multiraft.Command{GroupID: 1, Data: addSubscribersCmd})
+	_, err = sm.Apply(ctx, multiraft.Command{SlotID: 1, Data: addSubscribersCmd})
 	if err != nil {
 		t.Fatalf("Apply add subscribers: %v", err)
 	}
 
 	// Delete the channel
 	deleteCmd := EncodeDeleteChannelCommand("ch1", 1)
-	_, err = sm.Apply(ctx, multiraft.Command{GroupID: 1, Data: deleteCmd})
+	_, err = sm.Apply(ctx, multiraft.Command{SlotID: 1, Data: deleteCmd})
 	if err != nil {
 		t.Fatalf("Apply delete: %v", err)
 	}

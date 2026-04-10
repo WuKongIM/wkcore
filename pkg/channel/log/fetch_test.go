@@ -127,9 +127,9 @@ func newFetchEnv(t *testing.T) *fetchEnv {
 			},
 		},
 	}
-	group := &fakeGroupHandle{
+	group := &fakeChannelHandle{
 		state: isr.ReplicaState{
-			GroupKey:       channelGroupKey(ChannelKey{ChannelID: "c1", ChannelType: 1}),
+			ChannelKey:     isrChannelKeyForChannel(ChannelKey{ChannelID: "c1", ChannelType: 1}),
 			Role:           isr.RoleLeader,
 			Epoch:          9,
 			Leader:         1,
@@ -139,8 +139,8 @@ func newFetchEnv(t *testing.T) *fetchEnv {
 	}
 	got, err := New(Config{
 		Runtime: &fakeRuntime{
-			groups: map[isr.GroupKey]*fakeGroupHandle{
-				channelGroupKey(ChannelKey{ChannelID: "c1", ChannelType: 1}): group,
+			groups: map[isr.ChannelKey]*fakeChannelHandle{
+				isrChannelKeyForChannel(ChannelKey{ChannelID: "c1", ChannelType: 1}): group,
 			},
 		},
 		Log:        log,

@@ -6,7 +6,7 @@ import (
 )
 
 type NodeID uint64
-type GroupKey string
+type ChannelKey string
 
 type Role uint8
 
@@ -17,8 +17,8 @@ const (
 	RoleTombstoned
 )
 
-type GroupMeta struct {
-	GroupKey   GroupKey
+type ChannelMeta struct {
+	ChannelKey ChannelKey
 	Epoch      uint64
 	Leader     NodeID
 	Replicas   []NodeID
@@ -28,7 +28,7 @@ type GroupMeta struct {
 }
 
 type ReplicaState struct {
-	GroupKey       GroupKey
+	ChannelKey     ChannelKey
 	Role           Role
 	Epoch          uint64
 	OffsetEpoch    uint64
@@ -50,10 +50,10 @@ type Checkpoint struct {
 }
 
 type Snapshot struct {
-	GroupKey  GroupKey
-	Epoch     uint64
-	EndOffset uint64
-	Payload   []byte
+	ChannelKey ChannelKey
+	Epoch      uint64
+	EndOffset  uint64
+	Payload    []byte
 }
 
 type EpochPoint struct {
@@ -68,7 +68,7 @@ type CommitResult struct {
 }
 
 type FetchRequest struct {
-	GroupKey    GroupKey
+	ChannelKey  ChannelKey
 	Epoch       uint64
 	ReplicaID   NodeID
 	FetchOffset uint64
@@ -84,7 +84,7 @@ type FetchResult struct {
 }
 
 type ApplyFetchRequest struct {
-	GroupKey   GroupKey
+	ChannelKey ChannelKey
 	Epoch      uint64
 	Leader     NodeID
 	TruncateTo *uint64
@@ -93,7 +93,7 @@ type ApplyFetchRequest struct {
 }
 
 type ProgressAckRequest struct {
-	GroupKey    GroupKey
+	ChannelKey  ChannelKey
 	Epoch       uint64
 	ReplicaID   NodeID
 	MatchOffset uint64
@@ -145,9 +145,9 @@ type ReplicaConfig struct {
 }
 
 type Replica interface {
-	ApplyMeta(meta GroupMeta) error
-	BecomeLeader(meta GroupMeta) error
-	BecomeFollower(meta GroupMeta) error
+	ApplyMeta(meta ChannelMeta) error
+	BecomeLeader(meta ChannelMeta) error
+	BecomeFollower(meta ChannelMeta) error
 	Tombstone() error
 	InstallSnapshot(ctx context.Context, snap Snapshot) error
 	Append(ctx context.Context, batch []Record) (CommitResult, error)

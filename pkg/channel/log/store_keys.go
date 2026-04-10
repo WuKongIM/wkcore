@@ -14,46 +14,46 @@ const (
 	keyspaceState      byte = 0x14
 )
 
-func encodeGroupPrefix(keyspace byte, groupKey isr.GroupKey) []byte {
-	key := make([]byte, 0, 2+len(groupKey))
+func encodeGroupPrefix(keyspace byte, channelKey isr.ChannelKey) []byte {
+	key := make([]byte, 0, 2+len(channelKey))
 	key = append(key, keyspace)
-	key = binary.AppendUvarint(key, uint64(len(groupKey)))
-	key = append(key, groupKey...)
+	key = binary.AppendUvarint(key, uint64(len(channelKey)))
+	key = append(key, channelKey...)
 	return key
 }
 
-func encodeLogPrefix(groupKey isr.GroupKey) []byte {
-	return encodeGroupPrefix(keyspaceLog, groupKey)
+func encodeLogPrefix(channelKey isr.ChannelKey) []byte {
+	return encodeGroupPrefix(keyspaceLog, channelKey)
 }
 
-func encodeLogRecordKey(groupKey isr.GroupKey, offset uint64) []byte {
-	key := encodeLogPrefix(groupKey)
+func encodeLogRecordKey(channelKey isr.ChannelKey, offset uint64) []byte {
+	key := encodeLogPrefix(channelKey)
 	return binary.BigEndian.AppendUint64(key, offset)
 }
 
-func encodeCheckpointKey(groupKey isr.GroupKey) []byte {
-	return encodeGroupPrefix(keyspaceCheckpoint, groupKey)
+func encodeCheckpointKey(channelKey isr.ChannelKey) []byte {
+	return encodeGroupPrefix(keyspaceCheckpoint, channelKey)
 }
 
-func encodeHistoryPrefix(groupKey isr.GroupKey) []byte {
-	return encodeGroupPrefix(keyspaceHistory, groupKey)
+func encodeHistoryPrefix(channelKey isr.ChannelKey) []byte {
+	return encodeGroupPrefix(keyspaceHistory, channelKey)
 }
 
-func encodeHistoryKey(groupKey isr.GroupKey, startOffset uint64) []byte {
-	key := encodeHistoryPrefix(groupKey)
+func encodeHistoryKey(channelKey isr.ChannelKey, startOffset uint64) []byte {
+	key := encodeHistoryPrefix(channelKey)
 	return binary.BigEndian.AppendUint64(key, startOffset)
 }
 
-func encodeSnapshotKey(groupKey isr.GroupKey) []byte {
-	return encodeGroupPrefix(keyspaceSnapshot, groupKey)
+func encodeSnapshotKey(channelKey isr.ChannelKey) []byte {
+	return encodeGroupPrefix(keyspaceSnapshot, channelKey)
 }
 
-func encodeIdempotencyPrefix(groupKey isr.GroupKey) []byte {
-	return encodeGroupPrefix(keyspaceState, groupKey)
+func encodeIdempotencyPrefix(channelKey isr.ChannelKey) []byte {
+	return encodeGroupPrefix(keyspaceState, channelKey)
 }
 
-func encodeIdempotencyKey(groupKey isr.GroupKey, key IdempotencyKey) []byte {
-	encoded := encodeIdempotencyPrefix(groupKey)
+func encodeIdempotencyKey(channelKey isr.ChannelKey, key IdempotencyKey) []byte {
+	encoded := encodeIdempotencyPrefix(channelKey)
 	encoded = appendKeyString(encoded, key.FromUID)
 	encoded = appendKeyString(encoded, key.ClientMsgNo)
 	return encoded

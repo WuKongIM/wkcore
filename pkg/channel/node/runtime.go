@@ -25,10 +25,10 @@ type runtime struct {
 	cfg Config
 
 	mu               sync.RWMutex
-	groups           map[isr.GroupKey]*group
-	replicationRetry map[isr.GroupKey]map[isr.NodeID]*replicationRetryState
+	groups           map[isr.ChannelKey]*group
+	replicationRetry map[isr.ChannelKey]map[isr.NodeID]*replicationRetryState
 	scheduler        *scheduler
-	tombstones       map[isr.GroupKey]map[uint64]tombstone
+	tombstones       map[isr.ChannelKey]map[uint64]tombstone
 	sessions         peerSessionCache
 	peerRequests     peerRequestState
 	snapshots        snapshotState
@@ -52,7 +52,7 @@ func New(cfg Config) (Runtime, error) {
 	if cfg.PeerSessions == nil {
 		return nil, ErrInvalidConfig
 	}
-	if cfg.Limits.MaxGroups < 0 {
+	if cfg.Limits.MaxChannels < 0 {
 		return nil, ErrInvalidConfig
 	}
 	if cfg.Tombstones.TombstoneTTL <= 0 {
@@ -66,39 +66,39 @@ func New(cfg Config) (Runtime, error) {
 	}
 	r := &runtime{
 		cfg:              cfg,
-		groups:           make(map[isr.GroupKey]*group),
-		replicationRetry: make(map[isr.GroupKey]map[isr.NodeID]*replicationRetryState),
+		groups:           make(map[isr.ChannelKey]*group),
+		replicationRetry: make(map[isr.ChannelKey]map[isr.NodeID]*replicationRetryState),
 		scheduler:        newScheduler(),
 		sessions:         newPeerSessionCache(),
 		peerRequests:     newPeerRequestState(),
-		tombstones:       make(map[isr.GroupKey]map[uint64]tombstone),
+		tombstones:       make(map[isr.ChannelKey]map[uint64]tombstone),
 		snapshotThrottle: newSnapshotThrottle(cfg.Limits.MaxRecoveryBytesPerSecond, time.Sleep),
 	}
 	cfg.Transport.RegisterHandler(r.handleEnvelope)
 	return r, nil
 }
 
-func (r *runtime) EnsureGroup(meta isr.GroupMeta) error {
+func (r *runtime) EnsureChannel(meta isr.ChannelMeta) error {
 	r.mu.Lock()
 
 	r.dropExpiredTombstonesLocked(r.cfg.Now())
 
-	if _, ok := r.groupLocked(meta.GroupKey); ok {
+	if _, ok := r.channelLocked(meta.ChannelKey); ok {
 		r.mu.Unlock()
-		return ErrGroupExists
+		return ErrChannelExists
 	}
-	if r.cfg.Limits.MaxGroups > 0 && len(r.groups) >= r.cfg.Limits.MaxGroups {
+	if r.cfg.Limits.MaxChannels > 0 && len(r.groups) >= r.cfg.Limits.MaxChannels {
 		r.mu.Unlock()
-		return ErrTooManyGroups
+		return ErrTooManyChannels
 	}
 
-	generation, err := r.allocateGeneration(meta.GroupKey)
+	generation, err := r.allocateGeneration(meta.ChannelKey)
 	if err != nil {
 		r.mu.Unlock()
 		return err
 	}
-	replica, err := r.cfg.ReplicaFactory.New(GroupConfig{
-		GroupKey:   meta.GroupKey,
+	replica, err := r.cfg.ReplicaFactory.New(ChannelConfig{
+		ChannelKey: meta.ChannelKey,
 		Generation: generation,
 		Meta:       meta,
 	})
@@ -112,38 +112,38 @@ func (r *runtime) EnsureGroup(meta isr.GroupMeta) error {
 	}
 
 	r.putGroupLocked(&group{
-		id:         meta.GroupKey,
+		id:         meta.ChannelKey,
 		generation: generation,
 		replica:    replica,
 		now:        r.cfg.Now,
 		onReplication: func() {
-			r.processReplication(meta.GroupKey)
+			r.processReplication(meta.ChannelKey)
 		},
 		onSnapshot: func() {
-			r.processSnapshot(meta.GroupKey)
+			r.processSnapshot(meta.ChannelKey)
 		},
 	})
-	r.groups[meta.GroupKey].setMeta(meta)
+	r.groups[meta.ChannelKey].setMeta(meta)
 	bootstrapFollower := meta.Leader != r.cfg.LocalNode
 	r.mu.Unlock()
 	if bootstrapFollower {
-		r.retryReplication(meta.GroupKey, meta.Leader, true)
+		r.retryReplication(meta.ChannelKey, meta.Leader, true)
 	}
 	return nil
 }
 
-func (r *runtime) RemoveGroup(groupKey isr.GroupKey) error {
+func (r *runtime) RemoveChannel(channelKey isr.ChannelKey) error {
 	r.mu.Lock()
 
 	r.dropExpiredTombstonesLocked(r.cfg.Now())
 
-	g, ok := r.groupLocked(groupKey)
+	g, ok := r.channelLocked(channelKey)
 	if !ok {
 		r.mu.Unlock()
-		return ErrGroupNotFound
+		return ErrChannelNotFound
 	}
-	delete(r.groups, groupKey)
-	timers := r.clearReplicationRetriesLocked(groupKey, 0, false)
+	delete(r.groups, channelKey)
+	timers := r.clearReplicationRetriesLocked(channelKey, 0, false)
 	if err := g.replica.Tombstone(); err != nil {
 		r.mu.Unlock()
 		stopTimers(timers)
@@ -156,12 +156,12 @@ func (r *runtime) RemoveGroup(groupKey isr.GroupKey) error {
 	return nil
 }
 
-func (r *runtime) ApplyMeta(meta isr.GroupMeta) error {
+func (r *runtime) ApplyMeta(meta isr.ChannelMeta) error {
 	r.mu.RLock()
-	g, ok := r.groups[meta.GroupKey]
+	g, ok := r.groups[meta.ChannelKey]
 	r.mu.RUnlock()
 	if !ok {
-		return ErrGroupNotFound
+		return ErrChannelNotFound
 	}
 
 	if shouldSkipReplicaApplyMeta(g, r.cfg.LocalNode, meta) {
@@ -172,44 +172,44 @@ func (r *runtime) ApplyMeta(meta isr.GroupMeta) error {
 		return err
 	}
 	g.setMeta(meta)
-	stopTimers(r.clearStaleReplicationRetries(meta.GroupKey, meta))
+	stopTimers(r.clearStaleReplicationRetries(meta.ChannelKey, meta))
 	if meta.Leader != r.cfg.LocalNode {
-		r.retryReplication(meta.GroupKey, meta.Leader, true)
+		r.retryReplication(meta.ChannelKey, meta.Leader, true)
 	}
 	return nil
 }
 
-func (r *runtime) Group(groupKey isr.GroupKey) (GroupHandle, bool) {
+func (r *runtime) Channel(channelKey isr.ChannelKey) (ChannelHandle, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.dropExpiredTombstonesLocked(r.cfg.Now())
-	g, ok := r.groupLocked(groupKey)
+	g, ok := r.channelLocked(channelKey)
 	if !ok {
 		return nil, false
 	}
 	return g, true
 }
 
-func (r *runtime) enqueueReplication(groupKey isr.GroupKey, peer isr.NodeID) {
+func (r *runtime) enqueueReplication(channelKey isr.ChannelKey, peer isr.NodeID) {
 	r.mu.RLock()
-	g, ok := r.groups[groupKey]
+	g, ok := r.groups[channelKey]
 	r.mu.RUnlock()
 	if !ok {
 		return
 	}
 	g.enqueueReplication(peer)
 	g.markReplication()
-	r.enqueueScheduler(groupKey)
+	r.enqueueScheduler(channelKey)
 }
 
-func shouldSkipReplicaApplyMeta(g *group, localNode isr.NodeID, next isr.GroupMeta) bool {
+func shouldSkipReplicaApplyMeta(g *group, localNode isr.NodeID, next isr.ChannelMeta) bool {
 	if g == nil {
 		return false
 	}
 
 	current := g.metaSnapshot()
-	if !groupMetaEqual(current, next) {
+	if !channelMetaEqual(current, next) {
 		return false
 	}
 
@@ -221,11 +221,11 @@ func shouldSkipReplicaApplyMeta(g *group, localNode isr.NodeID, next isr.GroupMe
 	if state.Role != expectedRole {
 		return false
 	}
-	return state.GroupKey == next.GroupKey && state.Epoch == next.Epoch && state.Leader == next.Leader
+	return state.ChannelKey == next.ChannelKey && state.Epoch == next.Epoch && state.Leader == next.Leader
 }
 
-func groupMetaEqual(a, b isr.GroupMeta) bool {
-	return a.GroupKey == b.GroupKey &&
+func channelMetaEqual(a, b isr.ChannelMeta) bool {
+	return a.ChannelKey == b.ChannelKey &&
 		a.Epoch == b.Epoch &&
 		a.Leader == b.Leader &&
 		a.MinISR == b.MinISR &&
@@ -237,11 +237,11 @@ func groupMetaEqual(a, b isr.GroupMeta) bool {
 func (r *runtime) runScheduler() {
 	for {
 		select {
-		case groupKey := <-r.scheduler.ch:
-			r.scheduler.begin(groupKey)
-			r.processGroup(groupKey)
-			if r.scheduler.done(groupKey) {
-				r.scheduler.requeue(groupKey)
+		case channelKey := <-r.scheduler.ch:
+			r.scheduler.begin(channelKey)
+			r.processChannel(channelKey)
+			if r.scheduler.done(channelKey) {
+				r.scheduler.requeue(channelKey)
 			}
 		default:
 			return
@@ -249,9 +249,9 @@ func (r *runtime) runScheduler() {
 	}
 }
 
-func (r *runtime) processGroup(groupKey isr.GroupKey) {
+func (r *runtime) processChannel(channelKey isr.ChannelKey) {
 	r.mu.RLock()
-	g, ok := r.groups[groupKey]
+	g, ok := r.groups[channelKey]
 	r.mu.RUnlock()
 	if !ok {
 		return
@@ -259,16 +259,16 @@ func (r *runtime) processGroup(groupKey isr.GroupKey) {
 	g.runPendingTasks()
 }
 
-func (r *runtime) enqueueScheduler(groupKey isr.GroupKey) {
-	r.scheduler.enqueue(groupKey)
+func (r *runtime) enqueueScheduler(channelKey isr.ChannelKey) {
+	r.scheduler.enqueue(channelKey)
 	if r.cfg.AutoRunScheduler {
 		go r.runScheduler()
 	}
 }
 
-func (r *runtime) scheduleFollowerReplication(groupKey isr.GroupKey, leader isr.NodeID) {
+func (r *runtime) scheduleFollowerReplication(channelKey isr.ChannelKey, leader isr.NodeID) {
 	r.mu.Lock()
-	g, ok := r.groups[groupKey]
+	g, ok := r.groups[channelKey]
 	if !ok {
 		r.mu.Unlock()
 		return
@@ -278,7 +278,7 @@ func (r *runtime) scheduleFollowerReplication(groupKey isr.GroupKey, leader isr.
 		r.mu.Unlock()
 		return
 	}
-	state := r.replicationRetryStateLocked(groupKey, leader)
+	state := r.replicationRetryStateLocked(channelKey, leader)
 	if state.timer != nil {
 		r.mu.Unlock()
 		return
@@ -286,14 +286,14 @@ func (r *runtime) scheduleFollowerReplication(groupKey isr.GroupKey, leader isr.
 	state.timerVersion++
 	version := state.timerVersion
 	state.timer = time.AfterFunc(r.cfg.FollowerReplicationRetryInterval, func() {
-		r.fireFollowerReplicationRetry(groupKey, leader, version)
+		r.fireFollowerReplicationRetry(channelKey, leader, version)
 	})
 	r.mu.Unlock()
 }
 
-func (r *runtime) processReplication(groupKey isr.GroupKey) {
+func (r *runtime) processReplication(channelKey isr.ChannelKey) {
 	r.mu.RLock()
-	g, ok := r.groups[groupKey]
+	g, ok := r.groups[channelKey]
 	r.mu.RUnlock()
 	if !ok {
 		return
@@ -309,13 +309,13 @@ func (r *runtime) processReplication(groupKey isr.GroupKey) {
 		meta := g.Status()
 		err := r.sendEnvelope(Envelope{
 			Peer:       peer,
-			GroupKey:   groupKey,
+			ChannelKey: channelKey,
 			Epoch:      meta.Epoch,
 			Generation: g.generation,
 			RequestID:  r.requestID.Add(1),
 			Kind:       MessageKindFetchRequest,
 			FetchRequest: &FetchRequestEnvelope{
-				GroupKey:    groupKey,
+				ChannelKey:  channelKey,
 				Epoch:       meta.Epoch,
 				Generation:  g.generation,
 				ReplicaID:   r.cfg.LocalNode,
@@ -325,12 +325,12 @@ func (r *runtime) processReplication(groupKey isr.GroupKey) {
 			},
 		})
 		if err == nil {
-			r.clearReplicationRetry(groupKey, peer)
+			r.clearReplicationRetry(channelKey, peer)
 			continue
 		}
 		if err != nil && !errors.Is(err, ErrBackpressured) {
 			failedPeers = append(failedPeers, peer)
-			if r.markReplicationRetry(groupKey, peer) {
+			if r.markReplicationRetry(channelKey, peer) {
 				scheduleRetry = true
 			}
 		}
@@ -338,11 +338,11 @@ func (r *runtime) processReplication(groupKey isr.GroupKey) {
 	if len(failedPeers) > 0 {
 		for _, peer := range failedPeers {
 			g.enqueueReplication(peer)
-			r.scheduleFollowerReplication(groupKey, peer)
+			r.scheduleFollowerReplication(channelKey, peer)
 		}
 		g.markReplication()
 		if scheduleRetry {
-			r.enqueueScheduler(groupKey)
+			r.enqueueScheduler(channelKey)
 		}
 	}
 }
@@ -355,8 +355,8 @@ func (r *runtime) releasePeerInflight(peer isr.NodeID) {
 	r.peerRequests.release(peer)
 }
 
-func (r *runtime) releaseGroupInflight(groupKey isr.GroupKey, peer isr.NodeID) {
-	r.peerRequests.releaseGroup(groupKey, peer)
+func (r *runtime) releaseChannelInflight(channelKey isr.ChannelKey, peer isr.NodeID) {
+	r.peerRequests.releaseChannel(channelKey, peer)
 }
 
 func (r *runtime) drainPeerQueue(peer isr.NodeID) {
@@ -365,11 +365,11 @@ func (r *runtime) drainPeerQueue(peer isr.NodeID) {
 		return
 	}
 	if err := r.sendEnvelope(env); err != nil && !errors.Is(err, ErrBackpressured) {
-		r.retryReplication(env.GroupKey, env.Peer, true)
+		r.retryReplication(env.ChannelKey, env.Peer, true)
 	}
 }
 
-func applyReplicaMeta(replica isr.Replica, localNode isr.NodeID, meta isr.GroupMeta) error {
+func applyReplicaMeta(replica isr.Replica, localNode isr.NodeID, meta isr.ChannelMeta) error {
 	state := replica.Status()
 
 	var err error
@@ -387,9 +387,9 @@ func applyReplicaMeta(replica isr.Replica, localNode isr.NodeID, meta isr.GroupM
 	return err
 }
 
-func (r *runtime) retryReplication(groupKey isr.GroupKey, peer isr.NodeID, schedule bool) {
+func (r *runtime) retryReplication(channelKey isr.ChannelKey, peer isr.NodeID, schedule bool) {
 	r.mu.RLock()
-	g, ok := r.groups[groupKey]
+	g, ok := r.groups[channelKey]
 	r.mu.RUnlock()
 	if !ok {
 		return
@@ -397,16 +397,16 @@ func (r *runtime) retryReplication(groupKey isr.GroupKey, peer isr.NodeID, sched
 
 	g.enqueueReplication(peer)
 	g.markReplication()
-	if schedule && r.markReplicationRetry(groupKey, peer) {
-		r.enqueueScheduler(groupKey)
+	if schedule && r.markReplicationRetry(channelKey, peer) {
+		r.enqueueScheduler(channelKey)
 	}
 }
 
-func (r *runtime) markReplicationRetry(groupKey isr.GroupKey, peer isr.NodeID) bool {
+func (r *runtime) markReplicationRetry(channelKey isr.ChannelKey, peer isr.NodeID) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	state := r.replicationRetryStateLocked(groupKey, peer)
+	state := r.replicationRetryStateLocked(channelKey, peer)
 	if state.pending {
 		return false
 	}
@@ -414,15 +414,15 @@ func (r *runtime) markReplicationRetry(groupKey isr.GroupKey, peer isr.NodeID) b
 	return true
 }
 
-func (r *runtime) clearReplicationRetry(groupKey isr.GroupKey, peer isr.NodeID) {
+func (r *runtime) clearReplicationRetry(channelKey isr.ChannelKey, peer isr.NodeID) {
 	r.mu.Lock()
-	r.clearReplicationRetryLocked(groupKey, peer)
+	r.clearReplicationRetryLocked(channelKey, peer)
 	r.mu.Unlock()
 }
 
-func (r *runtime) fireFollowerReplicationRetry(groupKey isr.GroupKey, peer isr.NodeID, version uint64) {
+func (r *runtime) fireFollowerReplicationRetry(channelKey isr.ChannelKey, peer isr.NodeID, version uint64) {
 	r.mu.Lock()
-	peers, ok := r.replicationRetry[groupKey]
+	peers, ok := r.replicationRetry[channelKey]
 	if !ok {
 		r.mu.Unlock()
 		return
@@ -434,31 +434,31 @@ func (r *runtime) fireFollowerReplicationRetry(groupKey isr.GroupKey, peer isr.N
 	}
 	state.timer = nil
 
-	g, ok := r.groups[groupKey]
+	g, ok := r.groups[channelKey]
 	if !ok {
 		state.pending = false
-		r.dropReplicationRetryStateLocked(groupKey, peer)
+		r.dropReplicationRetryStateLocked(channelKey, peer)
 		r.mu.Unlock()
 		return
 	}
 	meta := g.metaSnapshot()
 	if !r.isReplicationPeerValid(meta, peer) {
 		state.pending = false
-		r.dropReplicationRetryStateLocked(groupKey, peer)
+		r.dropReplicationRetryStateLocked(channelKey, peer)
 		r.mu.Unlock()
 		return
 	}
 	r.mu.Unlock()
 
-	r.retryReplication(groupKey, peer, false)
-	r.enqueueScheduler(groupKey)
+	r.retryReplication(channelKey, peer, false)
+	r.enqueueScheduler(channelKey)
 }
 
-func (r *runtime) clearStaleReplicationRetries(groupKey isr.GroupKey, meta isr.GroupMeta) []*time.Timer {
+func (r *runtime) clearStaleReplicationRetries(channelKey isr.ChannelKey, meta isr.ChannelMeta) []*time.Timer {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	peers, ok := r.replicationRetry[groupKey]
+	peers, ok := r.replicationRetry[channelKey]
 	if !ok {
 		return nil
 	}
@@ -477,13 +477,13 @@ func (r *runtime) clearStaleReplicationRetries(groupKey isr.GroupKey, meta isr.G
 		delete(peers, peer)
 	}
 	if len(peers) == 0 {
-		delete(r.replicationRetry, groupKey)
+		delete(r.replicationRetry, channelKey)
 	}
 	return timers
 }
 
-func (r *runtime) clearReplicationRetryLocked(groupKey isr.GroupKey, peer isr.NodeID) {
-	peers, ok := r.replicationRetry[groupKey]
+func (r *runtime) clearReplicationRetryLocked(channelKey isr.ChannelKey, peer isr.NodeID) {
+	peers, ok := r.replicationRetry[channelKey]
 	if !ok {
 		return
 	}
@@ -492,11 +492,11 @@ func (r *runtime) clearReplicationRetryLocked(groupKey isr.GroupKey, peer isr.No
 		return
 	}
 	state.pending = false
-	r.dropReplicationRetryStateLocked(groupKey, peer)
+	r.dropReplicationRetryStateLocked(channelKey, peer)
 }
 
-func (r *runtime) clearReplicationRetriesLocked(groupKey isr.GroupKey, keepPeer isr.NodeID, keepMatching bool) []*time.Timer {
-	peers, ok := r.replicationRetry[groupKey]
+func (r *runtime) clearReplicationRetriesLocked(channelKey isr.ChannelKey, keepPeer isr.NodeID, keepMatching bool) []*time.Timer {
+	peers, ok := r.replicationRetry[channelKey]
 	if !ok {
 		return nil
 	}
@@ -515,16 +515,16 @@ func (r *runtime) clearReplicationRetriesLocked(groupKey isr.GroupKey, keepPeer 
 		delete(peers, peer)
 	}
 	if len(peers) == 0 {
-		delete(r.replicationRetry, groupKey)
+		delete(r.replicationRetry, channelKey)
 	}
 	return timers
 }
 
-func (r *runtime) replicationRetryStateLocked(groupKey isr.GroupKey, peer isr.NodeID) *replicationRetryState {
-	peers, ok := r.replicationRetry[groupKey]
+func (r *runtime) replicationRetryStateLocked(channelKey isr.ChannelKey, peer isr.NodeID) *replicationRetryState {
+	peers, ok := r.replicationRetry[channelKey]
 	if !ok {
 		peers = make(map[isr.NodeID]*replicationRetryState)
-		r.replicationRetry[groupKey] = peers
+		r.replicationRetry[channelKey] = peers
 	}
 	state, ok := peers[peer]
 	if !ok {
@@ -534,8 +534,8 @@ func (r *runtime) replicationRetryStateLocked(groupKey isr.GroupKey, peer isr.No
 	return state
 }
 
-func (r *runtime) dropReplicationRetryStateLocked(groupKey isr.GroupKey, peer isr.NodeID) {
-	peers, ok := r.replicationRetry[groupKey]
+func (r *runtime) dropReplicationRetryStateLocked(channelKey isr.ChannelKey, peer isr.NodeID) {
+	peers, ok := r.replicationRetry[channelKey]
 	if !ok {
 		return
 	}
@@ -545,7 +545,7 @@ func (r *runtime) dropReplicationRetryStateLocked(groupKey isr.GroupKey, peer is
 	}
 	delete(peers, peer)
 	if len(peers) == 0 {
-		delete(r.replicationRetry, groupKey)
+		delete(r.replicationRetry, channelKey)
 	}
 }
 
@@ -557,7 +557,7 @@ func stopTimers(timers []*time.Timer) {
 	}
 }
 
-func (r *runtime) isReplicationPeerValid(meta isr.GroupMeta, peer isr.NodeID) bool {
+func (r *runtime) isReplicationPeerValid(meta isr.ChannelMeta, peer isr.NodeID) bool {
 	if peer == 0 || peer == r.cfg.LocalNode {
 		return false
 	}

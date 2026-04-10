@@ -259,7 +259,7 @@ func TestAppendReturnsErrMessageSeqExhaustedAtLegacyLimit(t *testing.T) {
 
 type appendEnv struct {
 	cluster *cluster
-	group   *fakeGroupHandle
+	group   *fakeChannelHandle
 	log     *fakeMessageLog
 	state   *fakeStateStore
 	meta    ChannelMeta
@@ -275,13 +275,13 @@ func newAppendEnv(t *testing.T) *appendEnv {
 		t.Fatalf("stores.ForChannel() error = %v", err)
 	}
 	stateStore := state.(*fakeStateStore)
-	group := &fakeGroupHandle{
+	group := &fakeChannelHandle{
 		state: isr.ReplicaState{
-			GroupKey: channelGroupKey(ChannelKey{ChannelID: "c1", ChannelType: 1}),
-			Role:     isr.RoleLeader,
-			Epoch:    9,
-			Leader:   1,
-			HW:       0,
+			ChannelKey: isrChannelKeyForChannel(ChannelKey{ChannelID: "c1", ChannelType: 1}),
+			Role:       isr.RoleLeader,
+			Epoch:      9,
+			Leader:     1,
+			HW:         0,
 		},
 	}
 	group.appendFn = func(records []isr.Record) (isr.CommitResult, error) {
@@ -320,8 +320,8 @@ func newAppendEnv(t *testing.T) *appendEnv {
 	}
 
 	runtime := &fakeRuntime{
-		groups: map[isr.GroupKey]*fakeGroupHandle{
-			channelGroupKey(ChannelKey{ChannelID: "c1", ChannelType: 1}): group,
+		groups: map[isr.ChannelKey]*fakeChannelHandle{
+			isrChannelKeyForChannel(ChannelKey{ChannelID: "c1", ChannelType: 1}): group,
 		},
 	}
 	got, err := New(Config{

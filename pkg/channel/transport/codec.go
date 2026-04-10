@@ -26,7 +26,7 @@ const (
 func encodeFetchRequest(req isrnode.FetchRequestEnvelope) ([]byte, error) {
 	buf := bytes.NewBuffer(make([]byte, 0, 80))
 	buf.WriteByte(fetchRequestCodecVersion)
-	if err := writeGroupKey(buf, req.GroupKey); err != nil {
+	if err := writeChannelKey(buf, req.ChannelKey); err != nil {
 		return nil, err
 	}
 	if err := binary.Write(buf, binary.BigEndian, req.Epoch); err != nil {
@@ -60,12 +60,12 @@ func decodeFetchRequest(data []byte) (isrnode.FetchRequestEnvelope, error) {
 		return isrnode.FetchRequestEnvelope{}, fmt.Errorf("isrnodetransport: unknown fetch request codec version %d", version)
 	}
 
-	groupKey, err := readGroupKey(rd)
+	channelKey, err := readChannelKey(rd)
 	if err != nil {
 		return isrnode.FetchRequestEnvelope{}, err
 	}
 	var req isrnode.FetchRequestEnvelope
-	req.GroupKey = groupKey
+	req.ChannelKey = channelKey
 	if err := binary.Read(rd, binary.BigEndian, &req.Epoch); err != nil {
 		return isrnode.FetchRequestEnvelope{}, err
 	}
@@ -97,7 +97,7 @@ func decodeFetchRequest(data []byte) (isrnode.FetchRequestEnvelope, error) {
 func encodeFetchResponse(resp isrnode.FetchResponseEnvelope) ([]byte, error) {
 	buf := bytes.NewBuffer(make([]byte, 0, 96))
 	buf.WriteByte(fetchResponseCodecVersion)
-	if err := writeGroupKey(buf, resp.GroupKey); err != nil {
+	if err := writeChannelKey(buf, resp.ChannelKey); err != nil {
 		return nil, err
 	}
 	if err := binary.Write(buf, binary.BigEndian, resp.Epoch); err != nil {
@@ -144,11 +144,11 @@ func decodeFetchResponse(data []byte) (isrnode.FetchResponseEnvelope, error) {
 		return isrnode.FetchResponseEnvelope{}, fmt.Errorf("isrnodetransport: unknown fetch response codec version %d", version)
 	}
 
-	groupKey, err := readGroupKey(rd)
+	channelKey, err := readChannelKey(rd)
 	if err != nil {
 		return isrnode.FetchResponseEnvelope{}, err
 	}
-	resp := isrnode.FetchResponseEnvelope{GroupKey: groupKey}
+	resp := isrnode.FetchResponseEnvelope{ChannelKey: channelKey}
 	if err := binary.Read(rd, binary.BigEndian, &resp.Epoch); err != nil {
 		return isrnode.FetchResponseEnvelope{}, err
 	}
@@ -372,7 +372,7 @@ func decodeFetchBatchResponse(data []byte) (isrnode.FetchBatchResponseEnvelope, 
 func encodeProgressAck(ack isrnode.ProgressAckEnvelope) ([]byte, error) {
 	buf := bytes.NewBuffer(make([]byte, 0, 64))
 	buf.WriteByte(progressAckCodecVersion)
-	if err := writeGroupKey(buf, ack.GroupKey); err != nil {
+	if err := writeChannelKey(buf, ack.ChannelKey); err != nil {
 		return nil, err
 	}
 	if err := binary.Write(buf, binary.BigEndian, ack.Epoch); err != nil {
@@ -400,11 +400,11 @@ func decodeProgressAck(data []byte) (isrnode.ProgressAckEnvelope, error) {
 		return isrnode.ProgressAckEnvelope{}, fmt.Errorf("isrnodetransport: unknown progress ack codec version %d", version)
 	}
 
-	groupKey, err := readGroupKey(rd)
+	channelKey, err := readChannelKey(rd)
 	if err != nil {
 		return isrnode.ProgressAckEnvelope{}, err
 	}
-	ack := isrnode.ProgressAckEnvelope{GroupKey: groupKey}
+	ack := isrnode.ProgressAckEnvelope{ChannelKey: channelKey}
 	if err := binary.Read(rd, binary.BigEndian, &ack.Epoch); err != nil {
 		return isrnode.ProgressAckEnvelope{}, err
 	}
@@ -425,24 +425,24 @@ func decodeProgressAck(data []byte) (isrnode.ProgressAckEnvelope, error) {
 	return ack, nil
 }
 
-func writeGroupKey(buf *bytes.Buffer, groupKey isr.GroupKey) error {
-	if err := binary.Write(buf, binary.BigEndian, uint32(len(groupKey))); err != nil {
+func writeChannelKey(buf *bytes.Buffer, channelKey isr.ChannelKey) error {
+	if err := binary.Write(buf, binary.BigEndian, uint32(len(channelKey))); err != nil {
 		return err
 	}
-	if _, err := buf.WriteString(string(groupKey)); err != nil {
+	if _, err := buf.WriteString(string(channelKey)); err != nil {
 		return err
 	}
 	return nil
 }
 
-func readGroupKey(rd *bytes.Reader) (isr.GroupKey, error) {
+func readChannelKey(rd *bytes.Reader) (isr.ChannelKey, error) {
 	var length uint32
 	if err := binary.Read(rd, binary.BigEndian, &length); err != nil {
 		return "", err
 	}
-	groupKey := make([]byte, length)
-	if _, err := io.ReadFull(rd, groupKey); err != nil {
+	channelKey := make([]byte, length)
+	if _, err := io.ReadFull(rd, channelKey); err != nil {
 		return "", err
 	}
-	return isr.GroupKey(groupKey), nil
+	return isr.ChannelKey(channelKey), nil
 }
