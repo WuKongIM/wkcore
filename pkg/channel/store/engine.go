@@ -57,6 +57,9 @@ func (e *Engine) ForChannel(key channel.ChannelKey, id channel.ChannelID) *Chann
 		e.stores = make(map[channel.ChannelKey]*ChannelStore)
 	}
 	if st, ok := e.stores[key]; ok {
+		if st.id != id {
+			panic("store: inconsistent channel key and channel id")
+		}
 		return st
 	}
 	st := &ChannelStore{

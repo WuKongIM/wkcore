@@ -1,6 +1,9 @@
 package store
 
 import (
+	"encoding/binary"
+	"errors"
+	"io"
 	"sync"
 	"time"
 
@@ -166,7 +169,15 @@ func (b commitBatch) completeAll(err error) {
 }
 
 func (s *ChannelStore) StoreApplyFetch(req channel.ApplyFetchStoreRequest) (uint64, error) {
-	return s.applyFetchedRecords(req.Records, nil, req.Checkpoint)
+	base, err := s.leoWithError()
+	if err != nil {
+		return 0, err
+	}
+	committed, err := s.readCommittedBatchForApplyFetch(base, req)
+	if err != nil {
+		return 0, err
+	}
+	return s.applyFetchedRecords(req.Records, committed, req.Checkpoint)
 }
 
 func (s *ChannelStore) applyFetchedRecords(records []channel.Record, committed []appliedMessage, checkpoint *channel.Checkpoint) (uint64, error) {
@@ -249,4 +260,160 @@ func (s *ChannelStore) writeApplyFetchedRecords(writeBatch *pebble.Batch, base u
 		}
 	}
 	return nil
+}
+
+func (s *ChannelStore) readCommittedBatchForApplyFetch(base uint64, req channel.ApplyFetchStoreRequest) ([]appliedMessage, error) {
+	prevHW, err := s.loadCheckpointHW()
+	if err != nil {
+		return nil, err
+	}
+	if req.Checkpoint == nil || req.Checkpoint.HW <= prevHW {
+		return nil, nil
+	}
+
+	nextHW := req.Checkpoint.HW
+	batch := make([]appliedMessage, 0, int(nextHW-prevHW))
+
+	existingUpper := minUint64(nextHW, base)
+	if existingUpper > prevHW {
+		records, err := s.readOffsets(prevHW, spanLimit(existingUpper-prevHW), maxLogScanLimit())
+		if err != nil {
+			return nil, err
+		}
+		for _, record := range records {
+			msg, ok, err := appliedMessageFromLogRecord(s.id, record)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				batch = append(batch, msg)
+			}
+		}
+	}
+
+	newUpper := minUint64(nextHW, base+uint64(len(req.Records)))
+	start := maxUint64(prevHW, base)
+	for offset := start; offset < newUpper; offset++ {
+		record := LogRecord{
+			Offset:  offset,
+			Payload: req.Records[offset-base].Payload,
+		}
+		msg, ok, err := appliedMessageFromLogRecord(s.id, record)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			batch = append(batch, msg)
+		}
+	}
+	return batch, nil
+}
+
+func (s *ChannelStore) loadCheckpointHW() (uint64, error) {
+	checkpoint, err := s.LoadCheckpoint()
+	if errors.Is(err, channel.ErrEmptyState) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return checkpoint.HW, nil
+}
+
+func appliedMessageFromLogRecord(channelID channel.ChannelID, record LogRecord) (appliedMessage, bool, error) {
+	messageID, fromUID, clientMsgNo, err := decodeIdempotencyFields(record.Payload)
+	if err != nil {
+		return appliedMessage{}, false, err
+	}
+	if clientMsgNo == "" {
+		return appliedMessage{}, false, nil
+	}
+	return appliedMessage{
+		key: channel.IdempotencyKey{
+			ChannelID:   channelID,
+			FromUID:     fromUID,
+			ClientMsgNo: clientMsgNo,
+		},
+		entry: channel.IdempotencyEntry{
+			MessageID:  messageID,
+			MessageSeq: record.Offset + 1,
+			Offset:     record.Offset,
+		},
+	}, true, nil
+}
+
+func decodeIdempotencyFields(payload []byte) (uint64, string, string, error) {
+	const (
+		messageCodecVersion byte = 1
+		messageHeaderSize        = 45
+	)
+
+	if len(payload) < messageHeaderSize {
+		return 0, "", "", io.ErrUnexpectedEOF
+	}
+	if payload[0] != messageCodecVersion {
+		return 0, "", "", channel.ErrCorruptValue
+	}
+
+	messageID := binary.BigEndian.Uint64(payload[1:9])
+	pos := messageHeaderSize
+
+	_, pos, err := readSizedBytesView(payload, pos) // msgKey
+	if err != nil {
+		return 0, "", "", err
+	}
+	clientMsgNo, pos, err := readSizedBytesView(payload, pos)
+	if err != nil {
+		return 0, "", "", err
+	}
+	_, pos, err = readSizedBytesView(payload, pos) // streamNo
+	if err != nil {
+		return 0, "", "", err
+	}
+	_, pos, err = readSizedBytesView(payload, pos) // channelID
+	if err != nil {
+		return 0, "", "", err
+	}
+	_, pos, err = readSizedBytesView(payload, pos) // topic
+	if err != nil {
+		return 0, "", "", err
+	}
+	fromUID, _, err := readSizedBytesView(payload, pos)
+	if err != nil {
+		return 0, "", "", err
+	}
+	return messageID, string(fromUID), string(clientMsgNo), nil
+}
+
+func readSizedBytesView(payload []byte, pos int) ([]byte, int, error) {
+	if len(payload)-pos < 4 {
+		return nil, pos, io.ErrUnexpectedEOF
+	}
+	size := int(binary.BigEndian.Uint32(payload[pos : pos+4]))
+	pos += 4
+	if len(payload)-pos < size {
+		return nil, pos, io.ErrUnexpectedEOF
+	}
+	return payload[pos : pos+size], pos + size, nil
+}
+
+func minUint64(a, b uint64) uint64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxUint64(a, b uint64) uint64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func spanLimit(span uint64) int {
+	if span > uint64(maxLogScanLimit()) {
+		return maxLogScanLimit()
+	}
+	return int(span)
 }

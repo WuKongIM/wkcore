@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/stretchr/testify/require"
 )
 
 func TestOpenCreatesEngineAndForChannelBindsKeyAndID(t *testing.T) {
@@ -43,4 +44,15 @@ func TestEngineForChannelReturnsStableStorePerKey(t *testing.T) {
 	if first == other {
 		t.Fatal("expected different keys to have different ChannelStore instances")
 	}
+}
+
+func TestEngineForChannelPanicsOnMismatchedChannelID(t *testing.T) {
+	engine := openTestEngine(t)
+
+	key := channel.ChannelKey("channel/1/c1")
+	engine.ForChannel(key, channel.ChannelID{ID: "c1", Type: 1})
+
+	require.Panics(t, func() {
+		engine.ForChannel(key, channel.ChannelID{ID: "c2", Type: 1})
+	})
 }
