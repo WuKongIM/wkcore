@@ -22,6 +22,8 @@ type runtime struct {
 	tombstones      *tombstoneManager
 	replicaFactory  ReplicaFactory
 	generationStore GenerationStore
+	countMu         sync.Mutex
+	channelCount    int
 }
 
 func New(cfg Config) (Runtime, error) {
@@ -54,10 +56,6 @@ func New(cfg Config) (Runtime, error) {
 }
 
 func (r *runtime) EnsureChannel(meta core.Meta) error {
-	if r.cfg.Limits.MaxChannels > 0 && r.totalChannels() >= r.cfg.Limits.MaxChannels {
-		return ErrTooManyChannels
-	}
-
 	shard := r.shardFor(meta.Key)
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
@@ -66,15 +64,32 @@ func (r *runtime) EnsureChannel(meta core.Meta) error {
 		return ErrChannelExists
 	}
 
+	reserved := false
+	if r.cfg.Limits.MaxChannels > 0 {
+		if !r.tryReserveChannelSlot() {
+			return ErrTooManyChannels
+		}
+		reserved = true
+	}
+
 	generation, err := r.allocateGeneration(meta.Key)
 	if err != nil {
+		if reserved {
+			r.releaseChannelSlot()
+		}
 		return err
 	}
 	rep, err := r.replicaFactory.New(ChannelConfig{ChannelKey: meta.Key, Generation: generation, Meta: meta})
 	if err != nil {
+		if reserved {
+			r.releaseChannelSlot()
+		}
 		return err
 	}
 	if err := applyReplicaMeta(rep, r.cfg.LocalNode, meta); err != nil {
+		if reserved {
+			r.releaseChannelSlot()
+		}
 		return err
 	}
 
@@ -91,11 +106,15 @@ func (r *runtime) RemoveChannel(key core.ChannelKey) error {
 		shard.mu.Unlock()
 		return ErrChannelNotFound
 	}
+	if err := ch.replica.Tombstone(); err != nil {
+		shard.mu.Unlock()
+		return err
+	}
 	delete(shard.channels, key)
 	shard.mu.Unlock()
 
-	if err := ch.replica.Tombstone(); err != nil {
-		return err
+	if r.cfg.Limits.MaxChannels > 0 {
+		r.releaseChannelSlot()
 	}
 	r.tombstones.add(key, ch.gen, r.cfg.Now().Add(r.cfg.Tombstones.TombstoneTTL))
 	return nil
@@ -164,6 +183,26 @@ func (r *runtime) totalChannels() int {
 		r.shards[i].mu.RUnlock()
 	}
 	return total
+}
+
+func (r *runtime) tryReserveChannelSlot() bool {
+	r.countMu.Lock()
+	defer r.countMu.Unlock()
+
+	if r.channelCount >= r.cfg.Limits.MaxChannels {
+		return false
+	}
+	r.channelCount++
+	return true
+}
+
+func (r *runtime) releaseChannelSlot() {
+	r.countMu.Lock()
+	defer r.countMu.Unlock()
+
+	if r.channelCount > 0 {
+		r.channelCount--
+	}
 }
 
 func applyReplicaMeta(rep replica.Replica, localNode core.NodeID, meta core.Meta) error {

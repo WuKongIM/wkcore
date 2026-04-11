@@ -20,6 +20,8 @@ type testRuntimeOption func(*testRuntimeOptions)
 type testRuntimeOptions struct {
 	generationStoreDelay time.Duration
 	replicaFactoryDelay  time.Duration
+	maxChannels          int
+	tombstoneErrors      map[core.ChannelKey]error
 }
 
 func withGenerationStoreDelay(delay time.Duration) testRuntimeOption {
@@ -31,6 +33,21 @@ func withGenerationStoreDelay(delay time.Duration) testRuntimeOption {
 func withReplicaFactoryDelay(delay time.Duration) testRuntimeOption {
 	return func(opts *testRuntimeOptions) {
 		opts.replicaFactoryDelay = delay
+	}
+}
+
+func withMaxChannels(limit int) testRuntimeOption {
+	return func(opts *testRuntimeOptions) {
+		opts.maxChannels = limit
+	}
+}
+
+func withTombstoneError(key core.ChannelKey, err error) testRuntimeOption {
+	return func(opts *testRuntimeOptions) {
+		if opts.tombstoneErrors == nil {
+			opts.tombstoneErrors = make(map[core.ChannelKey]error)
+		}
+		opts.tombstoneErrors[key] = err
 	}
 }
 
@@ -46,11 +63,15 @@ func newTestRuntimeWithOptions(t *testing.T, options ...testRuntimeOption) *runt
 	store.delay = opts.generationStoreDelay
 	factory := newFakeReplicaFactory()
 	factory.delay = opts.replicaFactoryDelay
+	factory.tombstoneErrors = opts.tombstoneErrors
 
 	rt, err := New(Config{
 		LocalNode:       1,
 		ReplicaFactory:  factory,
 		GenerationStore: store,
+		Limits: Limits{
+			MaxChannels: opts.maxChannels,
+		},
 		Tombstones: TombstonePolicy{
 			TombstoneTTL: 30 * time.Second,
 		},
@@ -109,10 +130,11 @@ func (s *fakeGenerationStore) Store(key core.ChannelKey, generation uint64) erro
 }
 
 type fakeReplicaFactory struct {
-	mu       sync.Mutex
-	created  []ChannelConfig
-	replicas []*fakeReplica
-	delay    time.Duration
+	mu              sync.Mutex
+	created         []ChannelConfig
+	replicas        []*fakeReplica
+	delay           time.Duration
+	tombstoneErrors map[core.ChannelKey]error
 }
 
 func newFakeReplicaFactory() *fakeReplicaFactory {
@@ -126,16 +148,20 @@ func (f *fakeReplicaFactory) New(cfg ChannelConfig) (replica.Replica, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	r := &fakeReplica{state: core.ReplicaState{ChannelKey: cfg.ChannelKey, Epoch: cfg.Meta.Epoch, Leader: cfg.Meta.Leader, Role: core.ReplicaRoleFollower}}
+	r := &fakeReplica{
+		state:        core.ReplicaState{ChannelKey: cfg.ChannelKey, Epoch: cfg.Meta.Epoch, Leader: cfg.Meta.Leader, Role: core.ReplicaRoleFollower},
+		tombstoneErr: f.tombstoneErrors[cfg.ChannelKey],
+	}
 	f.created = append(f.created, cfg)
 	f.replicas = append(f.replicas, r)
 	return r, nil
 }
 
 type fakeReplica struct {
-	mu        sync.Mutex
-	state     core.ReplicaState
-	tombstone int
+	mu           sync.Mutex
+	state        core.ReplicaState
+	tombstone    int
+	tombstoneErr error
 }
 
 func (r *fakeReplica) ApplyMeta(meta core.Meta) error {
@@ -170,6 +196,9 @@ func (r *fakeReplica) BecomeFollower(meta core.Meta) error {
 func (r *fakeReplica) Tombstone() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.tombstoneErr != nil {
+		return r.tombstoneErr
+	}
 	r.tombstone++
 	r.state.Role = core.ReplicaRoleTombstoned
 	return nil
