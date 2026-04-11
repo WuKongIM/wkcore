@@ -97,13 +97,6 @@ type EpochPoint struct {
 	StartOffset uint64
 }
 
-type Snapshot struct {
-	ChannelKey ChannelKey
-	Epoch      uint64
-	EndOffset  uint64
-	Payload    []byte
-}
-
 type IdempotencyKey struct {
 	ChannelID   ChannelID
 	FromUID     string

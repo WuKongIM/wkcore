@@ -20,9 +20,32 @@ func TestChannelStoreAppendsAndReadsRecords(t *testing.T) {
 }
 
 func TestChannelStorePersistsCheckpointAndHistory(t *testing.T) {
-	st := newTestChannelStore(t)
+	dir := t.TempDir()
+	engine, err := Open(dir)
+	require.NoError(t, err)
+
+	key := channel.ChannelKey("channel/1/history")
+	id := channel.ChannelID{ID: "history", Type: 1}
+	st := engine.ForChannel(key, id)
+
 	require.NoError(t, st.StoreCheckpoint(channel.Checkpoint{Epoch: 2, HW: 8}))
-	cp, err := st.LoadCheckpoint()
+	require.NoError(t, st.AppendHistory(channel.EpochPoint{Epoch: 2, StartOffset: 6}))
+	require.NoError(t, engine.Close())
+
+	reopened, err := Open(dir)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, reopened.Close())
+	}()
+
+	reloaded := reopened.ForChannel(key, id)
+
+	cp, err := reloaded.LoadCheckpoint()
 	require.NoError(t, err)
 	require.Equal(t, uint64(8), cp.HW)
+
+	history, err := reloaded.LoadHistory()
+	require.NoError(t, err)
+	require.Len(t, history, 1)
+	require.Equal(t, channel.EpochPoint{Epoch: 2, StartOffset: 6}, history[0])
 }
