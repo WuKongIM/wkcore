@@ -113,3 +113,68 @@ type ApplyFetchStoreRequest struct {
 	Records    []Record
 	Checkpoint *Checkpoint
 }
+
+type ReplicaRole uint8
+
+const (
+	ReplicaRoleFollower ReplicaRole = iota + 1
+	ReplicaRoleLeader
+	ReplicaRoleFencedLeader
+	ReplicaRoleTombstoned
+)
+
+type ReplicaState struct {
+	ChannelKey     ChannelKey
+	Role           ReplicaRole
+	Epoch          uint64
+	OffsetEpoch    uint64
+	Leader         NodeID
+	LogStartOffset uint64
+	HW             uint64
+	LEO            uint64
+}
+
+type CommitResult struct {
+	BaseOffset   uint64
+	NextCommitHW uint64
+	RecordCount  int
+}
+
+type Snapshot struct {
+	ChannelKey ChannelKey
+	Epoch      uint64
+	EndOffset  uint64
+	Payload    []byte
+}
+
+type ReplicaFetchRequest struct {
+	ChannelKey  ChannelKey
+	Epoch       uint64
+	ReplicaID   NodeID
+	FetchOffset uint64
+	OffsetEpoch uint64
+	MaxBytes    int
+}
+
+type ReplicaFetchResult struct {
+	Epoch      uint64
+	HW         uint64
+	Records    []Record
+	TruncateTo *uint64
+}
+
+type ReplicaApplyFetchRequest struct {
+	ChannelKey ChannelKey
+	Epoch      uint64
+	Leader     NodeID
+	TruncateTo *uint64
+	Records    []Record
+	LeaderHW   uint64
+}
+
+type ReplicaProgressAckRequest struct {
+	ChannelKey  ChannelKey
+	Epoch       uint64
+	ReplicaID   NodeID
+	MatchOffset uint64
+}

@@ -1,0 +1,124 @@
+package replica
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
+)
+
+func (r *replica) recoverFromStores() error {
+	checkpoint, err := r.checkpoints.Load()
+	if errors.Is(err, channel.ErrEmptyState) {
+		checkpoint = channel.Checkpoint{}
+	} else if err != nil {
+		return err
+	}
+
+	history, err := r.history.Load()
+	if errors.Is(err, channel.ErrEmptyState) {
+		history = nil
+	} else if err != nil {
+		return err
+	}
+
+	if err := validateCheckpoint(checkpoint); err != nil {
+		return err
+	}
+	if err := validateEpochHistory(history); err != nil {
+		return err
+	}
+
+	leo := r.log.LEO()
+	if checkpoint.HW > leo {
+		return fmt.Errorf("%w: checkpoint hw %d > leo %d", channel.ErrCorruptState, checkpoint.HW, leo)
+	}
+	if len(history) > 0 && history[len(history)-1].StartOffset > leo {
+		return fmt.Errorf("%w: epoch history start %d > leo %d", channel.ErrCorruptState, history[len(history)-1].StartOffset, leo)
+	}
+
+	if leo > checkpoint.HW {
+		if err := r.truncateLogToLocked(checkpoint.HW); err != nil {
+			return err
+		}
+		leo = checkpoint.HW
+		history = trimEpochHistoryToLEO(history, leo)
+	}
+
+	r.state.Role = channel.ReplicaRoleFollower
+	r.state.Epoch = checkpoint.Epoch
+	r.state.OffsetEpoch = offsetEpochForLEO(history, leo)
+	r.state.LogStartOffset = checkpoint.LogStartOffset
+	r.state.HW = checkpoint.HW
+	r.state.LEO = leo
+	r.epochHistory = append([]channel.EpochPoint(nil), history...)
+	r.recovered = true
+	r.publishStateLocked()
+	return nil
+}
+
+func validateCheckpoint(checkpoint channel.Checkpoint) error {
+	if checkpoint.LogStartOffset > checkpoint.HW {
+		return channel.ErrCorruptState
+	}
+	return nil
+}
+
+func validateEpochHistory(history []channel.EpochPoint) error {
+	for i, point := range history {
+		if point.Epoch == 0 {
+			return channel.ErrCorruptState
+		}
+		if i == 0 {
+			continue
+		}
+		prev := history[i-1]
+		if point.Epoch < prev.Epoch {
+			return channel.ErrCorruptState
+		}
+		if point.StartOffset < prev.StartOffset {
+			return channel.ErrCorruptState
+		}
+		if point.Epoch == prev.Epoch && point.StartOffset != prev.StartOffset {
+			return channel.ErrCorruptState
+		}
+	}
+	return nil
+}
+
+func (r *replica) InstallSnapshot(ctx context.Context, snap channel.Snapshot) error {
+	r.appendMu.Lock()
+	defer r.appendMu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.state.Role == channel.ReplicaRoleTombstoned {
+		return channel.ErrTombstoned
+	}
+	if err := r.snapshots.InstallSnapshot(ctx, snap); err != nil {
+		return err
+	}
+
+	checkpoint := channel.Checkpoint{
+		Epoch:          snap.Epoch,
+		LogStartOffset: snap.EndOffset,
+		HW:             snap.EndOffset,
+	}
+	if err := r.checkpoints.Store(checkpoint); err != nil {
+		return err
+	}
+
+	leo := r.log.LEO()
+	r.state.Role = channel.ReplicaRoleFollower
+	r.state.Epoch = snap.Epoch
+	r.state.OffsetEpoch = snap.Epoch
+	r.state.LogStartOffset = snap.EndOffset
+	r.state.HW = snap.EndOffset
+	r.state.LEO = leo
+	r.publishStateLocked()
+	if leo < snap.EndOffset {
+		return channel.ErrCorruptState
+	}
+	return nil
+}
