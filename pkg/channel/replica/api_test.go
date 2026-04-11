@@ -18,5 +18,13 @@ func TestNewReplicaValidatesRequiredDependencies(t *testing.T) {
 func TestReplicaInterfaceSurfaceCompiles(t *testing.T) {
 	var r Replica = &replica{}
 	_, _ = r.Append(context.Background(), nil)
+	_ = r.ApplyMeta(channel.Meta{})
+	_ = r.BecomeLeader(channel.Meta{})
+	_ = r.BecomeFollower(channel.Meta{})
+	_ = r.Tombstone()
+	_, _ = r.Fetch(context.Background(), channel.ReplicaFetchRequest{})
+	_ = r.ApplyFetch(context.Background(), channel.ReplicaApplyFetchRequest{})
+	_ = r.ApplyProgressAck(context.Background(), channel.ReplicaProgressAckRequest{})
+	_ = r.InstallSnapshot(context.Background(), channel.Snapshot{})
 	_ = r.Status()
 }

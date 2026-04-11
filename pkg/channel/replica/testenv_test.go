@@ -18,6 +18,8 @@ type fakeLogStore struct {
 	syncCount     int
 	truncateCalls []uint64
 	appendSignal  chan uint64
+	syncStarted   chan struct{}
+	syncContinue  chan struct{}
 }
 
 func (f *fakeLogStore) LEO() uint64 {
@@ -87,6 +89,15 @@ func (f *fakeLogStore) Sync() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.syncCount++
+	if f.syncStarted != nil {
+		select {
+		case f.syncStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.syncContinue != nil {
+		<-f.syncContinue
+	}
 	return nil
 }
 
