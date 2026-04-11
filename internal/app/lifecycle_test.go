@@ -14,6 +14,7 @@ import (
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,6 +50,19 @@ func TestNewBuildsOptionalAPIServerWhenConfigured(t *testing.T) {
 	})
 
 	require.NotNil(t, app.API())
+}
+
+func TestNewBuildsRootLogger(t *testing.T) {
+	cfg := testConfig(t)
+
+	app, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, app.Stop())
+	})
+
+	require.NotNil(t, app.logger)
+	require.NotNil(t, app.logger.Named("child"))
 }
 
 func TestNewBuildsChannelLogDataPlane(t *testing.T) {
@@ -677,6 +691,19 @@ func TestStopJoinsCleanupErrors(t *testing.T) {
 	require.ErrorIs(t, joinedErr, errMetaDB)
 }
 
+func TestStopSyncsLogger(t *testing.T) {
+	logger := &recordingLogger{}
+	app := &App{
+		logger:        logger,
+		started:       atomicBool(true),
+		closeRaftDBFn: func() error { return nil },
+		closeWKDBFn:   func() error { return nil },
+	}
+
+	require.NoError(t, app.Stop())
+	require.Equal(t, 1, logger.syncCalls)
+}
+
 func testConfig(t *testing.T) Config {
 	t.Helper()
 
@@ -704,6 +731,24 @@ func openRaftDBForTest(path string) (interface{ Close() error }, error) {
 func atomicBool(v bool) (flag atomic.Bool) {
 	flag.Store(v)
 	return flag
+}
+
+type recordingLogger struct {
+	syncCalls int
+}
+
+func (r *recordingLogger) Debug(string, ...wklog.Field) {}
+func (r *recordingLogger) Info(string, ...wklog.Field)  {}
+func (r *recordingLogger) Warn(string, ...wklog.Field)  {}
+func (r *recordingLogger) Error(string, ...wklog.Field) {}
+func (r *recordingLogger) Fatal(string, ...wklog.Field) {}
+func (r *recordingLogger) Named(string) wklog.Logger    { return r }
+func (r *recordingLogger) With(...wklog.Field) wklog.Logger {
+	return r
+}
+func (r *recordingLogger) Sync() error {
+	r.syncCalls++
+	return nil
 }
 
 func requireAppFieldNonNil(t *testing.T, app *App, name string) {

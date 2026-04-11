@@ -7,6 +7,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 var (
@@ -28,4 +29,5 @@ type Options struct {
 	Devices   DeviceStore
 	Online    online.Registry
 	AfterFunc func(time.Duration, func())
+	Logger    wklog.Logger
 }

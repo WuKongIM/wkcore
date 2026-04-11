@@ -15,12 +15,14 @@ import (
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/transport"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 	raft "go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 )
 
 type Cluster struct {
 	cfg                         Config
+	logger                      wklog.Logger
 	server                      *transport.Server
 	rpcMux                      *transport.RPCMux
 	raftPool                    *transport.Pool
@@ -53,11 +55,19 @@ func NewCluster(cfg Config) (*Cluster, error) {
 	}
 	return &Cluster{
 		cfg:          cfg,
+		logger:       defaultLogger(cfg.Logger),
 		rpcMux:       transport.NewRPCMux(),
 		router:       NewRouter(cfg.SlotCount, cfg.NodeID, nil),
 		assignments:  newAssignmentCache(),
 		runtimePeers: make(map[multiraft.SlotID][]multiraft.NodeID),
 	}, nil
+}
+
+func defaultLogger(logger wklog.Logger) wklog.Logger {
+	if logger == nil {
+		return wklog.NewNop()
+	}
+	return logger
 }
 
 func (c *Cluster) Start() error {

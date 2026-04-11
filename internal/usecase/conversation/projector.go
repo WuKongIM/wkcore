@@ -11,6 +11,7 @@ import (
 	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type Projector interface {
@@ -29,6 +30,7 @@ type ProjectorOptions struct {
 	SubscriberPageSize int
 	Now                func() time.Time
 	Async              func(func())
+	Logger             wklog.Logger
 }
 
 type projector struct {
@@ -39,6 +41,7 @@ type projector struct {
 	subscriberPageSize int
 	now                func() time.Time
 	async              func(func())
+	logger             wklog.Logger
 	wakeupFlushMu      sync.Mutex
 
 	mu            sync.RWMutex
@@ -70,6 +73,9 @@ func NewProjector(opts ProjectorOptions) Projector {
 	if opts.Async == nil {
 		opts.Async = func(fn func()) { go fn() }
 	}
+	if opts.Logger == nil {
+		opts.Logger = wklog.NewNop()
+	}
 
 	return &projector{
 		store:              opts.Store,
@@ -79,6 +85,7 @@ func NewProjector(opts ProjectorOptions) Projector {
 		subscriberPageSize: opts.SubscriberPageSize,
 		now:                opts.Now,
 		async:              opts.Async,
+		logger:             opts.Logger,
 		hot:                make(map[metadb.ConversationKey]metadb.ChannelUpdateLog),
 		dirty:              make(map[metadb.ConversationKey]struct{}),
 		wakeups:            make(map[metadb.ConversationKey]channellog.Message),

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 var (
@@ -24,6 +25,7 @@ type Options struct {
 	LeaseTTL         time.Duration
 	CloseDelay       time.Duration
 	Now              func() time.Time
+	Logger           wklog.Logger
 }
 
 type App struct {
@@ -38,6 +40,7 @@ type App struct {
 	gatewayBootID uint64
 	leaseTTL      time.Duration
 	closeDelay    time.Duration
+	logger        wklog.Logger
 }
 
 func New(opts Options) *App {
@@ -56,6 +59,9 @@ func New(opts Options) *App {
 	if opts.CloseDelay <= 0 {
 		opts.CloseDelay = defaultRouteCloseDelay
 	}
+	if opts.Logger == nil {
+		opts.Logger = wklog.NewNop()
+	}
 
 	app := &App{
 		dir:           newDirectory(),
@@ -67,6 +73,7 @@ func New(opts Options) *App {
 		gatewayBootID: opts.GatewayBootID,
 		leaseTTL:      opts.LeaseTTL,
 		closeDelay:    opts.CloseDelay,
+		logger:        opts.Logger,
 	}
 	if opts.AuthorityClient != nil {
 		app.authority = opts.AuthorityClient

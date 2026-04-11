@@ -11,6 +11,7 @@ import (
 	accessgateway "github.com/WuKongIM/WuKongIM/internal/access/gateway"
 	accessnode "github.com/WuKongIM/WuKongIM/internal/access/node"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
+	applog "github.com/WuKongIM/WuKongIM/internal/log"
 	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/messageid"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
@@ -28,6 +29,7 @@ import (
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	metastore "github.com/WuKongIM/WuKongIM/pkg/slot/proxy"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 func build(cfg Config) (_ *App, err error) {
@@ -39,6 +41,9 @@ func build(cfg Config) (_ *App, err error) {
 	defer func() {
 		if err == nil {
 			return
+		}
+		if app.logger != nil {
+			_ = app.logger.Sync()
 		}
 		if app.raftDB != nil {
 			_ = app.raftDB.Close()
@@ -54,6 +59,20 @@ func build(cfg Config) (_ *App, err error) {
 		}
 	}()
 
+	app.logger, err = applog.NewLogger(applog.Config{
+		Level:      cfg.Log.Level,
+		Dir:        cfg.Log.Dir,
+		MaxSize:    cfg.Log.MaxSize,
+		MaxAge:     cfg.Log.MaxAge,
+		MaxBackups: cfg.Log.MaxBackups,
+		Compress:   cfg.Log.Compress,
+		Console:    cfg.Log.Console,
+		Format:     cfg.Log.Format,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("app: create logger: %w", err)
+	}
+
 	app.db, err = metadb.Open(cfg.Storage.DBPath)
 	if err != nil {
 		return nil, fmt.Errorf("app: open metadb: %w", err)
@@ -64,7 +83,7 @@ func build(cfg Config) (_ *App, err error) {
 		return nil, fmt.Errorf("app: open raftstorage: %w", err)
 	}
 
-	app.cluster, err = raftcluster.NewCluster(cfg.Cluster.runtimeConfig(cfg.Storage, app.db, app.raftDB, cfg.Node.ID))
+	app.cluster, err = raftcluster.NewCluster(cfg.Cluster.runtimeConfig(cfg.Storage, app.db, app.raftDB, cfg.Node.ID, app.logger.Named("cluster")))
 	if err != nil {
 		return nil, fmt.Errorf("app: create cluster: %w", err)
 	}
@@ -92,6 +111,7 @@ func build(cfg Config) (_ *App, err error) {
 		Transport:        app.isrTransport,
 		PeerSessions:     app.isrTransport,
 		AutoRunScheduler: true,
+		Logger:           app.logger.Named("channel.node"),
 		Limits: isrnode.Limits{
 			MaxFetchInflightPeer: cfg.Cluster.DataPlaneMaxFetchInflight,
 			MaxSnapshotInflight:  1,
@@ -109,6 +129,7 @@ func build(cfg Config) (_ *App, err error) {
 		Log:        app.channelLogDB,
 		States:     app.channelLogDB.StateStoreFactory(),
 		MessageIDs: messageIDs,
+		Logger:     app.logger.Named("channel.log"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("app: create channel log cluster: %w", err)
@@ -122,6 +143,7 @@ func build(cfg Config) (_ *App, err error) {
 		DirtyLimit:         cfg.Conversation.FlushDirtyLimit,
 		ColdThreshold:      cfg.Conversation.ColdThreshold,
 		SubscriberPageSize: cfg.Conversation.SubscriberPageSize,
+		Logger:             app.logger.Named("conversation.projector"),
 	})
 	app.store.RegisterChannelUpdateOverlay(app.conversationProjector)
 	app.conversationApp = conversationusecase.New(conversationusecase.Options{
@@ -136,6 +158,7 @@ func build(cfg Config) (_ *App, err error) {
 		ColdThreshold:         cfg.Conversation.ColdThreshold,
 		ActiveScanLimit:       cfg.Conversation.ActiveScanLimit,
 		ChannelProbeBatchSize: cfg.Conversation.ChannelProbeBatchSize,
+		Logger:                app.logger.Named("conversation"),
 	})
 	app.channelMetaSync = &channelMetaSync{
 		source:          app.store,
@@ -158,6 +181,7 @@ func build(cfg Config) (_ *App, err error) {
 		Router:           presenceRouter{cluster: app.cluster},
 		AuthorityClient:  authorityClient,
 		ActionDispatcher: authorityClient,
+		Logger:           app.logger.Named("presence"),
 	})
 	authorityClient.local = app.presenceApp
 	app.presenceWorker = newPresenceWorker(app.presenceApp, 0)
@@ -183,6 +207,7 @@ func build(cfg Config) (_ *App, err error) {
 	})
 	app.deliveryApp = deliveryusecase.New(deliveryusecase.Options{
 		Runtime: app.deliveryRuntime,
+		Logger:  app.logger.Named("delivery"),
 	})
 	committedDispatcher := asyncCommittedDispatcher{
 		localNodeID:  cfg.Node.ID,
@@ -203,6 +228,7 @@ func build(cfg Config) (_ *App, err error) {
 		DeliveryAck:      app.deliveryApp,
 		DeliveryOffline:  app.deliveryApp,
 		DeliveryAckIndex: app.deliveryAcks,
+		Logger:           app.logger.Named("access.node"),
 	})
 	app.messageApp = message.New(message.Options{
 		IdentityStore:       app.store,
@@ -223,11 +249,13 @@ func build(cfg Config) (_ *App, err error) {
 			remoteAcks:  app.deliveryAcks,
 			notifier:    app.nodeClient,
 		},
+		Logger: app.logger.Named("message"),
 	})
 	userApp := userusecase.New(userusecase.Options{
 		Users:   app.store,
 		Devices: app.store,
 		Online:  onlineRegistry,
+		Logger:  app.logger.Named("user"),
 	})
 	if cfg.API.ListenAddr != "" {
 		app.api = accessapi.New(accessapi.Options{
@@ -238,12 +266,14 @@ func build(cfg Config) (_ *App, err error) {
 			ConversationSyncEnabled:  cfg.Conversation.SyncEnabled,
 			ConversationDefaultLimit: cfg.Conversation.SyncDefaultLimit,
 			ConversationMaxLimit:     cfg.Conversation.SyncMaxLimit,
+			Logger:                   app.logger.Named("access.api"),
 		})
 	}
 	app.gatewayHandler = accessgateway.New(accessgateway.Options{
 		Online:   onlineRegistry,
 		Messages: app.messageApp,
 		Presence: app.presenceApp,
+		Logger:   app.logger.Named("access.gateway"),
 	})
 
 	app.gateway, err = gateway.New(gateway.Options{
@@ -297,7 +327,7 @@ func effectiveDataPlaneMaxPendingFetch(clusterPoolSize, configured int) int {
 	return dataPlaneMaxFetchInflightPeer(clusterPoolSize)
 }
 
-func (c ClusterConfig) runtimeConfig(storage StorageConfig, db *metadb.DB, raftDB *raftstorage.DB, nodeID uint64) raftcluster.Config {
+func (c ClusterConfig) runtimeConfig(storage StorageConfig, db *metadb.DB, raftDB *raftstorage.DB, nodeID uint64, logger wklog.Logger) raftcluster.Config {
 	return raftcluster.Config{
 		NodeID:             multiraft.NodeID(nodeID),
 		ListenAddr:         c.ListenAddr,
@@ -316,6 +346,7 @@ func (c ClusterConfig) runtimeConfig(storage StorageConfig, db *metadb.DB, raftD
 		ElectionTick:       c.ElectionTick,
 		HeartbeatTick:      c.HeartbeatTick,
 		DialTimeout:        c.DialTimeout,
+		Logger:             logger,
 	}
 }
 

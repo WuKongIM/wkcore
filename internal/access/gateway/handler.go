@@ -10,6 +10,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 var ErrUnsupportedFrame = errors.New("access/gateway: unsupported frame")
@@ -36,6 +37,7 @@ type Options struct {
 	Presence    PresenceUsecase
 	Now         func() time.Time
 	SendTimeout time.Duration
+	Logger      wklog.Logger
 }
 
 type Handler struct {
@@ -44,11 +46,15 @@ type Handler struct {
 	presence    PresenceUsecase
 	now         func() time.Time
 	sendTimeout time.Duration
+	logger      wklog.Logger
 }
 
 func New(opts Options) *Handler {
 	if opts.Now == nil {
 		opts.Now = time.Now
+	}
+	if opts.Logger == nil {
+		opts.Logger = wklog.NewNop()
 	}
 	if opts.SendTimeout <= 0 {
 		opts.SendTimeout = defaultSendTimeout
@@ -74,6 +80,7 @@ func New(opts Options) *Handler {
 		presence:    opts.Presence,
 		now:         opts.Now,
 		sendTimeout: opts.SendTimeout,
+		logger:      opts.Logger,
 	}
 }
 

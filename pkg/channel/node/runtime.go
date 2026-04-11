@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 const (
@@ -22,7 +23,8 @@ type replicationRetryState struct {
 }
 
 type runtime struct {
-	cfg Config
+	cfg    Config
+	logger wklog.Logger
 
 	mu               sync.RWMutex
 	groups           map[isr.ChannelKey]*group
@@ -66,6 +68,7 @@ func New(cfg Config) (Runtime, error) {
 	}
 	r := &runtime{
 		cfg:              cfg,
+		logger:           defaultLogger(cfg.Logger),
 		groups:           make(map[isr.ChannelKey]*group),
 		replicationRetry: make(map[isr.ChannelKey]map[isr.NodeID]*replicationRetryState),
 		scheduler:        newScheduler(),
@@ -76,6 +79,13 @@ func New(cfg Config) (Runtime, error) {
 	}
 	cfg.Transport.RegisterHandler(r.handleEnvelope)
 	return r, nil
+}
+
+func defaultLogger(logger wklog.Logger) wklog.Logger {
+	if logger == nil {
+		return wklog.NewNop()
+	}
+	return logger
 }
 
 func (r *runtime) EnsureChannel(meta isr.ChannelMeta) error {

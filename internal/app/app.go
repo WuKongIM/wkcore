@@ -20,10 +20,12 @@ import (
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	metastore "github.com/WuKongIM/WuKongIM/pkg/slot/proxy"
 	"github.com/WuKongIM/WuKongIM/pkg/transport"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type App struct {
-	cfg Config
+	cfg    Config
+	logger wklog.Logger
 
 	db                    *metadb.DB
 	raftDB                *raftstorage.DB

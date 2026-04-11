@@ -7,6 +7,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 var (
@@ -29,6 +30,7 @@ type Options struct {
 	LocalNodeID         uint64
 	LocalBootID         uint64
 	Now                 func() time.Time
+	Logger              wklog.Logger
 }
 
 type App struct {
@@ -46,6 +48,7 @@ type App struct {
 	localNodeID     uint64
 	localBootID     uint64
 	now             func() time.Time
+	logger          wklog.Logger
 }
 
 func New(opts Options) *App {
@@ -57,6 +60,9 @@ func New(opts Options) *App {
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
+	}
+	if opts.Logger == nil {
+		opts.Logger = wklog.NewNop()
 	}
 
 	return &App{
@@ -74,6 +80,7 @@ func New(opts Options) *App {
 		localNodeID:     opts.LocalNodeID,
 		localBootID:     opts.LocalBootID,
 		now:             opts.Now,
+		logger:          opts.Logger,
 	}
 }
 

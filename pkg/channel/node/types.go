@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type MessageKind uint8
@@ -166,4 +167,5 @@ type Config struct {
 	Limits                           Limits
 	Tombstones                       TombstonePolicy
 	Now                              func() time.Time
+	Logger                           wklog.Logger
 }

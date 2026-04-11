@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 const (
@@ -37,6 +38,7 @@ type Config struct {
 	ElectionTick       int
 	HeartbeatTick      int
 	DialTimeout        time.Duration
+	Logger             wklog.Logger
 }
 
 type NodeConfig struct {

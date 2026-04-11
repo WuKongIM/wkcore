@@ -177,6 +177,26 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 	if err != nil {
 		return app.Config{}, err
 	}
+	logMaxSize, err := parseInt(v, "WK_LOG_MAX_SIZE")
+	if err != nil {
+		return app.Config{}, err
+	}
+	logMaxAge, err := parseInt(v, "WK_LOG_MAX_AGE")
+	if err != nil {
+		return app.Config{}, err
+	}
+	logMaxBackups, err := parseInt(v, "WK_LOG_MAX_BACKUPS")
+	if err != nil {
+		return app.Config{}, err
+	}
+	logCompress, err := parseBool(v, "WK_LOG_COMPRESS")
+	if err != nil {
+		return app.Config{}, err
+	}
+	logConsole, err := parseBool(v, "WK_LOG_CONSOLE")
+	if err != nil {
+		return app.Config{}, err
+	}
 
 	cfg := app.Config{
 		Node: app.NodeConfig{
@@ -223,7 +243,18 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 			},
 			Listeners: listeners,
 		},
+		Log: app.LogConfig{
+			Level:      stringValue(v, "WK_LOG_LEVEL"),
+			Dir:        stringValue(v, "WK_LOG_DIR"),
+			MaxSize:    logMaxSize,
+			MaxAge:     logMaxAge,
+			MaxBackups: logMaxBackups,
+			Compress:   logCompress,
+			Console:    logConsole,
+			Format:     stringValue(v, "WK_LOG_FORMAT"),
+		},
 	}
+	cfg.Log.SetExplicitFlags(stringValue(v, "WK_LOG_COMPRESS") != "", stringValue(v, "WK_LOG_CONSOLE") != "")
 
 	if listenAddr := stringValue(v, "WK_API_LISTEN_ADDR"); listenAddr != "" {
 		cfg.API.ListenAddr = listenAddr

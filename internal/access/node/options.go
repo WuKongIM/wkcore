@@ -12,6 +12,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/transport"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type Cluster interface {
@@ -52,6 +53,7 @@ type Options struct {
 	DeliveryOffline  DeliveryOffline
 	DeliveryAckIndex *deliveryruntime.AckIndex
 	Codec            codec.Protocol
+	Logger           wklog.Logger
 }
 
 type Adapter struct {
@@ -66,11 +68,15 @@ type Adapter struct {
 	deliveryOffline  DeliveryOffline
 	deliveryAckIndex *deliveryruntime.AckIndex
 	codec            codec.Protocol
+	logger           wklog.Logger
 }
 
 func New(opts Options) *Adapter {
 	if opts.Codec == nil {
 		opts.Codec = codec.New()
+	}
+	if opts.Logger == nil {
+		opts.Logger = wklog.NewNop()
 	}
 	adapter := &Adapter{
 		cluster:          opts.Cluster,
@@ -84,6 +90,7 @@ func New(opts Options) *Adapter {
 		deliveryOffline:  opts.DeliveryOffline,
 		deliveryAckIndex: opts.DeliveryAckIndex,
 		codec:            opts.Codec,
+		logger:           opts.Logger,
 	}
 	if opts.Cluster != nil && opts.Cluster.RPCMux() != nil {
 		opts.Cluster.RPCMux().Handle(presenceRPCServiceID, adapter.handlePresenceRPC)

@@ -110,6 +110,7 @@ func (a *App) Stop() error {
 			a.closeChannelLogDB(),
 			a.closeRaftDB(),
 			a.closeWKDB(),
+			a.syncLogger(),
 		)
 	})
 	return err
@@ -313,6 +314,13 @@ func (a *App) stopCluster() {
 func (a *App) stopClusterWithError() error {
 	a.stopCluster()
 	return nil
+}
+
+func (a *App) syncLogger() error {
+	if a == nil || a.logger == nil {
+		return nil
+	}
+	return a.logger.Sync()
 }
 
 func (a *App) waitForManagedSlotsReady() error {

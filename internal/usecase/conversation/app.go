@@ -5,6 +5,7 @@ import (
 	"time"
 
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 const (
@@ -25,6 +26,7 @@ type Options struct {
 	ActiveScanLimit       int
 	ChannelProbeBatchSize int
 	Async                 func(func())
+	Logger                wklog.Logger
 }
 
 type App struct {
@@ -36,6 +38,7 @@ type App struct {
 	activeScanLimit       int
 	channelProbeBatchSize int
 	async                 func(func())
+	logger                wklog.Logger
 	demotionMu            sync.Mutex
 	pendingDemotions      map[string]*pendingUIDDemotion
 }
@@ -61,6 +64,9 @@ func New(opts Options) *App {
 	if opts.Async == nil {
 		opts.Async = func(fn func()) { go fn() }
 	}
+	if opts.Logger == nil {
+		opts.Logger = wklog.NewNop()
+	}
 
 	return &App{
 		states:                opts.States,
@@ -71,6 +77,7 @@ func New(opts Options) *App {
 		activeScanLimit:       opts.ActiveScanLimit,
 		channelProbeBatchSize: opts.ChannelProbeBatchSize,
 		async:                 opts.Async,
+		logger:                opts.Logger,
 		pendingDemotions:      make(map[string]*pendingUIDDemotion),
 	}
 }

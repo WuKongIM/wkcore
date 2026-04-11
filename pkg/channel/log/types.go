@@ -6,6 +6,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type NodeID = isr.NodeID
@@ -164,6 +165,7 @@ type Config struct {
 	States     StateStoreFactory
 	MessageIDs MessageIDGenerator
 	Now        func() time.Time
+	Logger     wklog.Logger
 }
 
 type Cluster interface {

@@ -17,6 +17,29 @@ type Config struct {
 	API          APIConfig
 	Gateway      GatewayConfig
 	Conversation ConversationConfig
+	Log          LogConfig
+}
+
+type LogConfig struct {
+	Level      string
+	Dir        string
+	MaxSize    int
+	MaxAge     int
+	MaxBackups int
+	Compress   bool
+	Console    bool
+	Format     string
+
+	compressSet bool
+	consoleSet  bool
+}
+
+func (c *LogConfig) SetExplicitFlags(compressSet, consoleSet bool) {
+	if c == nil {
+		return
+	}
+	c.compressSet = compressSet
+	c.consoleSet = consoleSet
 }
 
 type NodeConfig struct {
@@ -227,6 +250,30 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	}
 	if c.Conversation.SubscriberPageSize <= 0 {
 		c.Conversation.SubscriberPageSize = 512
+	}
+	if c.Log.Level == "" {
+		c.Log.Level = "info"
+	}
+	if c.Log.Dir == "" {
+		c.Log.Dir = "./logs"
+	}
+	if c.Log.MaxSize <= 0 {
+		c.Log.MaxSize = 100
+	}
+	if c.Log.MaxAge <= 0 {
+		c.Log.MaxAge = 30
+	}
+	if c.Log.MaxBackups <= 0 {
+		c.Log.MaxBackups = 10
+	}
+	if c.Log.Format == "" {
+		c.Log.Format = "console"
+	}
+	if !c.Log.Compress && !c.Log.compressSet {
+		c.Log.Compress = true
+	}
+	if !c.Log.Console && !c.Log.consoleSet {
+		c.Log.Console = true
 	}
 	c.Cluster.DataPlanePoolSize = effectiveDataPlanePoolSize(c.Cluster.PoolSize, c.Cluster.DataPlanePoolSize)
 	c.Cluster.DataPlaneMaxFetchInflight = effectiveDataPlaneMaxFetchInflight(c.Cluster.PoolSize, c.Cluster.DataPlaneMaxFetchInflight)

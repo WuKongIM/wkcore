@@ -230,3 +230,55 @@ func TestLoadConfigParsesGatewayAsyncSendDispatchFromConf(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, cfg.Gateway.DefaultSession.AsyncSendDispatch)
 }
+
+func TestLoadConfigParsesLogSettingsFromConf(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_CLUSTER_SLOT_COUNT=1",
+		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
+		"WK_LOG_LEVEL=debug",
+		"WK_LOG_DIR="+filepath.Join(dir, "logs"),
+		"WK_LOG_MAX_SIZE=64",
+		"WK_LOG_MAX_AGE=7",
+		"WK_LOG_MAX_BACKUPS=3",
+		"WK_LOG_COMPRESS=false",
+		"WK_LOG_CONSOLE=false",
+		"WK_LOG_FORMAT=json",
+	)
+
+	cfg, err := loadConfig(configPath)
+	require.NoError(t, err)
+	require.Equal(t, "debug", cfg.Log.Level)
+	require.Equal(t, filepath.Join(dir, "logs"), cfg.Log.Dir)
+	require.Equal(t, 64, cfg.Log.MaxSize)
+	require.Equal(t, 7, cfg.Log.MaxAge)
+	require.Equal(t, 3, cfg.Log.MaxBackups)
+	require.False(t, cfg.Log.Compress)
+	require.False(t, cfg.Log.Console)
+	require.Equal(t, "json", cfg.Log.Format)
+}
+
+func TestLoadConfigUsesLogDefaultsWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_CLUSTER_SLOT_COUNT=1",
+		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
+	)
+
+	cfg, err := loadConfig(configPath)
+	require.NoError(t, err)
+	require.Equal(t, "info", cfg.Log.Level)
+	require.Equal(t, "./logs", cfg.Log.Dir)
+	require.Equal(t, 100, cfg.Log.MaxSize)
+	require.Equal(t, 30, cfg.Log.MaxAge)
+	require.Equal(t, 10, cfg.Log.MaxBackups)
+	require.True(t, cfg.Log.Compress)
+	require.True(t, cfg.Log.Console)
+	require.Equal(t, "console", cfg.Log.Format)
+}

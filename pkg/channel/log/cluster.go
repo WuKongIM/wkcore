@@ -3,10 +3,13 @@ package log
 import (
 	"sync"
 	"time"
+
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type cluster struct {
-	cfg Config
+	cfg    Config
+	logger wklog.Logger
 
 	mu    sync.RWMutex
 	metas map[ChannelKey]ChannelMeta
@@ -29,7 +32,15 @@ func New(cfg Config) (Cluster, error) {
 		cfg.Now = time.Now
 	}
 	return &cluster{
-		cfg:   cfg,
-		metas: make(map[ChannelKey]ChannelMeta),
+		cfg:    cfg,
+		logger: defaultLogger(cfg.Logger),
+		metas:  make(map[ChannelKey]ChannelMeta),
 	}, nil
+}
+
+func defaultLogger(logger wklog.Logger) wklog.Logger {
+	if logger == nil {
+		return wklog.NewNop()
+	}
+	return logger
 }

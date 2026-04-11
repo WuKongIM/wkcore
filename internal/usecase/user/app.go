@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type App struct {
@@ -11,6 +12,7 @@ type App struct {
 	devices   DeviceStore
 	online    online.Registry
 	afterFunc func(time.Duration, func())
+	logger    wklog.Logger
 }
 
 func New(opts Options) *App {
@@ -20,10 +22,14 @@ func New(opts Options) *App {
 	if opts.Online == nil {
 		opts.Online = online.NewRegistry()
 	}
+	if opts.Logger == nil {
+		opts.Logger = wklog.NewNop()
+	}
 	return &App{
 		users:     opts.Users,
 		devices:   opts.Devices,
 		online:    opts.Online,
 		afterFunc: opts.AfterFunc,
+		logger:    opts.Logger,
 	}
 }

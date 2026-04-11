@@ -10,6 +10,7 @@ import (
 	conversationusecase "github.com/WuKongIM/WuKongIM/internal/usecase/conversation"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/user"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 	"github.com/gin-gonic/gin"
 )
 
@@ -35,6 +36,7 @@ type Options struct {
 	ConversationSyncEnabled  bool
 	ConversationDefaultLimit int
 	ConversationMaxLimit     int
+	Logger                   wklog.Logger
 }
 
 type Server struct {
@@ -50,12 +52,16 @@ type Server struct {
 	conversationSyncEnabled  bool
 	conversationDefaultLimit int
 	conversationMaxLimit     int
+	logger                   wklog.Logger
 	started                  bool
 }
 
 func New(opts Options) *Server {
 	if gin.Mode() != gin.ReleaseMode {
 		gin.SetMode(gin.ReleaseMode)
+	}
+	if opts.Logger == nil {
+		opts.Logger = wklog.NewNop()
 	}
 	defaultLimit, maxLimit := normalizeConversationLimits(opts.ConversationDefaultLimit, opts.ConversationMaxLimit)
 	engine := gin.New()
@@ -68,6 +74,7 @@ func New(opts Options) *Server {
 		conversationSyncEnabled:  opts.ConversationSyncEnabled,
 		conversationDefaultLimit: defaultLimit,
 		conversationMaxLimit:     maxLimit,
+		logger:                   opts.Logger,
 	}
 	srv.registerRoutes()
 	return srv
