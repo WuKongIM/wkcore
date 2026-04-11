@@ -24,13 +24,17 @@
 - 显式指定配置文件：`go run ./cmd/wukongim -config ./wukongim.conf`
 - 定向测试：`go test ./internal/... ./pkg/...`
 
+## 必须遵循的规则
+
+- 单元测试不要太耗时，如果模拟真实耗时测试做成集成测试 集成测试通过`go test -tags=integration`运行
+
 ## 配置约定
 
 - 主配置文件使用 `wukongim.conf`，格式为 `KEY=value`。
 - 文件键名与环境变量键名统一，均使用 `WK_` 前缀。
 - 不传 `-config` 时，程序按 `./wukongim.conf`、`./conf/wukongim.conf`、`/etc/wukongim/wukongim.conf` 顺序查找。
 - 环境变量优先级高于配置文件；列表字段使用 JSON 字符串整体覆盖。
-- 仓库根目录提供 `wukongim.conf.example` 作为单节点集群示例。
+- 当配置发生变化时 需要把 `wukongim.conf.example` 对齐。
 
 ## 目录结构
 
@@ -39,42 +43,72 @@ cmd/
   wukongim/              程序入口，负责读取配置并启动应用
 
 internal/
-  app/                   组合根；负责 build、lifecycle、config
+  app/                   组合根；负责 build、lifecycle、config、依赖装配
   access/                接入层，只做入口适配
+    api/                 HTTP API 入口与路由适配
     gateway/             网关 frame -> usecase 的适配
-    api/                 Gin HTTP API 入口骨架
+    node/                节点间 RPC / 转发入口适配
+  gateway/               通用网关基础设施
+    binding/             内置 handler 绑定与注册
+    core/                网关核心 server/dispatcher/registry
+    protocol/            协议适配层（wkproto / jsonrpc）
+    session/             网关会话模型与管理
+    testkit/             网关测试桩与辅助工具
+    transport/           gnet 等底层传输实现
+    types/               网关通用类型与选项
+  log/                   应用日志配置与 zap/lumberjack 封装
   usecase/               可复用业务用例，不依赖具体入口协议
-    message/             消息发送、回执等用例
+    conversation/        会话投影、同步等用例
+    delivery/            投递、离线、订阅等用例
+    message/             消息发送、回执、重试等用例
+    presence/            在线状态登记与权威查询用例
+    user/                用户与 token 相关用例
   runtime/               节点内运行时原语
+    channelid/           个人频道等 channel id 派生
+    delivery/            节点内投递 actor / mailbox / retry runtime
+    messageid/           消息 ID 分配
     online/              在线会话注册与本地投递
     sequence/            序列号分配
-  gateway/               通用网关基础设施：transport、protocol、session、core
 
 pkg/
-  replication/           复制与一致性运行时
-    isr/                 单 group ISR 复制库
-    isrnode/             多 ISR group 的节点内运行时
-    multiraft/           Multi-Raft 基础库
-  transport/             节点间传输抽象
-    nodetransport/       节点间 transport / RPC
-  protocol/              协议对象与编解码
-    wkframe/             WuKong frame/object 模型
-    wkcodec/             WuKong 二进制协议编解码
-    wkjsonrpc/           JSON-RPC schema 与 frame bridge
-  storage/               元数据、Raft 持久化与消息日志
-    metadb/              业务元数据存储
-    raftstorage/         Raft 存储实现
-    metastore/           分布式元数据 facade
-    metafsm/             元数据状态机与命令编解码
-    channellog/          Channel 消息日志与元数据 facade
   cluster/               集群运行时
-    raftcluster/         集群路由、转发与发现
+  channel/               Channel 维度复制、日志与节点间数据面
+    isr/                 单 channel replica group 的 ISR 运行时
+    log/                 Channel 消息日志、提交与元数据适配
+    node/                Channel 节点侧服务与批处理编排
+    transport/           Channel 数据面 RPC transport 适配
+  controller/            控制面元数据、规划器与控制器 Raft 服务
+    meta/                控制面元数据存储
+    plane/               控制面 planner / reconcile 编排
+    raft/                控制器单组 Raft 服务
+  protocol/              协议对象与编解码
+    codec/               WuKong 二进制协议编解码
+    frame/               WuKong frame/object 模型
+    jsonrpc/             JSON-RPC schema 与 frame bridge
+  raftlog/               Raft 日志持久化实现（存储controller和slot的分布式日志 但是不存储channel层的）
+  slot/                  槽位级多副本运行时与分布式元数据
+    fsm/                 槽位状态机与命令编解码
+    meta/                槽位业务元数据存储
+    multiraft/           Multi-Raft 基础库
+    proxy/               基于 cluster 的分布式存储 / RPC facade
+  transport/             节点间 transport / RPC 抽象与实现
+  wklog/                 通用日志接口与字段封装
 
 docs/
-  superpowers/           设计文档与实施计划
+  raw/                   草稿、重构提案与原始设计记录
+  superpowers/           specs / plans / reports / runbooks
+  wiki/                  项目 wiki 与架构文档
+
+scripts/                 仓库辅助脚本
+
+ui/                      内置管理 UI 静态页面
+  assets/                前端静态资源
+  placeholder/           占位页面与未完成视图
 
 learn_project/           调研/实验代码，非主执行路径
 ```
+
+- 当项目目录结构发生变化时更新此文件的`目录结构`
 
 ## 分层约定
 
