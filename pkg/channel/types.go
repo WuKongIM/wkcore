@@ -80,3 +80,43 @@ type FetchResult struct {
 	NextSeq      uint64
 	CommittedSeq uint64
 }
+
+type Record struct {
+	Payload   []byte
+	SizeBytes int
+}
+
+type Checkpoint struct {
+	Epoch          uint64
+	LogStartOffset uint64
+	HW             uint64
+}
+
+type EpochPoint struct {
+	Epoch       uint64
+	StartOffset uint64
+}
+
+type Snapshot struct {
+	ChannelKey ChannelKey
+	Epoch      uint64
+	EndOffset  uint64
+	Payload    []byte
+}
+
+type IdempotencyKey struct {
+	ChannelID   ChannelID
+	FromUID     string
+	ClientMsgNo string
+}
+
+type IdempotencyEntry struct {
+	MessageID  uint64
+	MessageSeq uint64
+	Offset     uint64
+}
+
+type ApplyFetchStoreRequest struct {
+	Records    []Record
+	Checkpoint *Checkpoint
+}

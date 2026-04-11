@@ -1,0 +1,367 @@
+package store
+
+import (
+	"errors"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/cockroachdb/pebble/v2"
+	"github.com/cockroachdb/pebble/v2/vfs"
+)
+
+func TestCommitCoordinatorBatchesMultipleGroupsIntoSinglePebbleSync(t *testing.T) {
+	engine, fs := openCountingCommitCoordinatorTestEngine(t)
+	coordinator := engine.commitCoordinator()
+	coordinator.flushWindow = 5 * time.Millisecond
+
+	before := fs.syncCount.Load()
+
+	errCh := make(chan error, 2)
+	start := make(chan struct{})
+	for i, channelKey := range []channel.ChannelKey{"group-1", "group-2"} {
+		go func(channelKey channel.ChannelKey, index int) {
+			<-start
+			errCh <- coordinator.submit(commitRequest{
+				channelKey: channelKey,
+				build: func(batch *pebble.Batch) error {
+					return batch.Set(
+						encodeCheckpointKey(channelKey),
+						encodeCheckpoint(channel.Checkpoint{Epoch: uint64(index + 1), HW: uint64(index + 1)}),
+						pebble.NoSync,
+					)
+				},
+			})
+		}(channelKey, i)
+	}
+	close(start)
+
+	for range 2 {
+		if err := <-errCh; err != nil {
+			t.Fatalf("submit() error = %v", err)
+		}
+	}
+
+	after := fs.syncCount.Load()
+	if got := after - before; got != 1 {
+		t.Fatalf("sync count delta = %d, want 1", got)
+	}
+}
+
+func TestCommitCoordinatorDoesNotPublishBeforeSyncCompletes(t *testing.T) {
+	engine, fs := openBlockingSyncTestEngine(t)
+	coordinator := engine.commitCoordinator()
+	coordinator.flushWindow = 0
+
+	published := make(chan struct{})
+	done := make(chan error, 1)
+
+	fs.enableNextSyncBlock()
+	go func() {
+		done <- coordinator.submit(commitRequest{
+			channelKey: "group-1",
+			build: func(batch *pebble.Batch) error {
+				return batch.Set(
+					encodeCheckpointKey("group-1"),
+					encodeCheckpoint(channel.Checkpoint{Epoch: 3, HW: 1}),
+					pebble.NoSync,
+				)
+			},
+			publish: func() error {
+				close(published)
+				return nil
+			},
+		})
+	}()
+
+	select {
+	case <-fs.syncStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for commit to reach durable sync")
+	}
+
+	select {
+	case <-published:
+		close(fs.syncContinue)
+		<-done
+		t.Fatal("publish callback ran before sync completed")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(fs.syncContinue)
+	if err := <-done; err != nil {
+		t.Fatalf("submit() error = %v", err)
+	}
+
+	select {
+	case <-published:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for publish callback after sync")
+	}
+}
+
+func TestCommitCoordinatorFanoutsBatchFailureToAllWaiters(t *testing.T) {
+	engine, _ := openCountingCommitCoordinatorTestEngine(t)
+	coordinator := engine.commitCoordinator()
+	coordinator.flushWindow = 5 * time.Millisecond
+	coordinator.commit = func(*pebble.Batch) error {
+		return errSyntheticSyncFailure
+	}
+
+	publishCalls := 0
+	var publishMu sync.Mutex
+	errCh := make(chan error, 2)
+	start := make(chan struct{})
+	for _, channelKey := range []channel.ChannelKey{"group-1", "group-2"} {
+		go func(channelKey channel.ChannelKey) {
+			<-start
+			errCh <- coordinator.submit(commitRequest{
+				channelKey: channelKey,
+				build: func(batch *pebble.Batch) error {
+					return batch.Set(
+						encodeCheckpointKey(channelKey),
+						encodeCheckpoint(channel.Checkpoint{Epoch: 3, HW: 1}),
+						pebble.NoSync,
+					)
+				},
+				publish: func() error {
+					publishMu.Lock()
+					publishCalls++
+					publishMu.Unlock()
+					return nil
+				},
+			})
+		}(channelKey)
+	}
+	close(start)
+
+	for range 2 {
+		err := <-errCh
+		if err == nil {
+			t.Fatal("expected sync failure to fan out to all waiters")
+		}
+		if !errors.Is(err, errSyntheticSyncFailure) {
+			t.Fatalf("submit() error = %v, want synthetic sync failure", err)
+		}
+	}
+
+	publishMu.Lock()
+	defer publishMu.Unlock()
+	if publishCalls != 0 {
+		t.Fatalf("publish callbacks = %d, want 0", publishCalls)
+	}
+}
+
+func openCountingCommitCoordinatorTestEngine(tb testing.TB) (*Engine, *countingFS) {
+	tb.Helper()
+
+	fs := newCountingFS(vfs.NewMem())
+	pdb, err := pebble.Open("test", &pebble.Options{FS: fs})
+	if err != nil {
+		tb.Fatalf("pebble.Open() error = %v", err)
+	}
+
+	engine := &Engine{
+		db:     pdb,
+		stores: make(map[channel.ChannelKey]*ChannelStore),
+	}
+	tb.Cleanup(func() {
+		if err := engine.Close(); err != nil {
+			tb.Fatalf("Close() error = %v", err)
+		}
+	})
+	return engine, fs
+}
+
+func openBlockingSyncTestEngine(tb testing.TB) (*Engine, *blockingSyncFS) {
+	tb.Helper()
+
+	dir := tb.TempDir()
+	fs := newBlockingSyncFS(vfs.Default)
+	pdb, err := pebble.Open(dir, &pebble.Options{FS: fs})
+	if err != nil {
+		tb.Fatalf("pebble.Open() error = %v", err)
+	}
+
+	engine := &Engine{
+		db:     pdb,
+		stores: make(map[channel.ChannelKey]*ChannelStore),
+	}
+	tb.Cleanup(func() {
+		if err := engine.Close(); err != nil {
+			tb.Fatalf("Close() error = %v", err)
+		}
+	})
+	return engine, fs
+}
+
+var errSyntheticSyncFailure = errors.New("synthetic sync failure")
+
+type countingFS struct {
+	vfs.FS
+	syncCount atomic.Int64
+}
+
+func newCountingFS(base vfs.FS) *countingFS {
+	return &countingFS{FS: base}
+}
+
+func (fs *countingFS) Create(name string, category vfs.DiskWriteCategory) (vfs.File, error) {
+	file, err := fs.FS.Create(name, category)
+	if err != nil {
+		return nil, err
+	}
+	return &countingFile{File: file, syncCount: &fs.syncCount}, nil
+}
+
+func (fs *countingFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
+	file, err := fs.FS.Open(name, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &countingFile{File: file, syncCount: &fs.syncCount}, nil
+}
+
+func (fs *countingFS) OpenReadWrite(name string, category vfs.DiskWriteCategory, opts ...vfs.OpenOption) (vfs.File, error) {
+	file, err := fs.FS.OpenReadWrite(name, category, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &countingFile{File: file, syncCount: &fs.syncCount}, nil
+}
+
+func (fs *countingFS) OpenDir(name string) (vfs.File, error) {
+	file, err := fs.FS.OpenDir(name)
+	if err != nil {
+		return nil, err
+	}
+	return &countingFile{File: file, syncCount: &fs.syncCount}, nil
+}
+
+func (fs *countingFS) ReuseForWrite(oldname, newname string, category vfs.DiskWriteCategory) (vfs.File, error) {
+	file, err := fs.FS.ReuseForWrite(oldname, newname, category)
+	if err != nil {
+		return nil, err
+	}
+	return &countingFile{File: file, syncCount: &fs.syncCount}, nil
+}
+
+type countingFile struct {
+	vfs.File
+	syncCount *atomic.Int64
+}
+
+func (f *countingFile) Sync() error {
+	f.syncCount.Add(1)
+	return f.File.Sync()
+}
+
+func (f *countingFile) SyncData() error {
+	f.syncCount.Add(1)
+	return f.File.SyncData()
+}
+
+func (f *countingFile) SyncTo(length int64) (bool, error) {
+	f.syncCount.Add(1)
+	return f.File.SyncTo(length)
+}
+
+type blockingSyncFS struct {
+	vfs.FS
+
+	enabled      atomic.Bool
+	syncStarted  chan struct{}
+	syncContinue chan struct{}
+	once         sync.Once
+}
+
+func newBlockingSyncFS(base vfs.FS) *blockingSyncFS {
+	return &blockingSyncFS{
+		FS:           base,
+		syncStarted:  make(chan struct{}),
+		syncContinue: make(chan struct{}),
+	}
+}
+
+func (fs *blockingSyncFS) enableNextSyncBlock() {
+	fs.enabled.Store(true)
+}
+
+func (fs *blockingSyncFS) Create(name string, category vfs.DiskWriteCategory) (vfs.File, error) {
+	file, err := fs.FS.Create(name, category)
+	if err != nil {
+		return nil, err
+	}
+	return fs.wrap(file), nil
+}
+
+func (fs *blockingSyncFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
+	file, err := fs.FS.Open(name, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return fs.wrap(file), nil
+}
+
+func (fs *blockingSyncFS) OpenReadWrite(name string, category vfs.DiskWriteCategory, opts ...vfs.OpenOption) (vfs.File, error) {
+	file, err := fs.FS.OpenReadWrite(name, category, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return fs.wrap(file), nil
+}
+
+func (fs *blockingSyncFS) OpenDir(name string) (vfs.File, error) {
+	file, err := fs.FS.OpenDir(name)
+	if err != nil {
+		return nil, err
+	}
+	return fs.wrap(file), nil
+}
+
+func (fs *blockingSyncFS) ReuseForWrite(oldname, newname string, category vfs.DiskWriteCategory) (vfs.File, error) {
+	file, err := fs.FS.ReuseForWrite(oldname, newname, category)
+	if err != nil {
+		return nil, err
+	}
+	return fs.wrap(file), nil
+}
+
+func (fs *blockingSyncFS) wrap(file vfs.File) vfs.File {
+	if file == nil {
+		return nil
+	}
+	return &blockingSyncFile{File: file, fs: fs}
+}
+
+func (fs *blockingSyncFS) maybeBlockSync() {
+	if !fs.enabled.Load() {
+		return
+	}
+	fs.once.Do(func() {
+		close(fs.syncStarted)
+		<-fs.syncContinue
+	})
+}
+
+type blockingSyncFile struct {
+	vfs.File
+	fs *blockingSyncFS
+}
+
+func (f *blockingSyncFile) Sync() error {
+	f.fs.maybeBlockSync()
+	return f.File.Sync()
+}
+
+func (f *blockingSyncFile) SyncTo(length int64) (bool, error) {
+	f.fs.maybeBlockSync()
+	return f.File.SyncTo(length)
+}
+
+func (f *blockingSyncFile) SyncData() error {
+	f.fs.maybeBlockSync()
+	return f.File.SyncData()
+}
