@@ -45,6 +45,43 @@ func TestRemoveChannel(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestRemoveChannelPublishesTombstoneBeforeRegistryDrop(t *testing.T) {
+	meta := testMeta("room-remove-visibility")
+	blockAdd := make(chan struct{})
+	addStarted := make(chan struct{})
+	rt := newTestRuntimeWithOptions(t, withTombstoneAddHook(func() {
+		close(addStarted)
+		<-blockAdd
+	}))
+	require.NoError(t, rt.EnsureChannel(meta))
+
+	removeDone := make(chan error, 1)
+	go func() {
+		removeDone <- rt.RemoveChannel(meta.Key)
+	}()
+
+	<-addStarted
+	require.False(t, rt.tombstones.contains(meta.Key, 1))
+
+	lookupDone := make(chan bool, 1)
+	go func() {
+		_, ok := rt.Channel(meta.Key)
+		lookupDone <- ok
+	}()
+
+	select {
+	case ok := <-lookupDone:
+		require.True(t, ok, "channel became invisible before tombstone was published")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(blockAdd)
+	require.NoError(t, <-removeDone)
+	_, ok := rt.Channel(meta.Key)
+	require.False(t, ok)
+	require.True(t, rt.tombstones.contains(meta.Key, 1))
+}
+
 func TestEnsureChannelIsAtomicPerKey(t *testing.T) {
 	rt := newTestRuntimeWithOptions(t,
 		withGenerationStoreDelay(25*time.Millisecond),

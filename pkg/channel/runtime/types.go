@@ -17,7 +17,8 @@ var (
 )
 
 type TombstonePolicy struct {
-	TombstoneTTL time.Duration
+	TombstoneTTL    time.Duration
+	CleanupInterval time.Duration
 }
 
 type Limits struct {

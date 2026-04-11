@@ -24,3 +24,20 @@ func TestExpiredTombstonesDoNotBlockChannelLookup(t *testing.T) {
 	_, ok := rt.Channel(meta.Key)
 	require.False(t, ok)
 }
+
+func TestRuntimeCleanupExpiresTombstones(t *testing.T) {
+	rt := newTestRuntimeWithOptions(
+		t,
+		withTombstoneTTL(25*time.Millisecond),
+		withTombstoneCleanupInterval(5*time.Millisecond),
+	)
+	meta := testMeta("room-cleanup")
+
+	require.NoError(t, rt.EnsureChannel(meta))
+	require.NoError(t, rt.RemoveChannel(meta.Key))
+	require.True(t, rt.tombstones.contains(meta.Key, 1))
+
+	require.Eventually(t, func() bool {
+		return !rt.tombstones.contains(meta.Key, 1)
+	}, 400*time.Millisecond, 10*time.Millisecond)
+}

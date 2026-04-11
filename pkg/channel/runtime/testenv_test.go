@@ -22,6 +22,9 @@ type testRuntimeOptions struct {
 	replicaFactoryDelay  time.Duration
 	maxChannels          int
 	tombstoneErrors      map[core.ChannelKey]error
+	tombstoneTTL         time.Duration
+	tombstoneCleanup     time.Duration
+	beforeTombstoneAdd   func()
 }
 
 func withGenerationStoreDelay(delay time.Duration) testRuntimeOption {
@@ -51,6 +54,24 @@ func withTombstoneError(key core.ChannelKey, err error) testRuntimeOption {
 	}
 }
 
+func withTombstoneTTL(ttl time.Duration) testRuntimeOption {
+	return func(opts *testRuntimeOptions) {
+		opts.tombstoneTTL = ttl
+	}
+}
+
+func withTombstoneCleanupInterval(interval time.Duration) testRuntimeOption {
+	return func(opts *testRuntimeOptions) {
+		opts.tombstoneCleanup = interval
+	}
+}
+
+func withTombstoneAddHook(fn func()) testRuntimeOption {
+	return func(opts *testRuntimeOptions) {
+		opts.beforeTombstoneAdd = fn
+	}
+}
+
 func newTestRuntimeWithOptions(t *testing.T, options ...testRuntimeOption) *runtime {
 	t.Helper()
 
@@ -64,6 +85,10 @@ func newTestRuntimeWithOptions(t *testing.T, options ...testRuntimeOption) *runt
 	factory := newFakeReplicaFactory()
 	factory.delay = opts.replicaFactoryDelay
 	factory.tombstoneErrors = opts.tombstoneErrors
+	ttl := 30 * time.Second
+	if opts.tombstoneTTL > 0 {
+		ttl = opts.tombstoneTTL
+	}
 
 	rt, err := New(Config{
 		LocalNode:       1,
@@ -73,7 +98,8 @@ func newTestRuntimeWithOptions(t *testing.T, options ...testRuntimeOption) *runt
 			MaxChannels: opts.maxChannels,
 		},
 		Tombstones: TombstonePolicy{
-			TombstoneTTL: 30 * time.Second,
+			TombstoneTTL:    ttl,
+			CleanupInterval: opts.tombstoneCleanup,
 		},
 		Now: time.Now,
 	})
@@ -81,6 +107,10 @@ func newTestRuntimeWithOptions(t *testing.T, options ...testRuntimeOption) *runt
 
 	impl, ok := rt.(*runtime)
 	require.True(t, ok)
+	impl.tombstones.beforeAdd = opts.beforeTombstoneAdd
+	t.Cleanup(func() {
+		impl.stopTombstoneCleanup()
+	})
 	return impl
 }
 

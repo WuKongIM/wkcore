@@ -24,6 +24,9 @@ type runtime struct {
 	generationStore GenerationStore
 	countMu         sync.Mutex
 	channelCount    int
+	cleanupStop     chan struct{}
+	cleanupDone     chan struct{}
+	cleanupOnce     sync.Once
 }
 
 func New(cfg Config) (Runtime, error) {
@@ -48,10 +51,13 @@ func New(cfg Config) (Runtime, error) {
 		tombstones:      newTombstoneManager(),
 		replicaFactory:  cfg.ReplicaFactory,
 		generationStore: cfg.GenerationStore,
+		cleanupStop:     make(chan struct{}),
+		cleanupDone:     make(chan struct{}),
 	}
 	for i := range r.shards {
 		r.shards[i].channels = make(map[core.ChannelKey]*channel)
 	}
+	r.startTombstoneCleanup()
 	return r, nil
 }
 
@@ -110,13 +116,13 @@ func (r *runtime) RemoveChannel(key core.ChannelKey) error {
 		shard.mu.Unlock()
 		return err
 	}
+	r.tombstones.add(key, ch.gen, r.cfg.Now().Add(r.cfg.Tombstones.TombstoneTTL))
 	delete(shard.channels, key)
 	shard.mu.Unlock()
 
 	if r.cfg.Limits.MaxChannels > 0 {
 		r.releaseChannelSlot()
 	}
-	r.tombstones.add(key, ch.gen, r.cfg.Now().Add(r.cfg.Tombstones.TombstoneTTL))
 	return nil
 }
 
@@ -260,4 +266,31 @@ func metaEqual(a, b core.Meta) bool {
 		}
 	}
 	return true
+}
+
+func (r *runtime) startTombstoneCleanup() {
+	interval := r.cfg.Tombstones.CleanupInterval
+	if interval <= 0 {
+		interval = r.cfg.Tombstones.TombstoneTTL
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		defer close(r.cleanupDone)
+		for {
+			select {
+			case <-ticker.C:
+				r.tombstones.dropExpired(r.cfg.Now())
+			case <-r.cleanupStop:
+				return
+			}
+		}
+	}()
+}
+
+func (r *runtime) stopTombstoneCleanup() {
+	r.cleanupOnce.Do(func() {
+		close(r.cleanupStop)
+		<-r.cleanupDone
+	})
 }
