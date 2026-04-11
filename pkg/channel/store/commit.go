@@ -343,20 +343,15 @@ func appliedMessageFromLogRecord(channelID channel.ChannelID, record LogRecord) 
 }
 
 func decodeIdempotencyFields(payload []byte) (uint64, string, string, error) {
-	const (
-		messageCodecVersion byte = 1
-		messageHeaderSize        = 45
-	)
-
-	if len(payload) < messageHeaderSize {
+	if len(payload) < channel.DurableMessageHeaderSize {
 		return 0, "", "", io.ErrUnexpectedEOF
 	}
-	if payload[0] != messageCodecVersion {
+	if payload[0] != channel.DurableMessageCodecVersion {
 		return 0, "", "", channel.ErrCorruptValue
 	}
 
 	messageID := binary.BigEndian.Uint64(payload[1:9])
-	pos := messageHeaderSize
+	pos := channel.DurableMessageHeaderSize
 
 	_, pos, err := readSizedBytesView(payload, pos) // msgKey
 	if err != nil {

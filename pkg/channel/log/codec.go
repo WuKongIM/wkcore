@@ -7,6 +7,7 @@ import (
 	"hash/fnv"
 	"io"
 
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
@@ -31,11 +32,6 @@ type messageView struct {
 	PayloadHash uint64
 }
 
-const (
-	messageCodecVersion byte = 1
-	messageHeaderSize        = 45
-)
-
 var errUnknownMessageCodecVersion = errors.New("channellog: unknown message codec version")
 
 const (
@@ -53,7 +49,7 @@ func encodeMessage(message Message) ([]byte, error) {
 
 func encodeMessageWithPayloadHash(message Message, payloadHash uint64) ([]byte, error) {
 	var buf bytes.Buffer
-	if err := buf.WriteByte(messageCodecVersion); err != nil {
+	if err := buf.WriteByte(channel.DurableMessageCodecVersion); err != nil {
 		return nil, err
 	}
 	if err := binary.Write(&buf, binary.BigEndian, message.MessageID); err != nil {
@@ -121,10 +117,10 @@ func decodeMessage(payload []byte) (Message, error) {
 }
 
 func decodeMessageView(payload []byte) (messageView, error) {
-	if len(payload) < messageHeaderSize {
+	if len(payload) < channel.DurableMessageHeaderSize {
 		return messageView{}, io.ErrUnexpectedEOF
 	}
-	if payload[0] != messageCodecVersion {
+	if payload[0] != channel.DurableMessageCodecVersion {
 		return messageView{}, errUnknownMessageCodecVersion
 	}
 
@@ -140,7 +136,7 @@ func decodeMessageView(payload []byte) (messageView, error) {
 	view.Timestamp = int32(binary.BigEndian.Uint32(payload[33:37]))
 	view.PayloadHash = binary.BigEndian.Uint64(payload[37:45])
 
-	pos := messageHeaderSize
+	pos := channel.DurableMessageHeaderSize
 
 	msgKey, nextPos, err := readSizedBytesView(payload, pos)
 	if err != nil {

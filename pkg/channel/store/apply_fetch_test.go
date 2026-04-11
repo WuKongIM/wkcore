@@ -55,16 +55,16 @@ func mustEncodeApplyFetchMessagePayload(t *testing.T, messageID uint64, fromUID,
 	t.Helper()
 
 	var payload bytes.Buffer
-	require.NoError(t, payload.WriteByte(1))
+	require.NoError(t, payload.WriteByte(channel.DurableMessageCodecVersion))
 	require.NoError(t, binary.Write(&payload, binary.BigEndian, messageID))
-	payload.Write(make([]byte, 36))                   // codec header fields not used by StoreApplyFetch parsing.
-	writeSizedBytes(t, &payload, nil)                 // msgKey
-	writeSizedBytes(t, &payload, []byte(clientMsgNo)) // clientMsgNo
-	writeSizedBytes(t, &payload, nil)                 // streamNo
-	writeSizedBytes(t, &payload, nil)                 // channelID
-	writeSizedBytes(t, &payload, nil)                 // topic
-	writeSizedBytes(t, &payload, []byte(fromUID))     // fromUID
-	writeSizedBytes(t, &payload, []byte(body))        // payload
+	payload.Write(make([]byte, channel.DurableMessageHeaderSize-9)) // header fields not used by StoreApplyFetch parsing.
+	writeSizedBytes(t, &payload, nil)                               // msgKey
+	writeSizedBytes(t, &payload, []byte(clientMsgNo))               // clientMsgNo
+	writeSizedBytes(t, &payload, nil)                               // streamNo
+	writeSizedBytes(t, &payload, nil)                               // channelID
+	writeSizedBytes(t, &payload, nil)                               // topic
+	writeSizedBytes(t, &payload, []byte(fromUID))                   // fromUID
+	writeSizedBytes(t, &payload, []byte(body))                      // payload
 	return payload.Bytes()
 }
 
