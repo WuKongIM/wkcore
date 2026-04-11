@@ -1,0 +1,230 @@
+package runtime
+
+import (
+	"hash/fnv"
+	"sync"
+	"time"
+
+	core "github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/channel/replica"
+)
+
+const runtimeShardCount = 64
+
+type shard struct {
+	mu       sync.RWMutex
+	channels map[core.ChannelKey]*channel
+}
+
+type runtime struct {
+	cfg             Config
+	shards          [runtimeShardCount]shard
+	tombstones      *tombstoneManager
+	replicaFactory  ReplicaFactory
+	generationStore GenerationStore
+}
+
+func New(cfg Config) (Runtime, error) {
+	if cfg.LocalNode == 0 {
+		return nil, ErrInvalidConfig
+	}
+	if cfg.ReplicaFactory == nil {
+		return nil, ErrInvalidConfig
+	}
+	if cfg.GenerationStore == nil {
+		return nil, ErrInvalidConfig
+	}
+	if cfg.Tombstones.TombstoneTTL <= 0 {
+		return nil, ErrInvalidConfig
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+
+	r := &runtime{
+		cfg:             cfg,
+		tombstones:      newTombstoneManager(),
+		replicaFactory:  cfg.ReplicaFactory,
+		generationStore: cfg.GenerationStore,
+	}
+	for i := range r.shards {
+		r.shards[i].channels = make(map[core.ChannelKey]*channel)
+	}
+	return r, nil
+}
+
+func (r *runtime) EnsureChannel(meta core.Meta) error {
+	if r.cfg.Limits.MaxChannels > 0 && r.totalChannels() >= r.cfg.Limits.MaxChannels {
+		return ErrTooManyChannels
+	}
+
+	shard := r.shardFor(meta.Key)
+	shard.mu.Lock()
+	if _, ok := shard.channels[meta.Key]; ok {
+		shard.mu.Unlock()
+		return ErrChannelExists
+	}
+	shard.mu.Unlock()
+
+	generation, err := r.allocateGeneration(meta.Key)
+	if err != nil {
+		return err
+	}
+	rep, err := r.replicaFactory.New(ChannelConfig{ChannelKey: meta.Key, Generation: generation, Meta: meta})
+	if err != nil {
+		return err
+	}
+	if err := applyReplicaMeta(rep, r.cfg.LocalNode, meta); err != nil {
+		return err
+	}
+
+	ch := newChannel(meta.Key, generation, rep, meta, r.cfg.Now)
+	shard.mu.Lock()
+	if _, ok := shard.channels[meta.Key]; ok {
+		shard.mu.Unlock()
+		return ErrChannelExists
+	}
+	shard.channels[meta.Key] = ch
+	shard.mu.Unlock()
+	return nil
+}
+
+func (r *runtime) RemoveChannel(key core.ChannelKey) error {
+	shard := r.shardFor(key)
+	shard.mu.Lock()
+	ch, ok := shard.channels[key]
+	if !ok {
+		shard.mu.Unlock()
+		return ErrChannelNotFound
+	}
+	delete(shard.channels, key)
+	shard.mu.Unlock()
+
+	if err := ch.replica.Tombstone(); err != nil {
+		return err
+	}
+	r.tombstones.add(key, ch.gen, r.cfg.Now().Add(r.cfg.Tombstones.TombstoneTTL))
+	return nil
+}
+
+func (r *runtime) ApplyMeta(meta core.Meta) error {
+	ch, ok := r.lookupChannel(meta.Key)
+	if !ok {
+		return ErrChannelNotFound
+	}
+	if shouldSkipReplicaApplyMeta(ch, r.cfg.LocalNode, meta) {
+		ch.setMeta(meta)
+		return nil
+	}
+	if err := applyReplicaMeta(ch.replica, r.cfg.LocalNode, meta); err != nil {
+		return err
+	}
+	ch.setMeta(meta)
+	return nil
+}
+
+func (r *runtime) Channel(key core.ChannelKey) (ChannelHandle, bool) {
+	ch, ok := r.lookupChannel(key)
+	if !ok {
+		return nil, false
+	}
+	return ch, true
+}
+
+func (r *runtime) lookupChannel(key core.ChannelKey) (*channel, bool) {
+	shard := r.shardFor(key)
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
+	ch, ok := shard.channels[key]
+	return ch, ok
+}
+
+func (r *runtime) allocateGeneration(key core.ChannelKey) (uint64, error) {
+	current, err := r.generationStore.Load(key)
+	if err != nil {
+		return 0, err
+	}
+	next := current + 1
+	if err := r.generationStore.Store(key, next); err != nil {
+		return 0, err
+	}
+	return next, nil
+}
+
+func (r *runtime) shardFor(key core.ChannelKey) *shard {
+	idx := shardIndex(key)
+	return &r.shards[idx]
+}
+
+func shardIndex(key core.ChannelKey) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return h.Sum32() % runtimeShardCount
+}
+
+func (r *runtime) totalChannels() int {
+	total := 0
+	for i := range r.shards {
+		r.shards[i].mu.RLock()
+		total += len(r.shards[i].channels)
+		r.shards[i].mu.RUnlock()
+	}
+	return total
+}
+
+func applyReplicaMeta(rep replica.Replica, localNode core.NodeID, meta core.Meta) error {
+	state := rep.Status()
+
+	var err error
+	switch {
+	case meta.Leader == localNode && state.Role != core.ReplicaRoleLeader:
+		err = rep.BecomeLeader(meta)
+	case meta.Leader != localNode && state.Role != core.ReplicaRoleFollower:
+		err = rep.BecomeFollower(meta)
+	default:
+		err = rep.ApplyMeta(meta)
+	}
+	if err == core.ErrLeaseExpired {
+		return nil
+	}
+	return err
+}
+
+func shouldSkipReplicaApplyMeta(ch *channel, localNode core.NodeID, next core.Meta) bool {
+	if ch == nil {
+		return false
+	}
+	current := ch.metaSnapshot()
+	if !metaEqual(current, next) {
+		return false
+	}
+	state := ch.Status()
+	expectedRole := core.ReplicaRoleFollower
+	if next.Leader == localNode {
+		expectedRole = core.ReplicaRoleLeader
+	}
+	if state.Role != expectedRole {
+		return false
+	}
+	return state.ChannelKey == next.Key && state.Epoch == next.Epoch && state.Leader == next.Leader
+}
+
+func metaEqual(a, b core.Meta) bool {
+	if a.Key != b.Key || a.Epoch != b.Epoch || a.Leader != b.Leader || a.MinISR != b.MinISR || !a.LeaseUntil.Equal(b.LeaseUntil) {
+		return false
+	}
+	if len(a.Replicas) != len(b.Replicas) || len(a.ISR) != len(b.ISR) {
+		return false
+	}
+	for i := range a.Replicas {
+		if a.Replicas[i] != b.Replicas[i] {
+			return false
+		}
+	}
+	for i := range a.ISR {
+		if a.ISR[i] != b.ISR[i] {
+			return false
+		}
+	}
+	return true
+}
