@@ -134,3 +134,67 @@ func TestAppendContextCancellationReturnsPromptly(t *testing.T) {
 		t.Fatal("append did not return after context cancellation")
 	}
 }
+
+func TestBecomeFollowerFailsOutstandingAppendWaiters(t *testing.T) {
+	cluster := newThreeReplicaCluster(t)
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := cluster.leader.Append(context.Background(), []channel.Record{{Payload: []byte("x"), SizeBytes: 1}})
+		done <- err
+	}()
+	waitForLogAppend(t, cluster.leader.log.(*fakeLogStore), 1)
+
+	err := cluster.leader.BecomeFollower(activeMetaWithMinISR(8, 2, 3))
+	require.NoError(t, err)
+
+	select {
+	case appendErr := <-done:
+		require.ErrorIs(t, appendErr, channel.ErrNotLeader)
+	case <-time.After(time.Second):
+		t.Fatal("append waiter did not fail after leadership loss")
+	}
+}
+
+func TestTombstoneFailsOutstandingAppendWaiters(t *testing.T) {
+	cluster := newThreeReplicaCluster(t)
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := cluster.leader.Append(context.Background(), []channel.Record{{Payload: []byte("x"), SizeBytes: 1}})
+		done <- err
+	}()
+	waitForLogAppend(t, cluster.leader.log.(*fakeLogStore), 1)
+
+	require.NoError(t, cluster.leader.Tombstone())
+
+	select {
+	case appendErr := <-done:
+		require.ErrorIs(t, appendErr, channel.ErrTombstoned)
+	case <-time.After(time.Second):
+		t.Fatal("append waiter did not fail after tombstone")
+	}
+}
+
+func TestCloseFailsPendingAppendRequests(t *testing.T) {
+	env := newTestEnv(t)
+	env.replica = newReplicaFromEnvWithGroupCommit(t, env, time.Second, 8, 1024)
+	meta := activeMetaWithMinISR(7, 1, 1)
+	env.replica.mustApplyMeta(t, meta)
+	require.NoError(t, env.replica.BecomeLeader(meta))
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := env.replica.Append(context.Background(), []channel.Record{{Payload: []byte("x"), SizeBytes: 1}})
+		done <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	require.NoError(t, env.replica.Close())
+
+	select {
+	case appendErr := <-done:
+		require.ErrorIs(t, appendErr, channel.ErrNotLeader)
+	case <-time.After(time.Second):
+		t.Fatal("pending append did not fail after close")
+	}
+}

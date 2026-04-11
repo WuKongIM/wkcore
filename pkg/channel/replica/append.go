@@ -9,6 +9,10 @@ import (
 
 func (r *replica) Append(ctx context.Context, batch []channel.Record) (channel.CommitResult, error) {
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return channel.CommitResult{}, channel.ErrNotLeader
+	}
 	if r.state.Role == channel.ReplicaRoleTombstoned {
 		r.mu.Unlock()
 		return channel.CommitResult{}, channel.ErrTombstoned
@@ -186,6 +190,11 @@ func (r *replica) flushAppendBatch(batch []*appendRequest) {
 	}
 
 	r.mu.Lock()
+	if err := r.appendableLocked(); err != nil {
+		r.mu.Unlock()
+		r.completeAppendRequests(active, err)
+		return
+	}
 	addedWaiters := make([]*appendWaiter, 0, len(active))
 	nextLEO := base
 	for _, req := range active {
@@ -246,6 +255,9 @@ func (r *replica) buildActiveAppendBatch(batch []*appendRequest) ([]*appendReque
 }
 
 func (r *replica) appendableLocked() error {
+	if r.closed {
+		return channel.ErrNotLeader
+	}
 	if r.state.Role == channel.ReplicaRoleTombstoned {
 		return channel.ErrTombstoned
 	}
@@ -359,5 +371,19 @@ func (r *replica) removeWaiterLocked(target *appendWaiter) {
 		}
 		r.waiters = append(r.waiters[:i], r.waiters[i+1:]...)
 		return
+	}
+}
+
+func (r *replica) failOutstandingAppendWorkLocked(err error) {
+	pending := r.appendPending
+	r.appendPending = nil
+	waiters := r.waiters
+	r.waiters = nil
+
+	for _, req := range pending {
+		r.completeAppendWaiter(req.waiter, channel.CommitResult{}, err)
+	}
+	for _, waiter := range waiters {
+		r.completeAppendWaiter(waiter, channel.CommitResult{}, err)
 	}
 }

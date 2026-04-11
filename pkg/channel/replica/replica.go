@@ -55,6 +55,7 @@ type replica struct {
 	waiters      []*appendWaiter
 	epochHistory []channel.EpochPoint
 	recovered    bool
+	closed       bool
 
 	appendGroupCommit appendGroupCommitConfig
 	appendPending     []*appendRequest
@@ -221,6 +222,7 @@ func (r *replica) BecomeFollower(meta channel.Meta) error {
 		return err
 	}
 	r.state.Role = channel.ReplicaRoleFollower
+	r.failOutstandingAppendWorkLocked(channel.ErrNotLeader)
 	r.publishStateLocked()
 	return nil
 }
@@ -232,6 +234,7 @@ func (r *replica) Tombstone() error {
 	defer r.mu.Unlock()
 
 	r.state.Role = channel.ReplicaRoleTombstoned
+	r.failOutstandingAppendWorkLocked(channel.ErrTombstoned)
 	r.publishStateLocked()
 	return nil
 }
@@ -241,6 +244,13 @@ func (r *replica) Close() error {
 		return nil
 	}
 	r.closeOnce.Do(func() {
+		r.appendMu.Lock()
+		r.mu.Lock()
+		r.closed = true
+		r.failOutstandingAppendWorkLocked(channel.ErrNotLeader)
+		r.publishStateLocked()
+		r.mu.Unlock()
+		r.appendMu.Unlock()
 		if r.stopCh != nil {
 			close(r.stopCh)
 		}

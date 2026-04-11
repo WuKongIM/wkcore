@@ -34,6 +34,63 @@ func TestInstallSnapshotRejectsLogStoreBehindSnapshotEndOffset(t *testing.T) {
 	require.Equal(t, before, env.replica.Status())
 }
 
+func TestInstallSnapshotRejectsMismatchedChannelWithoutMutation(t *testing.T) {
+	env := newFollowerEnv(t)
+	env.log.leo = 8
+	before := env.replica.Status()
+	historyBefore := append([]channel.EpochPoint(nil), env.history.points...)
+
+	err := env.replica.InstallSnapshot(context.Background(), channel.Snapshot{
+		ChannelKey: "group-other",
+		Epoch:      7,
+		EndOffset:  8,
+	})
+	require.ErrorIs(t, err, channel.ErrStaleMeta)
+	require.Empty(t, env.snapshots.installed)
+	require.Empty(t, env.checkpoints.stored)
+	require.Equal(t, before, env.replica.Status())
+	require.Equal(t, historyBefore, env.history.points)
+}
+
+func TestInstallSnapshotRejectsStaleEpochWithoutMutation(t *testing.T) {
+	env := newFollowerEnv(t)
+	env.log.leo = 8
+	before := env.replica.Status()
+	historyBefore := append([]channel.EpochPoint(nil), env.history.points...)
+
+	err := env.replica.InstallSnapshot(context.Background(), channel.Snapshot{
+		ChannelKey: "group-10",
+		Epoch:      6,
+		EndOffset:  8,
+	})
+	require.ErrorIs(t, err, channel.ErrStaleMeta)
+	require.Empty(t, env.snapshots.installed)
+	require.Empty(t, env.checkpoints.stored)
+	require.Equal(t, before, env.replica.Status())
+	require.Equal(t, historyBefore, env.history.points)
+}
+
+func TestInstallSnapshotRejectsBackwardEndOffsetWithoutMutation(t *testing.T) {
+	env := newFollowerEnv(t)
+	env.log.leo = 8
+	env.replica.state.HW = 6
+	env.replica.state.LogStartOffset = 5
+	env.replica.publishStateLocked()
+	before := env.replica.Status()
+	historyBefore := append([]channel.EpochPoint(nil), env.history.points...)
+
+	err := env.replica.InstallSnapshot(context.Background(), channel.Snapshot{
+		ChannelKey: "group-10",
+		Epoch:      7,
+		EndOffset:  4,
+	})
+	require.ErrorIs(t, err, channel.ErrCorruptState)
+	require.Empty(t, env.snapshots.installed)
+	require.Empty(t, env.checkpoints.stored)
+	require.Equal(t, before, env.replica.Status())
+	require.Equal(t, historyBefore, env.history.points)
+}
+
 func TestInstallSnapshotPersistsEpochHistoryForRecovery(t *testing.T) {
 	env := newFollowerEnv(t)
 	env.history.points = nil

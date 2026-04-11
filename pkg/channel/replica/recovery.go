@@ -96,6 +96,15 @@ func (r *replica) InstallSnapshot(ctx context.Context, snap channel.Snapshot) er
 	if r.state.Role == channel.ReplicaRoleTombstoned {
 		return channel.ErrTombstoned
 	}
+	if r.state.ChannelKey != "" && snap.ChannelKey != "" && snap.ChannelKey != r.state.ChannelKey {
+		return channel.ErrStaleMeta
+	}
+	if snap.Epoch < r.state.Epoch {
+		return channel.ErrStaleMeta
+	}
+	if snap.EndOffset < r.state.HW || snap.EndOffset < r.state.LogStartOffset {
+		return channel.ErrCorruptState
+	}
 	leo := r.log.LEO()
 	if leo < snap.EndOffset {
 		return channel.ErrCorruptState
