@@ -60,11 +60,11 @@ func (r *runtime) EnsureChannel(meta core.Meta) error {
 
 	shard := r.shardFor(meta.Key)
 	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
 	if _, ok := shard.channels[meta.Key]; ok {
-		shard.mu.Unlock()
 		return ErrChannelExists
 	}
-	shard.mu.Unlock()
 
 	generation, err := r.allocateGeneration(meta.Key)
 	if err != nil {
@@ -79,13 +79,7 @@ func (r *runtime) EnsureChannel(meta core.Meta) error {
 	}
 
 	ch := newChannel(meta.Key, generation, rep, meta, r.cfg.Now)
-	shard.mu.Lock()
-	if _, ok := shard.channels[meta.Key]; ok {
-		shard.mu.Unlock()
-		return ErrChannelExists
-	}
 	shard.channels[meta.Key] = ch
-	shard.mu.Unlock()
 	return nil
 }
 

@@ -9,8 +9,18 @@ import (
 
 func TestExpiredTombstonesDoNotBlockChannelLookup(t *testing.T) {
 	rt := newTestRuntime(t)
-	rt.tombstones.add(testMeta("room-2").Key, 1, time.Now().Add(-time.Second))
-	rt.tombstones.dropExpired(time.Now())
-	_, ok := rt.Channel(testMeta("room-2").Key)
+	meta := testMeta("room-2")
+	now := time.Now()
+
+	rt.tombstones.add(meta.Key, 1, now.Add(-time.Second))
+	rt.tombstones.add(meta.Key, 2, now.Add(time.Second))
+	require.True(t, rt.tombstones.contains(meta.Key, 1))
+	require.True(t, rt.tombstones.contains(meta.Key, 2))
+
+	rt.tombstones.dropExpired(now)
+
+	require.False(t, rt.tombstones.contains(meta.Key, 1))
+	require.True(t, rt.tombstones.contains(meta.Key, 2))
+	_, ok := rt.Channel(meta.Key)
 	require.False(t, ok)
 }

@@ -12,10 +12,40 @@ import (
 )
 
 func newTestRuntime(t *testing.T) *runtime {
+	return newTestRuntimeWithOptions(t)
+}
+
+type testRuntimeOption func(*testRuntimeOptions)
+
+type testRuntimeOptions struct {
+	generationStoreDelay time.Duration
+	replicaFactoryDelay  time.Duration
+}
+
+func withGenerationStoreDelay(delay time.Duration) testRuntimeOption {
+	return func(opts *testRuntimeOptions) {
+		opts.generationStoreDelay = delay
+	}
+}
+
+func withReplicaFactoryDelay(delay time.Duration) testRuntimeOption {
+	return func(opts *testRuntimeOptions) {
+		opts.replicaFactoryDelay = delay
+	}
+}
+
+func newTestRuntimeWithOptions(t *testing.T, options ...testRuntimeOption) *runtime {
 	t.Helper()
 
+	opts := testRuntimeOptions{}
+	for _, apply := range options {
+		apply(&opts)
+	}
+
 	store := newFakeGenerationStore()
+	store.delay = opts.generationStoreDelay
 	factory := newFakeReplicaFactory()
+	factory.delay = opts.replicaFactoryDelay
 
 	rt, err := New(Config{
 		LocalNode:       1,
@@ -48,6 +78,7 @@ type fakeGenerationStore struct {
 	mu     sync.Mutex
 	values map[core.ChannelKey]uint64
 	stored map[core.ChannelKey]uint64
+	delay  time.Duration
 }
 
 func newFakeGenerationStore() *fakeGenerationStore {
@@ -58,12 +89,18 @@ func newFakeGenerationStore() *fakeGenerationStore {
 }
 
 func (s *fakeGenerationStore) Load(key core.ChannelKey) (uint64, error) {
+	if s.delay > 0 {
+		time.Sleep(s.delay)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.values[key], nil
 }
 
 func (s *fakeGenerationStore) Store(key core.ChannelKey, generation uint64) error {
+	if s.delay > 0 {
+		time.Sleep(s.delay)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.values[key] = generation
@@ -75,6 +112,7 @@ type fakeReplicaFactory struct {
 	mu       sync.Mutex
 	created  []ChannelConfig
 	replicas []*fakeReplica
+	delay    time.Duration
 }
 
 func newFakeReplicaFactory() *fakeReplicaFactory {
@@ -82,6 +120,9 @@ func newFakeReplicaFactory() *fakeReplicaFactory {
 }
 
 func (f *fakeReplicaFactory) New(cfg ChannelConfig) (replica.Replica, error) {
+	if f.delay > 0 {
+		time.Sleep(f.delay)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
