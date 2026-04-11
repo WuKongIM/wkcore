@@ -26,5 +26,6 @@ func TestReplicaInterfaceSurfaceCompiles(t *testing.T) {
 	_ = r.ApplyFetch(context.Background(), channel.ReplicaApplyFetchRequest{})
 	_ = r.ApplyProgressAck(context.Background(), channel.ReplicaProgressAckRequest{})
 	_ = r.InstallSnapshot(context.Background(), channel.Snapshot{})
+	_ = r.Close()
 	_ = r.Status()
 }

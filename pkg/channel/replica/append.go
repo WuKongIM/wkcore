@@ -93,6 +93,7 @@ func (r *replica) enqueueAppendRequest(req *appendRequest) {
 
 func (r *replica) startAppendCollector() {
 	go func() {
+		defer close(r.collectorDone)
 		for {
 			select {
 			case <-r.appendSignal:

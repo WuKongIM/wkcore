@@ -52,6 +52,7 @@ type Replica interface {
 	BecomeLeader(meta channel.Meta) error
 	BecomeFollower(meta channel.Meta) error
 	Tombstone() error
+	Close() error
 	InstallSnapshot(ctx context.Context, snap channel.Snapshot) error
 	Append(ctx context.Context, batch []channel.Record) (channel.CommitResult, error)
 	Fetch(ctx context.Context, req channel.ReplicaFetchRequest) (channel.ReplicaFetchResult, error)

@@ -96,8 +96,39 @@ func (r *replica) InstallSnapshot(ctx context.Context, snap channel.Snapshot) er
 	if r.state.Role == channel.ReplicaRoleTombstoned {
 		return channel.ErrTombstoned
 	}
+	leo := r.log.LEO()
+	if leo < snap.EndOffset {
+		return channel.ErrCorruptState
+	}
 	if err := r.snapshots.InstallSnapshot(ctx, snap); err != nil {
 		return err
+	}
+	if err := r.history.TruncateTo(snap.EndOffset); err != nil {
+		return err
+	}
+	r.epochHistory = trimEpochHistoryToLEO(r.epochHistory, snap.EndOffset)
+	if len(r.epochHistory) == 0 {
+		if err := r.appendEpochPointLocked(channel.EpochPoint{
+			Epoch:       snap.Epoch,
+			StartOffset: snap.EndOffset,
+		}); err != nil {
+			return err
+		}
+	} else {
+		last := r.epochHistory[len(r.epochHistory)-1]
+		switch {
+		case last.Epoch == snap.Epoch:
+			// Existing history already maps this epoch; no additional point needed.
+		case last.Epoch < snap.Epoch:
+			if err := r.appendEpochPointLocked(channel.EpochPoint{
+				Epoch:       snap.Epoch,
+				StartOffset: snap.EndOffset,
+			}); err != nil {
+				return err
+			}
+		default:
+			return channel.ErrCorruptState
+		}
 	}
 
 	checkpoint := channel.Checkpoint{
@@ -108,17 +139,12 @@ func (r *replica) InstallSnapshot(ctx context.Context, snap channel.Snapshot) er
 	if err := r.checkpoints.Store(checkpoint); err != nil {
 		return err
 	}
-
-	leo := r.log.LEO()
 	r.state.Role = channel.ReplicaRoleFollower
 	r.state.Epoch = snap.Epoch
-	r.state.OffsetEpoch = snap.Epoch
+	r.state.OffsetEpoch = offsetEpochForLEO(r.epochHistory, leo)
 	r.state.LogStartOffset = snap.EndOffset
 	r.state.HW = snap.EndOffset
 	r.state.LEO = leo
 	r.publishStateLocked()
-	if leo < snap.EndOffset {
-		return channel.ErrCorruptState
-	}
 	return nil
 }

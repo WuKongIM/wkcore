@@ -60,6 +60,8 @@ type replica struct {
 	appendPending     []*appendRequest
 	appendSignal      chan struct{}
 	stopCh            chan struct{}
+	collectorDone     chan struct{}
+	closeOnce         sync.Once
 }
 
 func NewReplica(cfg ReplicaConfig) (Replica, error) {
@@ -95,8 +97,9 @@ func NewReplica(cfg ReplicaConfig) (Replica, error) {
 			maxRecords: effectiveAppendGroupCommitMaxRecords(cfg.AppendGroupCommitMaxRecords),
 			maxBytes:   effectiveAppendGroupCommitMaxBytes(cfg.AppendGroupCommitMaxBytes),
 		},
-		appendSignal: make(chan struct{}, 1),
-		stopCh:       make(chan struct{}),
+		appendSignal:  make(chan struct{}, 1),
+		stopCh:        make(chan struct{}),
+		collectorDone: make(chan struct{}),
 		state: channel.ReplicaState{
 			Role: channel.ReplicaRoleFollower,
 		},
@@ -230,6 +233,21 @@ func (r *replica) Tombstone() error {
 
 	r.state.Role = channel.ReplicaRoleTombstoned
 	r.publishStateLocked()
+	return nil
+}
+
+func (r *replica) Close() error {
+	if r == nil {
+		return nil
+	}
+	r.closeOnce.Do(func() {
+		if r.stopCh != nil {
+			close(r.stopCh)
+		}
+	})
+	if r.collectorDone != nil {
+		<-r.collectorDone
+	}
 	return nil
 }
 
