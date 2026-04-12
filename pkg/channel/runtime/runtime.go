@@ -164,6 +164,7 @@ func (r *runtime) RemoveChannel(key core.ChannelKey) error {
 		shard.mu.Unlock()
 		return err
 	}
+	previousMeta := ch.metaSnapshot()
 	r.tombstones.add(key, ch.gen, r.cfg.Now().Add(r.cfg.Tombstones.TombstoneTTL))
 	delete(shard.channels, key)
 	shard.mu.Unlock()
@@ -171,6 +172,8 @@ func (r *runtime) RemoveChannel(key core.ChannelKey) error {
 	for _, peer := range r.peerRequests.clearChannel(key) {
 		r.drainPeerQueue(peer)
 	}
+	r.snapshots.removeWaiter(key)
+	r.evictInvalidPeerSessions(r.activeReplicationPeers(previousMeta))
 
 	if r.cfg.Limits.MaxChannels > 0 {
 		r.releaseChannelSlot()
@@ -183,6 +186,7 @@ func (r *runtime) ApplyMeta(meta core.Meta) error {
 	if !ok {
 		return ErrChannelNotFound
 	}
+	previousMeta := ch.metaSnapshot()
 	if shouldSkipReplicaApplyMeta(ch, r.cfg.LocalNode, meta) {
 		ch.setMeta(meta)
 		return nil
@@ -192,6 +196,7 @@ func (r *runtime) ApplyMeta(meta core.Meta) error {
 	}
 	ch.setMeta(meta)
 	r.clearInvalidPeerWork(ch, meta)
+	r.evictInvalidPeerSessions(r.invalidatedReplicationPeers(previousMeta, meta))
 	stopTimers(r.clearStaleReplicationRetries(meta.Key, meta))
 	if meta.Leader != r.cfg.LocalNode {
 		r.retryReplication(meta.Key, meta.Leader, true)
@@ -210,6 +215,94 @@ func (r *runtime) clearInvalidPeerWork(ch *channel, meta core.Meta) {
 	for _, peer := range r.peerRequests.clearChannelInvalidPeers(meta.Key, allow) {
 		r.drainPeerQueue(peer)
 	}
+}
+
+func (r *runtime) invalidatedReplicationPeers(previous, next core.Meta) []core.NodeID {
+	candidates := make(map[core.NodeID]struct{}, len(previous.Replicas)+1)
+	if previous.Leader != 0 {
+		candidates[previous.Leader] = struct{}{}
+	}
+	for _, peer := range previous.Replicas {
+		if peer == 0 {
+			continue
+		}
+		candidates[peer] = struct{}{}
+	}
+	invalid := make([]core.NodeID, 0, len(candidates))
+	for peer := range candidates {
+		if !r.isReplicationPeerValid(previous, peer) {
+			continue
+		}
+		if r.isReplicationPeerValid(next, peer) {
+			continue
+		}
+		invalid = append(invalid, peer)
+	}
+	return invalid
+}
+
+func (r *runtime) activeReplicationPeers(meta core.Meta) []core.NodeID {
+	candidates := make(map[core.NodeID]struct{}, len(meta.Replicas)+1)
+	if meta.Leader != 0 {
+		candidates[meta.Leader] = struct{}{}
+	}
+	for _, peer := range meta.Replicas {
+		if peer == 0 {
+			continue
+		}
+		candidates[peer] = struct{}{}
+	}
+	active := make([]core.NodeID, 0, len(candidates))
+	for peer := range candidates {
+		if !r.isReplicationPeerValid(meta, peer) {
+			continue
+		}
+		active = append(active, peer)
+	}
+	return active
+}
+
+func (r *runtime) evictInvalidPeerSessions(peers []core.NodeID) {
+	if len(peers) == 0 {
+		return
+	}
+	seen := make(map[core.NodeID]struct{}, len(peers))
+	for _, peer := range peers {
+		if peer == 0 || peer == r.cfg.LocalNode {
+			continue
+		}
+		if _, exists := seen[peer]; exists {
+			continue
+		}
+		seen[peer] = struct{}{}
+		if r.peerReferencedByAnyChannel(peer) {
+			continue
+		}
+		session, ok := r.sessions.evict(peer)
+		if !ok {
+			continue
+		}
+		_ = session.Close()
+	}
+}
+
+func (r *runtime) peerReferencedByAnyChannel(peer core.NodeID) bool {
+	if peer == 0 || peer == r.cfg.LocalNode {
+		return false
+	}
+	for i := range r.shards {
+		shard := &r.shards[i]
+		shard.mu.RLock()
+		for _, ch := range shard.channels {
+			meta := ch.metaSnapshot()
+			if r.isReplicationPeerValid(meta, peer) {
+				shard.mu.RUnlock()
+				return true
+			}
+		}
+		shard.mu.RUnlock()
+	}
+	return false
 }
 
 func (r *runtime) Channel(key core.ChannelKey) (ChannelHandle, bool) {

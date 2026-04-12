@@ -162,6 +162,63 @@ func TestSnapshotRuntimeClosePreventsPostCloseReschedule(t *testing.T) {
 	}
 }
 
+func TestSnapshotRemoveChannelPurgesWaitingSnapshotEntry(t *testing.T) {
+	env := newSnapshotTestEnv(t, func(cfg *Config) {
+		cfg.Limits.MaxSnapshotInflight = 1
+	})
+	first := testChannelKey(73)
+	second := testChannelKey(74)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(73, 1, 1, []core.NodeID{1, 2}))
+	mustEnsureLocal(t, env.runtime, testMetaLocal(74, 1, 1, []core.NodeID{1, 2}))
+
+	if !env.runtime.snapshots.begin(1) {
+		t.Fatal("expected to reserve one inflight snapshot")
+	}
+	env.runtime.queueSnapshot(first)
+	env.runtime.queueSnapshot(second)
+	env.runtime.runScheduler()
+	if got := env.runtime.queuedSnapshotGroups(); got != 2 {
+		t.Fatalf("expected two waiting snapshots before removal, got %d", got)
+	}
+
+	if err := env.runtime.RemoveChannel(first); err != nil {
+		t.Fatalf("RemoveChannel() error = %v", err)
+	}
+	if got := env.runtime.queuedSnapshotGroups(); got != 1 {
+		t.Fatalf("expected removed channel waiter to be purged, got %d waiting", got)
+	}
+}
+
+func TestSnapshotCompletionSkipsRemovedWaitersAndAdvancesLiveSnapshot(t *testing.T) {
+	env := newSnapshotTestEnv(t, func(cfg *Config) {
+		cfg.Limits.MaxSnapshotInflight = 1
+	})
+	first := testChannelKey(75)
+	second := testChannelKey(76)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(75, 1, 1, []core.NodeID{1, 2}))
+	mustEnsureLocal(t, env.runtime, testMetaLocal(76, 1, 1, []core.NodeID{1, 2}))
+
+	if !env.runtime.snapshots.begin(1) {
+		t.Fatal("expected to reserve one inflight snapshot")
+	}
+	env.runtime.queueSnapshot(first)
+	env.runtime.queueSnapshot(second)
+	env.runtime.runScheduler()
+	if got := env.runtime.queuedSnapshotGroups(); got != 2 {
+		t.Fatalf("expected two waiting snapshots before completion, got %d", got)
+	}
+
+	if err := env.runtime.RemoveChannel(first); err != nil {
+		t.Fatalf("RemoveChannel() error = %v", err)
+	}
+
+	env.runtime.completeSnapshot("")
+	env.runtime.runScheduler()
+	if got := env.runtime.queuedSnapshotGroups(); got != 0 {
+		t.Fatalf("expected completion to advance to live waiter, got %d waiting", got)
+	}
+}
+
 type snapshotTestEnv struct {
 	runtime  *runtime
 	clock    *snapshotManualClock

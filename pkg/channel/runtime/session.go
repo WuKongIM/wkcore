@@ -17,6 +17,17 @@ func newPeerSessionCache() peerSessionCache {
 	}
 }
 
+func (c *peerSessionCache) evict(peer core.NodeID) (PeerSession, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	session, ok := c.sessions[peer]
+	if !ok {
+		return nil, false
+	}
+	delete(c.sessions, peer)
+	return session, true
+}
+
 func (r *runtime) peerSession(peer core.NodeID) PeerSession {
 	if r.isClosed() {
 		return nopPeerSession{}

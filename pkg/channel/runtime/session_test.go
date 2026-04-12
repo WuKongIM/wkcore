@@ -581,6 +581,63 @@ func TestSessionRuntimeClosePreventsPostCloseSessionRecreation(t *testing.T) {
 	}
 }
 
+func TestSessionApplyMetaEvictsAndClosesInvalidPeerSession(t *testing.T) {
+	env := newSessionTestEnv(t)
+	key := testChannelKey(306)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(306, 1, 1, []core.NodeID{1, 2, 3}))
+
+	env.runtime.enqueueReplication(key, 2)
+	env.runtime.runScheduler()
+	session2 := env.sessions.session(2)
+	if got := session2.sendCount(); got != 1 {
+		t.Fatalf("expected initial replication to create peer session, got %d sends", got)
+	}
+
+	if err := env.runtime.ApplyMeta(testMetaLocal(306, 2, 1, []core.NodeID{1, 3})); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+
+	if got := session2.closeCount(); got != 1 {
+		t.Fatalf("expected invalid peer session to be closed once, got %d", got)
+	}
+	env.runtime.sessions.mu.Lock()
+	_, exists := env.runtime.sessions.sessions[2]
+	env.runtime.sessions.mu.Unlock()
+	if exists {
+		t.Fatal("expected invalid peer session to be evicted from runtime cache")
+	}
+}
+
+func TestSessionApplyMetaKeepsPeerSessionWhenStillValidOnOtherChannel(t *testing.T) {
+	env := newSessionTestEnv(t)
+	first := testChannelKey(307)
+	second := testChannelKey(308)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(307, 1, 1, []core.NodeID{1, 2, 3}))
+	mustEnsureLocal(t, env.runtime, testMetaLocal(308, 1, 1, []core.NodeID{1, 2, 4}))
+
+	env.runtime.enqueueReplication(first, 2)
+	env.runtime.enqueueReplication(second, 2)
+	env.runtime.runScheduler()
+	session2 := env.sessions.session(2)
+	if got := session2.sendCount(); got == 0 {
+		t.Fatal("expected replication to use peer 2 session")
+	}
+
+	if err := env.runtime.ApplyMeta(testMetaLocal(307, 2, 1, []core.NodeID{1, 3})); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+
+	if got := session2.closeCount(); got != 0 {
+		t.Fatalf("expected peer session to stay open while still valid elsewhere, got close count %d", got)
+	}
+	env.runtime.sessions.mu.Lock()
+	_, exists := env.runtime.sessions.sessions[2]
+	env.runtime.sessions.mu.Unlock()
+	if !exists {
+		t.Fatal("expected peer session to remain cached while still valid for another channel")
+	}
+}
+
 func TestSessionApplyMetaFailureLeavesCachedChannelMetaUnchanged(t *testing.T) {
 	env := newSessionTestEnv(t)
 	initial := testMetaLocal(31, 1, 2, []core.NodeID{1, 2})

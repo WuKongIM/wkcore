@@ -91,6 +91,32 @@ func (s *snapshotState) popWaiter() (core.ChannelKey, bool) {
 	return key, true
 }
 
+func (s *snapshotState) removeWaiter(key core.ChannelKey) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.waiting) == 0 {
+		return false
+	}
+	if s.waitingSet == nil {
+		return false
+	}
+	if _, exists := s.waitingSet[key]; !exists {
+		return false
+	}
+	delete(s.waitingSet, key)
+	filtered := make([]core.ChannelKey, 0, len(s.waiting)-1)
+	removed := false
+	for _, waiter := range s.waiting {
+		if waiter == key {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, waiter)
+	}
+	s.waiting = filtered
+	return removed
+}
+
 func (s *snapshotState) maxObserved() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -174,15 +200,19 @@ func (r *runtime) completeSnapshot(_ core.ChannelKey) {
 		return
 	}
 	r.snapshots.finish()
-	nextKey, ok := r.snapshots.popWaiter()
-	if !ok {
+	for {
+		nextKey, ok := r.snapshots.popWaiter()
+		if !ok {
+			return
+		}
+		next, exists := r.lookupChannel(nextKey)
+		if !exists {
+			continue
+		}
+		next.markSnapshot()
+		r.enqueueScheduler(nextKey, PriorityLow)
 		return
 	}
-	next, exists := r.lookupChannel(nextKey)
-	if exists {
-		next.markSnapshot()
-	}
-	r.enqueueScheduler(nextKey, PriorityLow)
 }
 
 func (r *runtime) queuedSnapshotGroups() int {
