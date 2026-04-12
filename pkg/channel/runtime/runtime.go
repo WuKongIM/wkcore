@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"hash/fnv"
 	"sync"
 	"time"
@@ -96,6 +97,10 @@ func (r *runtime) EnsureChannel(meta core.Meta) error {
 		if reserved {
 			r.releaseChannelSlot()
 		}
+		closeErr := rep.Close()
+		if closeErr != nil {
+			return errors.Join(err, closeErr)
+		}
 		return err
 	}
 
@@ -123,7 +128,7 @@ func (r *runtime) RemoveChannel(key core.ChannelKey) error {
 	if r.cfg.Limits.MaxChannels > 0 {
 		r.releaseChannelSlot()
 	}
-	return nil
+	return ch.replica.Close()
 }
 
 func (r *runtime) ApplyMeta(meta core.Meta) error {
@@ -293,4 +298,29 @@ func (r *runtime) stopTombstoneCleanup() {
 		close(r.cleanupStop)
 		<-r.cleanupDone
 	})
+}
+
+func (r *runtime) Close() error {
+	r.stopTombstoneCleanup()
+
+	reps := make([]replica.Replica, 0)
+	for i := range r.shards {
+		shard := &r.shards[i]
+		shard.mu.Lock()
+		for key, ch := range shard.channels {
+			reps = append(reps, ch.replica)
+			delete(shard.channels, key)
+		}
+		shard.mu.Unlock()
+	}
+
+	r.countMu.Lock()
+	r.channelCount = 0
+	r.countMu.Unlock()
+
+	var err error
+	for _, rep := range reps {
+		err = errors.Join(err, rep.Close())
+	}
+	return err
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -192,6 +193,54 @@ func TestRemoveChannelTombstoneFailureKeepsChannel(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, meta.Key, ch.ID())
 	require.False(t, rt.tombstones.contains(meta.Key, 1))
+}
+
+func TestRuntimeCloseStopsTombstoneCleanupWorker(t *testing.T) {
+	var drops atomic.Int64
+	rt := newTestRuntimeWithOptions(
+		t,
+		withTombstoneTTL(time.Second),
+		withTombstoneCleanupInterval(5*time.Millisecond),
+		withTombstoneDropHook(func() {
+			drops.Add(1)
+		}),
+	)
+	require.Eventually(t, func() bool {
+		return drops.Load() > 0
+	}, 300*time.Millisecond, 10*time.Millisecond)
+
+	require.NoError(t, rt.Close())
+	stoppedAt := drops.Load()
+	time.Sleep(40 * time.Millisecond)
+	require.Equal(t, stoppedAt, drops.Load())
+}
+
+func TestRemoveChannelClosesReplica(t *testing.T) {
+	meta := testMeta("room-remove-close")
+	rt := newTestRuntime(t)
+	require.NoError(t, rt.EnsureChannel(meta))
+
+	require.NoError(t, rt.RemoveChannel(meta.Key))
+
+	factory, ok := rt.replicaFactory.(*fakeReplicaFactory)
+	require.True(t, ok)
+	require.Len(t, factory.replicas, 1)
+	require.Equal(t, 1, factory.replicas[0].closeCalls())
+}
+
+func TestEnsureChannelFailureAfterReplicaCreationClosesReplica(t *testing.T) {
+	meta := testMeta("room-ensure-close")
+	rt := newTestRuntimeWithOptions(t, withBecomeLeaderError(meta.Key, errors.New("become leader failed")))
+
+	err := rt.EnsureChannel(meta)
+	require.Error(t, err)
+
+	factory, ok := rt.replicaFactory.(*fakeReplicaFactory)
+	require.True(t, ok)
+	require.Len(t, factory.replicas, 1)
+	require.Equal(t, 1, factory.replicas[0].closeCalls())
+	_, exists := rt.Channel(meta.Key)
+	require.False(t, exists)
 }
 
 func distinctShardKeys(t *testing.T, n int) []core.ChannelKey {

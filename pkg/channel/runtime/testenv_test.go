@@ -22,9 +22,11 @@ type testRuntimeOptions struct {
 	replicaFactoryDelay  time.Duration
 	maxChannels          int
 	tombstoneErrors      map[core.ChannelKey]error
+	becomeLeaderErrors   map[core.ChannelKey]error
 	tombstoneTTL         time.Duration
 	tombstoneCleanup     time.Duration
 	beforeTombstoneAdd   func()
+	tombstoneDropHook    func()
 }
 
 func withGenerationStoreDelay(delay time.Duration) testRuntimeOption {
@@ -54,6 +56,15 @@ func withTombstoneError(key core.ChannelKey, err error) testRuntimeOption {
 	}
 }
 
+func withBecomeLeaderError(key core.ChannelKey, err error) testRuntimeOption {
+	return func(opts *testRuntimeOptions) {
+		if opts.becomeLeaderErrors == nil {
+			opts.becomeLeaderErrors = make(map[core.ChannelKey]error)
+		}
+		opts.becomeLeaderErrors[key] = err
+	}
+}
+
 func withTombstoneTTL(ttl time.Duration) testRuntimeOption {
 	return func(opts *testRuntimeOptions) {
 		opts.tombstoneTTL = ttl
@@ -72,6 +83,12 @@ func withTombstoneAddHook(fn func()) testRuntimeOption {
 	}
 }
 
+func withTombstoneDropHook(fn func()) testRuntimeOption {
+	return func(opts *testRuntimeOptions) {
+		opts.tombstoneDropHook = fn
+	}
+}
+
 func newTestRuntimeWithOptions(t *testing.T, options ...testRuntimeOption) *runtime {
 	t.Helper()
 
@@ -85,6 +102,7 @@ func newTestRuntimeWithOptions(t *testing.T, options ...testRuntimeOption) *runt
 	factory := newFakeReplicaFactory()
 	factory.delay = opts.replicaFactoryDelay
 	factory.tombstoneErrors = opts.tombstoneErrors
+	factory.becomeLeaderErrors = opts.becomeLeaderErrors
 	ttl := 30 * time.Second
 	if opts.tombstoneTTL > 0 {
 		ttl = opts.tombstoneTTL
@@ -108,6 +126,7 @@ func newTestRuntimeWithOptions(t *testing.T, options ...testRuntimeOption) *runt
 	impl, ok := rt.(*runtime)
 	require.True(t, ok)
 	impl.tombstones.beforeAdd = opts.beforeTombstoneAdd
+	impl.tombstones.onDrop = opts.tombstoneDropHook
 	t.Cleanup(func() {
 		impl.stopTombstoneCleanup()
 	})
@@ -160,11 +179,12 @@ func (s *fakeGenerationStore) Store(key core.ChannelKey, generation uint64) erro
 }
 
 type fakeReplicaFactory struct {
-	mu              sync.Mutex
-	created         []ChannelConfig
-	replicas        []*fakeReplica
-	delay           time.Duration
-	tombstoneErrors map[core.ChannelKey]error
+	mu                 sync.Mutex
+	created            []ChannelConfig
+	replicas           []*fakeReplica
+	delay              time.Duration
+	tombstoneErrors    map[core.ChannelKey]error
+	becomeLeaderErrors map[core.ChannelKey]error
 }
 
 func newFakeReplicaFactory() *fakeReplicaFactory {
@@ -179,8 +199,9 @@ func (f *fakeReplicaFactory) New(cfg ChannelConfig) (replica.Replica, error) {
 	defer f.mu.Unlock()
 
 	r := &fakeReplica{
-		state:        core.ReplicaState{ChannelKey: cfg.ChannelKey, Epoch: cfg.Meta.Epoch, Leader: cfg.Meta.Leader, Role: core.ReplicaRoleFollower},
-		tombstoneErr: f.tombstoneErrors[cfg.ChannelKey],
+		state:           core.ReplicaState{ChannelKey: cfg.ChannelKey, Epoch: cfg.Meta.Epoch, Leader: cfg.Meta.Leader, Role: core.ReplicaRoleFollower},
+		tombstoneErr:    f.tombstoneErrors[cfg.ChannelKey],
+		becomeLeaderErr: f.becomeLeaderErrors[cfg.ChannelKey],
 	}
 	f.created = append(f.created, cfg)
 	f.replicas = append(f.replicas, r)
@@ -188,10 +209,12 @@ func (f *fakeReplicaFactory) New(cfg ChannelConfig) (replica.Replica, error) {
 }
 
 type fakeReplica struct {
-	mu           sync.Mutex
-	state        core.ReplicaState
-	tombstone    int
-	tombstoneErr error
+	mu              sync.Mutex
+	state           core.ReplicaState
+	tombstone       int
+	tombstoneErr    error
+	becomeLeaderErr error
+	closeCount      int
 }
 
 func (r *fakeReplica) ApplyMeta(meta core.Meta) error {
@@ -206,6 +229,9 @@ func (r *fakeReplica) ApplyMeta(meta core.Meta) error {
 func (r *fakeReplica) BecomeLeader(meta core.Meta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.becomeLeaderErr != nil {
+		return r.becomeLeaderErr
+	}
 	r.state.ChannelKey = meta.Key
 	r.state.Epoch = meta.Epoch
 	r.state.Leader = meta.Leader
@@ -235,6 +261,9 @@ func (r *fakeReplica) Tombstone() error {
 }
 
 func (r *fakeReplica) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closeCount++
 	return nil
 }
 
@@ -262,4 +291,10 @@ func (r *fakeReplica) Status() core.ReplicaState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.state
+}
+
+func (r *fakeReplica) closeCalls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closeCount
 }

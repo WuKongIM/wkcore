@@ -30,6 +30,7 @@ type Runtime interface {
 	RemoveChannel(key core.ChannelKey) error
 	ApplyMeta(meta core.Meta) error
 	Channel(key core.ChannelKey) (ChannelHandle, bool)
+	Close() error
 }
 
 type ChannelHandle interface {

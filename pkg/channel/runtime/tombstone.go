@@ -17,6 +17,7 @@ type tombstoneManager struct {
 	mu         sync.RWMutex
 	generation map[core.ChannelKey]map[uint64]tombstone
 	beforeAdd  func()
+	onDrop     func()
 }
 
 func newTombstoneManager() *tombstoneManager {
@@ -53,6 +54,9 @@ func (m *tombstoneManager) contains(key core.ChannelKey, generation uint64) bool
 }
 
 func (m *tombstoneManager) dropExpired(now time.Time) {
+	if m.onDrop != nil {
+		m.onDrop()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
