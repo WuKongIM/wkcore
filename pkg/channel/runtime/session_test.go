@@ -29,6 +29,61 @@ func TestManyGroupsToSamePeerReuseOneSession(t *testing.T) {
 	}
 }
 
+func TestSessionAutoRunForegroundDrainWaitsForWorker(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.AutoRunScheduler = true
+	})
+	key := testChannelKey(20901)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(20901, 1, 1, []core.NodeID{1, 2}))
+
+	pause := make(chan struct{})
+	popStarted := make(chan struct{}, 1)
+	env.runtime.schedulerPopHook = func(popKey core.ChannelKey) {
+		if popKey != key {
+			return
+		}
+		select {
+		case popStarted <- struct{}{}:
+		default:
+		}
+		<-pause
+	}
+
+	env.runtime.enqueueReplication(key, 2)
+	<-popStarted
+
+	done := make(chan struct{})
+	go func() {
+		env.runtime.runScheduler()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("foreground runScheduler returned while auto worker held reserved work")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	close(pause)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if env.sessions.session(2).sendCount() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if env.sessions.session(2).sendCount() == 0 {
+		t.Fatal("expected auto-run worker to send fetch request")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("foreground runScheduler did not complete after worker release")
+	}
+}
+
 func TestReplicationRequestPopulatesFetchRequestEnvelope(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(27, 4, 1, []core.NodeID{1, 2}))

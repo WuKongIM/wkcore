@@ -125,6 +125,27 @@ func (s *scheduler) isDirty(key core.ChannelKey) bool {
 	return ok
 }
 
+func (s *scheduler) hasReady() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := PriorityHigh; i < priorityCount; i++ {
+		q := &s.queues[i]
+		for idx := q.head; idx < len(q.items); idx++ {
+			key := q.items[idx]
+			priority, queued := s.queued[key]
+			if !queued || priority != i {
+				continue
+			}
+			if _, running := s.processing[key]; running {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
 func higherPriority(left, right Priority) bool {
 	return left < right
 }
@@ -177,6 +198,9 @@ func (r *runtime) processChannel(key core.ChannelKey) {
 }
 
 func (r *runtime) runScheduler() {
+	r.schedulerDrainMu.Lock()
+	defer r.schedulerDrainMu.Unlock()
+
 	for {
 		entry, ok := r.scheduler.popReady()
 		if !ok {
@@ -192,9 +216,24 @@ func (r *runtime) runScheduler() {
 	}
 }
 
+func (r *runtime) startSchedulerWorker() {
+	if !r.schedulerWorker.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		for {
+			r.runScheduler()
+			r.schedulerWorker.Store(false)
+			if !r.scheduler.hasReady() || !r.schedulerWorker.CompareAndSwap(false, true) {
+				return
+			}
+		}
+	}()
+}
+
 func (r *runtime) enqueueScheduler(key core.ChannelKey, priority Priority) {
 	r.scheduler.enqueue(key, priority)
 	if r.cfg.AutoRunScheduler {
-		go r.runScheduler()
+		r.startSchedulerWorker()
 	}
 }

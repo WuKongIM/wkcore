@@ -33,6 +33,8 @@ type runtime struct {
 	requestID          atomic.Uint64
 	replicationRetryMu sync.Mutex
 	replicationRetry   map[core.ChannelKey]map[core.NodeID]*replicationRetryState
+	schedulerDrainMu   sync.Mutex
+	schedulerWorker    atomic.Bool
 	countMu            sync.Mutex
 	channelCount       int
 	cleanupStop        chan struct{}

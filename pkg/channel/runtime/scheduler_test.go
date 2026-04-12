@@ -41,7 +41,7 @@ func TestSchedulerDoesNotRunSameKeyConcurrently(t *testing.T) {
 	require.Equal(t, PriorityHigh, next.priority)
 }
 
-func TestAutoRunSchedulerSerializesSameKeyProcessing(t *testing.T) {
+func TestSchedulerAutoRunSerializesSameKeyProcessing(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.AutoRunScheduler = true
 	})

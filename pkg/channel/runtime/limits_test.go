@@ -8,7 +8,7 @@ import (
 	core "github.com/WuKongIM/WuKongIM/pkg/channel"
 )
 
-func TestMaxFetchInflightPeerQueuesExcessReplication(t *testing.T) {
+func TestLimitsMaxFetchInflightPeerQueuesExcessReplication(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.Limits.MaxFetchInflightPeer = 1
 	})
