@@ -80,6 +80,7 @@ func (s *scheduler) popReady() (schedulerEntry, bool) {
 				continue
 			}
 			delete(s.queued, key)
+			s.processing[key] = struct{}{}
 			return schedulerEntry{key: key, priority: i}, true
 		}
 	}
@@ -181,7 +182,9 @@ func (r *runtime) runScheduler() {
 		if !ok {
 			return
 		}
-		r.scheduler.begin(entry.key)
+		if r.schedulerPopHook != nil {
+			r.schedulerPopHook(entry.key)
+		}
 		r.processChannel(entry.key)
 		if r.scheduler.done(entry.key) {
 			r.scheduler.requeue(entry.key)

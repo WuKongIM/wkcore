@@ -25,6 +25,7 @@ type runtime struct {
 	replicaFactory     ReplicaFactory
 	generationStore    GenerationStore
 	scheduler          *scheduler
+	schedulerPopHook   func(core.ChannelKey)
 	sessions           peerSessionCache
 	peerRequests       peerRequestState
 	snapshots          snapshotState
