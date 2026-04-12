@@ -434,6 +434,56 @@ func TestLimitsHardBackpressureClearingEventuallyDrainsQueuedWork(t *testing.T) 
 	}
 }
 
+func TestLimitsQueueDrainSuccessAllowsLaterRetryReplicationScheduling(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.AutoRunScheduler = true
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+	key := testChannelKey(77)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(77, 3, 1, []core.NodeID{1, 2}))
+
+	session := env.sessions.session(2)
+	session.setBackpressure(BackpressureState{Level: BackpressureHard})
+
+	env.runtime.retryReplication(key, 2, true)
+	env.runtime.runScheduler()
+
+	if got := session.sendCount(); got != 0 {
+		t.Fatalf("hard backpressure should keep retry request queued, got %d sends", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("expected queued request under hard backpressure, got %d", got)
+	}
+
+	session.setBackpressure(BackpressureState{Level: BackpressureNone})
+	env.runtime.drainPeerQueue(2)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected one successful drain send after backpressure clears, got %d", got)
+	}
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		Epoch:      3,
+		RequestID:  session.sent[0].RequestID,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 1,
+		},
+	})
+
+	env.runtime.retryReplication(key, 2, true)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if session.sendCount() >= 2 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("expected retryReplication to schedule again after drained success, got %d sends", session.sendCount())
+}
+
 func TestLimitsPeerRequestStateRetainsQueueBucketAfterDrain(t *testing.T) {
 	state := newPeerRequestState()
 	peer := core.NodeID(2)

@@ -383,6 +383,10 @@ func (r *runtime) drainPeerQueue(peer core.NodeID) {
 	}
 	if err := r.sendEnvelope(env); err != nil && !errors.Is(err, ErrBackpressured) {
 		r.retryReplication(env.ChannelKey, env.Peer, true)
+		return
+	}
+	if env.Kind == MessageKindFetchRequest {
+		r.clearReplicationRetry(env.ChannelKey, env.Peer)
 	}
 }
 
