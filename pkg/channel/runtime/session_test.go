@@ -15,7 +15,7 @@ func testChannelKey(groupID uint64) core.ChannelKey {
 	return core.ChannelKey("group-" + strconv.FormatUint(groupID, 10))
 }
 
-func TestManyGroupsToSamePeerReuseOneSession(t *testing.T) {
+func TestSessionManyGroupsToSamePeerReuseOneSession(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(21, 1, 1, []core.NodeID{1, 2}))
 	mustEnsureLocal(t, env.runtime, testMetaLocal(22, 1, 1, []core.NodeID{1, 2}))
@@ -84,7 +84,7 @@ func TestSessionAutoRunForegroundDrainWaitsForWorker(t *testing.T) {
 	}
 }
 
-func TestReplicationRequestPopulatesFetchRequestEnvelope(t *testing.T) {
+func TestSessionReplicationRequestPopulatesFetchRequestEnvelope(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(27, 4, 1, []core.NodeID{1, 2}))
 
@@ -125,7 +125,7 @@ func TestReplicationRequestPopulatesFetchRequestEnvelope(t *testing.T) {
 	}
 }
 
-func TestReplicationRequestUsesReplicaOffsetEpochInsteadOfChannelMetaEpoch(t *testing.T) {
+func TestSessionReplicationRequestUsesReplicaOffsetEpochInsteadOfChannelMetaEpoch(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(271, 4, 1, []core.NodeID{1, 2}))
 
@@ -151,7 +151,7 @@ func TestReplicationRequestUsesReplicaOffsetEpochInsteadOfChannelMetaEpoch(t *te
 	}
 }
 
-func TestReplicationRequestUsesPeerSessionBatchingWhenAccepted(t *testing.T) {
+func TestSessionReplicationRequestUsesPeerSessionBatchingWhenAccepted(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(2711, 4, 1, []core.NodeID{1, 2}))
 
@@ -182,7 +182,7 @@ func TestReplicationRequestUsesPeerSessionBatchingWhenAccepted(t *testing.T) {
 	}
 }
 
-func TestQueuedReplicationRecomputesReplicaProgressBetweenSends(t *testing.T) {
+func TestSessionQueuedReplicationRecomputesReplicaProgressBetweenSends(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(272, 4, 1, []core.NodeID{1, 2}))
 
@@ -226,7 +226,7 @@ func TestQueuedReplicationRecomputesReplicaProgressBetweenSends(t *testing.T) {
 	}
 }
 
-func TestQueuedReplicationRecomputesReplicaProgressAfterInflightQueueing(t *testing.T) {
+func TestSessionQueuedReplicationRecomputesReplicaProgressAfterInflightQueueing(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.Limits.MaxFetchInflightPeer = 1
 	})
@@ -270,7 +270,7 @@ func TestQueuedReplicationRecomputesReplicaProgressAfterInflightQueueing(t *test
 	}
 }
 
-func TestQueuedReplicationCoalescesSameGroupRequestsWhileInflight(t *testing.T) {
+func TestSessionQueuedReplicationCoalescesSameGroupRequestsWhileInflight(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.Limits.MaxFetchInflightPeer = 1
 	})
@@ -297,7 +297,7 @@ func TestQueuedReplicationCoalescesSameGroupRequestsWhileInflight(t *testing.T) 
 	}
 }
 
-func TestConcurrentPeerInflightStillSerializesSameGroupReplication(t *testing.T) {
+func TestSessionConcurrentPeerInflightStillSerializesSameGroupReplication(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.Limits.MaxFetchInflightPeer = 2
 	})
@@ -348,7 +348,7 @@ func TestConcurrentPeerInflightStillSerializesSameGroupReplication(t *testing.T)
 	}
 }
 
-func TestReplicationSendErrorRetriesOnceWithoutNewWork(t *testing.T) {
+func TestSessionReplicationSendErrorRetriesOnceWithoutNewWork(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.AutoRunScheduler = true
 	})
@@ -365,7 +365,7 @@ func TestReplicationSendErrorRetriesOnceWithoutNewWork(t *testing.T) {
 	}
 }
 
-func TestReplicationSendErrorKeepsRetryingUntilSuccessWithoutNewWork(t *testing.T) {
+func TestSessionReplicationSendErrorKeepsRetryingUntilSuccessWithoutNewWork(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.AutoRunScheduler = true
 	})
@@ -388,7 +388,7 @@ func TestReplicationSendErrorKeepsRetryingUntilSuccessWithoutNewWork(t *testing.
 	t.Fatalf("expected failed replication to keep retrying until success, got %d sends", session.sendCount())
 }
 
-func TestReplicationRetryIntervalUsesConfigOverride(t *testing.T) {
+func TestSessionReplicationRetryIntervalUsesConfigOverride(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.AutoRunScheduler = true
 		cfg.FollowerReplicationRetryInterval = time.Hour
@@ -407,7 +407,7 @@ func TestReplicationRetryIntervalUsesConfigOverride(t *testing.T) {
 	}
 }
 
-func TestScheduleFollowerReplicationCoalescesPendingDelayedRetry(t *testing.T) {
+func TestSessionScheduleFollowerReplicationCoalescesPendingDelayedRetry(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.FollowerReplicationRetryInterval = 15 * time.Millisecond
 	})
@@ -436,7 +436,7 @@ func TestScheduleFollowerReplicationCoalescesPendingDelayedRetry(t *testing.T) {
 	t.Fatal("expected delayed retry to be queued")
 }
 
-func TestDelayedFollowerRetrySkipsStaleLeaderAfterMetaChange(t *testing.T) {
+func TestSessionDelayedFollowerRetrySkipsStaleLeaderAfterMetaChange(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.AutoRunScheduler = true
 		cfg.FollowerReplicationRetryInterval = 15 * time.Millisecond
@@ -476,7 +476,7 @@ func TestDelayedFollowerRetrySkipsStaleLeaderAfterMetaChange(t *testing.T) {
 	}
 }
 
-func TestApplyMetaFailureLeavesCachedChannelMetaUnchanged(t *testing.T) {
+func TestSessionApplyMetaFailureLeavesCachedChannelMetaUnchanged(t *testing.T) {
 	env := newSessionTestEnv(t)
 	initial := testMetaLocal(31, 1, 2, []core.NodeID{1, 2})
 	mustEnsureLocal(t, env.runtime, initial)
@@ -502,7 +502,7 @@ func TestApplyMetaFailureLeavesCachedChannelMetaUnchanged(t *testing.T) {
 	}
 }
 
-func TestInboundEnvelopeDemuxRequiresMatchingGeneration(t *testing.T) {
+func TestSessionInboundEnvelopeDemuxRequiresMatchingGeneration(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(23, 1, 1, []core.NodeID{1, 2}))
 
@@ -512,7 +512,7 @@ func TestInboundEnvelopeDemuxRequiresMatchingGeneration(t *testing.T) {
 	}
 }
 
-func TestFetchResponseDropsStaleEpoch(t *testing.T) {
+func TestSessionFetchResponseDropsStaleEpoch(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(24, 3, 1, []core.NodeID{1, 2}))
 
@@ -529,7 +529,7 @@ func TestFetchResponseDropsStaleEpoch(t *testing.T) {
 	}
 }
 
-func TestFetchResponseDecodesPayloadIntoApplyFetch(t *testing.T) {
+func TestSessionFetchResponseDecodesPayloadIntoApplyFetch(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(25, 4, 1, []core.NodeID{1, 2}))
 
@@ -562,7 +562,7 @@ func TestFetchResponseDecodesPayloadIntoApplyFetch(t *testing.T) {
 	}
 }
 
-func TestFetchResponseSendsProgressAckAfterApplyFetch(t *testing.T) {
+func TestSessionFetchResponseSendsProgressAckAfterApplyFetch(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(250, 4, 2, []core.NodeID{1, 2}))
 
@@ -600,7 +600,7 @@ func TestFetchResponseSendsProgressAckAfterApplyFetch(t *testing.T) {
 	}
 }
 
-func TestNonEmptyFetchResponseQueuesImmediateFollowerRefetch(t *testing.T) {
+func TestSessionNonEmptyFetchResponseQueuesImmediateFollowerRefetch(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.FollowerReplicationRetryInterval = time.Hour
 	})
@@ -635,7 +635,7 @@ func TestNonEmptyFetchResponseQueuesImmediateFollowerRefetch(t *testing.T) {
 	}
 }
 
-func TestProgressAckEnvelopeRequiresMatchingGeneration(t *testing.T) {
+func TestSessionProgressAckEnvelopeRequiresMatchingGeneration(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(253, 4, 1, []core.NodeID{1, 2}))
 
@@ -659,7 +659,7 @@ func TestProgressAckEnvelopeRequiresMatchingGeneration(t *testing.T) {
 	}
 }
 
-func TestLeaderAppliesProgressAckWithoutWaitingForNextFetch(t *testing.T) {
+func TestSessionLeaderAppliesProgressAckWithoutWaitingForNextFetch(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(254, 4, 1, []core.NodeID{1, 2}))
 
@@ -690,7 +690,7 @@ func TestLeaderAppliesProgressAckWithoutWaitingForNextFetch(t *testing.T) {
 	}
 }
 
-func TestFetchFailureEnvelopeReleasesInflightAndRetriesReplication(t *testing.T) {
+func TestSessionFetchFailureEnvelopeReleasesInflightAndRetriesReplication(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.AutoRunScheduler = true
 		cfg.FollowerReplicationRetryInterval = time.Hour
@@ -722,7 +722,7 @@ func TestFetchFailureEnvelopeReleasesInflightAndRetriesReplication(t *testing.T)
 	t.Fatalf("expected fetch failure to trigger immediate retry, got %d sends", session.sendCount())
 }
 
-func TestEmptyFetchResponseUsesRetryIntervalBeforeFollowerRefetch(t *testing.T) {
+func TestSessionEmptyFetchResponseUsesRetryIntervalBeforeFollowerRefetch(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.AutoRunScheduler = true
 		cfg.FollowerReplicationRetryInterval = 20 * time.Millisecond
@@ -761,7 +761,7 @@ func TestEmptyFetchResponseUsesRetryIntervalBeforeFollowerRefetch(t *testing.T) 
 	t.Fatalf("expected empty fetch response to trigger delayed follower re-fetch, got %d sends", session.sendCount())
 }
 
-func TestServeFetchReturnsReplicaFetchResult(t *testing.T) {
+func TestSessionServeFetchReturnsReplicaFetchResult(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(26, 5, 1, []core.NodeID{1, 2}))
 

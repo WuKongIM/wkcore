@@ -27,7 +27,7 @@ func TestLimitsMaxFetchInflightPeerQueuesExcessReplication(t *testing.T) {
 	}
 }
 
-func TestFetchResponseDrainsQueuedReplicationForPeer(t *testing.T) {
+func TestLimitsFetchResponseDrainsQueuedReplicationForPeer(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.Limits.MaxFetchInflightPeer = 1
 	})
@@ -61,7 +61,7 @@ func TestFetchResponseDrainsQueuedReplicationForPeer(t *testing.T) {
 	}
 }
 
-func TestFetchResponseApplyErrorKeepsPeerInflightAndQueuedReplication(t *testing.T) {
+func TestLimitsFetchResponseApplyErrorKeepsPeerInflightAndQueuedReplication(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.Limits.MaxFetchInflightPeer = 1
 	})
@@ -108,7 +108,7 @@ func TestFetchResponseApplyErrorKeepsPeerInflightAndQueuedReplication(t *testing
 	}
 }
 
-func TestDrainPeerQueueSendErrorRequeuesReplication(t *testing.T) {
+func TestLimitsDrainPeerQueueSendErrorRequeuesReplication(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.Limits.MaxFetchInflightPeer = 1
 	})
@@ -144,7 +144,7 @@ func TestDrainPeerQueueSendErrorRequeuesReplication(t *testing.T) {
 	}
 }
 
-func TestUnknownFetchResponseDoesNotReleasePeerInflight(t *testing.T) {
+func TestLimitsUnknownFetchResponseDoesNotReleasePeerInflight(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.Limits.MaxFetchInflightPeer = 1
 	})
@@ -171,7 +171,7 @@ func TestUnknownFetchResponseDoesNotReleasePeerInflight(t *testing.T) {
 	}
 }
 
-func TestHardBackpressureQueuesWithoutSending(t *testing.T) {
+func TestLimitsHardBackpressureQueuesWithoutSending(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.Limits.MaxFetchInflightPeer = 2
 	})
@@ -189,7 +189,7 @@ func TestHardBackpressureQueuesWithoutSending(t *testing.T) {
 	}
 }
 
-func TestPeerRequestStateRetainsQueueBucketAfterDrain(t *testing.T) {
+func TestLimitsPeerRequestStateRetainsQueueBucketAfterDrain(t *testing.T) {
 	state := newPeerRequestState()
 	peer := core.NodeID(2)
 
@@ -216,7 +216,7 @@ func TestPeerRequestStateRetainsQueueBucketAfterDrain(t *testing.T) {
 	}
 }
 
-func TestPeerQueueRetainsEnvelopeChannelKeyOrder(t *testing.T) {
+func TestLimitsPeerQueueRetainsEnvelopeChannelKeyOrder(t *testing.T) {
 	state := newPeerRequestState()
 	peer := core.NodeID(2)
 
