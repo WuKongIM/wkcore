@@ -146,6 +146,17 @@ func (s *scheduler) hasReady() bool {
 	return false
 }
 
+func (s *scheduler) clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.queues {
+		s.queues[i] = schedulerQueue{}
+	}
+	s.queued = make(map[core.ChannelKey]Priority)
+	s.processing = make(map[core.ChannelKey]struct{})
+	s.dirty = make(map[core.ChannelKey]Priority)
+}
+
 func higherPriority(left, right Priority) bool {
 	return left < right
 }
@@ -190,6 +201,9 @@ func (q *schedulerQueue) compact() {
 }
 
 func (r *runtime) processChannel(key core.ChannelKey) {
+	if r.isClosed() {
+		return
+	}
 	ch, ok := r.lookupChannel(key)
 	if !ok {
 		return
@@ -198,10 +212,16 @@ func (r *runtime) processChannel(key core.ChannelKey) {
 }
 
 func (r *runtime) runScheduler() {
+	if r.isClosed() {
+		return
+	}
 	r.schedulerDrainMu.Lock()
 	defer r.schedulerDrainMu.Unlock()
 
 	for {
+		if r.isClosed() {
+			return
+		}
 		entry, ok := r.scheduler.popReady()
 		if !ok {
 			return
@@ -210,21 +230,32 @@ func (r *runtime) runScheduler() {
 			r.schedulerPopHook(entry.key)
 		}
 		r.processChannel(entry.key)
-		if r.scheduler.done(entry.key) {
+		dirty := r.scheduler.done(entry.key)
+		if r.isClosed() {
+			return
+		}
+		if dirty {
 			r.scheduler.requeue(entry.key)
 		}
 	}
 }
 
 func (r *runtime) startSchedulerWorker() {
+	if r.isClosed() {
+		return
+	}
 	if !r.schedulerWorker.CompareAndSwap(false, true) {
 		return
 	}
 	go func() {
 		for {
+			if r.isClosed() {
+				r.schedulerWorker.Store(false)
+				return
+			}
 			r.runScheduler()
 			r.schedulerWorker.Store(false)
-			if !r.scheduler.hasReady() || !r.schedulerWorker.CompareAndSwap(false, true) {
+			if r.isClosed() || !r.scheduler.hasReady() || !r.schedulerWorker.CompareAndSwap(false, true) {
 				return
 			}
 		}
@@ -232,6 +263,9 @@ func (r *runtime) startSchedulerWorker() {
 }
 
 func (r *runtime) enqueueScheduler(key core.ChannelKey, priority Priority) {
+	if r.isClosed() {
+		return
+	}
 	r.scheduler.enqueue(key, priority)
 	if r.cfg.AutoRunScheduler {
 		r.startSchedulerWorker()

@@ -126,6 +126,42 @@ func TestSnapshotThrottlingDoesNotBlockUnrelatedReplication(t *testing.T) {
 	close(blocking.release)
 }
 
+func TestSnapshotRuntimeClosePreventsPostCloseReschedule(t *testing.T) {
+	env := newSnapshotTestEnv(t, func(cfg *Config) {
+		cfg.Limits.MaxSnapshotInflight = 1
+	})
+	first := testChannelKey(71)
+	second := testChannelKey(72)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(71, 1, 1, []core.NodeID{1, 2}))
+	mustEnsureLocal(t, env.runtime, testMetaLocal(72, 1, 1, []core.NodeID{1, 2}))
+
+	blocking := newBlockingSnapshotThrottle()
+	env.runtime.snapshotThrottle = blocking
+
+	env.runtime.queueSnapshotChunk(first, 128)
+	env.runtime.queueSnapshotChunk(second, 128)
+	env.runtime.runScheduler()
+
+	select {
+	case <-blocking.started:
+	case <-time.After(time.Second):
+		t.Fatal("expected first snapshot throttle to start")
+	}
+	if got := env.runtime.queuedSnapshotGroups(); got != 1 {
+		t.Fatalf("expected one queued snapshot waiter before close, got %d", got)
+	}
+
+	if err := env.runtime.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	close(blocking.release)
+	time.Sleep(30 * time.Millisecond)
+
+	if env.runtime.scheduler.hasReady() {
+		t.Fatal("expected runtime close to prevent post-close snapshot reschedule")
+	}
+}
+
 type snapshotTestEnv struct {
 	runtime  *runtime
 	clock    *snapshotManualClock

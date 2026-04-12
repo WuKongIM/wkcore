@@ -103,7 +103,18 @@ func (s *snapshotState) waitingCount() int {
 	return len(s.waiting)
 }
 
+func (s *snapshotState) clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inflight = 0
+	s.waiting = nil
+	s.waitingSet = nil
+}
+
 func (r *runtime) OnSnapshot(key core.ChannelKey) {
+	if r.isClosed() {
+		return
+	}
 	r.processSnapshot(key)
 }
 
@@ -112,6 +123,9 @@ func (r *runtime) queueSnapshot(key core.ChannelKey) {
 }
 
 func (r *runtime) queueSnapshotChunk(key core.ChannelKey, bytes int64) {
+	if r.isClosed() {
+		return
+	}
 	ch, ok := r.lookupChannel(key)
 	if !ok {
 		return
@@ -122,6 +136,9 @@ func (r *runtime) queueSnapshotChunk(key core.ChannelKey, bytes int64) {
 }
 
 func (r *runtime) processSnapshot(key core.ChannelKey) {
+	if r.isClosed() {
+		return
+	}
 	ch, ok := r.lookupChannel(key)
 	if !ok {
 		return
@@ -141,6 +158,9 @@ func (r *runtime) processSnapshot(key core.ChannelKey) {
 }
 
 func (r *runtime) throttleSnapshot(key core.ChannelKey, bytes int64) {
+	if r.isClosed() {
+		return
+	}
 	r.snapshotThrottle.Wait(bytes)
 	r.completeSnapshot(key)
 }
@@ -150,6 +170,9 @@ func (r *runtime) maxSnapshotConcurrent() int {
 }
 
 func (r *runtime) completeSnapshot(_ core.ChannelKey) {
+	if r.isClosed() {
+		return
+	}
 	r.snapshots.finish()
 	nextKey, ok := r.snapshots.popWaiter()
 	if !ok {

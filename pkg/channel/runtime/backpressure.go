@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	core "github.com/WuKongIM/WuKongIM/pkg/channel"
 )
@@ -13,6 +14,11 @@ type peerRequestState struct {
 	inflight map[core.NodeID]int
 	groups   map[channelPeerKey]inflightReservation
 	queued   map[core.NodeID]*peerEnvelopeQueue
+}
+
+type backpressureRetryState struct {
+	timer        *time.Timer
+	timerVersion uint64
 }
 
 type channelPeerKey struct {
@@ -164,6 +170,14 @@ func (s *peerRequestState) clearChannelInvalidPeers(key core.ChannelKey, allow f
 	return peers
 }
 
+func (s *peerRequestState) clearAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inflight = make(map[core.NodeID]int)
+	s.groups = make(map[channelPeerKey]inflightReservation)
+	s.queued = make(map[core.NodeID]*peerEnvelopeQueue)
+}
+
 func (s *peerRequestState) releaseInflightForEnvelope(env Envelope) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -276,12 +290,16 @@ func (q *peerEnvelopeQueue) compact() {
 }
 
 func (r *runtime) sendEnvelope(env Envelope) error {
+	if r.isClosed() {
+		return ErrChannelNotFound
+	}
 	env = r.refreshFetchEnvelope(env)
 	trackInflight := env.Kind == MessageKindFetchRequest
 
 	session := r.peerSession(env.Peer)
 	if state := session.Backpressure(); state.Level == BackpressureHard {
 		r.peerRequests.enqueue(env)
+		r.scheduleBackpressureRetry(env.Peer)
 		return ErrBackpressured
 	}
 
@@ -355,8 +373,12 @@ func (r *runtime) releaseChannelInflight(key core.ChannelKey, peer core.NodeID) 
 }
 
 func (r *runtime) drainPeerQueue(peer core.NodeID) {
+	if r.isClosed() {
+		return
+	}
 	env, ok := r.peerRequests.popQueued(peer)
 	if !ok {
+		r.clearBackpressureRetry(peer)
 		return
 	}
 	if err := r.sendEnvelope(env); err != nil && !errors.Is(err, ErrBackpressured) {
@@ -369,6 +391,9 @@ func (r *runtime) releaseInflightForEnvelope(env Envelope) bool {
 }
 
 func (r *runtime) handleEnvelope(env Envelope) {
+	if r.isClosed() {
+		return
+	}
 	var (
 		ch        *channel
 		knownDrop bool
@@ -411,6 +436,99 @@ func (r *runtime) handleEnvelope(env Envelope) {
 		return
 	}
 	_ = r.deliverEnvelope(ch, env)
+}
+
+func (r *runtime) scheduleBackpressureRetry(peer core.NodeID) {
+	if r.isClosed() {
+		return
+	}
+	interval := r.cfg.FollowerReplicationRetryInterval
+	if interval <= 0 {
+		interval = defaultFollowerReplicationRetryDelay
+	}
+
+	r.backpressureMu.Lock()
+	defer r.backpressureMu.Unlock()
+
+	state, ok := r.backpressureRetry[peer]
+	if !ok {
+		state = &backpressureRetryState{}
+		r.backpressureRetry[peer] = state
+	}
+	if state.timer != nil {
+		return
+	}
+	state.timerVersion++
+	version := state.timerVersion
+	state.timer = time.AfterFunc(interval, func() {
+		r.fireBackpressureRetry(peer, version)
+	})
+}
+
+func (r *runtime) fireBackpressureRetry(peer core.NodeID, version uint64) {
+	if r.isClosed() {
+		return
+	}
+
+	r.backpressureMu.Lock()
+	state, ok := r.backpressureRetry[peer]
+	if !ok || state.timer == nil || state.timerVersion != version {
+		r.backpressureMu.Unlock()
+		return
+	}
+	state.timer = nil
+	r.backpressureMu.Unlock()
+
+	if r.queuedPeerRequests(peer) == 0 {
+		r.clearBackpressureRetry(peer)
+		return
+	}
+
+	r.drainPeerQueue(peer)
+
+	if r.queuedPeerRequests(peer) > 0 {
+		r.scheduleBackpressureRetry(peer)
+		return
+	}
+	r.clearBackpressureRetry(peer)
+}
+
+func (r *runtime) clearBackpressureRetry(peer core.NodeID) {
+	r.backpressureMu.Lock()
+	state, ok := r.backpressureRetry[peer]
+	if !ok {
+		r.backpressureMu.Unlock()
+		return
+	}
+	var timer *time.Timer
+	if state.timer != nil {
+		timer = state.timer
+		state.timer = nil
+	}
+	delete(r.backpressureRetry, peer)
+	r.backpressureMu.Unlock()
+
+	if timer != nil {
+		timer.Stop()
+	}
+}
+
+func (r *runtime) clearAllBackpressureRetries() []*time.Timer {
+	r.backpressureMu.Lock()
+	defer r.backpressureMu.Unlock()
+
+	if len(r.backpressureRetry) == 0 {
+		return nil
+	}
+	timers := make([]*time.Timer, 0, len(r.backpressureRetry))
+	for peer, state := range r.backpressureRetry {
+		if state.timer != nil {
+			timers = append(timers, state.timer)
+			state.timer = nil
+		}
+		delete(r.backpressureRetry, peer)
+	}
+	return timers
 }
 
 func (r *runtime) deliverEnvelope(ch *channel, env Envelope) bool {

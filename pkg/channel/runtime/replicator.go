@@ -20,10 +20,16 @@ type replicationRetryState struct {
 }
 
 func (r *runtime) OnReplication(key core.ChannelKey) {
+	if r.isClosed() {
+		return
+	}
 	r.processReplication(key)
 }
 
 func (r *runtime) enqueueReplication(key core.ChannelKey, peer core.NodeID) {
+	if r.isClosed() {
+		return
+	}
 	ch, ok := r.lookupChannel(key)
 	if !ok {
 		return
@@ -34,6 +40,9 @@ func (r *runtime) enqueueReplication(key core.ChannelKey, peer core.NodeID) {
 }
 
 func (r *runtime) processReplication(key core.ChannelKey) {
+	if r.isClosed() {
+		return
+	}
 	ch, ok := r.lookupChannel(key)
 	if !ok {
 		return
@@ -90,6 +99,9 @@ func (r *runtime) processReplication(key core.ChannelKey) {
 }
 
 func (r *runtime) scheduleFollowerReplication(key core.ChannelKey, leader core.NodeID) {
+	if r.isClosed() {
+		return
+	}
 	ch, ok := r.lookupChannel(key)
 	if !ok {
 		return
@@ -114,6 +126,9 @@ func (r *runtime) scheduleFollowerReplication(key core.ChannelKey, leader core.N
 }
 
 func (r *runtime) retryReplication(key core.ChannelKey, peer core.NodeID, schedule bool) {
+	if r.isClosed() {
+		return
+	}
 	ch, ok := r.lookupChannel(key)
 	if !ok {
 		return
@@ -223,6 +238,9 @@ func (r *runtime) clearAllReplicationRetries() []*time.Timer {
 }
 
 func (r *runtime) fireFollowerReplicationRetry(key core.ChannelKey, peer core.NodeID, version uint64) {
+	if r.isClosed() {
+		return
+	}
 	r.replicationRetryMu.Lock()
 	peers, ok := r.replicationRetry[key]
 	if !ok {

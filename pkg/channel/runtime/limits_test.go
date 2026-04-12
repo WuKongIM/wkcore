@@ -397,6 +397,43 @@ func TestLimitsHardBackpressureQueuesWithoutSending(t *testing.T) {
 	}
 }
 
+func TestLimitsHardBackpressureClearingEventuallyDrainsQueuedWork(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Limits.MaxFetchInflightPeer = 2
+		cfg.FollowerReplicationRetryInterval = 5 * time.Millisecond
+	})
+	key := testChannelKey(76)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(76, 3, 1, []core.NodeID{1, 2}))
+
+	session := env.sessions.session(2)
+	session.setBackpressure(BackpressureState{Level: BackpressureHard})
+	env.runtime.enqueueReplication(key, 2)
+	env.runtime.runScheduler()
+
+	if got := session.sendCount(); got != 0 {
+		t.Fatalf("hard backpressure should block immediate send, got %d", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("hard backpressure should queue request, got %d", got)
+	}
+
+	session.setBackpressure(BackpressureState{Level: BackpressureNone})
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if session.sendCount() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected queued request to drain after hard backpressure clears, got %d sends", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 0 {
+		t.Fatalf("expected queued requests to be drained after backpressure clears, got %d", got)
+	}
+}
+
 func TestLimitsPeerRequestStateRetainsQueueBucketAfterDrain(t *testing.T) {
 	state := newPeerRequestState()
 	peer := core.NodeID(2)

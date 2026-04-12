@@ -18,6 +18,9 @@ func newPeerSessionCache() peerSessionCache {
 }
 
 func (r *runtime) peerSession(peer core.NodeID) PeerSession {
+	if r.isClosed() {
+		return nopPeerSession{}
+	}
 	r.sessions.mu.Lock()
 	defer r.sessions.mu.Unlock()
 

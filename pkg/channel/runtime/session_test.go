@@ -521,6 +521,66 @@ func TestSessionRuntimeCloseClosesCachedPeerSessions(t *testing.T) {
 	}
 }
 
+func TestSessionRuntimeClosePreventsPostCloseSessionRecreation(t *testing.T) {
+	env := newSessionTestEnv(t)
+	key := testChannelKey(305)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(305, 1, 1, []core.NodeID{1, 2, 3}))
+
+	const inflightRequestID = 7001
+	const queuedRequestID = 7002
+	if !env.runtime.peerRequests.tryAcquireChannel(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		RequestID:  inflightRequestID,
+		Kind:       MessageKindFetchRequest,
+	}) {
+		t.Fatal("expected to reserve in-flight channel/peer request state")
+	}
+	env.runtime.peerRequests.enqueue(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Epoch:      1,
+		Generation: 1,
+		RequestID:  queuedRequestID,
+		Kind:       MessageKindFetchRequest,
+		FetchRequest: &FetchRequestEnvelope{
+			ChannelKey:  key,
+			Epoch:       1,
+			Generation:  1,
+			ReplicaID:   1,
+			FetchOffset: 1,
+			OffsetEpoch: 1,
+			MaxBytes:    128,
+		},
+	})
+	env.runtime.tombstones.add(key, 1, env.runtime.cfg.Now().Add(time.Minute))
+
+	if err := env.runtime.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	createdBefore := env.sessions.createdFor(2)
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		RequestID:  inflightRequestID,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			ChannelKey: key,
+			Epoch:      1,
+			Generation: 1,
+			LeaderHW:   1,
+		},
+	})
+
+	time.Sleep(20 * time.Millisecond)
+	if got := env.sessions.createdFor(2); got != createdBefore {
+		t.Fatalf("expected no post-close session recreation, created count %d -> %d", createdBefore, got)
+	}
+}
+
 func TestSessionApplyMetaFailureLeavesCachedChannelMetaUnchanged(t *testing.T) {
 	env := newSessionTestEnv(t)
 	initial := testMetaLocal(31, 1, 2, []core.NodeID{1, 2})

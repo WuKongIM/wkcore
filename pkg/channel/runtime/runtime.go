@@ -33,8 +33,11 @@ type runtime struct {
 	requestID          atomic.Uint64
 	replicationRetryMu sync.Mutex
 	replicationRetry   map[core.ChannelKey]map[core.NodeID]*replicationRetryState
+	backpressureRetry  map[core.NodeID]*backpressureRetryState
+	backpressureMu     sync.Mutex
 	schedulerDrainMu   sync.Mutex
 	schedulerWorker    atomic.Bool
+	closed             atomic.Bool
 	countMu            sync.Mutex
 	channelCount       int
 	cleanupStop        chan struct{}
@@ -72,17 +75,18 @@ func New(cfg Config) (Runtime, error) {
 	}
 
 	r := &runtime{
-		cfg:              cfg,
-		tombstones:       newTombstoneManager(),
-		replicaFactory:   cfg.ReplicaFactory,
-		generationStore:  cfg.GenerationStore,
-		scheduler:        newScheduler(),
-		sessions:         newPeerSessionCache(),
-		peerRequests:     newPeerRequestState(),
-		snapshotThrottle: newSnapshotThrottle(cfg.Limits.MaxRecoveryBytesPerSecond, time.Sleep),
-		replicationRetry: make(map[core.ChannelKey]map[core.NodeID]*replicationRetryState),
-		cleanupStop:      make(chan struct{}),
-		cleanupDone:      make(chan struct{}),
+		cfg:               cfg,
+		tombstones:        newTombstoneManager(),
+		replicaFactory:    cfg.ReplicaFactory,
+		generationStore:   cfg.GenerationStore,
+		scheduler:         newScheduler(),
+		sessions:          newPeerSessionCache(),
+		peerRequests:      newPeerRequestState(),
+		snapshotThrottle:  newSnapshotThrottle(cfg.Limits.MaxRecoveryBytesPerSecond, time.Sleep),
+		replicationRetry:  make(map[core.ChannelKey]map[core.NodeID]*replicationRetryState),
+		backpressureRetry: make(map[core.NodeID]*backpressureRetryState),
+		cleanupStop:       make(chan struct{}),
+		cleanupDone:       make(chan struct{}),
 	}
 	for i := range r.shards {
 		r.shards[i].channels = make(map[core.ChannelKey]*channel)
@@ -362,8 +366,16 @@ func (r *runtime) stopTombstoneCleanup() {
 }
 
 func (r *runtime) Close() error {
+	if !r.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+
 	r.stopTombstoneCleanup()
 	stopTimers(r.clearAllReplicationRetries())
+	stopTimers(r.clearAllBackpressureRetries())
+	r.peerRequests.clearAll()
+	r.snapshots.clear()
+	r.scheduler.clear()
 
 	reps := make([]replica.Replica, 0)
 	for i := range r.shards {
@@ -396,4 +408,8 @@ func (r *runtime) Close() error {
 		err = errors.Join(err, session.Close())
 	}
 	return err
+}
+
+func (r *runtime) isClosed() bool {
+	return r.closed.Load()
 }
