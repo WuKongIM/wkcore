@@ -11,13 +11,18 @@ import (
 type peerRequestState struct {
 	mu       sync.Mutex
 	inflight map[core.NodeID]int
-	groups   map[channelPeerKey]struct{}
+	groups   map[channelPeerKey]inflightReservation
 	queued   map[core.NodeID]*peerEnvelopeQueue
 }
 
 type channelPeerKey struct {
 	channelKey core.ChannelKey
 	peer       core.NodeID
+}
+
+type inflightReservation struct {
+	generation uint64
+	requestID  uint64
 }
 
 type peerEnvelopeQueue struct {
@@ -28,7 +33,7 @@ type peerEnvelopeQueue struct {
 func newPeerRequestState() peerRequestState {
 	return peerRequestState{
 		inflight: make(map[core.NodeID]int),
-		groups:   make(map[channelPeerKey]struct{}),
+		groups:   make(map[channelPeerKey]inflightReservation),
 		queued:   make(map[core.NodeID]*peerEnvelopeQueue),
 	}
 }
@@ -47,15 +52,18 @@ func (s *peerRequestState) tryAcquire(peer core.NodeID, limit int) bool {
 	return true
 }
 
-func (s *peerRequestState) tryAcquireChannel(key core.ChannelKey, peer core.NodeID) bool {
+func (s *peerRequestState) tryAcquireChannel(env Envelope) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	channelPeer := channelPeerKey{channelKey: key, peer: peer}
+	channelPeer := channelPeerKey{channelKey: env.ChannelKey, peer: env.Peer}
 	if _, ok := s.groups[channelPeer]; ok {
 		return false
 	}
-	s.groups[channelPeer] = struct{}{}
+	s.groups[channelPeer] = inflightReservation{
+		generation: env.Generation,
+		requestID:  env.RequestID,
+	}
 	return true
 }
 
@@ -88,6 +96,28 @@ func (s *peerRequestState) releaseChannel(key core.ChannelKey, peer core.NodeID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.groups, channelPeerKey{channelKey: key, peer: peer})
+}
+
+func (s *peerRequestState) releaseInflightForEnvelope(env Envelope) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := channelPeerKey{channelKey: env.ChannelKey, peer: env.Peer}
+	reservation, ok := s.groups[key]
+	if !ok {
+		return false
+	}
+	if reservation.generation != 0 && env.Generation != 0 && reservation.generation != env.Generation {
+		return false
+	}
+	if reservation.requestID != 0 && env.RequestID != 0 && reservation.requestID != env.RequestID {
+		return false
+	}
+	delete(s.groups, key)
+	if s.inflight[env.Peer] > 0 {
+		s.inflight[env.Peer]--
+	}
+	return true
 }
 
 func (s *peerRequestState) popQueued(peer core.NodeID) (Envelope, bool) {
@@ -165,7 +195,7 @@ func (r *runtime) sendEnvelope(env Envelope) error {
 		return ErrBackpressured
 	}
 
-	if trackInflight && !r.peerRequests.tryAcquireChannel(env.ChannelKey, env.Peer) {
+	if trackInflight && !r.peerRequests.tryAcquireChannel(env) {
 		r.peerRequests.enqueue(env)
 		return ErrBackpressured
 	}
@@ -176,6 +206,13 @@ func (r *runtime) sendEnvelope(env Envelope) error {
 	}
 
 	if env.Kind == MessageKindFetchRequest && session.TryBatch(env) {
+		if err := session.Flush(); err != nil {
+			if trackInflight {
+				r.peerRequests.release(env.Peer)
+				r.peerRequests.releaseChannel(env.ChannelKey, env.Peer)
+			}
+			return err
+		}
 		return nil
 	}
 	if err := session.Send(env); err != nil {
@@ -237,6 +274,10 @@ func (r *runtime) drainPeerQueue(peer core.NodeID) {
 	}
 }
 
+func (r *runtime) releaseInflightForEnvelope(env Envelope) bool {
+	return r.peerRequests.releaseInflightForEnvelope(env)
+}
+
 func (r *runtime) handleEnvelope(env Envelope) {
 	var (
 		ch        *channel
@@ -251,19 +292,19 @@ func (r *runtime) handleEnvelope(env Envelope) {
 	}
 
 	if env.Kind == MessageKindFetchResponse && knownDrop {
-		r.releasePeerInflight(env.Peer)
-		r.releaseChannelInflight(env.ChannelKey, env.Peer)
-		r.drainPeerQueue(env.Peer)
+		if r.releaseInflightForEnvelope(env) {
+			r.drainPeerQueue(env.Peer)
+		}
 		return
 	}
 	if env.Kind == MessageKindFetchFailure {
-		r.releasePeerInflight(env.Peer)
-		r.releaseChannelInflight(env.ChannelKey, env.Peer)
-		if ch != nil {
-			r.retryReplication(env.ChannelKey, env.Peer, true)
-			r.scheduleFollowerReplication(env.ChannelKey, env.Peer)
+		if r.releaseInflightForEnvelope(env) {
+			if ch != nil {
+				r.retryReplication(env.ChannelKey, env.Peer, true)
+				r.scheduleFollowerReplication(env.ChannelKey, env.Peer)
+			}
+			r.drainPeerQueue(env.Peer)
 		}
-		r.drainPeerQueue(env.Peer)
 		return
 	}
 
@@ -273,9 +314,9 @@ func (r *runtime) handleEnvelope(env Envelope) {
 
 	if env.Kind == MessageKindFetchResponse {
 		if r.deliverEnvelope(ch, env) {
-			r.releasePeerInflight(env.Peer)
-			r.releaseChannelInflight(env.ChannelKey, env.Peer)
-			r.drainPeerQueue(env.Peer)
+			if r.releaseInflightForEnvelope(env) {
+				r.drainPeerQueue(env.Peer)
+			}
 		}
 		return
 	}

@@ -174,6 +174,9 @@ func TestSessionReplicationRequestUsesPeerSessionBatchingWhenAccepted(t *testing
 	if got := session.batchCount(); got != 1 {
 		t.Fatalf("expected one batched fetch request, got %d", got)
 	}
+	if got := session.flushCount(); got == 0 {
+		t.Fatalf("expected batched fetch request to be flushed, got %d flushes", got)
+	}
 	if session.batched[0].Kind != MessageKindFetchRequest {
 		t.Fatalf("batched kind = %v, want fetch request", session.batched[0].Kind)
 	}
@@ -1089,11 +1092,13 @@ func (m *sessionPeerSessionManager) session(peer core.NodeID) *trackingPeerSessi
 type trackingPeerSession struct {
 	mu           sync.Mutex
 	sends        int
+	flushes      int
 	last         Envelope
 	sent         []Envelope
 	batched      []Envelope
 	sendErr      error
 	sendErrs     []error
+	flushErr     error
 	backpressure BackpressureState
 	afterSend    func()
 	tryBatch     bool
@@ -1133,7 +1138,10 @@ func (s *trackingPeerSession) TryBatch(env Envelope) bool {
 }
 
 func (s *trackingPeerSession) Flush() error {
-	return nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flushes++
+	return s.flushErr
 }
 
 func (s *trackingPeerSession) Backpressure() BackpressureState {
@@ -1158,6 +1166,12 @@ func (s *trackingPeerSession) batchCount() int {
 	return len(s.batched)
 }
 
+func (s *trackingPeerSession) flushCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.flushes
+}
+
 func (s *trackingPeerSession) setBackpressure(state BackpressureState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1180,4 +1194,10 @@ func (s *trackingPeerSession) enqueueSendErrors(errs ...error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sendErrs = append(s.sendErrs, errs...)
+}
+
+func (s *trackingPeerSession) setFlushErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flushErr = err
 }

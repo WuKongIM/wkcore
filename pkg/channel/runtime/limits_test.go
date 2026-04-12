@@ -171,6 +171,132 @@ func TestLimitsUnknownFetchResponseDoesNotReleasePeerInflight(t *testing.T) {
 	}
 }
 
+func TestLimitsStaleFetchFailureDoesNotReleaseCurrentGenerationInflight(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Limits.MaxFetchInflightPeer = 1
+	})
+	key := testChannelKey(901)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(901, 3, 1, []core.NodeID{1, 2}))
+	mustEnsureLocal(t, env.runtime, testMetaLocal(902, 3, 1, []core.NodeID{1, 2}))
+
+	env.runtime.enqueueReplication(key, 2)
+	env.runtime.runScheduler()
+	session := env.sessions.session(2)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected initial send, got %d", got)
+	}
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		Epoch:      3,
+		RequestID:  session.sent[0].RequestID,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 1,
+		},
+	})
+	if got := env.runtime.queuedPeerRequests(2); got != 0 {
+		t.Fatalf("expected queue drained after matching response, got %d", got)
+	}
+
+	if err := env.runtime.RemoveChannel(key); err != nil {
+		t.Fatalf("RemoveChannel() error = %v", err)
+	}
+	mustEnsureLocal(t, env.runtime, testMetaLocal(901, 4, 1, []core.NodeID{1, 2}))
+
+	env.runtime.enqueueReplication(key, 2)
+	env.runtime.runScheduler()
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("expected send for current generation, got %d", got)
+	}
+	env.runtime.enqueueReplication(testChannelKey(902), 2)
+	env.runtime.runScheduler()
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("expected queued request before stale failure envelope, got %d", got)
+	}
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		Epoch:      3,
+		RequestID:  session.sent[0].RequestID,
+		Kind:       MessageKindFetchFailure,
+	})
+
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("stale fetch failure should not free current inflight, got %d sends", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("stale fetch failure should keep peer queue blocked, got %d", got)
+	}
+}
+
+func TestLimitsTombstonedFetchResponseDoesNotReleaseCurrentGenerationInflight(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Limits.MaxFetchInflightPeer = 1
+	})
+	key := testChannelKey(911)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(911, 3, 1, []core.NodeID{1, 2}))
+	mustEnsureLocal(t, env.runtime, testMetaLocal(912, 3, 1, []core.NodeID{1, 2}))
+
+	env.runtime.enqueueReplication(key, 2)
+	env.runtime.runScheduler()
+	session := env.sessions.session(2)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected initial send, got %d", got)
+	}
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		Epoch:      3,
+		RequestID:  session.sent[0].RequestID,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 1,
+		},
+	})
+
+	if err := env.runtime.RemoveChannel(key); err != nil {
+		t.Fatalf("RemoveChannel() error = %v", err)
+	}
+	mustEnsureLocal(t, env.runtime, testMetaLocal(911, 4, 1, []core.NodeID{1, 2}))
+
+	env.runtime.enqueueReplication(key, 2)
+	env.runtime.runScheduler()
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("expected send for current generation, got %d", got)
+	}
+	env.runtime.enqueueReplication(testChannelKey(912), 2)
+	env.runtime.runScheduler()
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("expected queued request before tombstoned envelope, got %d", got)
+	}
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		Epoch:      3,
+		RequestID:  session.sent[0].RequestID,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 1,
+		},
+	})
+
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("tombstoned response should not free current inflight, got %d sends", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("tombstoned response should keep peer queue blocked, got %d", got)
+	}
+}
+
 func TestLimitsHardBackpressureQueuesWithoutSending(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.Limits.MaxFetchInflightPeer = 2
