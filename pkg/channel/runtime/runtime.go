@@ -195,6 +195,10 @@ func (r *runtime) ApplyMeta(meta core.Meta) error {
 		return err
 	}
 	ch.setMeta(meta)
+	if snapshotWorkInvalidated(previousMeta, meta) {
+		ch.clearSnapshotWork()
+		r.snapshots.removeWaiter(meta.Key)
+	}
 	r.clearInvalidPeerWork(ch, meta)
 	r.evictInvalidPeerSessions(r.invalidatedReplicationPeers(previousMeta, meta))
 	stopTimers(r.clearStaleReplicationRetries(meta.Key, meta))
@@ -429,6 +433,26 @@ func metaEqual(a, b core.Meta) bool {
 		}
 	}
 	return true
+}
+
+func snapshotWorkInvalidated(previous, next core.Meta) bool {
+	if previous.Epoch != next.Epoch || previous.Leader != next.Leader {
+		return true
+	}
+	if len(previous.Replicas) != len(next.Replicas) || len(previous.ISR) != len(next.ISR) {
+		return true
+	}
+	for i := range previous.Replicas {
+		if previous.Replicas[i] != next.Replicas[i] {
+			return true
+		}
+	}
+	for i := range previous.ISR {
+		if previous.ISR[i] != next.ISR[i] {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *runtime) startTombstoneCleanup() {

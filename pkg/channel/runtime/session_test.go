@@ -638,6 +638,53 @@ func TestSessionApplyMetaKeepsPeerSessionWhenStillValidOnOtherChannel(t *testing
 	}
 }
 
+func TestSessionApplyMetaDoesNotRecreateEvictedSessionFromStaleInFlightReplication(t *testing.T) {
+	env := newSessionTestEnv(t)
+	key := testChannelKey(309)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(309, 1, 1, []core.NodeID{1, 2, 3}))
+
+	env.runtime.enqueueReplication(key, 2)
+	env.runtime.runScheduler()
+	session2 := env.sessions.session(2)
+	if got := session2.sendCount(); got != 1 {
+		t.Fatalf("expected initial replication send, got %d", got)
+	}
+
+	if err := env.runtime.ApplyMeta(testMetaLocal(309, 2, 1, []core.NodeID{1, 3})); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+	if got := session2.closeCount(); got != 1 {
+		t.Fatalf("expected stale peer session to be evicted and closed, got close count %d", got)
+	}
+
+	if err := env.runtime.sendEnvelope(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Epoch:      1,
+		Generation: 1,
+		RequestID:  9001,
+		Kind:       MessageKindFetchRequest,
+		FetchRequest: &FetchRequestEnvelope{
+			ChannelKey:  key,
+			Epoch:       1,
+			Generation:  1,
+			ReplicaID:   1,
+			FetchOffset: 1,
+			OffsetEpoch: 1,
+			MaxBytes:    128,
+		},
+	}); err != nil {
+		t.Fatalf("sendEnvelope() error = %v", err)
+	}
+
+	if got := env.sessions.createdFor(2); got != 1 {
+		t.Fatalf("expected stale send to not recreate peer session, got created count %d", got)
+	}
+	if got := session2.sendCount(); got != 1 {
+		t.Fatalf("expected stale replication not to send after meta churn, got %d sends", got)
+	}
+}
+
 func TestSessionApplyMetaFailureLeavesCachedChannelMetaUnchanged(t *testing.T) {
 	env := newSessionTestEnv(t)
 	initial := testMetaLocal(31, 1, 2, []core.NodeID{1, 2})

@@ -166,6 +166,13 @@ func (c *channel) clearInvalidReplicationPeers(allow func(core.NodeID) bool) {
 	c.mu.Unlock()
 }
 
+func (c *channel) clearSnapshotWork() {
+	c.mu.Lock()
+	c.snapshotBytes = 0
+	c.pending &^= taskSnapshot
+	c.mu.Unlock()
+}
+
 type nodeIDQueue struct {
 	items []core.NodeID
 	head  int

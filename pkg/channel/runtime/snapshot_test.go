@@ -219,6 +219,63 @@ func TestSnapshotCompletionSkipsRemovedWaitersAndAdvancesLiveSnapshot(t *testing
 	}
 }
 
+func TestSnapshotApplyMetaPurgesStaleWaitingSnapshotWork(t *testing.T) {
+	env := newSnapshotTestEnv(t, func(cfg *Config) {
+		cfg.Limits.MaxSnapshotInflight = 1
+	})
+	key := testChannelKey(77)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(77, 1, 1, []core.NodeID{1, 2}))
+
+	if !env.runtime.snapshots.begin(1) {
+		t.Fatal("expected to reserve one inflight snapshot")
+	}
+	env.runtime.queueSnapshotChunk(key, 256)
+	env.runtime.runScheduler()
+	if got := env.runtime.queuedSnapshotGroups(); got != 1 {
+		t.Fatalf("expected queued snapshot waiter before meta churn, got %d", got)
+	}
+
+	if err := env.runtime.ApplyMeta(testMetaLocal(77, 2, 1, []core.NodeID{1, 2, 3})); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+	if got := env.runtime.queuedSnapshotGroups(); got != 0 {
+		t.Fatalf("expected ApplyMeta to purge stale snapshot waiter, got %d", got)
+	}
+}
+
+func TestSnapshotApplyMetaClearsStaleSnapshotBytes(t *testing.T) {
+	env := newSnapshotTestEnv(t, func(cfg *Config) {
+		cfg.Limits.MaxSnapshotInflight = 1
+	})
+	key := testChannelKey(78)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(78, 1, 1, []core.NodeID{1, 2}))
+
+	if !env.runtime.snapshots.begin(1) {
+		t.Fatal("expected to reserve one inflight snapshot")
+	}
+	env.runtime.queueSnapshotChunk(key, 512)
+	env.runtime.runScheduler()
+
+	if err := env.runtime.ApplyMeta(testMetaLocal(78, 2, 1, []core.NodeID{1, 2, 3})); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+
+	ch, ok := env.runtime.lookupChannel(key)
+	if !ok {
+		t.Fatal("expected channel to exist")
+	}
+	ch.mu.Lock()
+	gotBytes := ch.snapshotBytes
+	gotPending := ch.pending&taskSnapshot != 0
+	ch.mu.Unlock()
+	if gotBytes != 0 {
+		t.Fatalf("expected stale snapshot bytes to be cleared, got %d", gotBytes)
+	}
+	if gotPending {
+		t.Fatal("expected stale snapshot task marker to be cleared")
+	}
+}
+
 type snapshotTestEnv struct {
 	runtime  *runtime
 	clock    *snapshotManualClock

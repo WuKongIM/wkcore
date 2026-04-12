@@ -293,6 +293,12 @@ func (r *runtime) sendEnvelope(env Envelope) error {
 	if r.isClosed() {
 		return ErrChannelNotFound
 	}
+	if r.shouldDropOutboundEnvelope(env) {
+		if env.Kind == MessageKindFetchRequest {
+			r.clearReplicationRetry(env.ChannelKey, env.Peer)
+		}
+		return nil
+	}
 	env = r.refreshFetchEnvelope(env)
 	trackInflight := env.Kind == MessageKindFetchRequest
 
@@ -331,6 +337,21 @@ func (r *runtime) sendEnvelope(env Envelope) error {
 		return err
 	}
 	return nil
+}
+
+func (r *runtime) shouldDropOutboundEnvelope(env Envelope) bool {
+	ch, ok := r.lookupChannel(env.ChannelKey)
+	if !ok {
+		return true
+	}
+	if env.Generation != 0 && ch.gen != env.Generation {
+		return true
+	}
+	switch env.Kind {
+	case MessageKindFetchRequest, MessageKindProgressAck:
+		return !r.isReplicationPeerValid(ch.metaSnapshot(), env.Peer)
+	}
+	return false
 }
 
 func (r *runtime) refreshFetchEnvelope(env Envelope) Envelope {
