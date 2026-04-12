@@ -23,7 +23,7 @@ func TestSnapshotTasksRespectMaxSnapshotInflight(t *testing.T) {
 	}
 }
 
-func TestRecoveryBandwidthLimiterThrottlesSnapshotChunks(t *testing.T) {
+func TestSnapshotRecoveryBandwidthLimiterThrottlesSnapshotChunks(t *testing.T) {
 	env := newSnapshotTestEnv(t, func(cfg *Config) {
 		cfg.Limits.MaxRecoveryBytesPerSecond = 128
 	})
