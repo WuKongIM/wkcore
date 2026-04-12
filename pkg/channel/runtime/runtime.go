@@ -164,6 +164,9 @@ func (r *runtime) RemoveChannel(key core.ChannelKey) error {
 	delete(shard.channels, key)
 	shard.mu.Unlock()
 	stopTimers(r.clearReplicationRetries(key, 0, false))
+	for _, peer := range r.peerRequests.clearChannel(key) {
+		r.drainPeerQueue(peer)
+	}
 
 	if r.cfg.Limits.MaxChannels > 0 {
 		r.releaseChannelSlot()

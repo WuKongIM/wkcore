@@ -133,6 +133,14 @@ func (r *runtime) processSnapshot(key core.ChannelKey) {
 	}
 
 	bytes := ch.drainSnapshotBytes()
+	if bytes <= 0 {
+		r.completeSnapshot(key)
+		return
+	}
+	go r.throttleSnapshot(key, bytes)
+}
+
+func (r *runtime) throttleSnapshot(key core.ChannelKey, bytes int64) {
 	r.snapshotThrottle.Wait(bytes)
 	r.completeSnapshot(key)
 }

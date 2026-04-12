@@ -98,6 +98,36 @@ func (s *peerRequestState) releaseChannel(key core.ChannelKey, peer core.NodeID)
 	delete(s.groups, channelPeerKey{channelKey: key, peer: peer})
 }
 
+func (s *peerRequestState) clearChannel(key core.ChannelKey) []core.NodeID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	affected := make(map[core.NodeID]struct{})
+	for channelPeer := range s.groups {
+		if channelPeer.channelKey != key {
+			continue
+		}
+		delete(s.groups, channelPeer)
+		if s.inflight[channelPeer.peer] > 0 {
+			s.inflight[channelPeer.peer]--
+		}
+		affected[channelPeer.peer] = struct{}{}
+	}
+	for peer, queue := range s.queued {
+		if queue == nil {
+			continue
+		}
+		if queue.dropChannel(key) {
+			affected[peer] = struct{}{}
+		}
+	}
+	peers := make([]core.NodeID, 0, len(affected))
+	for peer := range affected {
+		peers = append(peers, peer)
+	}
+	return peers
+}
+
 func (s *peerRequestState) releaseInflightForEnvelope(env Envelope) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -174,6 +204,30 @@ func (q *peerEnvelopeQueue) pop() (Envelope, bool) {
 
 func (q *peerEnvelopeQueue) len() int {
 	return len(q.items) - q.head
+}
+
+func (q *peerEnvelopeQueue) dropChannel(key core.ChannelKey) bool {
+	if q.head >= len(q.items) {
+		return false
+	}
+
+	write := 0
+	removed := false
+	for i := q.head; i < len(q.items); i++ {
+		env := q.items[i]
+		if env.ChannelKey == key {
+			removed = true
+			continue
+		}
+		q.items[write] = env
+		write++
+	}
+	for i := write; i < len(q.items); i++ {
+		q.items[i] = Envelope{}
+	}
+	q.items = q.items[:write]
+	q.head = 0
+	return removed
 }
 
 func (q *peerEnvelopeQueue) compact() {

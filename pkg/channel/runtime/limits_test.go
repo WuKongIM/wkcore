@@ -297,6 +297,39 @@ func TestLimitsTombstonedFetchResponseDoesNotReleaseCurrentGenerationInflight(t 
 	}
 }
 
+func TestLimitsRemoveChannelClearsPeerInflightAndQueuedState(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Limits.MaxFetchInflightPeer = 1
+	})
+	firstKey := testChannelKey(921)
+	secondKey := testChannelKey(922)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(921, 3, 1, []core.NodeID{1, 2}))
+	mustEnsureLocal(t, env.runtime, testMetaLocal(922, 3, 1, []core.NodeID{1, 2}))
+
+	env.runtime.enqueueReplication(firstKey, 2)
+	env.runtime.enqueueReplication(secondKey, 2)
+	env.runtime.runScheduler()
+
+	session := env.sessions.session(2)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected first request to be in-flight, got %d sends", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("expected second request queued, got %d", got)
+	}
+
+	if err := env.runtime.RemoveChannel(firstKey); err != nil {
+		t.Fatalf("RemoveChannel() error = %v", err)
+	}
+
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("expected queued second request to drain after first channel removal, got %d sends", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 0 {
+		t.Fatalf("expected peer queue to be clear after removal cleanup, got %d", got)
+	}
+}
+
 func TestLimitsHardBackpressureQueuesWithoutSending(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.Limits.MaxFetchInflightPeer = 2

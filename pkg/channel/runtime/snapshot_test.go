@@ -32,9 +32,15 @@ func TestSnapshotRecoveryBandwidthLimiterThrottlesSnapshotChunks(t *testing.T) {
 	startedAt := env.clock.Now()
 	env.runtime.queueSnapshotChunk(testChannelKey(63), 256)
 	env.runtime.runScheduler()
-	if env.clock.Now().Sub(startedAt) < time.Second {
-		t.Fatalf("expected throttling delay")
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if env.clock.Now().Sub(startedAt) >= time.Second {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
+	t.Fatalf("expected throttling delay")
 }
 
 func TestSnapshotTaskRequeuesWhenInflightLimitReached(t *testing.T) {
@@ -80,15 +86,51 @@ func TestSnapshotWaitingQueueIsFIFO(t *testing.T) {
 	env.runtime.completeSnapshot("")
 	env.runtime.runScheduler()
 
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		env.runtime.runScheduler()
+		if len(env.throttle.values) == 3 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
 	if len(env.throttle.values) != 3 || env.throttle.values[0] != 101 || env.throttle.values[1] != 102 || env.throttle.values[2] != 103 {
 		t.Fatalf("expected FIFO throttle trace [101 102 103], got %v", env.throttle.values)
 	}
+}
+
+func TestSnapshotThrottlingDoesNotBlockUnrelatedReplication(t *testing.T) {
+	env := newSnapshotTestEnv(t, func(cfg *Config) {
+		cfg.AutoRunScheduler = true
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(69, 1, 1, []core.NodeID{1, 2}))
+	mustEnsureLocal(t, env.runtime, testMetaLocal(70, 1, 1, []core.NodeID{1, 2}))
+
+	blocking := newBlockingSnapshotThrottle()
+	env.runtime.snapshotThrottle = blocking
+
+	env.runtime.queueSnapshotChunk(testChannelKey(69), 256)
+	select {
+	case <-blocking.started:
+	case <-time.After(time.Second):
+		t.Fatal("expected snapshot throttle to start")
+	}
+
+	env.runtime.enqueueReplication(testChannelKey(70), 2)
+	time.Sleep(30 * time.Millisecond)
+	if got := env.sessions.session(2).sendCount(); got == 0 {
+		t.Fatal("expected replication to make progress while snapshot throttle is blocked")
+	}
+
+	close(blocking.release)
 }
 
 type snapshotTestEnv struct {
 	runtime  *runtime
 	clock    *snapshotManualClock
 	throttle *fakeSnapshotThrottle
+	sessions *sessionPeerSessionManager
 }
 
 func newSnapshotTestEnv(t *testing.T, mutate func(*Config)) *snapshotTestEnv {
@@ -127,6 +169,7 @@ func newSnapshotTestEnv(t *testing.T, mutate func(*Config)) *snapshotTestEnv {
 		runtime:  impl,
 		clock:    clock,
 		throttle: throttle,
+		sessions: sessions,
 	}
 }
 
@@ -161,4 +204,27 @@ func (t *fakeSnapshotThrottle) Wait(bytes int64) {
 		}
 		t.advance(time.Duration(bytes) * time.Second / time.Duration(rate))
 	}
+}
+
+type blockingSnapshotThrottle struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func newBlockingSnapshotThrottle() *blockingSnapshotThrottle {
+	return &blockingSnapshotThrottle{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (t *blockingSnapshotThrottle) Wait(bytes int64) {
+	if bytes <= 0 {
+		return
+	}
+	select {
+	case t.started <- struct{}{}:
+	default:
+	}
+	<-t.release
 }
