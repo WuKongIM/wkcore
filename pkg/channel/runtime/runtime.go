@@ -19,32 +19,33 @@ type shard struct {
 }
 
 type runtime struct {
-	cfg                   Config
-	shards                [runtimeShardCount]shard
-	tombstones            *tombstoneManager
-	replicaFactory        ReplicaFactory
-	generationStore       GenerationStore
-	scheduler             *scheduler
-	schedulerPopHook      func(core.ChannelKey)
-	beforePeerSessionHook func(Envelope)
-	sessions              peerSessionCache
-	peerRequests          peerRequestState
-	snapshots             snapshotState
-	snapshotThrottle      snapshotThrottle
-	requestID             atomic.Uint64
-	replicationRetryMu    sync.Mutex
-	replicationRetry      map[core.ChannelKey]map[core.NodeID]*replicationRetryState
-	backpressureRetry     map[core.NodeID]*backpressureRetryState
-	backpressureMu        sync.Mutex
-	sendCoordMu           sync.Mutex
-	schedulerDrainMu      sync.Mutex
-	schedulerWorker       atomic.Bool
-	closed                atomic.Bool
-	countMu               sync.Mutex
-	channelCount          int
-	cleanupStop           chan struct{}
-	cleanupDone           chan struct{}
-	cleanupOnce           sync.Once
+	cfg                         Config
+	shards                      [runtimeShardCount]shard
+	tombstones                  *tombstoneManager
+	replicaFactory              ReplicaFactory
+	generationStore             GenerationStore
+	scheduler                   *scheduler
+	schedulerPopHook            func(core.ChannelKey)
+	beforePeerSessionHook       func(Envelope)
+	afterOutboundValidationHook func(Envelope)
+	sessions                    peerSessionCache
+	peerRequests                peerRequestState
+	snapshots                   snapshotState
+	snapshotThrottle            snapshotThrottle
+	requestID                   atomic.Uint64
+	replicationRetryMu          sync.Mutex
+	replicationRetry            map[core.ChannelKey]map[core.NodeID]*replicationRetryState
+	backpressureRetry           map[core.NodeID]*backpressureRetryState
+	backpressureMu              sync.Mutex
+	sendCoordMu                 sync.Mutex
+	schedulerDrainMu            sync.Mutex
+	schedulerWorker             atomic.Bool
+	closed                      atomic.Bool
+	countMu                     sync.Mutex
+	channelCount                int
+	cleanupStop                 chan struct{}
+	cleanupDone                 chan struct{}
+	cleanupOnce                 sync.Once
 }
 
 func New(cfg Config) (Runtime, error) {
@@ -156,28 +157,31 @@ func (r *runtime) EnsureChannel(meta core.Meta) error {
 
 func (r *runtime) RemoveChannel(key core.ChannelKey) error {
 	shard := r.shardFor(key)
+	r.sendCoordMu.Lock()
 	shard.mu.Lock()
 	ch, ok := shard.channels[key]
 	if !ok {
 		shard.mu.Unlock()
+		r.sendCoordMu.Unlock()
 		return ErrChannelNotFound
 	}
 	if err := ch.replica.Tombstone(); err != nil {
 		shard.mu.Unlock()
+		r.sendCoordMu.Unlock()
 		return err
 	}
 	previousMeta := ch.metaSnapshot()
 	r.tombstones.add(key, ch.gen, r.cfg.Now().Add(r.cfg.Tombstones.TombstoneTTL))
 	delete(shard.channels, key)
 	shard.mu.Unlock()
+	r.snapshots.removeWaiter(key)
+	r.evictInvalidPeerSessions(r.activeReplicationPeers(previousMeta))
+	r.sendCoordMu.Unlock()
+
 	stopTimers(r.clearReplicationRetries(key, 0, false))
 	for _, peer := range r.peerRequests.clearChannel(key) {
 		r.drainPeerQueue(peer)
 	}
-	r.sendCoordMu.Lock()
-	r.snapshots.removeWaiter(key)
-	r.evictInvalidPeerSessions(r.activeReplicationPeers(previousMeta))
-	r.sendCoordMu.Unlock()
 
 	if r.cfg.Limits.MaxChannels > 0 {
 		r.releaseChannelSlot()

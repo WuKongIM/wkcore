@@ -312,6 +312,9 @@ func (r *runtime) sendEnvelope(env Envelope) error {
 		}
 		return nil
 	}
+	if r.afterOutboundValidationHook != nil {
+		r.afterOutboundValidationHook(env)
+	}
 	trackInflight := env.Kind == MessageKindFetchRequest
 
 	session := r.peerSession(env.Peer)

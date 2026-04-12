@@ -751,6 +751,83 @@ func TestSessionApplyMetaDuringSendRaceDoesNotRecreateInvalidPeerSession(t *test
 	}
 }
 
+func TestSessionRemoveChannelDuringSendRaceDropsStaleReplication(t *testing.T) {
+	env := newSessionTestEnv(t)
+	key := testChannelKey(311)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(311, 1, 1, []core.NodeID{1, 2, 3}))
+
+	env.runtime.enqueueReplication(key, 2)
+	env.runtime.runScheduler()
+	session2 := env.sessions.session(2)
+	if got := session2.sendCount(); got != 1 {
+		t.Fatalf("expected initial replication send, got %d", got)
+	}
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		Epoch:      1,
+		RequestID:  session2.sent[0].RequestID,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 1,
+		},
+	})
+
+	paused := make(chan struct{}, 1)
+	release := make(chan struct{})
+	env.runtime.afterOutboundValidationHook = func(outbound Envelope) {
+		if outbound.Kind != MessageKindFetchRequest || outbound.ChannelKey != key || outbound.Peer != 2 {
+			return
+		}
+		select {
+		case paused <- struct{}{}:
+		default:
+		}
+		<-release
+	}
+
+	env.runtime.enqueueReplication(key, 2)
+	doneScheduler := make(chan struct{})
+	go func() {
+		env.runtime.runScheduler()
+		close(doneScheduler)
+	}()
+	<-paused
+
+	doneRemove := make(chan error, 1)
+	go func() {
+		doneRemove <- env.runtime.RemoveChannel(key)
+	}()
+	select {
+	case err := <-doneRemove:
+		t.Fatalf("RemoveChannel() returned before in-flight send released: %v", err)
+	default:
+	}
+	if _, ok := env.runtime.lookupChannel(key); !ok {
+		t.Fatal("expected channel to remain visible while in-flight send still holds send serialization")
+	}
+
+	close(release)
+	select {
+	case <-doneScheduler:
+	case <-time.After(time.Second):
+		t.Fatal("runScheduler did not finish")
+	}
+	select {
+	case err := <-doneRemove:
+		if err != nil {
+			t.Fatalf("RemoveChannel() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RemoveChannel did not finish")
+	}
+
+	if _, ok := env.runtime.lookupChannel(key); ok {
+		t.Fatal("expected channel to be removed after RemoveChannel returns")
+	}
+}
+
 func TestSessionApplyMetaFailureLeavesCachedChannelMetaUnchanged(t *testing.T) {
 	env := newSessionTestEnv(t)
 	initial := testMetaLocal(31, 1, 2, []core.NodeID{1, 2})
