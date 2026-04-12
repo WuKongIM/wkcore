@@ -4,6 +4,7 @@ import (
 	"errors"
 	"hash/fnv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	core "github.com/WuKongIM/WuKongIM/pkg/channel"
@@ -18,16 +19,24 @@ type shard struct {
 }
 
 type runtime struct {
-	cfg             Config
-	shards          [runtimeShardCount]shard
-	tombstones      *tombstoneManager
-	replicaFactory  ReplicaFactory
-	generationStore GenerationStore
-	countMu         sync.Mutex
-	channelCount    int
-	cleanupStop     chan struct{}
-	cleanupDone     chan struct{}
-	cleanupOnce     sync.Once
+	cfg                Config
+	shards             [runtimeShardCount]shard
+	tombstones         *tombstoneManager
+	replicaFactory     ReplicaFactory
+	generationStore    GenerationStore
+	scheduler          *scheduler
+	sessions           peerSessionCache
+	peerRequests       peerRequestState
+	snapshots          snapshotState
+	snapshotThrottle   snapshotThrottle
+	requestID          atomic.Uint64
+	replicationRetryMu sync.Mutex
+	replicationRetry   map[core.ChannelKey]map[core.NodeID]*replicationRetryState
+	countMu            sync.Mutex
+	channelCount       int
+	cleanupStop        chan struct{}
+	cleanupDone        chan struct{}
+	cleanupOnce        sync.Once
 }
 
 func New(cfg Config) (Runtime, error) {
@@ -40,24 +49,42 @@ func New(cfg Config) (Runtime, error) {
 	if cfg.GenerationStore == nil {
 		return nil, ErrInvalidConfig
 	}
+	if cfg.Limits.MaxChannels < 0 || cfg.Limits.MaxFetchInflightPeer < 0 || cfg.Limits.MaxSnapshotInflight < 0 {
+		return nil, ErrInvalidConfig
+	}
 	if cfg.Tombstones.TombstoneTTL <= 0 {
 		return nil, ErrInvalidConfig
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.FollowerReplicationRetryInterval <= 0 {
+		cfg.FollowerReplicationRetryInterval = defaultFollowerReplicationRetryDelay
+	}
+	if cfg.Transport == nil {
+		cfg.Transport = &nopTransport{}
+	}
+	if cfg.PeerSessions == nil {
+		cfg.PeerSessions = nopPeerSessionManager{}
+	}
 
 	r := &runtime{
-		cfg:             cfg,
-		tombstones:      newTombstoneManager(),
-		replicaFactory:  cfg.ReplicaFactory,
-		generationStore: cfg.GenerationStore,
-		cleanupStop:     make(chan struct{}),
-		cleanupDone:     make(chan struct{}),
+		cfg:              cfg,
+		tombstones:       newTombstoneManager(),
+		replicaFactory:   cfg.ReplicaFactory,
+		generationStore:  cfg.GenerationStore,
+		scheduler:        newScheduler(),
+		sessions:         newPeerSessionCache(),
+		peerRequests:     newPeerRequestState(),
+		snapshotThrottle: newSnapshotThrottle(cfg.Limits.MaxRecoveryBytesPerSecond, time.Sleep),
+		replicationRetry: make(map[core.ChannelKey]map[core.NodeID]*replicationRetryState),
+		cleanupStop:      make(chan struct{}),
+		cleanupDone:      make(chan struct{}),
 	}
 	for i := range r.shards {
 		r.shards[i].channels = make(map[core.ChannelKey]*channel)
 	}
+	cfg.Transport.RegisterHandler(r.handleEnvelope)
 	r.startTombstoneCleanup()
 	return r, nil
 }
@@ -65,15 +92,16 @@ func New(cfg Config) (Runtime, error) {
 func (r *runtime) EnsureChannel(meta core.Meta) error {
 	shard := r.shardFor(meta.Key)
 	shard.mu.Lock()
-	defer shard.mu.Unlock()
 
 	if _, ok := shard.channels[meta.Key]; ok {
+		shard.mu.Unlock()
 		return ErrChannelExists
 	}
 
 	reserved := false
 	if r.cfg.Limits.MaxChannels > 0 {
 		if !r.tryReserveChannelSlot() {
+			shard.mu.Unlock()
 			return ErrTooManyChannels
 		}
 		reserved = true
@@ -81,6 +109,7 @@ func (r *runtime) EnsureChannel(meta core.Meta) error {
 
 	generation, err := r.allocateGeneration(meta.Key)
 	if err != nil {
+		shard.mu.Unlock()
 		if reserved {
 			r.releaseChannelSlot()
 		}
@@ -88,12 +117,14 @@ func (r *runtime) EnsureChannel(meta core.Meta) error {
 	}
 	rep, err := r.replicaFactory.New(ChannelConfig{ChannelKey: meta.Key, Generation: generation, Meta: meta})
 	if err != nil {
+		shard.mu.Unlock()
 		if reserved {
 			r.releaseChannelSlot()
 		}
 		return err
 	}
 	if err := applyReplicaMeta(rep, r.cfg.LocalNode, meta); err != nil {
+		shard.mu.Unlock()
 		if reserved {
 			r.releaseChannelSlot()
 		}
@@ -104,8 +135,13 @@ func (r *runtime) EnsureChannel(meta core.Meta) error {
 		return err
 	}
 
-	ch := newChannel(meta.Key, generation, rep, meta, r.cfg.Now)
+	ch := newChannel(meta.Key, generation, rep, meta, r.cfg.Now, r)
 	shard.channels[meta.Key] = ch
+	shard.mu.Unlock()
+
+	if meta.Leader != r.cfg.LocalNode {
+		r.retryReplication(meta.Key, meta.Leader, true)
+	}
 	return nil
 }
 
@@ -124,6 +160,7 @@ func (r *runtime) RemoveChannel(key core.ChannelKey) error {
 	r.tombstones.add(key, ch.gen, r.cfg.Now().Add(r.cfg.Tombstones.TombstoneTTL))
 	delete(shard.channels, key)
 	shard.mu.Unlock()
+	stopTimers(r.clearReplicationRetries(key, 0, false))
 
 	if r.cfg.Limits.MaxChannels > 0 {
 		r.releaseChannelSlot()
@@ -144,6 +181,10 @@ func (r *runtime) ApplyMeta(meta core.Meta) error {
 		return err
 	}
 	ch.setMeta(meta)
+	stopTimers(r.clearStaleReplicationRetries(meta.Key, meta))
+	if meta.Leader != r.cfg.LocalNode {
+		r.retryReplication(meta.Key, meta.Leader, true)
+	}
 	return nil
 }
 
@@ -302,6 +343,7 @@ func (r *runtime) stopTombstoneCleanup() {
 
 func (r *runtime) Close() error {
 	r.stopTombstoneCleanup()
+	stopTimers(r.clearAllReplicationRetries())
 
 	reps := make([]replica.Replica, 0)
 	for i := range r.shards {

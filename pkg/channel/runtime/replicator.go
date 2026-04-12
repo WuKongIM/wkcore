@@ -1,0 +1,317 @@
+package runtime
+
+import (
+	"errors"
+	"slices"
+	"time"
+
+	core "github.com/WuKongIM/WuKongIM/pkg/channel"
+)
+
+const (
+	defaultFetchMaxBytes                 = 1 << 20
+	defaultFollowerReplicationRetryDelay = 10 * time.Millisecond
+)
+
+type replicationRetryState struct {
+	pending      bool
+	timer        *time.Timer
+	timerVersion uint64
+}
+
+func (r *runtime) OnReplication(key core.ChannelKey) {
+	r.processReplication(key)
+}
+
+func (r *runtime) enqueueReplication(key core.ChannelKey, peer core.NodeID) {
+	ch, ok := r.lookupChannel(key)
+	if !ok {
+		return
+	}
+	ch.enqueueReplication(peer)
+	ch.markReplication()
+	r.enqueueScheduler(key, PriorityNormal)
+}
+
+func (r *runtime) processReplication(key core.ChannelKey) {
+	ch, ok := r.lookupChannel(key)
+	if !ok {
+		return
+	}
+
+	var failedPeers []core.NodeID
+	scheduleRetry := false
+	for {
+		peer, ok := ch.popReplicationPeer()
+		if !ok {
+			break
+		}
+		state := ch.Status()
+		err := r.sendEnvelope(Envelope{
+			Peer:       peer,
+			ChannelKey: key,
+			Epoch:      state.Epoch,
+			Generation: ch.gen,
+			RequestID:  r.requestID.Add(1),
+			Kind:       MessageKindFetchRequest,
+			FetchRequest: &FetchRequestEnvelope{
+				ChannelKey:  key,
+				Epoch:       state.Epoch,
+				Generation:  ch.gen,
+				ReplicaID:   r.cfg.LocalNode,
+				FetchOffset: state.LEO,
+				OffsetEpoch: state.OffsetEpoch,
+				MaxBytes:    defaultFetchMaxBytes,
+			},
+		})
+		if err == nil {
+			r.clearReplicationRetry(key, peer)
+			continue
+		}
+		if !errors.Is(err, ErrBackpressured) {
+			failedPeers = append(failedPeers, peer)
+			if r.markReplicationRetry(key, peer) {
+				scheduleRetry = true
+			}
+		}
+	}
+
+	if len(failedPeers) == 0 {
+		return
+	}
+	for _, peer := range failedPeers {
+		ch.enqueueReplication(peer)
+		r.scheduleFollowerReplication(key, peer)
+	}
+	ch.markReplication()
+	if scheduleRetry {
+		r.enqueueScheduler(key, PriorityNormal)
+	}
+}
+
+func (r *runtime) scheduleFollowerReplication(key core.ChannelKey, leader core.NodeID) {
+	ch, ok := r.lookupChannel(key)
+	if !ok {
+		return
+	}
+	meta := ch.metaSnapshot()
+
+	r.replicationRetryMu.Lock()
+	defer r.replicationRetryMu.Unlock()
+	if !r.isReplicationPeerValid(meta, leader) {
+		return
+	}
+
+	state := r.replicationRetryStateLocked(key, leader)
+	if state.timer != nil {
+		return
+	}
+	state.timerVersion++
+	version := state.timerVersion
+	state.timer = time.AfterFunc(r.cfg.FollowerReplicationRetryInterval, func() {
+		r.fireFollowerReplicationRetry(key, leader, version)
+	})
+}
+
+func (r *runtime) retryReplication(key core.ChannelKey, peer core.NodeID, schedule bool) {
+	ch, ok := r.lookupChannel(key)
+	if !ok {
+		return
+	}
+	ch.enqueueReplication(peer)
+	ch.markReplication()
+	if schedule && r.markReplicationRetry(key, peer) {
+		r.enqueueScheduler(key, PriorityNormal)
+	}
+}
+
+func (r *runtime) markReplicationRetry(key core.ChannelKey, peer core.NodeID) bool {
+	r.replicationRetryMu.Lock()
+	defer r.replicationRetryMu.Unlock()
+
+	state := r.replicationRetryStateLocked(key, peer)
+	if state.pending {
+		return false
+	}
+	state.pending = true
+	return true
+}
+
+func (r *runtime) clearReplicationRetry(key core.ChannelKey, peer core.NodeID) {
+	r.replicationRetryMu.Lock()
+	r.clearReplicationRetryLocked(key, peer)
+	r.replicationRetryMu.Unlock()
+}
+
+func (r *runtime) clearStaleReplicationRetries(key core.ChannelKey, meta core.Meta) []*time.Timer {
+	r.replicationRetryMu.Lock()
+	defer r.replicationRetryMu.Unlock()
+
+	peers, ok := r.replicationRetry[key]
+	if !ok {
+		return nil
+	}
+
+	timers := make([]*time.Timer, 0, len(peers))
+	for peer, state := range peers {
+		if r.isReplicationPeerValid(meta, peer) {
+			continue
+		}
+		state.pending = false
+		state.timerVersion++
+		if state.timer != nil {
+			timers = append(timers, state.timer)
+			state.timer = nil
+		}
+		delete(peers, peer)
+	}
+	if len(peers) == 0 {
+		delete(r.replicationRetry, key)
+	}
+	return timers
+}
+
+func (r *runtime) clearReplicationRetries(key core.ChannelKey, keepPeer core.NodeID, keepMatching bool) []*time.Timer {
+	r.replicationRetryMu.Lock()
+	defer r.replicationRetryMu.Unlock()
+
+	peers, ok := r.replicationRetry[key]
+	if !ok {
+		return nil
+	}
+
+	timers := make([]*time.Timer, 0, len(peers))
+	for peer, state := range peers {
+		if keepMatching && peer == keepPeer {
+			continue
+		}
+		state.pending = false
+		state.timerVersion++
+		if state.timer != nil {
+			timers = append(timers, state.timer)
+			state.timer = nil
+		}
+		delete(peers, peer)
+	}
+	if len(peers) == 0 {
+		delete(r.replicationRetry, key)
+	}
+	return timers
+}
+
+func (r *runtime) clearAllReplicationRetries() []*time.Timer {
+	r.replicationRetryMu.Lock()
+	defer r.replicationRetryMu.Unlock()
+
+	if len(r.replicationRetry) == 0 {
+		return nil
+	}
+	var timers []*time.Timer
+	for key, peers := range r.replicationRetry {
+		for peer, state := range peers {
+			state.pending = false
+			state.timerVersion++
+			if state.timer != nil {
+				timers = append(timers, state.timer)
+				state.timer = nil
+			}
+			delete(peers, peer)
+		}
+		delete(r.replicationRetry, key)
+	}
+	return timers
+}
+
+func (r *runtime) fireFollowerReplicationRetry(key core.ChannelKey, peer core.NodeID, version uint64) {
+	r.replicationRetryMu.Lock()
+	peers, ok := r.replicationRetry[key]
+	if !ok {
+		r.replicationRetryMu.Unlock()
+		return
+	}
+	state, ok := peers[peer]
+	if !ok || state.timer == nil || state.timerVersion != version {
+		r.replicationRetryMu.Unlock()
+		return
+	}
+	state.timer = nil
+
+	ch, ok := r.lookupChannel(key)
+	if !ok {
+		state.pending = false
+		r.dropReplicationRetryStateLocked(key, peer)
+		r.replicationRetryMu.Unlock()
+		return
+	}
+	meta := ch.metaSnapshot()
+	if !r.isReplicationPeerValid(meta, peer) {
+		state.pending = false
+		r.dropReplicationRetryStateLocked(key, peer)
+		r.replicationRetryMu.Unlock()
+		return
+	}
+	r.replicationRetryMu.Unlock()
+
+	r.retryReplication(key, peer, false)
+	r.enqueueScheduler(key, PriorityNormal)
+}
+
+func (r *runtime) replicationRetryStateLocked(key core.ChannelKey, peer core.NodeID) *replicationRetryState {
+	peers, ok := r.replicationRetry[key]
+	if !ok {
+		peers = make(map[core.NodeID]*replicationRetryState)
+		r.replicationRetry[key] = peers
+	}
+	state, ok := peers[peer]
+	if !ok {
+		state = &replicationRetryState{}
+		peers[peer] = state
+	}
+	return state
+}
+
+func (r *runtime) clearReplicationRetryLocked(key core.ChannelKey, peer core.NodeID) {
+	peers, ok := r.replicationRetry[key]
+	if !ok {
+		return
+	}
+	state, ok := peers[peer]
+	if !ok {
+		return
+	}
+	state.pending = false
+	r.dropReplicationRetryStateLocked(key, peer)
+}
+
+func (r *runtime) dropReplicationRetryStateLocked(key core.ChannelKey, peer core.NodeID) {
+	peers, ok := r.replicationRetry[key]
+	if !ok {
+		return
+	}
+	state, ok := peers[peer]
+	if !ok || state.pending || state.timer != nil {
+		return
+	}
+	delete(peers, peer)
+	if len(peers) == 0 {
+		delete(r.replicationRetry, key)
+	}
+}
+
+func stopTimers(timers []*time.Timer) {
+	for _, timer := range timers {
+		if timer != nil {
+			timer.Stop()
+		}
+	}
+}
+
+func (r *runtime) isReplicationPeerValid(meta core.Meta, peer core.NodeID) bool {
+	if peer == 0 || peer == r.cfg.LocalNode {
+		return false
+	}
+	if meta.Leader == r.cfg.LocalNode {
+		return slices.Contains(meta.Replicas, peer)
+	}
+	return meta.Leader == peer
+}
