@@ -19,30 +19,32 @@ type shard struct {
 }
 
 type runtime struct {
-	cfg                Config
-	shards             [runtimeShardCount]shard
-	tombstones         *tombstoneManager
-	replicaFactory     ReplicaFactory
-	generationStore    GenerationStore
-	scheduler          *scheduler
-	schedulerPopHook   func(core.ChannelKey)
-	sessions           peerSessionCache
-	peerRequests       peerRequestState
-	snapshots          snapshotState
-	snapshotThrottle   snapshotThrottle
-	requestID          atomic.Uint64
-	replicationRetryMu sync.Mutex
-	replicationRetry   map[core.ChannelKey]map[core.NodeID]*replicationRetryState
-	backpressureRetry  map[core.NodeID]*backpressureRetryState
-	backpressureMu     sync.Mutex
-	schedulerDrainMu   sync.Mutex
-	schedulerWorker    atomic.Bool
-	closed             atomic.Bool
-	countMu            sync.Mutex
-	channelCount       int
-	cleanupStop        chan struct{}
-	cleanupDone        chan struct{}
-	cleanupOnce        sync.Once
+	cfg                   Config
+	shards                [runtimeShardCount]shard
+	tombstones            *tombstoneManager
+	replicaFactory        ReplicaFactory
+	generationStore       GenerationStore
+	scheduler             *scheduler
+	schedulerPopHook      func(core.ChannelKey)
+	beforePeerSessionHook func(Envelope)
+	sessions              peerSessionCache
+	peerRequests          peerRequestState
+	snapshots             snapshotState
+	snapshotThrottle      snapshotThrottle
+	requestID             atomic.Uint64
+	replicationRetryMu    sync.Mutex
+	replicationRetry      map[core.ChannelKey]map[core.NodeID]*replicationRetryState
+	backpressureRetry     map[core.NodeID]*backpressureRetryState
+	backpressureMu        sync.Mutex
+	sendCoordMu           sync.Mutex
+	schedulerDrainMu      sync.Mutex
+	schedulerWorker       atomic.Bool
+	closed                atomic.Bool
+	countMu               sync.Mutex
+	channelCount          int
+	cleanupStop           chan struct{}
+	cleanupDone           chan struct{}
+	cleanupOnce           sync.Once
 }
 
 func New(cfg Config) (Runtime, error) {
@@ -172,8 +174,10 @@ func (r *runtime) RemoveChannel(key core.ChannelKey) error {
 	for _, peer := range r.peerRequests.clearChannel(key) {
 		r.drainPeerQueue(peer)
 	}
+	r.sendCoordMu.Lock()
 	r.snapshots.removeWaiter(key)
 	r.evictInvalidPeerSessions(r.activeReplicationPeers(previousMeta))
+	r.sendCoordMu.Unlock()
 
 	if r.cfg.Limits.MaxChannels > 0 {
 		r.releaseChannelSlot()
@@ -188,19 +192,24 @@ func (r *runtime) ApplyMeta(meta core.Meta) error {
 	}
 	previousMeta := ch.metaSnapshot()
 	if shouldSkipReplicaApplyMeta(ch, r.cfg.LocalNode, meta) {
+		r.sendCoordMu.Lock()
 		ch.setMeta(meta)
+		r.sendCoordMu.Unlock()
 		return nil
 	}
 	if err := applyReplicaMeta(ch.replica, r.cfg.LocalNode, meta); err != nil {
 		return err
 	}
+	invalidatedPeers := r.invalidatedReplicationPeers(previousMeta, meta)
+	r.sendCoordMu.Lock()
 	ch.setMeta(meta)
 	if snapshotWorkInvalidated(previousMeta, meta) {
 		ch.clearSnapshotWork()
 		r.snapshots.removeWaiter(meta.Key)
 	}
+	r.evictInvalidPeerSessions(invalidatedPeers)
+	r.sendCoordMu.Unlock()
 	r.clearInvalidPeerWork(ch, meta)
-	r.evictInvalidPeerSessions(r.invalidatedReplicationPeers(previousMeta, meta))
 	stopTimers(r.clearStaleReplicationRetries(meta.Key, meta))
 	if meta.Leader != r.cfg.LocalNode {
 		r.retryReplication(meta.Key, meta.Leader, true)

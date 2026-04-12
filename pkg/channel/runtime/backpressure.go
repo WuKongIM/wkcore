@@ -290,6 +290,12 @@ func (q *peerEnvelopeQueue) compact() {
 }
 
 func (r *runtime) sendEnvelope(env Envelope) error {
+	if r.beforePeerSessionHook != nil {
+		r.beforePeerSessionHook(env)
+	}
+	r.sendCoordMu.Lock()
+	defer r.sendCoordMu.Unlock()
+
 	if r.isClosed() {
 		return ErrChannelNotFound
 	}
@@ -300,6 +306,12 @@ func (r *runtime) sendEnvelope(env Envelope) error {
 		return nil
 	}
 	env = r.refreshFetchEnvelope(env)
+	if r.shouldDropOutboundEnvelope(env) {
+		if env.Kind == MessageKindFetchRequest {
+			r.clearReplicationRetry(env.ChannelKey, env.Peer)
+		}
+		return nil
+	}
 	trackInflight := env.Kind == MessageKindFetchRequest
 
 	session := r.peerSession(env.Peer)

@@ -685,6 +685,72 @@ func TestSessionApplyMetaDoesNotRecreateEvictedSessionFromStaleInFlightReplicati
 	}
 }
 
+func TestSessionApplyMetaDuringSendRaceDoesNotRecreateInvalidPeerSession(t *testing.T) {
+	env := newSessionTestEnv(t)
+	key := testChannelKey(310)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(310, 1, 1, []core.NodeID{1, 2, 3}))
+
+	env.runtime.enqueueReplication(key, 2)
+	env.runtime.runScheduler()
+	session2 := env.sessions.session(2)
+	if got := session2.sendCount(); got != 1 {
+		t.Fatalf("expected initial replication send, got %d", got)
+	}
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		Epoch:      1,
+		RequestID:  session2.sent[0].RequestID,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 1,
+		},
+	})
+
+	paused := make(chan struct{}, 1)
+	release := make(chan struct{})
+	env.runtime.beforePeerSessionHook = func(outbound Envelope) {
+		if outbound.Kind != MessageKindFetchRequest || outbound.ChannelKey != key || outbound.Peer != 2 {
+			return
+		}
+		select {
+		case paused <- struct{}{}:
+		default:
+		}
+		<-release
+	}
+
+	env.runtime.enqueueReplication(key, 2)
+	done := make(chan struct{})
+	go func() {
+		env.runtime.runScheduler()
+		close(done)
+	}()
+	<-paused
+
+	if err := env.runtime.ApplyMeta(testMetaLocal(310, 2, 1, []core.NodeID{1, 3})); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+	if got := session2.closeCount(); got != 1 {
+		t.Fatalf("expected stale peer session to be evicted and closed, got close count %d", got)
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runScheduler did not finish")
+	}
+
+	if got := env.sessions.createdFor(2); got != 1 {
+		t.Fatalf("expected raced stale send to not recreate peer session, got created count %d", got)
+	}
+	if got := session2.sendCount(); got != 1 {
+		t.Fatalf("expected raced stale replication not to send after meta churn, got %d sends", got)
+	}
+}
+
 func TestSessionApplyMetaFailureLeavesCachedChannelMetaUnchanged(t *testing.T) {
 	env := newSessionTestEnv(t)
 	initial := testMetaLocal(31, 1, 2, []core.NodeID{1, 2})
