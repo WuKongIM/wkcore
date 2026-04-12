@@ -479,6 +479,48 @@ func TestSessionDelayedFollowerRetrySkipsStaleLeaderAfterMetaChange(t *testing.T
 	}
 }
 
+func TestSessionApplyMetaSkipsQueuedReplicationForRemovedPeer(t *testing.T) {
+	env := newSessionTestEnv(t)
+	key := testChannelKey(303)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(303, 1, 1, []core.NodeID{1, 2, 3}))
+
+	env.runtime.enqueueReplication(key, 2)
+	if err := env.runtime.ApplyMeta(testMetaLocal(303, 2, 1, []core.NodeID{1, 3})); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+	env.runtime.runScheduler()
+
+	if got := env.sessions.session(2).sendCount(); got != 0 {
+		t.Fatalf("expected removed peer to receive no replication after meta change, got %d sends", got)
+	}
+
+	env.runtime.enqueueReplication(key, 3)
+	env.runtime.runScheduler()
+	if got := env.sessions.session(3).sendCount(); got != 1 {
+		t.Fatalf("expected replication to valid peer after meta change, got %d sends", got)
+	}
+}
+
+func TestSessionRuntimeCloseClosesCachedPeerSessions(t *testing.T) {
+	env := newSessionTestEnv(t)
+	key := testChannelKey(304)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(304, 1, 1, []core.NodeID{1, 2, 3}))
+
+	env.runtime.enqueueReplication(key, 2)
+	env.runtime.enqueueReplication(key, 3)
+	env.runtime.runScheduler()
+
+	if err := env.runtime.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if got := env.sessions.session(2).closeCount(); got != 1 {
+		t.Fatalf("expected peer 2 session close count = 1, got %d", got)
+	}
+	if got := env.sessions.session(3).closeCount(); got != 1 {
+		t.Fatalf("expected peer 3 session close count = 1, got %d", got)
+	}
+}
+
 func TestSessionApplyMetaFailureLeavesCachedChannelMetaUnchanged(t *testing.T) {
 	env := newSessionTestEnv(t)
 	initial := testMetaLocal(31, 1, 2, []core.NodeID{1, 2})
@@ -1093,6 +1135,7 @@ type trackingPeerSession struct {
 	mu           sync.Mutex
 	sends        int
 	flushes      int
+	closes       int
 	last         Envelope
 	sent         []Envelope
 	batched      []Envelope
@@ -1151,6 +1194,9 @@ func (s *trackingPeerSession) Backpressure() BackpressureState {
 }
 
 func (s *trackingPeerSession) Close() error {
+	s.mu.Lock()
+	s.closes++
+	s.mu.Unlock()
 	return nil
 }
 
@@ -1170,6 +1216,12 @@ func (s *trackingPeerSession) flushCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.flushes
+}
+
+func (s *trackingPeerSession) closeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closes
 }
 
 func (s *trackingPeerSession) setBackpressure(state BackpressureState) {

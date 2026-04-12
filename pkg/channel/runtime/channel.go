@@ -160,6 +160,12 @@ func (c *channel) drainSnapshotBytes() int64 {
 	return bytes
 }
 
+func (c *channel) clearInvalidReplicationPeers(allow func(core.NodeID) bool) {
+	c.mu.Lock()
+	c.replicationPeers.filter(allow)
+	c.mu.Unlock()
+}
+
 type nodeIDQueue struct {
 	items []core.NodeID
 	head  int
@@ -222,4 +228,19 @@ func (q *nodeIDQueue) compact() {
 	}
 	q.items = q.items[:n]
 	q.head = 0
+}
+
+func (q *nodeIDQueue) filter(allow func(core.NodeID) bool) {
+	if allow == nil {
+		return
+	}
+	filtered := nodeIDQueue{}
+	for i := q.head; i < len(q.items); i++ {
+		nodeID := q.items[i]
+		if !allow(nodeID) {
+			continue
+		}
+		filtered.enqueue(nodeID)
+	}
+	*q = filtered
 }

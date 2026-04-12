@@ -187,11 +187,25 @@ func (r *runtime) ApplyMeta(meta core.Meta) error {
 		return err
 	}
 	ch.setMeta(meta)
+	r.clearInvalidPeerWork(ch, meta)
 	stopTimers(r.clearStaleReplicationRetries(meta.Key, meta))
 	if meta.Leader != r.cfg.LocalNode {
 		r.retryReplication(meta.Key, meta.Leader, true)
 	}
 	return nil
+}
+
+func (r *runtime) clearInvalidPeerWork(ch *channel, meta core.Meta) {
+	if ch == nil {
+		return
+	}
+	allow := func(peer core.NodeID) bool {
+		return r.isReplicationPeerValid(meta, peer)
+	}
+	ch.clearInvalidReplicationPeers(allow)
+	for _, peer := range r.peerRequests.clearChannelInvalidPeers(meta.Key, allow) {
+		r.drainPeerQueue(peer)
+	}
 }
 
 func (r *runtime) Channel(key core.ChannelKey) (ChannelHandle, bool) {
@@ -366,9 +380,20 @@ func (r *runtime) Close() error {
 	r.channelCount = 0
 	r.countMu.Unlock()
 
+	sessions := make([]PeerSession, 0)
+	r.sessions.mu.Lock()
+	for peer, session := range r.sessions.sessions {
+		sessions = append(sessions, session)
+		delete(r.sessions.sessions, peer)
+	}
+	r.sessions.mu.Unlock()
+
 	var err error
 	for _, rep := range reps {
 		err = errors.Join(err, rep.Close())
+	}
+	for _, session := range sessions {
+		err = errors.Join(err, session.Close())
 	}
 	return err
 }

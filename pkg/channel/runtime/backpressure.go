@@ -128,6 +128,42 @@ func (s *peerRequestState) clearChannel(key core.ChannelKey) []core.NodeID {
 	return peers
 }
 
+func (s *peerRequestState) clearChannelInvalidPeers(key core.ChannelKey, allow func(core.NodeID) bool) []core.NodeID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	affected := make(map[core.NodeID]struct{})
+	for channelPeer := range s.groups {
+		if channelPeer.channelKey != key {
+			continue
+		}
+		if allow != nil && allow(channelPeer.peer) {
+			continue
+		}
+		delete(s.groups, channelPeer)
+		if s.inflight[channelPeer.peer] > 0 {
+			s.inflight[channelPeer.peer]--
+		}
+		affected[channelPeer.peer] = struct{}{}
+	}
+	for peer, queue := range s.queued {
+		if queue == nil {
+			continue
+		}
+		if allow != nil && allow(peer) {
+			continue
+		}
+		if queue.dropChannel(key) {
+			affected[peer] = struct{}{}
+		}
+	}
+	peers := make([]core.NodeID, 0, len(affected))
+	for peer := range affected {
+		peers = append(peers, peer)
+	}
+	return peers
+}
+
 func (s *peerRequestState) releaseInflightForEnvelope(env Envelope) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

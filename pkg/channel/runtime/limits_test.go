@@ -330,6 +330,55 @@ func TestLimitsRemoveChannelClearsPeerInflightAndQueuedState(t *testing.T) {
 	}
 }
 
+func TestLimitsApplyMetaClearsStalePeerInflightAndQueueState(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Limits.MaxFetchInflightPeer = 1
+	})
+	key := testChannelKey(923)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(923, 3, 1, []core.NodeID{1, 2, 3}))
+
+	env.runtime.enqueueReplication(key, 2)
+	env.runtime.runScheduler()
+	session2 := env.sessions.session(2)
+	if got := session2.sendCount(); got != 1 {
+		t.Fatalf("expected first send to peer 2, got %d", got)
+	}
+
+	env.runtime.enqueueReplication(key, 2)
+	env.runtime.runScheduler()
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("expected queued stale request before meta change, got %d", got)
+	}
+
+	if err := env.runtime.ApplyMeta(testMetaLocal(923, 4, 1, []core.NodeID{1, 3})); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+
+	if got := env.runtime.queuedPeerRequests(2); got != 0 {
+		t.Fatalf("expected peer 2 queue cleared after meta change, got %d", got)
+	}
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		Epoch:      3,
+		RequestID:  session2.sent[0].RequestID,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 1,
+		},
+	})
+	if got := session2.sendCount(); got != 1 {
+		t.Fatalf("stale peer should not receive follow-up sends, got %d", got)
+	}
+
+	env.runtime.enqueueReplication(key, 3)
+	env.runtime.runScheduler()
+	if got := env.sessions.session(3).sendCount(); got != 1 {
+		t.Fatalf("expected replication to new valid peer, got %d sends", got)
+	}
+}
+
 func TestLimitsHardBackpressureQueuesWithoutSending(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.Limits.MaxFetchInflightPeer = 2
