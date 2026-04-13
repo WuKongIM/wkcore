@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/binary"
 	"reflect"
 	"testing"
@@ -142,6 +143,53 @@ func TestDecodeMessageRecordPreservesRootDurableFieldsAndSequence(t *testing.T) 
 	assertMessageFieldEqual(t, decoded, "Topic", "topic-88")
 }
 
+func TestDecodeMessagePreservesLegacyDurablePayloadLayout(t *testing.T) {
+	legacy := channel.Message{
+		MessageID:   109,
+		ChannelID:   "legacy-room",
+		ChannelType: 2,
+		FromUID:     "legacy-user",
+		ClientMsgNo: "legacy-client",
+		Payload:     []byte("legacy-payload"),
+	}
+
+	payload := encodeLegacyCompatibleMessagePayloadForTest(t, legacy)
+
+	decoded, err := decodeMessage(payload)
+	if err != nil {
+		t.Fatalf("decodeMessage() error = %v", err)
+	}
+
+	if decoded.MessageID != legacy.MessageID {
+		t.Fatalf("MessageID = %d, want %d", decoded.MessageID, legacy.MessageID)
+	}
+	if decoded.ChannelID != legacy.ChannelID {
+		t.Fatalf("ChannelID = %q, want %q", decoded.ChannelID, legacy.ChannelID)
+	}
+	if decoded.ChannelType != legacy.ChannelType {
+		t.Fatalf("ChannelType = %d, want %d", decoded.ChannelType, legacy.ChannelType)
+	}
+	if decoded.ClientMsgNo != legacy.ClientMsgNo {
+		t.Fatalf("ClientMsgNo = %q, want %q", decoded.ClientMsgNo, legacy.ClientMsgNo)
+	}
+	if decoded.FromUID != legacy.FromUID {
+		t.Fatalf("FromUID = %q, want %q", decoded.FromUID, legacy.FromUID)
+	}
+	if !reflect.DeepEqual(decoded.Payload, legacy.Payload) {
+		t.Fatalf("Payload = %q, want %q", decoded.Payload, legacy.Payload)
+	}
+	assertMessageFieldEqual(t, decoded, "Framer", frame.Framer{})
+	assertMessageFieldEqual(t, decoded, "Setting", frame.Setting(0))
+	assertMessageFieldEqual(t, decoded, "MsgKey", "")
+	assertMessageFieldEqual(t, decoded, "Expire", uint32(0))
+	assertMessageFieldEqual(t, decoded, "ClientSeq", uint64(0))
+	assertMessageFieldEqual(t, decoded, "StreamNo", "")
+	assertMessageFieldEqual(t, decoded, "StreamID", uint64(0))
+	assertMessageFieldEqual(t, decoded, "StreamFlag", frame.StreamFlag(0))
+	assertMessageFieldEqual(t, decoded, "Timestamp", int32(0))
+	assertMessageFieldEqual(t, decoded, "Topic", "")
+}
+
 func setMessageField(t *testing.T, msg *channel.Message, name string, value any) {
 	t.Helper()
 
@@ -200,4 +248,44 @@ func testEncodeFramerFlags(framer frame.Framer) uint8 {
 		flags |= 1 << 5
 	}
 	return flags
+}
+
+func encodeLegacyCompatibleMessagePayloadForTest(t *testing.T, msg channel.Message) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	if err := buf.WriteByte(channel.DurableMessageCodecVersion); err != nil {
+		t.Fatalf("WriteByte() error = %v", err)
+	}
+	if err := binary.Write(&buf, binary.BigEndian, msg.MessageID); err != nil {
+		t.Fatalf("binary.Write(MessageID) error = %v", err)
+	}
+	if _, err := buf.Write(make([]byte, channel.DurableMessageHeaderSize-9)); err != nil {
+		t.Fatalf("Write(header padding) error = %v", err)
+	}
+	binary.BigEndian.PutUint64(buf.Bytes()[37:45], hashPayload(msg.Payload))
+	if err := writeString(&buf, ""); err != nil {
+		t.Fatalf("writeString(msgKey) error = %v", err)
+	}
+	if err := writeString(&buf, msg.ClientMsgNo); err != nil {
+		t.Fatalf("writeString(clientMsgNo) error = %v", err)
+	}
+	if err := writeString(&buf, ""); err != nil {
+		t.Fatalf("writeString(streamNo) error = %v", err)
+	}
+	if err := writeString(&buf, msg.ChannelID); err != nil {
+		t.Fatalf("writeString(channelID) error = %v", err)
+	}
+	if err := writeString(&buf, ""); err != nil {
+		t.Fatalf("writeString(topic) error = %v", err)
+	}
+	if err := writeString(&buf, msg.FromUID); err != nil {
+		t.Fatalf("writeString(fromUID) error = %v", err)
+	}
+	if err := writeBytes(&buf, msg.Payload); err != nil {
+		t.Fatalf("writeBytes(payload) error = %v", err)
+	}
+	payload := buf.Bytes()
+	payload[12] = msg.ChannelType
+	return payload
 }
