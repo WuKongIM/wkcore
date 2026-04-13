@@ -224,7 +224,7 @@ func build(cfg Config) (_ *App, err error) {
 		GatewayBootID:    app.gatewayBootID,
 		LocalNodeID:      cfg.Node.ID,
 		ChannelLog:       app.channelLog,
-		DeliverySubmit:   committedDispatcher,
+		DeliverySubmit:   legacyCommittedDispatcherAdapter{dispatcher: committedDispatcher},
 		DeliveryAck:      app.deliveryApp,
 		DeliveryOffline:  app.deliveryApp,
 		DeliveryAckIndex: app.deliveryAcks,
@@ -233,8 +233,8 @@ func build(cfg Config) (_ *App, err error) {
 	app.messageApp = message.New(message.Options{
 		IdentityStore:       app.store,
 		ChannelStore:        app.store,
-		Cluster:             app.channelLog,
-		MetaRefresher:       app.channelMetaSync,
+		Cluster:             messageChannelClusterAdapter{cluster: app.channelLog},
+		MetaRefresher:       messageMetaRefresherAdapter{refresher: app.channelMetaSync},
 		Online:              onlineRegistry,
 		CommittedDispatcher: committedDispatcher,
 		DeliveryAck: ackRouting{

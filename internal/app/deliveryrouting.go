@@ -11,6 +11,7 @@ import (
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
@@ -35,7 +36,7 @@ type asyncCommittedDispatcher struct {
 	nodeClient   committedNodeSubmitter
 }
 
-func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, msg channellog.Message) error {
+func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, msg channel.Message) error {
 	if d.delivery == nil && d.conversation == nil {
 		return nil
 	}
@@ -50,13 +51,14 @@ func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, msg chann
 	return nil
 }
 
-func (d asyncCommittedDispatcher) routeCommitted(ctx context.Context, msg channellog.Message) {
+func (d asyncCommittedDispatcher) routeCommitted(ctx context.Context, msg channel.Message) {
+	legacyMsg := rootChannelMessageToLegacy(msg)
 	if d.preferLocal {
-		d.submitLocal(ctx, msg)
+		d.submitLocal(ctx, legacyMsg)
 		return
 	}
 	if d.channelLog == nil {
-		d.submitLocal(ctx, msg)
+		d.submitLocal(ctx, legacyMsg)
 		return
 	}
 
@@ -68,11 +70,11 @@ func (d asyncCommittedDispatcher) routeCommitted(ctx context.Context, msg channe
 		if err == nil && status.Leader != 0 {
 			ownerNodeID := uint64(status.Leader)
 			if ownerNodeID == d.localNodeID {
-				d.submitLocal(ctx, msg)
+				d.submitLocal(ctx, legacyMsg)
 				return
 			}
 			if d.nodeClient != nil {
-				if err := d.nodeClient.SubmitCommitted(ctx, ownerNodeID, msg); err == nil {
+				if err := d.nodeClient.SubmitCommitted(ctx, ownerNodeID, legacyMsg); err == nil {
 					return
 				}
 			}
@@ -81,7 +83,7 @@ func (d asyncCommittedDispatcher) routeCommitted(ctx context.Context, msg channe
 			time.Sleep(time.Duration(attempt+1) * committedRouteRetryBackoff)
 		}
 	}
-	d.submitConversationFallback(ctx, msg)
+	d.submitConversationFallback(ctx, legacyMsg)
 }
 
 func (d asyncCommittedDispatcher) submitLocal(ctx context.Context, msg channellog.Message) {

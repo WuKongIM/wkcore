@@ -5,7 +5,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/sequence"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
@@ -37,7 +37,7 @@ type RemoteDelivery interface {
 }
 
 type CommittedMessageDispatcher interface {
-	SubmitCommitted(ctx context.Context, msg channellog.Message) error
+	SubmitCommitted(ctx context.Context, msg channel.Message) error
 }
 
 type DeliveryAck interface {
@@ -49,12 +49,12 @@ type DeliveryOffline interface {
 }
 
 type ChannelCluster interface {
-	ApplyMeta(meta channellog.ChannelMeta) error
-	Append(ctx context.Context, req channellog.AppendRequest) (channellog.AppendResult, error)
+	ApplyMeta(meta channel.Meta) error
+	Append(ctx context.Context, req channel.AppendRequest) (channel.AppendResult, error)
 }
 
 type MetaRefresher interface {
-	RefreshChannelMeta(ctx context.Context, key channellog.ChannelKey) (channellog.ChannelMeta, error)
+	RefreshChannelMeta(ctx context.Context, id channel.ChannelID) (channel.Meta, error)
 }
 
 type onlineRegistryProvider interface {

@@ -12,9 +12,9 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
-	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,7 +23,7 @@ func TestAPIServerSendMessageWithRealMessageApp(t *testing.T) {
 		IdentityStore: &fakeIdentityStore{},
 		ChannelStore:  &fakeChannelStore{},
 		Cluster: &fakeChannelCluster{
-			result: channellog.AppendResult{MessageID: 66, MessageSeq: 7},
+			result: channel.AppendResult{MessageID: 66, MessageSeq: 7},
 		},
 	})
 	require.NoError(t, msgApp.OnlineRegistry().Register(online.OnlineConn{
@@ -89,14 +89,14 @@ func (*fakeChannelStore) GetChannel(context.Context, string, int64) (metadb.Chan
 }
 
 type fakeChannelCluster struct {
-	result channellog.AppendResult
+	result channel.AppendResult
 	err    error
 }
 
-func (*fakeChannelCluster) ApplyMeta(channellog.ChannelMeta) error {
+func (*fakeChannelCluster) ApplyMeta(channel.Meta) error {
 	return nil
 }
 
-func (f *fakeChannelCluster) Append(context.Context, channellog.AppendRequest) (channellog.AppendResult, error) {
+func (f *fakeChannelCluster) Append(context.Context, channel.AppendRequest) (channel.AppendResult, error) {
 	return f.result, f.err
 }

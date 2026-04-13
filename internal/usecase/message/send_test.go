@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/stretchr/testify/require"
@@ -63,10 +63,10 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 	dispatcher := &recordingCommittedDispatcher{}
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{result: channellog.AppendResult{
+			{result: channel.AppendResult{
 				MessageID:  99,
 				MessageSeq: 7,
-				Message: channellog.Message{
+				Message: channel.Message{
 					MessageID:   99,
 					MessageSeq:  7,
 					Framer:      frame.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
@@ -112,7 +112,7 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 	require.Equal(t, int64(99), result.MessageID)
 	require.Equal(t, uint64(7), result.MessageSeq)
 	require.Len(t, cluster.sendRequests, 1)
-	require.Equal(t, "u2@u1", cluster.sendRequests[0].ChannelID)
+	require.Equal(t, channel.ChannelID{ID: "u2@u1", Type: frame.ChannelTypePerson}, cluster.sendRequests[0].ChannelID)
 	require.Equal(t, frame.Framer{NoPersist: true, RedDot: true, SyncOnce: true}, cluster.sendRequests[0].Message.Framer)
 	require.Equal(t, frame.SettingReceiptEnabled, cluster.sendRequests[0].Message.Setting)
 	require.Equal(t, "k1", cluster.sendRequests[0].Message.MsgKey)
@@ -125,7 +125,7 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 	require.Equal(t, "u1", cluster.sendRequests[0].Message.FromUID)
 	require.Equal(t, []byte("hi"), cluster.sendRequests[0].Message.Payload)
 	require.Len(t, dispatcher.calls, 1)
-	require.Equal(t, channellog.Message{
+	require.Equal(t, channel.Message{
 		MessageID:   99,
 		MessageSeq:  7,
 		Framer:      frame.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
@@ -147,7 +147,7 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 func TestSendRecanonicalizesPrecomposedPersonChannelBeforeDurableWrite(t *testing.T) {
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{result: channellog.AppendResult{MessageID: 88, MessageSeq: 12}},
+			{result: channel.AppendResult{MessageID: 88, MessageSeq: 12}},
 		},
 	}
 	app := New(Options{
@@ -165,7 +165,7 @@ func TestSendRecanonicalizesPrecomposedPersonChannelBeforeDurableWrite(t *testin
 	require.NoError(t, err)
 	require.Equal(t, frame.ReasonSuccess, result.Reason)
 	require.Len(t, cluster.sendRequests, 1)
-	require.Equal(t, "u2@u1", cluster.sendRequests[0].ChannelID)
+	require.Equal(t, channel.ChannelID{ID: "u2@u1", Type: frame.ChannelTypePerson}, cluster.sendRequests[0].ChannelID)
 }
 
 func TestSendRejectsThirdPartyPrecomposedPersonChannel(t *testing.T) {
@@ -191,7 +191,7 @@ func TestSendReturnsSuccessWhenCommittedSubmitFails(t *testing.T) {
 	dispatcher := &recordingCommittedDispatcher{err: errors.New("queue full")}
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{result: channellog.AppendResult{MessageID: 101, MessageSeq: 5}},
+			{result: channel.AppendResult{MessageID: 101, MessageSeq: 5}},
 		},
 	}
 	app := New(Options{
@@ -221,10 +221,10 @@ func TestSendSubmitsCommittedMessageFromClusterResult(t *testing.T) {
 	dispatcher := &recordingCommittedDispatcher{}
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{result: channellog.AppendResult{
+			{result: channel.AppendResult{
 				MessageID:  88,
 				MessageSeq: 7,
-				Message: channellog.Message{
+				Message: channel.Message{
 					MessageID:   88,
 					MessageSeq:  7,
 					ChannelID:   "u2@u1",
@@ -272,7 +272,7 @@ func TestSendDoesNotPerformSynchronousDeliveryAfterDurableWrite(t *testing.T) {
 	remote := &recordingRemoteDelivery{}
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{result: channellog.AppendResult{MessageID: 601, MessageSeq: 22}},
+			{result: channel.AppendResult{MessageID: 601, MessageSeq: 22}},
 		},
 	}
 	recipients := fakeRecipientDirectory{
@@ -314,11 +314,11 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	dispatcher := &recordingCommittedDispatcher{}
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{err: channellog.ErrStaleMeta},
-			{result: channellog.AppendResult{
+			{err: channel.ErrStaleMeta},
+			{result: channel.AppendResult{
 				MessageID:  201,
 				MessageSeq: 7,
-				Message: channellog.Message{
+				Message: channel.Message{
 					MessageID:   201,
 					MessageSeq:  7,
 					ChannelID:   "u2@u1",
@@ -332,11 +332,10 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 		},
 	}
 	refresher := &fakeMetaRefresher{
-		metas: []channellog.ChannelMeta{{
-			ChannelID:    "u2@u1",
-			ChannelType:  frame.ChannelTypePerson,
-			ChannelEpoch: 11,
-			LeaderEpoch:  3,
+		metas: []channel.Meta{{
+			ID:          channel.ChannelID{ID: "u2@u1", Type: frame.ChannelTypePerson},
+			Epoch:       11,
+			LeaderEpoch: 3,
 		}},
 	}
 	app := New(Options{
@@ -360,14 +359,14 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	require.Equal(t, int64(201), result.MessageID)
 	require.Equal(t, uint64(7), result.MessageSeq)
 	require.Len(t, refresher.keys, 1)
-	require.Equal(t, "u2@u1", refresher.keys[0].ChannelID)
+	require.Equal(t, channel.ChannelID{ID: "u2@u1", Type: frame.ChannelTypePerson}, refresher.keys[0])
 	require.Len(t, cluster.appliedMetas, 1)
-	require.Equal(t, uint64(11), cluster.appliedMetas[0].ChannelEpoch)
+	require.Equal(t, uint64(11), cluster.appliedMetas[0].Epoch)
 	require.Len(t, cluster.sendRequests, 2)
 	require.Zero(t, cluster.sendRequests[0].ExpectedChannelEpoch)
 	require.Equal(t, uint64(11), cluster.sendRequests[1].ExpectedChannelEpoch)
 	require.Equal(t, uint64(3), cluster.sendRequests[1].ExpectedLeaderEpoch)
-	require.Equal(t, []channellog.Message{{
+	require.Equal(t, []channel.Message{{
 		MessageID:   201,
 		MessageSeq:  7,
 		ChannelID:   "u2@u1",
@@ -384,16 +383,15 @@ func TestSendDurablePersonPropagatesRequestContextToClusterAndMetaRefresh(t *tes
 
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{err: channellog.ErrStaleMeta},
-			{result: channellog.AppendResult{MessageID: 401, MessageSeq: 19}},
+			{err: channel.ErrStaleMeta},
+			{result: channel.AppendResult{MessageID: 401, MessageSeq: 19}},
 		},
 	}
 	refresher := &fakeMetaRefresher{
-		metas: []channellog.ChannelMeta{{
-			ChannelID:    "u2@u1",
-			ChannelType:  frame.ChannelTypePerson,
-			ChannelEpoch: 12,
-			LeaderEpoch:  4,
+		metas: []channel.Meta{{
+			ID:          channel.ChannelID{ID: "u2@u1", Type: frame.ChannelTypePerson},
+			Epoch:       12,
+			LeaderEpoch: 4,
 		}},
 	}
 	app := New(Options{
@@ -422,9 +420,9 @@ func TestSendDurablePersonPropagatesRequestContextToClusterAndMetaRefresh(t *tes
 
 func TestSendDurablePersonReturnsContextCanceled(t *testing.T) {
 	cluster := &fakeChannelCluster{
-		sendFn: func(ctx context.Context, _ channellog.AppendRequest) (channellog.AppendResult, error) {
+		sendFn: func(ctx context.Context, _ channel.AppendRequest) (channel.AppendResult, error) {
 			<-ctx.Done()
-			return channellog.AppendResult{}, ctx.Err()
+			return channel.AppendResult{}, ctx.Err()
 		},
 	}
 	app := New(Options{
@@ -452,7 +450,7 @@ func TestSendDurablePersonReturnsContextCanceled(t *testing.T) {
 func TestSendReturnsProtocolUpgradeRequiredWhenClusterRejectsLegacyClient(t *testing.T) {
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{err: channellog.ErrProtocolUpgradeRequired},
+			{err: channel.ErrProtocolUpgradeRequired},
 		},
 	}
 	delivery := &recordingDelivery{}
@@ -479,7 +477,7 @@ func TestSendReturnsProtocolUpgradeRequiredWhenClusterRejectsLegacyClient(t *tes
 		ProtocolVersion: frame.LegacyMessageSeqVersion,
 	})
 
-	require.ErrorIs(t, err, channellog.ErrProtocolUpgradeRequired)
+	require.ErrorIs(t, err, channel.ErrProtocolUpgradeRequired)
 	require.Equal(t, SendResult{}, result)
 	require.Empty(t, delivery.calls)
 }
@@ -632,11 +630,11 @@ func (d *recordingRemoteDelivery) DeliverRemote(_ context.Context, cmd RemoteDel
 }
 
 type recordingCommittedDispatcher struct {
-	calls []channellog.Message
+	calls []channel.Message
 	err   error
 }
 
-func (d *recordingCommittedDispatcher) SubmitCommitted(_ context.Context, msg channellog.Message) error {
+func (d *recordingCommittedDispatcher) SubmitCommitted(_ context.Context, msg channel.Message) error {
 	copied := msg
 	copied.Payload = append([]byte(nil), msg.Payload...)
 	d.calls = append(d.calls, copied)
@@ -672,32 +670,32 @@ func (*fakeChannelStore) GetChannel(context.Context, string, int64) (metadb.Chan
 }
 
 type fakeChannelClusterSendReply struct {
-	result channellog.AppendResult
+	result channel.AppendResult
 	err    error
 }
 
 type fakeChannelCluster struct {
-	appliedMetas []channellog.ChannelMeta
-	sendRequests []channellog.AppendRequest
+	appliedMetas []channel.Meta
+	sendRequests []channel.AppendRequest
 	sendContexts []context.Context
 	sendReplies  []fakeChannelClusterSendReply
-	sendFn       func(context.Context, channellog.AppendRequest) (channellog.AppendResult, error)
+	sendFn       func(context.Context, channel.AppendRequest) (channel.AppendResult, error)
 	applyErr     error
 }
 
-func (f *fakeChannelCluster) ApplyMeta(meta channellog.ChannelMeta) error {
+func (f *fakeChannelCluster) ApplyMeta(meta channel.Meta) error {
 	f.appliedMetas = append(f.appliedMetas, meta)
 	return f.applyErr
 }
 
-func (f *fakeChannelCluster) Append(ctx context.Context, req channellog.AppendRequest) (channellog.AppendResult, error) {
+func (f *fakeChannelCluster) Append(ctx context.Context, req channel.AppendRequest) (channel.AppendResult, error) {
 	f.sendContexts = append(f.sendContexts, ctx)
 	f.sendRequests = append(f.sendRequests, req)
 	if f.sendFn != nil {
 		return f.sendFn(ctx, req)
 	}
 	if len(f.sendReplies) == 0 {
-		return channellog.AppendResult{}, nil
+		return channel.AppendResult{}, nil
 	}
 	reply := f.sendReplies[0]
 	f.sendReplies = f.sendReplies[1:]
@@ -705,24 +703,24 @@ func (f *fakeChannelCluster) Append(ctx context.Context, req channellog.AppendRe
 }
 
 type fakeMetaRefresher struct {
-	keys            []channellog.ChannelKey
+	keys            []channel.ChannelID
 	refreshContexts []context.Context
-	metas           []channellog.ChannelMeta
+	metas           []channel.Meta
 	errs            []error
 }
 
-func (f *fakeMetaRefresher) RefreshChannelMeta(ctx context.Context, key channellog.ChannelKey) (channellog.ChannelMeta, error) {
+func (f *fakeMetaRefresher) RefreshChannelMeta(ctx context.Context, key channel.ChannelID) (channel.Meta, error) {
 	f.keys = append(f.keys, key)
 	f.refreshContexts = append(f.refreshContexts, ctx)
 	if len(f.errs) > 0 {
 		err := f.errs[0]
 		f.errs = f.errs[1:]
 		if err != nil {
-			return channellog.ChannelMeta{}, err
+			return channel.Meta{}, err
 		}
 	}
 	if len(f.metas) == 0 {
-		return channellog.ChannelMeta{}, nil
+		return channel.Meta{}, nil
 	}
 	meta := f.metas[0]
 	f.metas = f.metas[1:]

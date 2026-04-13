@@ -14,7 +14,6 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/stretchr/testify/require"
@@ -390,7 +389,7 @@ func TestHandlerOnFramePingIsNoop(t *testing.T) {
 }
 
 func TestNewSharesOnlineRegistryWithInjectedMessageApp(t *testing.T) {
-	msgApp := newClusterBackedMessageApp(channellog.AppendResult{
+	msgApp := newClusterBackedMessageApp(channel.AppendResult{
 		MessageID:  88,
 		MessageSeq: 9,
 	})
@@ -596,23 +595,23 @@ func (*fakeChannelStore) GetChannel(context.Context, string, int64) (metadb.Chan
 }
 
 type fakeChannelCluster struct {
-	result channellog.AppendResult
+	result channel.AppendResult
 	err    error
 }
 
-func (f *fakeChannelCluster) ApplyMeta(channellog.ChannelMeta) error {
+func (f *fakeChannelCluster) ApplyMeta(channel.Meta) error {
 	return nil
 }
 
-func (f *fakeChannelCluster) Append(context.Context, channellog.AppendRequest) (channellog.AppendResult, error) {
+func (f *fakeChannelCluster) Append(context.Context, channel.AppendRequest) (channel.AppendResult, error) {
 	return f.result, f.err
 }
 
-func newClusterBackedMessageApp(result channellog.AppendResult) *message.App {
+func newClusterBackedMessageApp(result channel.AppendResult) *message.App {
 	return newClusterBackedMessageAppWithOnline(nil, result)
 }
 
-func newClusterBackedMessageAppWithOnline(registry online.Registry, result channellog.AppendResult) *message.App {
+func newClusterBackedMessageAppWithOnline(registry online.Registry, result channel.AppendResult) *message.App {
 	return message.New(message.Options{
 		IdentityStore: &fakeIdentityStore{},
 		ChannelStore:  &fakeChannelStore{},

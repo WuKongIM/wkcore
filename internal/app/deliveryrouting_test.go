@@ -11,6 +11,7 @@ import (
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
@@ -205,7 +206,7 @@ func TestAsyncCommittedDispatcherFallsBackToLocalConversationWhenOwnerIsUnknown(
 		conversation: conversation,
 	}
 
-	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), channellog.Message{
+	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), channel.Message{
 		ChannelID:   "g1",
 		ChannelType: 2,
 		MessageID:   101,
@@ -229,7 +230,7 @@ func TestAsyncCommittedDispatcherSubmitsDurableMessageToLocalDelivery(t *testing
 		delivery: delivery,
 	}
 
-	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), channellog.Message{
+	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), channel.Message{
 		MessageID:   88,
 		MessageSeq:  7,
 		Framer:      message.SendCommand{}.Framer,
@@ -279,7 +280,7 @@ func TestAsyncCommittedDispatcherSubmitsToConversationProjector(t *testing.T) {
 		conversation: conversation,
 	}
 
-	msg := channellog.Message{
+	msg := channel.Message{
 		ChannelID:   "u1@u2",
 		ChannelType: frame.ChannelTypePerson,
 		MessageID:   99,
@@ -293,8 +294,8 @@ func TestAsyncCommittedDispatcherSubmitsToConversationProjector(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(delivery.calls) == 1 && len(conversation.calls) == 1
 	}, time.Second, 10*time.Millisecond)
-	require.Equal(t, msg, delivery.calls[0])
-	require.Equal(t, msg, conversation.calls[0])
+	require.Equal(t, rootChannelMessageToLegacy(msg), delivery.calls[0])
+	require.Equal(t, rootChannelMessageToLegacy(msg), conversation.calls[0])
 }
 
 func TestAsyncCommittedDispatcherPrefersLocalDeliveryWithoutOwnerLookup(t *testing.T) {
@@ -311,7 +312,7 @@ func TestAsyncCommittedDispatcherPrefersLocalDeliveryWithoutOwnerLookup(t *testi
 		conversation: conversation,
 	}
 
-	msg := channellog.Message{
+	msg := channel.Message{
 		ChannelID:   "u1@u2",
 		ChannelType: frame.ChannelTypePerson,
 		MessageID:   100,
@@ -326,8 +327,8 @@ func TestAsyncCommittedDispatcherPrefersLocalDeliveryWithoutOwnerLookup(t *testi
 		return len(delivery.calls) == 1 && len(conversation.calls) == 1
 	}, time.Second, 10*time.Millisecond)
 	require.Equal(t, 0, channelLog.StatusCalls())
-	require.Equal(t, msg, delivery.calls[0])
-	require.Equal(t, msg, conversation.calls[0])
+	require.Equal(t, rootChannelMessageToLegacy(msg), delivery.calls[0])
+	require.Equal(t, rootChannelMessageToLegacy(msg), conversation.calls[0])
 }
 
 func TestBuildRealtimeRecvPacketUsesDurableTimestampAndPersonChannelView(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"time"
 
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
@@ -34,9 +34,11 @@ func (a *App) Send(ctx context.Context, cmd SendCommand) (SendResult, error) {
 
 func (a *App) sendDurable(ctx context.Context, cmd SendCommand) (SendResult, error) {
 	draft := buildDurableMessage(cmd, a.now())
-	result, err := sendWithMetaRefreshRetry(ctx, a.cluster, a.refresher, channellog.AppendRequest{
-		ChannelID:             cmd.ChannelID,
-		ChannelType:           cmd.ChannelType,
+	result, err := sendWithMetaRefreshRetry(ctx, a.cluster, a.refresher, channel.AppendRequest{
+		ChannelID: channel.ChannelID{
+			ID:   cmd.ChannelID,
+			Type: cmd.ChannelType,
+		},
 		Message:               draft,
 		SupportsMessageSeqU64: supportsMessageSeqU64(cmd.ProtocolVersion),
 		ExpectedChannelEpoch:  cmd.ExpectedChannelEpoch,
@@ -58,8 +60,8 @@ func (a *App) sendDurable(ctx context.Context, cmd SendCommand) (SendResult, err
 	return sendResult, nil
 }
 
-func buildDurableMessage(cmd SendCommand, now time.Time) channellog.Message {
-	return channellog.Message{
+func buildDurableMessage(cmd SendCommand, now time.Time) channel.Message {
+	return channel.Message{
 		Framer:      cmd.Framer,
 		Setting:     cmd.Setting,
 		MsgKey:      cmd.MsgKey,

@@ -12,7 +12,6 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
@@ -30,7 +29,7 @@ const (
 func TestGatewayWKProtoHandlerAcknowledgesDurablePersonSend(t *testing.T) {
 	registry := online.NewRegistry()
 	handler := newGatewayIntegrationHandler(
-		newClusterBackedMessageAppWithOnline(registry, channellog.AppendResult{
+		newClusterBackedMessageAppWithOnline(registry, channel.AppendResult{
 			MessageID:  88,
 			MessageSeq: 9,
 		}),
