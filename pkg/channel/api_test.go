@@ -32,17 +32,16 @@ func TestNewBuildsClusterWithRuntimeHandlerAndTransport(t *testing.T) {
 	client := wktransport.NewClient(wktransport.NewPool(channelTestDiscovery{addrs: map[uint64]string{}}, 1, time.Second))
 	defer client.Stop()
 
-	var runtimeToClose interface{ Close() error }
-
 	got, err := channel.New(channel.Config{
 		LocalNode:       1,
 		Store:           engine,
 		GenerationStore: &channelTestGenerationStore{},
 		MessageIDs:      &channelTestMessageIDs{},
 		Transport: channel.TransportConfig{
-			Client: client,
-			RPCMux: wktransport.NewRPCMux(),
-			Build:  buildTestTransport,
+			Client:           client,
+			RPCMux:           wktransport.NewRPCMux(),
+			Build:            buildTestTransport,
+			BindFetchService: bindTestTransportFetchService,
 		},
 		Runtime: channel.RuntimeConfig{
 			Limits: channel.RuntimeLimits{
@@ -53,18 +52,7 @@ func TestNewBuildsClusterWithRuntimeHandlerAndTransport(t *testing.T) {
 				TombstoneTTL:    time.Minute,
 				CleanupInterval: time.Minute,
 			},
-			Build: func(cfg channel.RuntimeBuildConfig) (channel.Runtime, channel.HandlerRuntime, error) {
-				control, runtimeValue, err := buildTestRuntime(cfg)
-				if err != nil {
-					return nil, nil, err
-				}
-				closer, ok := runtimeValue.(interface{ Close() error })
-				if !ok {
-					t.Fatalf("runtime build value %T does not implement Close", runtimeValue)
-				}
-				runtimeToClose = closer
-				return control, runtimeValue, nil
-			},
+			Build: buildTestRuntime,
 		},
 		Handler: channel.HandlerConfig{
 			Build: buildTestHandler,
@@ -79,14 +67,11 @@ func TestNewBuildsClusterWithRuntimeHandlerAndTransport(t *testing.T) {
 	if got == nil {
 		t.Fatal("channel.New() returned nil cluster")
 	}
-	if runtimeToClose == nil {
-		t.Fatal("runtime builder did not capture runtime closer")
-	}
-	defer func() {
-		if err := runtimeToClose.Close(); err != nil {
-			t.Fatalf("runtime.Close() error = %v", err)
+	t.Cleanup(func() {
+		if err := got.Close(); err != nil {
+			t.Fatalf("cluster.Close() error = %v", err)
 		}
-	}()
+	})
 
 	id := channel.ChannelID{ID: "room-1", Type: 1}
 	meta := channel.Meta{
@@ -277,6 +262,7 @@ func TestApplyMetaKeepsNewerMetaWhenOlderSameChannelUpdateFails(t *testing.T) {
 func TestNewClosesBuiltRuntimeWhenHandlerBuildFails(t *testing.T) {
 	runtimeControl := &stubRuntimeControl{}
 	runtimeValue := &stubClosableRuntimeValue{}
+	transportValue := &stubTransportBuildValue{}
 
 	_, err := channel.New(channel.Config{
 		LocalNode:       1,
@@ -285,8 +271,9 @@ func TestNewClosesBuiltRuntimeWhenHandlerBuildFails(t *testing.T) {
 		MessageIDs:      &channelTestMessageIDs{},
 		Transport: channel.TransportConfig{
 			Build: func(channel.TransportBuildConfig) (any, error) {
-				return struct{}{}, nil
+				return transportValue, nil
 			},
+			BindFetchService: bindStubTransportFetchService,
 		},
 		Runtime: channel.RuntimeConfig{
 			Build: func(channel.RuntimeBuildConfig) (channel.Runtime, channel.HandlerRuntime, error) {
@@ -308,6 +295,9 @@ func TestNewClosesBuiltRuntimeWhenHandlerBuildFails(t *testing.T) {
 	if runtimeValue.closeCalls != 1 {
 		t.Fatalf("runtime value close calls = %d, want 1", runtimeValue.closeCalls)
 	}
+	if transportValue.closeCalls != 1 {
+		t.Fatalf("transport close calls = %d, want 1", transportValue.closeCalls)
+	}
 }
 
 func TestNewReleasesChannelTransportRPCServicesAfterAssemblyFailure(t *testing.T) {
@@ -324,9 +314,10 @@ func TestNewReleasesChannelTransportRPCServicesAfterAssemblyFailure(t *testing.T
 		GenerationStore: struct{}{},
 		MessageIDs:      &channelTestMessageIDs{},
 		Transport: channel.TransportConfig{
-			Client: client,
-			RPCMux: mux,
-			Build:  buildTestTransport,
+			Client:           client,
+			RPCMux:           mux,
+			Build:            buildTestTransport,
+			BindFetchService: bindTestTransportFetchService,
 		},
 		Runtime: channel.RuntimeConfig{
 			Build: func(channel.RuntimeBuildConfig) (channel.Runtime, channel.HandlerRuntime, error) {
@@ -360,6 +351,108 @@ func TestNewReleasesChannelTransportRPCServicesAfterAssemblyFailure(t *testing.T
 	}
 	if handlerBuildCalls != 2 {
 		t.Fatalf("handler build calls = %d, want 2", handlerBuildCalls)
+	}
+}
+
+func TestNewBindsFetchServiceAndClusterCloseOwnsBuiltResources(t *testing.T) {
+	runtimeControl := &stubRuntimeControl{}
+	runtimeValue := &stubClosableRuntimeValue{}
+	transportValue := &stubTransportBuildValue{}
+
+	got, err := channel.New(channel.Config{
+		LocalNode:       1,
+		Store:           struct{}{},
+		GenerationStore: struct{}{},
+		MessageIDs:      &channelTestMessageIDs{},
+		Transport: channel.TransportConfig{
+			Build: func(channel.TransportBuildConfig) (any, error) {
+				return transportValue, nil
+			},
+			BindFetchService: bindStubTransportFetchService,
+		},
+		Runtime: channel.RuntimeConfig{
+			Build: func(channel.RuntimeBuildConfig) (channel.Runtime, channel.HandlerRuntime, error) {
+				return runtimeControl, runtimeValue, nil
+			},
+		},
+		Handler: channel.HandlerConfig{
+			Build: func(channel.HandlerBuildConfig) (channel.MetaRollbackService, error) {
+				return newStubMetaService(), nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("channel.New() error = %v", err)
+	}
+
+	if transportValue.bindCalls != 1 {
+		t.Fatalf("transport bind calls = %d, want 1", transportValue.bindCalls)
+	}
+	if transportValue.boundService != runtimeValue {
+		t.Fatalf("transport bound service = %T, want %T", transportValue.boundService, runtimeValue)
+	}
+
+	if err := got.Close(); err != nil {
+		t.Fatalf("first Close() error = %v", err)
+	}
+	if err := got.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+
+	if runtimeControl.closeCalls != 0 {
+		t.Fatalf("runtime control close calls = %d, want 0 when only runtime value owns cleanup", runtimeControl.closeCalls)
+	}
+	if runtimeValue.closeCalls != 1 {
+		t.Fatalf("runtime value close calls = %d, want 1", runtimeValue.closeCalls)
+	}
+	if transportValue.closeCalls != 1 {
+		t.Fatalf("transport close calls = %d, want 1", transportValue.closeCalls)
+	}
+}
+
+func TestNewClosesBuiltRuntimeAndTransportWhenFetchBindingFails(t *testing.T) {
+	bindErr := errors.New("bind fetch service failed")
+	runtimeControl := &stubRuntimeControl{}
+	runtimeValue := &stubClosableRuntimeValue{}
+	transportValue := &stubTransportBuildValue{bindErr: bindErr}
+
+	_, err := channel.New(channel.Config{
+		LocalNode:       1,
+		Store:           struct{}{},
+		GenerationStore: struct{}{},
+		MessageIDs:      &channelTestMessageIDs{},
+		Transport: channel.TransportConfig{
+			Build: func(channel.TransportBuildConfig) (any, error) {
+				return transportValue, nil
+			},
+			BindFetchService: bindStubTransportFetchService,
+		},
+		Runtime: channel.RuntimeConfig{
+			Build: func(channel.RuntimeBuildConfig) (channel.Runtime, channel.HandlerRuntime, error) {
+				return runtimeControl, runtimeValue, nil
+			},
+		},
+		Handler: channel.HandlerConfig{
+			Build: func(channel.HandlerBuildConfig) (channel.MetaRollbackService, error) {
+				t.Fatal("handler build should not run when fetch binding fails")
+				return nil, nil
+			},
+		},
+	})
+	if !errors.Is(err, bindErr) {
+		t.Fatalf("channel.New() error = %v, want %v", err, bindErr)
+	}
+	if transportValue.bindCalls != 1 {
+		t.Fatalf("transport bind calls = %d, want 1", transportValue.bindCalls)
+	}
+	if runtimeControl.closeCalls != 0 {
+		t.Fatalf("runtime control close calls = %d, want 0 when only runtime value owns cleanup", runtimeControl.closeCalls)
+	}
+	if runtimeValue.closeCalls != 1 {
+		t.Fatalf("runtime value close calls = %d, want 1", runtimeValue.closeCalls)
+	}
+	if transportValue.closeCalls != 1 {
+		t.Fatalf("transport close calls = %d, want 1", transportValue.closeCalls)
 	}
 }
 
@@ -418,8 +511,30 @@ func buildTestRuntime(cfg channel.RuntimeBuildConfig) (channel.Runtime, channel.
 	if err != nil {
 		return nil, nil, err
 	}
-	transportValue.BindFetchService(rt)
 	return channelRuntimeControl{runtime: rt}, rt, nil
+}
+
+func bindTestTransportFetchService(transport any, runtimeValue channel.HandlerRuntime) error {
+	transportValue, ok := transport.(*channeltransport.Transport)
+	if !ok {
+		return errors.New("transport build value type mismatch")
+	}
+	service, ok := runtimeValue.(interface {
+		ServeFetch(context.Context, channelruntime.FetchRequestEnvelope) (channelruntime.FetchResponseEnvelope, error)
+	})
+	if !ok {
+		return errors.New("runtime fetch service type mismatch")
+	}
+	transportValue.BindFetchService(service)
+	return nil
+}
+
+func bindStubTransportFetchService(transport any, runtimeValue channel.HandlerRuntime) error {
+	transportValue, ok := transport.(*stubTransportBuildValue)
+	if !ok {
+		return errors.New("stub transport build value type mismatch")
+	}
+	return transportValue.BindFetchService(runtimeValue)
 }
 
 func buildTestHandler(cfg channel.HandlerBuildConfig) (channel.MetaRollbackService, error) {
@@ -533,8 +648,9 @@ func mustBuildStubCluster(t *testing.T, service channel.MetaRollbackService, run
 		MessageIDs:      &channelTestMessageIDs{},
 		Transport: channel.TransportConfig{
 			Build: func(channel.TransportBuildConfig) (any, error) {
-				return struct{}{}, nil
+				return &stubTransportBuildValue{}, nil
 			},
+			BindFetchService: bindStubTransportFetchService,
 		},
 		Runtime: channel.RuntimeConfig{
 			Build: func(channel.RuntimeBuildConfig) (channel.Runtime, channel.HandlerRuntime, error) {
@@ -657,6 +773,28 @@ func (r *stubClosableRuntimeValue) Close() error {
 
 func (*stubClosableRuntimeValue) Channel(channel.ChannelKey) (channel.HandlerChannel, bool) {
 	return nil, false
+}
+
+func (*stubClosableRuntimeValue) ServeFetch(context.Context, channelruntime.FetchRequestEnvelope) (channelruntime.FetchResponseEnvelope, error) {
+	return channelruntime.FetchResponseEnvelope{}, nil
+}
+
+type stubTransportBuildValue struct {
+	bindCalls    int
+	boundService any
+	bindErr      error
+	closeCalls   int
+}
+
+func (t *stubTransportBuildValue) BindFetchService(service any) error {
+	t.bindCalls++
+	t.boundService = service
+	return t.bindErr
+}
+
+func (t *stubTransportBuildValue) Close() error {
+	t.closeCalls++
+	return nil
 }
 
 type stubHandlerRuntime struct{}

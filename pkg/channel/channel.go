@@ -14,6 +14,7 @@ type Cluster interface {
 	Append(ctx context.Context, req AppendRequest) (AppendResult, error)
 	Fetch(ctx context.Context, req FetchRequest) (FetchResult, error)
 	Status(id ChannelID) (ChannelRuntimeStatus, error)
+	Close() error
 }
 
 type Service interface {
@@ -66,6 +67,7 @@ type TransportConfig struct {
 	RPCTimeout         time.Duration
 	MaxPendingFetchRPC int
 	Build              func(TransportBuildConfig) (any, error)
+	BindFetchService   func(transport any, runtime HandlerRuntime) error
 }
 
 type RuntimeLimits struct {
@@ -121,6 +123,10 @@ type HandlerBuildConfig struct {
 type cluster struct {
 	service MetaRollbackService
 	runtime Runtime
+	closers []ownedCloser
+
+	closeOnce sync.Once
+	closeErr  error
 
 	applyMu    sync.Mutex
 	applyLocks map[ChannelKey]*channelApplyLock
@@ -138,7 +144,7 @@ func New(cfg Config) (Cluster, error) {
 	if cfg.Store == nil || cfg.GenerationStore == nil || cfg.MessageIDs == nil {
 		return nil, ErrInvalidConfig
 	}
-	if cfg.Transport.Build == nil || cfg.Runtime.Build == nil || cfg.Handler.Build == nil {
+	if cfg.Transport.Build == nil || cfg.Transport.BindFetchService == nil || cfg.Runtime.Build == nil || cfg.Handler.Build == nil {
 		return nil, ErrInvalidConfig
 	}
 	if cfg.Now == nil {
@@ -155,6 +161,7 @@ func New(cfg Config) (Cluster, error) {
 	if err != nil {
 		return nil, err
 	}
+	transportCloser := buildValueCloser(transportValue)
 
 	runtimeControl, runtimeValue, err := cfg.Runtime.Build(RuntimeBuildConfig{
 		LocalNode:                        cfg.LocalNode,
@@ -168,7 +175,11 @@ func New(cfg Config) (Cluster, error) {
 		Now:                              cfg.Now,
 	})
 	if err != nil {
-		return nil, joinBuildError(err, closeBuildError(transportValue))
+		return nil, joinBuildError(err, transportCloser())
+	}
+	runtimeCloser := buildRuntimeCloser(runtimeControl, runtimeValue)
+	if err := cfg.Transport.BindFetchService(transportValue, runtimeValue); err != nil {
+		return nil, joinBuildError(err, runtimeCloser(), transportCloser())
 	}
 
 	service, err := cfg.Handler.Build(HandlerBuildConfig{
@@ -177,10 +188,18 @@ func New(cfg Config) (Cluster, error) {
 		MessageIDs: cfg.MessageIDs,
 	})
 	if err != nil {
-		return nil, joinBuildError(err, closeBuiltRuntime(runtimeControl, runtimeValue), closeBuildError(transportValue))
+		return nil, joinBuildError(err, runtimeCloser(), transportCloser())
 	}
 
-	return &cluster{service: service, runtime: runtimeControl}, nil
+	return &cluster{
+		service: service,
+		runtime: runtimeControl,
+		closers: []ownedCloser{
+			buildValueCloser(service),
+			runtimeCloser,
+			transportCloser,
+		},
+	}, nil
 }
 
 func (c *cluster) ApplyMeta(meta Meta) error {
@@ -243,6 +262,18 @@ func (c *cluster) Status(id ChannelID) (ChannelRuntimeStatus, error) {
 	return c.service.Status(id)
 }
 
+func (c *cluster) Close() error {
+	c.closeOnce.Do(func() {
+		for _, closeFn := range c.closers {
+			if closeFn == nil {
+				continue
+			}
+			c.closeErr = errors.Join(c.closeErr, closeFn())
+		}
+	})
+	return c.closeErr
+}
+
 func effectiveChannelKey(meta Meta) ChannelKey {
 	if meta.Key != "" {
 		return meta.Key
@@ -258,6 +289,20 @@ func effectiveChannelKey(meta Meta) ChannelKey {
 
 type buildCloser interface {
 	Close() error
+}
+
+type ownedCloser func() error
+
+func buildRuntimeCloser(control Runtime, value HandlerRuntime) ownedCloser {
+	return func() error {
+		return closeBuiltRuntime(control, value)
+	}
+}
+
+func buildValueCloser(value any) ownedCloser {
+	return func() error {
+		return closeBuildError(value)
+	}
 }
 
 func closeBuiltRuntime(control Runtime, value HandlerRuntime) error {
