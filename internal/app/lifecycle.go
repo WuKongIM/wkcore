@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
-	isrnodetransport "github.com/WuKongIM/WuKongIM/pkg/channel/transport"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	channeltransport "github.com/WuKongIM/WuKongIM/pkg/channel/transport"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	"github.com/WuKongIM/WuKongIM/pkg/transport"
 )
@@ -155,11 +155,11 @@ func (a *App) startChannelMetaSync() error {
 		}
 		a.dataPlanePool = transport.NewPool(discovery, poolSize, dialTimeout)
 		a.dataPlaneClient = transport.NewClient(a.dataPlanePool)
-		adapter, err := isrnodetransport.New(isrnodetransport.Options{
-			LocalNode:          isr.NodeID(a.cfg.Node.ID),
+		adapter, err := channeltransport.New(channeltransport.Options{
+			LocalNode:          channel.NodeID(a.cfg.Node.ID),
 			Client:             a.dataPlaneClient,
 			RPCMux:             a.cluster.RPCMux(),
-			FetchService:       a.isrRuntime,
+			FetchService:       legacyFetchServiceAdapter{runtime: a.isrRuntime},
 			RPCTimeout:         a.cfg.Cluster.DataPlaneRPCTimeout,
 			MaxPendingFetchRPC: a.cfg.Cluster.DataPlaneMaxPendingFetch,
 		})

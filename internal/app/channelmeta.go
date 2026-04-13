@@ -7,10 +7,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
 	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	isrnode "github.com/WuKongIM/WuKongIM/pkg/channel/node"
-	isrnodetransport "github.com/WuKongIM/WuKongIM/pkg/channel/transport"
+	channelruntime "github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
+	channeltransport "github.com/WuKongIM/WuKongIM/pkg/channel/transport"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 )
@@ -25,7 +27,7 @@ type channelMetaSource interface {
 type isrTransportBridge struct {
 	mu      sync.RWMutex
 	handler func(isrnode.Envelope)
-	adapter *isrnodetransport.Adapter
+	adapter *channeltransport.Transport
 }
 
 type noopPeerSession struct{}
@@ -80,7 +82,7 @@ func (t *isrTransportBridge) Send(peer isr.NodeID, env isrnode.Envelope) error {
 	if adapter == nil {
 		return errChannelDataPlaneNotReady
 	}
-	return adapter.Send(peer, env)
+	return adapter.Send(channel.NodeID(peer), runtimeEnvelopeFromISR(env))
 }
 
 func (t *isrTransportBridge) RegisterHandler(fn func(isrnode.Envelope)) {
@@ -89,7 +91,9 @@ func (t *isrTransportBridge) RegisterHandler(fn func(isrnode.Envelope)) {
 	adapter := t.adapter
 	t.mu.Unlock()
 	if adapter != nil {
-		adapter.RegisterHandler(fn)
+		adapter.RegisterHandler(func(env channelruntime.Envelope) {
+			fn(isrEnvelopeFromRuntime(env))
+		})
 	}
 }
 
@@ -98,7 +102,7 @@ func (t *isrTransportBridge) Session(peer isr.NodeID) isrnode.PeerSession {
 	adapter := t.adapter
 	t.mu.RUnlock()
 	if adapter != nil {
-		return adapter.SessionManager().Session(peer)
+		return legacyPeerSessionAdapter{session: adapter.SessionManager().Session(channel.NodeID(peer))}
 	}
 	return noopPeerSession{}
 }
@@ -488,13 +492,15 @@ func cloneAppliedLocalSet(values map[channellog.ChannelKey]struct{}) map[channel
 	return cloned
 }
 
-func (t *isrTransportBridge) Bind(adapter *isrnodetransport.Adapter) {
+func (t *isrTransportBridge) Bind(adapter *channeltransport.Transport) {
 	t.mu.Lock()
 	t.adapter = adapter
 	handler := t.handler
 	t.mu.Unlock()
 	if adapter != nil && handler != nil {
-		adapter.RegisterHandler(handler)
+		adapter.RegisterHandler(func(env channelruntime.Envelope) {
+			handler(isrEnvelopeFromRuntime(env))
+		})
 	}
 }
 
@@ -502,4 +508,174 @@ func (t *isrTransportBridge) Unbind() {
 	t.mu.Lock()
 	t.adapter = nil
 	t.mu.Unlock()
+}
+
+type legacyPeerSessionAdapter struct {
+	session channelruntime.PeerSession
+}
+
+func (s legacyPeerSessionAdapter) Send(env isrnode.Envelope) error {
+	return s.session.Send(runtimeEnvelopeFromISR(env))
+}
+
+func (s legacyPeerSessionAdapter) TryBatch(env isrnode.Envelope) bool {
+	return s.session.TryBatch(runtimeEnvelopeFromISR(env))
+}
+
+func (s legacyPeerSessionAdapter) Flush() error {
+	return s.session.Flush()
+}
+
+func (s legacyPeerSessionAdapter) Backpressure() isrnode.BackpressureState {
+	state := s.session.Backpressure()
+	return isrnode.BackpressureState{
+		Level:           isrnode.BackpressureLevel(state.Level),
+		PendingRequests: state.PendingRequests,
+		PendingBytes:    state.PendingBytes,
+	}
+}
+
+func (s legacyPeerSessionAdapter) Close() error {
+	return s.session.Close()
+}
+
+type legacyFetchServiceAdapter struct {
+	runtime isrnode.Runtime
+}
+
+func (a legacyFetchServiceAdapter) ServeFetch(ctx context.Context, req channelruntime.FetchRequestEnvelope) (channelruntime.FetchResponseEnvelope, error) {
+	resp, err := a.runtime.ServeFetch(ctx, isrnode.FetchRequestEnvelope{
+		ChannelKey:  isr.ChannelKey(req.ChannelKey),
+		Epoch:       req.Epoch,
+		Generation:  req.Generation,
+		ReplicaID:   isr.NodeID(req.ReplicaID),
+		FetchOffset: req.FetchOffset,
+		OffsetEpoch: req.OffsetEpoch,
+		MaxBytes:    req.MaxBytes,
+	})
+	if err != nil {
+		return channelruntime.FetchResponseEnvelope{}, err
+	}
+	return channelruntime.FetchResponseEnvelope{
+		ChannelKey: channel.ChannelKey(resp.ChannelKey),
+		Epoch:      resp.Epoch,
+		Generation: resp.Generation,
+		TruncateTo: resp.TruncateTo,
+		LeaderHW:   resp.LeaderHW,
+		Records:    recordsFromISR(resp.Records),
+	}, nil
+}
+
+func runtimeEnvelopeFromISR(env isrnode.Envelope) channelruntime.Envelope {
+	out := channelruntime.Envelope{
+		Peer:       channel.NodeID(env.Peer),
+		ChannelKey: channel.ChannelKey(env.ChannelKey),
+		Epoch:      env.Epoch,
+		Generation: env.Generation,
+		RequestID:  env.RequestID,
+		Kind:       channelruntime.MessageKind(env.Kind),
+		Payload:    append([]byte(nil), env.Payload...),
+	}
+	if env.FetchRequest != nil {
+		out.FetchRequest = &channelruntime.FetchRequestEnvelope{
+			ChannelKey:  channel.ChannelKey(env.FetchRequest.ChannelKey),
+			Epoch:       env.FetchRequest.Epoch,
+			Generation:  env.FetchRequest.Generation,
+			ReplicaID:   channel.NodeID(env.FetchRequest.ReplicaID),
+			FetchOffset: env.FetchRequest.FetchOffset,
+			OffsetEpoch: env.FetchRequest.OffsetEpoch,
+			MaxBytes:    env.FetchRequest.MaxBytes,
+		}
+	}
+	if env.FetchResponse != nil {
+		out.FetchResponse = &channelruntime.FetchResponseEnvelope{
+			ChannelKey: channel.ChannelKey(env.FetchResponse.ChannelKey),
+			Epoch:      env.FetchResponse.Epoch,
+			Generation: env.FetchResponse.Generation,
+			TruncateTo: env.FetchResponse.TruncateTo,
+			LeaderHW:   env.FetchResponse.LeaderHW,
+			Records:    recordsFromISR(env.FetchResponse.Records),
+		}
+	}
+	if env.ProgressAck != nil {
+		out.ProgressAck = &channelruntime.ProgressAckEnvelope{
+			ChannelKey:  channel.ChannelKey(env.ProgressAck.ChannelKey),
+			Epoch:       env.ProgressAck.Epoch,
+			Generation:  env.ProgressAck.Generation,
+			ReplicaID:   channel.NodeID(env.ProgressAck.ReplicaID),
+			MatchOffset: env.ProgressAck.MatchOffset,
+		}
+	}
+	return out
+}
+
+func isrEnvelopeFromRuntime(env channelruntime.Envelope) isrnode.Envelope {
+	out := isrnode.Envelope{
+		Peer:       isr.NodeID(env.Peer),
+		ChannelKey: isr.ChannelKey(env.ChannelKey),
+		Epoch:      env.Epoch,
+		Generation: env.Generation,
+		RequestID:  env.RequestID,
+		Kind:       isrnode.MessageKind(env.Kind),
+		Payload:    append([]byte(nil), env.Payload...),
+	}
+	if env.FetchRequest != nil {
+		out.FetchRequest = &isrnode.FetchRequestEnvelope{
+			ChannelKey:  isr.ChannelKey(env.FetchRequest.ChannelKey),
+			Epoch:       env.FetchRequest.Epoch,
+			Generation:  env.FetchRequest.Generation,
+			ReplicaID:   isr.NodeID(env.FetchRequest.ReplicaID),
+			FetchOffset: env.FetchRequest.FetchOffset,
+			OffsetEpoch: env.FetchRequest.OffsetEpoch,
+			MaxBytes:    env.FetchRequest.MaxBytes,
+		}
+	}
+	if env.FetchResponse != nil {
+		out.FetchResponse = &isrnode.FetchResponseEnvelope{
+			ChannelKey: isr.ChannelKey(env.FetchResponse.ChannelKey),
+			Epoch:      env.FetchResponse.Epoch,
+			Generation: env.FetchResponse.Generation,
+			TruncateTo: env.FetchResponse.TruncateTo,
+			LeaderHW:   env.FetchResponse.LeaderHW,
+			Records:    recordsToISR(env.FetchResponse.Records),
+		}
+	}
+	if env.ProgressAck != nil {
+		out.ProgressAck = &isrnode.ProgressAckEnvelope{
+			ChannelKey:  isr.ChannelKey(env.ProgressAck.ChannelKey),
+			Epoch:       env.ProgressAck.Epoch,
+			Generation:  env.ProgressAck.Generation,
+			ReplicaID:   isr.NodeID(env.ProgressAck.ReplicaID),
+			MatchOffset: env.ProgressAck.MatchOffset,
+		}
+	}
+	return out
+}
+
+func recordsFromISR(records []isr.Record) []channel.Record {
+	if len(records) == 0 {
+		return nil
+	}
+	out := make([]channel.Record, 0, len(records))
+	for _, record := range records {
+		out = append(out, channel.Record{
+			Payload:   append([]byte(nil), record.Payload...),
+			SizeBytes: record.SizeBytes,
+		})
+	}
+	return out
+}
+
+func recordsToISR(records []channel.Record) []isr.Record {
+	if len(records) == 0 {
+		return nil
+	}
+	out := make([]isr.Record, 0, len(records))
+	for _, record := range records {
+		out = append(out, isr.Record{
+			Payload:   append([]byte(nil), record.Payload...),
+			SizeBytes: record.SizeBytes,
+		})
+	}
+	return out
 }
