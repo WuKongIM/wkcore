@@ -25,12 +25,14 @@ type Options struct {
 type Transport struct {
 	localNode  channel.NodeID
 	client     *wktransport.Client
+	rpcMux     *wktransport.RPCMux
 	rpcTimeout time.Duration
 	maxPending int
 
 	mu           sync.RWMutex
 	handler      func(runtime.Envelope)
 	fetchService runtime.FetchService
+	closeOnce    sync.Once
 
 	sessions *sessionManager
 }
@@ -58,6 +60,7 @@ func New(opts Options) (*Transport, error) {
 	transport := &Transport{
 		localNode:    opts.LocalNode,
 		client:       opts.Client,
+		rpcMux:       opts.RPCMux,
 		rpcTimeout:   opts.RPCTimeout,
 		maxPending:   opts.MaxPendingFetchRPC,
 		fetchService: opts.FetchService,
@@ -67,6 +70,18 @@ func New(opts Options) (*Transport, error) {
 	opts.RPCMux.Handle(RPCServiceFetchBatch, transport.handleFetchBatchRPC)
 	opts.RPCMux.Handle(RPCServiceProgressAck, transport.handleProgressAckRPC)
 	return transport, nil
+}
+
+func (t *Transport) Close() error {
+	t.closeOnce.Do(func() {
+		if t.rpcMux == nil {
+			return
+		}
+		t.rpcMux.Unhandle(RPCServiceFetch)
+		t.rpcMux.Unhandle(RPCServiceFetchBatch)
+		t.rpcMux.Unhandle(RPCServiceProgressAck)
+	})
+	return nil
 }
 
 func (t *Transport) BindFetchService(service runtime.FetchService) {

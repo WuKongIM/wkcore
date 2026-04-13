@@ -246,6 +246,59 @@ func TestNewClosesBuiltRuntimeWhenHandlerBuildFails(t *testing.T) {
 	}
 }
 
+func TestNewReleasesChannelTransportRPCServicesAfterAssemblyFailure(t *testing.T) {
+	client := wktransport.NewClient(wktransport.NewPool(channelTestDiscovery{addrs: map[uint64]string{}}, 1, time.Second))
+	defer client.Stop()
+
+	mux := wktransport.NewRPCMux()
+	errHandlerBuild := errors.New("handler build failed")
+	handlerBuildCalls := 0
+
+	cfg := channel.Config{
+		LocalNode:       1,
+		Store:           struct{}{},
+		GenerationStore: struct{}{},
+		MessageIDs:      &channelTestMessageIDs{},
+		Transport: channel.TransportConfig{
+			Client: client,
+			RPCMux: mux,
+			Build:  buildTestTransport,
+		},
+		Runtime: channel.RuntimeConfig{
+			Build: func(channel.RuntimeBuildConfig) (channel.Runtime, channel.HandlerRuntime, error) {
+				return &stubRuntimeControl{}, &stubClosableRuntimeValue{}, nil
+			},
+		},
+		Handler: channel.HandlerConfig{
+			Build: func(channel.HandlerBuildConfig) (channel.MetaRollbackService, error) {
+				handlerBuildCalls++
+				return nil, errHandlerBuild
+			},
+		},
+	}
+
+	if _, err := channel.New(cfg); !errors.Is(err, errHandlerBuild) {
+		t.Fatalf("first channel.New() error = %v, want %v", err, errHandlerBuild)
+	}
+
+	var retryErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("second channel.New() panicked with reused mux: %v", r)
+			}
+		}()
+		_, retryErr = channel.New(cfg)
+	}()
+
+	if !errors.Is(retryErr, errHandlerBuild) {
+		t.Fatalf("second channel.New() error = %v, want %v", retryErr, errHandlerBuild)
+	}
+	if handlerBuildCalls != 2 {
+		t.Fatalf("handler build calls = %d, want 2", handlerBuildCalls)
+	}
+}
+
 func buildTestTransport(cfg channel.TransportBuildConfig) (any, error) {
 	client, ok := cfg.Client.(*wktransport.Client)
 	if !ok {

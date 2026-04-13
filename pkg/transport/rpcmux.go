@@ -30,6 +30,15 @@ func (m *RPCMux) Handle(serviceID uint8, handler RPCHandler) {
 	m.mu.Unlock()
 }
 
+func (m *RPCMux) Unhandle(serviceID uint8) {
+	if serviceID == 0 {
+		return
+	}
+	m.mu.Lock()
+	delete(m.handlers, serviceID)
+	m.mu.Unlock()
+}
+
 func (m *RPCMux) HandleRPC(ctx context.Context, payload []byte) ([]byte, error) {
 	serviceID, body, err := decodeRPCServicePayload(payload)
 	if err != nil {
