@@ -1,6 +1,6 @@
 package conversation
 
-import channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+import "github.com/WuKongIM/WuKongIM/pkg/channel"
 
 type ConversationKey struct {
 	ChannelID   string
@@ -26,7 +26,7 @@ type SyncConversation struct {
 	LastClientMsgNo string
 	ReadToMsgSeq    uint32
 	Version         int64
-	Recents         []channellog.Message
+	Recents         []channel.Message
 }
 
 type SyncResult struct {

@@ -8,7 +8,6 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
@@ -34,6 +33,11 @@ type DeliverySubmit interface {
 	SubmitCommitted(ctx context.Context, msg channel.Message) error
 }
 
+type ChannelLog interface {
+	Status(id channel.ChannelID) (channel.ChannelRuntimeStatus, error)
+	Fetch(ctx context.Context, req channel.FetchRequest) (channel.FetchResult, error)
+}
+
 type DeliveryAck interface {
 	AckRoute(ctx context.Context, cmd message.RouteAckCommand) error
 }
@@ -48,7 +52,7 @@ type Options struct {
 	Online           online.Registry
 	GatewayBootID    uint64
 	LocalNodeID      uint64
-	ChannelLog       channellog.Cluster
+	ChannelLog       ChannelLog
 	DeliverySubmit   DeliverySubmit
 	DeliveryAck      DeliveryAck
 	DeliveryOffline  DeliveryOffline
@@ -63,7 +67,7 @@ type Adapter struct {
 	online           online.Registry
 	gatewayBootID    uint64
 	localNodeID      uint64
-	channelLog       channellog.Cluster
+	channelLog       ChannelLog
 	deliverySubmit   DeliverySubmit
 	deliveryAck      DeliveryAck
 	deliveryOffline  DeliveryOffline

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 )
 
 const (
@@ -14,23 +14,75 @@ const (
 	conversationFactsOpRecent = "recent"
 )
 
+type conversationFactsChannelKey struct {
+	ID   string
+	Type uint8
+}
+
 type conversationFactsRequest struct {
-	Op       string                  `json:"op"`
-	Key      channellog.ChannelKey   `json:"key"`
-	Keys     []channellog.ChannelKey `json:"keys,omitempty"`
-	Limit    int                     `json:"limit,omitempty"`
-	MaxBytes int                     `json:"max_bytes,omitempty"`
+	Op       string                        `json:"op"`
+	Key      conversationFactsChannelKey   `json:"key"`
+	Keys     []conversationFactsChannelKey `json:"keys,omitempty"`
+	Limit    int                           `json:"limit,omitempty"`
+	MaxBytes int                           `json:"max_bytes,omitempty"`
 }
 
 type conversationFactsEntry struct {
-	Key      channellog.ChannelKey `json:"key"`
-	Messages []channellog.Message  `json:"messages,omitempty"`
+	Key      conversationFactsChannelKey `json:"key"`
+	Messages []channel.Message           `json:"messages,omitempty"`
 }
 
 type conversationFactsResponse struct {
 	Status   string                   `json:"status"`
-	Messages []channellog.Message     `json:"messages,omitempty"`
+	Messages []channel.Message        `json:"messages,omitempty"`
 	Entries  []conversationFactsEntry `json:"entries,omitempty"`
+}
+
+func newConversationFactsChannelKey(id channel.ChannelID) conversationFactsChannelKey {
+	return conversationFactsChannelKey{ID: id.ID, Type: id.Type}
+}
+
+func (k conversationFactsChannelKey) channelID() channel.ChannelID {
+	return channel.ChannelID{ID: k.ID, Type: k.Type}
+}
+
+func (k conversationFactsChannelKey) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		ChannelID   string `json:"ChannelID"`
+		ChannelType uint8  `json:"ChannelType"`
+	}{
+		ChannelID:   k.ID,
+		ChannelType: k.Type,
+	})
+}
+
+func (k *conversationFactsChannelKey) UnmarshalJSON(body []byte) error {
+	var payload struct {
+		ChannelID   *string `json:"ChannelID"`
+		ChannelType *uint8  `json:"ChannelType"`
+		ID          *string `json:"ID"`
+		Type        *uint8  `json:"Type"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return err
+	}
+	switch {
+	case payload.ChannelID != nil || payload.ChannelType != nil:
+		if payload.ChannelID != nil {
+			k.ID = *payload.ChannelID
+		}
+		if payload.ChannelType != nil {
+			k.Type = *payload.ChannelType
+		}
+	default:
+		if payload.ID != nil {
+			k.ID = *payload.ID
+		}
+		if payload.Type != nil {
+			k.Type = *payload.Type
+		}
+	}
+	return nil
 }
 
 func (a *Adapter) handleConversationFactsRPC(ctx context.Context, body []byte) ([]byte, error) {
@@ -40,28 +92,29 @@ func (a *Adapter) handleConversationFactsRPC(ctx context.Context, body []byte) (
 	}
 
 	var (
-		messages []channellog.Message
+		messages []channel.Message
 		entries  []conversationFactsEntry
 		err      error
 	)
 	if len(req.Keys) > 0 {
 		entries = make([]conversationFactsEntry, 0, len(req.Keys))
-		for _, key := range req.Keys {
-			entry := conversationFactsEntry{Key: key}
+		for _, rawKey := range req.Keys {
+			key := rawKey.channelID()
+			entry := conversationFactsEntry{Key: newConversationFactsChannelKey(key)}
 			switch req.Op {
 			case conversationFactsOpLatest:
-				var msg channellog.Message
+				var msg channel.Message
 				var ok bool
 				msg, ok, err = loadLatestConversationMessage(ctx, a.channelLog, key, req.MaxBytes)
 				if ok {
-					entry.Messages = []channellog.Message{msg}
+					entry.Messages = []channel.Message{msg}
 				}
 			case conversationFactsOpRecent:
 				entry.Messages, err = loadRecentConversationMessages(ctx, a.channelLog, key, req.Limit, req.MaxBytes)
 			default:
 				return nil, fmt.Errorf("access/node: unknown conversation facts op %q", req.Op)
 			}
-			if errors.Is(err, channellog.ErrChannelNotFound) {
+			if errors.Is(err, channel.ErrChannelNotFound) {
 				err = nil
 			}
 			if err != nil {
@@ -75,20 +128,21 @@ func (a *Adapter) handleConversationFactsRPC(ctx context.Context, body []byte) (
 		})
 	}
 
+	key := req.Key.channelID()
 	switch req.Op {
 	case conversationFactsOpLatest:
-		var msg channellog.Message
+		var msg channel.Message
 		var ok bool
-		msg, ok, err = loadLatestConversationMessage(ctx, a.channelLog, req.Key, req.MaxBytes)
+		msg, ok, err = loadLatestConversationMessage(ctx, a.channelLog, key, req.MaxBytes)
 		if ok {
-			messages = []channellog.Message{msg}
+			messages = []channel.Message{msg}
 		}
 	case conversationFactsOpRecent:
-		messages, err = loadRecentConversationMessages(ctx, a.channelLog, req.Key, req.Limit, req.MaxBytes)
+		messages, err = loadRecentConversationMessages(ctx, a.channelLog, key, req.Limit, req.MaxBytes)
 	default:
 		return nil, fmt.Errorf("access/node: unknown conversation facts op %q", req.Op)
 	}
-	if errors.Is(err, channellog.ErrChannelNotFound) {
+	if errors.Is(err, channel.ErrChannelNotFound) {
 		err = nil
 	}
 	if err != nil {
@@ -100,38 +154,38 @@ func (a *Adapter) handleConversationFactsRPC(ctx context.Context, body []byte) (
 	})
 }
 
-func loadLatestConversationMessage(ctx context.Context, cluster channellog.Cluster, key channellog.ChannelKey, maxBytes int) (channellog.Message, bool, error) {
+func loadLatestConversationMessage(ctx context.Context, cluster ChannelLog, id channel.ChannelID, maxBytes int) (channel.Message, bool, error) {
 	if cluster == nil {
-		return channellog.Message{}, false, channellog.ErrStaleMeta
+		return channel.Message{}, false, channel.ErrStaleMeta
 	}
-	status, err := cluster.Status(key)
+	status, err := cluster.Status(id)
 	if err != nil {
-		return channellog.Message{}, false, err
+		return channel.Message{}, false, err
 	}
 	if status.CommittedSeq == 0 {
-		return channellog.Message{}, false, nil
+		return channel.Message{}, false, nil
 	}
 
-	fetch, err := cluster.Fetch(ctx, channellog.FetchRequest{
-		Key:      key,
-		FromSeq:  status.CommittedSeq,
-		Limit:    1,
-		MaxBytes: maxBytes,
+	fetch, err := cluster.Fetch(ctx, channel.FetchRequest{
+		ChannelID: id,
+		FromSeq:   status.CommittedSeq,
+		Limit:     1,
+		MaxBytes:  maxBytes,
 	})
 	if err != nil {
-		return channellog.Message{}, false, err
+		return channel.Message{}, false, err
 	}
 	if len(fetch.Messages) == 0 {
-		return channellog.Message{}, false, nil
+		return channel.Message{}, false, nil
 	}
 	return fetch.Messages[0], true, nil
 }
 
-func loadRecentConversationMessages(ctx context.Context, cluster channellog.Cluster, key channellog.ChannelKey, limit, maxBytes int) ([]channellog.Message, error) {
+func loadRecentConversationMessages(ctx context.Context, cluster ChannelLog, id channel.ChannelID, limit, maxBytes int) ([]channel.Message, error) {
 	if cluster == nil || limit <= 0 {
 		return nil, nil
 	}
-	status, err := cluster.Status(key)
+	status, err := cluster.Status(id)
 	if err != nil {
 		return nil, err
 	}
@@ -143,16 +197,16 @@ func loadRecentConversationMessages(ctx context.Context, cluster channellog.Clus
 	if status.CommittedSeq >= uint64(limit) {
 		fromSeq = status.CommittedSeq - uint64(limit) + 1
 	}
-	fetch, err := cluster.Fetch(ctx, channellog.FetchRequest{
-		Key:      key,
-		FromSeq:  fromSeq,
-		Limit:    limit,
-		MaxBytes: maxBytes,
+	fetch, err := cluster.Fetch(ctx, channel.FetchRequest{
+		ChannelID: id,
+		FromSeq:   fromSeq,
+		Limit:     limit,
+		MaxBytes:  maxBytes,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return append([]channellog.Message(nil), fetch.Messages...), nil
+	return append([]channel.Message(nil), fetch.Messages...), nil
 }
 
 func encodeConversationFactsResponse(resp conversationFactsResponse) ([]byte, error) {

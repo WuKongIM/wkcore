@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/stretchr/testify/require"
 )
@@ -332,15 +332,15 @@ func TestSyncLoadsRecentsOnlyForFinalLimitedWindow(t *testing.T) {
 	repo.latest[key("g1", 2)] = testMessage("g1", 2, 30, "u2", 300, "c1")
 	repo.latest[key("g2", 2)] = testMessage("g2", 2, 20, "u2", 200, "c2")
 	repo.latest[key("g3", 2)] = testMessage("g3", 2, 10, "u2", 100, "c3")
-	repo.recents[key("g1", 2)] = []channellog.Message{
+	repo.recents[key("g1", 2)] = []channel.Message{
 		testMessage("g1", 2, 30, "u2", 300, "c1"),
 		testMessage("g1", 2, 29, "u2", 299, "c1-1"),
 	}
-	repo.recents[key("g2", 2)] = []channellog.Message{
+	repo.recents[key("g2", 2)] = []channel.Message{
 		testMessage("g2", 2, 20, "u2", 200, "c2"),
 		testMessage("g2", 2, 19, "u2", 199, "c2-1"),
 	}
-	repo.recents[key("g3", 2)] = []channellog.Message{
+	repo.recents[key("g3", 2)] = []channel.Message{
 		testMessage("g3", 2, 10, "u2", 100, "c3"),
 		testMessage("g3", 2, 9, "u2", 99, "c3-1"),
 	}
@@ -364,11 +364,11 @@ func TestSyncLoadsRecentsOnlyForFinalLimitedWindow(t *testing.T) {
 	require.Len(t, got.Conversations, 2)
 	require.Equal(t, [][]ConversationKey{{key("g1", 2), key("g2", 2)}}, repo.recentBatchLoads)
 	require.Empty(t, repo.recentLoads)
-	require.Equal(t, []channellog.Message{
+	require.Equal(t, []channel.Message{
 		testMessage("g1", 2, 30, "u2", 300, "c1"),
 		testMessage("g1", 2, 29, "u2", 299, "c1-1"),
 	}, got.Conversations[0].Recents)
-	require.Equal(t, []channellog.Message{
+	require.Equal(t, []channel.Message{
 		testMessage("g2", 2, 20, "u2", 200, "c2"),
 		testMessage("g2", 2, 19, "u2", 199, "c2-1"),
 	}, got.Conversations[1].Recents)
@@ -564,8 +564,8 @@ type conversationSyncRepoStub struct {
 	directory          []metadb.UserConversationState
 	states             map[metadb.ConversationKey]metadb.UserConversationState
 	channelUpdates     map[metadb.ConversationKey]metadb.ChannelUpdateLog
-	latest             map[ConversationKey]channellog.Message
-	recents            map[ConversationKey][]channellog.Message
+	latest             map[ConversationKey]channel.Message
+	recents            map[ConversationKey][]channel.Message
 	clearedActive      []metadb.ConversationKey
 	clearCalls         int
 	clearErrs          []error
@@ -581,8 +581,8 @@ func newConversationSyncRepoStub() *conversationSyncRepoStub {
 	return &conversationSyncRepoStub{
 		states:         make(map[metadb.ConversationKey]metadb.UserConversationState),
 		channelUpdates: make(map[metadb.ConversationKey]metadb.ChannelUpdateLog),
-		latest:         make(map[ConversationKey]channellog.Message),
-		recents:        make(map[ConversationKey][]channellog.Message),
+		latest:         make(map[ConversationKey]channel.Message),
+		recents:        make(map[ConversationKey][]channel.Message),
 	}
 }
 
@@ -662,9 +662,9 @@ func (r *conversationSyncRepoStub) BatchGetChannelUpdateLogs(_ context.Context, 
 	return out, nil
 }
 
-func (r *conversationSyncRepoStub) LoadLatestMessages(_ context.Context, keys []ConversationKey) (map[ConversationKey]channellog.Message, error) {
+func (r *conversationSyncRepoStub) LoadLatestMessages(_ context.Context, keys []ConversationKey) (map[ConversationKey]channel.Message, error) {
 	r.latestLoads = append(r.latestLoads, append([]ConversationKey(nil), keys...)...)
-	out := make(map[ConversationKey]channellog.Message, len(keys))
+	out := make(map[ConversationKey]channel.Message, len(keys))
 	for _, key := range keys {
 		msg, ok := r.latest[key]
 		if ok {
@@ -674,26 +674,26 @@ func (r *conversationSyncRepoStub) LoadLatestMessages(_ context.Context, keys []
 	return out, nil
 }
 
-func (r *conversationSyncRepoStub) LoadRecentMessages(_ context.Context, key ConversationKey, limit int) ([]channellog.Message, error) {
+func (r *conversationSyncRepoStub) LoadRecentMessages(_ context.Context, key ConversationKey, limit int) ([]channel.Message, error) {
 	if r.recentLoadErr != nil {
 		return nil, r.recentLoadErr
 	}
 	r.recentLoads = append(r.recentLoads, key)
-	msgs := append([]channellog.Message(nil), r.recents[key]...)
+	msgs := append([]channel.Message(nil), r.recents[key]...)
 	if limit > 0 && len(msgs) > limit {
 		msgs = msgs[:limit]
 	}
 	return msgs, nil
 }
 
-func (r *conversationSyncRepoStub) LoadRecentMessagesBatch(_ context.Context, keys []ConversationKey, limit int) (map[ConversationKey][]channellog.Message, error) {
+func (r *conversationSyncRepoStub) LoadRecentMessagesBatch(_ context.Context, keys []ConversationKey, limit int) (map[ConversationKey][]channel.Message, error) {
 	if r.recentBatchLoadErr != nil {
 		return nil, r.recentBatchLoadErr
 	}
 	r.recentBatchLoads = append(r.recentBatchLoads, append([]ConversationKey(nil), keys...))
-	out := make(map[ConversationKey][]channellog.Message, len(keys))
+	out := make(map[ConversationKey][]channel.Message, len(keys))
 	for _, key := range keys {
-		msgs := append([]channellog.Message(nil), r.recents[key]...)
+		msgs := append([]channel.Message(nil), r.recents[key]...)
 		if limit > 0 && len(msgs) > limit {
 			msgs = msgs[:limit]
 		}
@@ -716,8 +716,8 @@ func metadbKey(channelID string, channelType uint8) metadb.ConversationKey {
 	}
 }
 
-func testMessage(channelID string, channelType uint8, seq uint64, fromUID string, ts int32, clientMsgNo string) channellog.Message {
-	return channellog.Message{
+func testMessage(channelID string, channelType uint8, seq uint64, fromUID string, ts int32, clientMsgNo string) channel.Message {
+	return channel.Message{
 		ChannelID:   channelID,
 		ChannelType: channelType,
 		MessageSeq:  seq,

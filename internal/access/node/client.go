@@ -8,7 +8,6 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
@@ -158,68 +157,76 @@ func (c *Client) NotifyOffline(ctx context.Context, nodeID uint64, cmd message.S
 	return nil
 }
 
-func (c *Client) LoadLatestConversationMessage(ctx context.Context, nodeID uint64, key channellog.ChannelKey, maxBytes int) (channellog.Message, bool, error) {
+func (c *Client) LoadLatestConversationMessage(ctx context.Context, nodeID uint64, key channel.ChannelID, maxBytes int) (channel.Message, bool, error) {
 	resp, err := callConversationFactsDirect(ctx, c, nodeID, conversationFactsRequest{
 		Op:       conversationFactsOpLatest,
-		Key:      key,
+		Key:      newConversationFactsChannelKey(key),
 		MaxBytes: maxBytes,
 	})
 	if err != nil {
-		return channellog.Message{}, false, err
+		return channel.Message{}, false, err
 	}
 	if len(resp.Messages) == 0 {
-		return channellog.Message{}, false, nil
+		return channel.Message{}, false, nil
 	}
 	return resp.Messages[0], true, nil
 }
 
-func (c *Client) LoadLatestConversationMessages(ctx context.Context, nodeID uint64, keys []channellog.ChannelKey, maxBytes int) (map[channellog.ChannelKey]channellog.Message, error) {
+func (c *Client) LoadLatestConversationMessages(ctx context.Context, nodeID uint64, keys []channel.ChannelID, maxBytes int) (map[channel.ChannelID]channel.Message, error) {
 	resp, err := callConversationFactsDirect(ctx, c, nodeID, conversationFactsRequest{
 		Op:       conversationFactsOpLatest,
-		Keys:     append([]channellog.ChannelKey(nil), keys...),
+		Keys:     conversationFactsChannelKeys(keys),
 		MaxBytes: maxBytes,
 	})
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[channellog.ChannelKey]channellog.Message, len(resp.Entries))
+	out := make(map[channel.ChannelID]channel.Message, len(resp.Entries))
 	for _, entry := range resp.Entries {
 		if len(entry.Messages) == 0 {
 			continue
 		}
-		out[entry.Key] = entry.Messages[0]
+		out[entry.Key.channelID()] = entry.Messages[0]
 	}
 	return out, nil
 }
 
-func (c *Client) LoadRecentConversationMessages(ctx context.Context, nodeID uint64, key channellog.ChannelKey, limit, maxBytes int) ([]channellog.Message, error) {
+func (c *Client) LoadRecentConversationMessages(ctx context.Context, nodeID uint64, key channel.ChannelID, limit, maxBytes int) ([]channel.Message, error) {
 	resp, err := callConversationFactsDirect(ctx, c, nodeID, conversationFactsRequest{
 		Op:       conversationFactsOpRecent,
-		Key:      key,
+		Key:      newConversationFactsChannelKey(key),
 		Limit:    limit,
 		MaxBytes: maxBytes,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return append([]channellog.Message(nil), resp.Messages...), nil
+	return append([]channel.Message(nil), resp.Messages...), nil
 }
 
-func (c *Client) LoadRecentConversationMessagesBatch(ctx context.Context, nodeID uint64, keys []channellog.ChannelKey, limit, maxBytes int) (map[channellog.ChannelKey][]channellog.Message, error) {
+func (c *Client) LoadRecentConversationMessagesBatch(ctx context.Context, nodeID uint64, keys []channel.ChannelID, limit, maxBytes int) (map[channel.ChannelID][]channel.Message, error) {
 	resp, err := callConversationFactsDirect(ctx, c, nodeID, conversationFactsRequest{
 		Op:       conversationFactsOpRecent,
-		Keys:     append([]channellog.ChannelKey(nil), keys...),
+		Keys:     conversationFactsChannelKeys(keys),
 		Limit:    limit,
 		MaxBytes: maxBytes,
 	})
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[channellog.ChannelKey][]channellog.Message, len(resp.Entries))
+	out := make(map[channel.ChannelID][]channel.Message, len(resp.Entries))
 	for _, entry := range resp.Entries {
-		out[entry.Key] = append([]channellog.Message(nil), entry.Messages...)
+		out[entry.Key.channelID()] = append([]channel.Message(nil), entry.Messages...)
 	}
 	return out, nil
+}
+
+func conversationFactsChannelKeys(keys []channel.ChannelID) []conversationFactsChannelKey {
+	out := make([]conversationFactsChannelKey, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, newConversationFactsChannelKey(key))
+	}
+	return out
 }
 
 func (c *Client) callPresenceAuthoritative(ctx context.Context, slotID multiraft.SlotID, req presenceRPCRequest) (presenceRPCResponse, error) {

@@ -1,0 +1,100 @@
+package node
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/stretchr/testify/require"
+)
+
+func TestConversationFactsRequestJSONPreservesLegacyChannelKeyFields(t *testing.T) {
+	body := mustMarshal(t, conversationFactsRequest{
+		Op: conversationFactsOpLatest,
+		Key: newConversationFactsChannelKey(channel.ChannelID{
+			ID:   "g1",
+			Type: 2,
+		}),
+		Keys: []conversationFactsChannelKey{
+			newConversationFactsChannelKey(channel.ChannelID{ID: "g1", Type: 2}),
+			newConversationFactsChannelKey(channel.ChannelID{ID: "g2", Type: 3}),
+		},
+	})
+
+	require.JSONEq(t, `{
+		"op":"latest",
+		"key":{"ChannelID":"g1","ChannelType":2},
+		"keys":[
+			{"ChannelID":"g1","ChannelType":2},
+			{"ChannelID":"g2","ChannelType":3}
+		]
+	}`, string(body))
+	require.NotContains(t, string(body), `"ID":"g1"`)
+	require.NotContains(t, string(body), `"Type":2`)
+}
+
+func TestConversationFactsRequestJSONDecodesLegacyChannelKeyFields(t *testing.T) {
+	body := []byte(`{
+		"op":"recent",
+		"key":{"ChannelID":"g1","ChannelType":2},
+		"keys":[{"ChannelID":"g2","ChannelType":3}],
+		"limit":5,
+		"max_bytes":1024
+	}`)
+
+	var req conversationFactsRequest
+	require.NoError(t, json.Unmarshal(body, &req))
+	require.Equal(t, channel.ChannelID{ID: "g1", Type: 2}, req.Key.channelID())
+	require.Equal(t, []conversationFactsChannelKey{
+		newConversationFactsChannelKey(channel.ChannelID{ID: "g2", Type: 3}),
+	}, req.Keys)
+	require.Equal(t, 5, req.Limit)
+	require.Equal(t, 1024, req.MaxBytes)
+}
+
+func TestConversationFactsResponseJSONPreservesLegacyBatchEntryKeyFields(t *testing.T) {
+	body, err := encodeConversationFactsResponse(conversationFactsResponse{
+		Status: rpcStatusOK,
+		Entries: []conversationFactsEntry{{
+			Key: newConversationFactsChannelKey(channel.ChannelID{ID: "g1", Type: 2}),
+			Messages: []channel.Message{{
+				ChannelID:   "g1",
+				ChannelType: 2,
+				MessageSeq:  9,
+			}},
+		}},
+	})
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(body, &payload))
+	require.Equal(t, rpcStatusOK, payload["status"])
+	entries, ok := payload["entries"].([]any)
+	require.True(t, ok)
+	require.Len(t, entries, 1)
+	entry, ok := entries[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, map[string]any{
+		"ChannelID":   "g1",
+		"ChannelType": float64(2),
+	}, entry["key"])
+	require.NotContains(t, string(body), `"ID":"g1"`)
+	require.NotContains(t, string(body), `"Type":2`)
+}
+
+func TestConversationFactsResponseJSONDecodesLegacyBatchEntryKeyFields(t *testing.T) {
+	body := []byte(`{
+		"status":"ok",
+		"entries":[{
+			"key":{"ChannelID":"g1","ChannelType":2},
+			"messages":[{"ChannelID":"g1","ChannelType":2,"MessageSeq":9}]
+		}]
+	}`)
+
+	resp, err := decodeConversationFactsResponse(body)
+	require.NoError(t, err)
+	require.Len(t, resp.Entries, 1)
+	require.Equal(t, channel.ChannelID{ID: "g1", Type: 2}, resp.Entries[0].Key.channelID())
+	require.Len(t, resp.Entries[0].Messages, 1)
+	require.Equal(t, uint64(9), resp.Entries[0].Messages[0].MessageSeq)
+}

@@ -256,7 +256,7 @@ func TestOfflineRoutingKeepsLocalBindingsWhenLocalCloseFails(t *testing.T) {
 
 func TestAsyncCommittedDispatcherFallsBackToLocalConversationWhenOwnerIsUnknown(t *testing.T) {
 	delivery := &recordingCommittedSubmitter{}
-	conversation := &recordingFlushingLegacyCommittedSubmitter{}
+	conversation := &recordingFlushingConversationSubmitter{}
 	dispatcher := asyncCommittedDispatcher{
 		localNodeID: 1,
 		channelLog: &stubChannelLogCluster{
@@ -328,7 +328,7 @@ func TestAsyncCommittedDispatcherSubmitsDurableMessageToLocalDelivery(t *testing
 
 func TestAsyncCommittedDispatcherSubmitsToConversationProjector(t *testing.T) {
 	delivery := &recordingCommittedSubmitter{}
-	conversation := &recordingLegacyCommittedSubmitter{}
+	conversation := &recordingConversationSubmitter{}
 	dispatcher := asyncCommittedDispatcher{
 		localNodeID: 1,
 		channelLog: &stubChannelLogCluster{
@@ -355,12 +355,12 @@ func TestAsyncCommittedDispatcherSubmitsToConversationProjector(t *testing.T) {
 		return len(delivery.calls) == 1 && len(conversation.calls) == 1
 	}, time.Second, 10*time.Millisecond)
 	require.Equal(t, msg, delivery.calls[0])
-	require.Equal(t, rootChannelMessageToLegacy(msg), conversation.calls[0])
+	require.Equal(t, msg, conversation.calls[0])
 }
 
 func TestAsyncCommittedDispatcherPrefersLocalDeliveryWithoutOwnerLookup(t *testing.T) {
 	delivery := &recordingCommittedSubmitter{}
-	conversation := &recordingLegacyCommittedSubmitter{}
+	conversation := &recordingConversationSubmitter{}
 	channelLog := &stubChannelLogCluster{
 		statusErr: errors.New("status should not be called in local-preferred mode"),
 	}
@@ -388,7 +388,7 @@ func TestAsyncCommittedDispatcherPrefersLocalDeliveryWithoutOwnerLookup(t *testi
 	}, time.Second, 10*time.Millisecond)
 	require.Equal(t, 0, channelLog.StatusCalls())
 	require.Equal(t, msg, delivery.calls[0])
-	require.Equal(t, rootChannelMessageToLegacy(msg), conversation.calls[0])
+	require.Equal(t, msg, conversation.calls[0])
 }
 
 func TestBuildRealtimeRecvPacketUsesDurableTimestampAndPersonChannelView(t *testing.T) {
@@ -606,12 +606,12 @@ func (r *recordingCommittedSubmitter) SubmitCommitted(_ context.Context, msg cha
 	return nil
 }
 
-type recordingLegacyCommittedSubmitter struct {
+type recordingConversationSubmitter struct {
 	submitCalls int
-	calls       []channellog.Message
+	calls       []channel.Message
 }
 
-func (r *recordingLegacyCommittedSubmitter) SubmitCommitted(_ context.Context, msg channellog.Message) error {
+func (r *recordingConversationSubmitter) SubmitCommitted(_ context.Context, msg channel.Message) error {
 	r.submitCalls++
 	copied := msg
 	copied.Payload = append([]byte(nil), msg.Payload...)
@@ -619,12 +619,12 @@ func (r *recordingLegacyCommittedSubmitter) SubmitCommitted(_ context.Context, m
 	return nil
 }
 
-type recordingFlushingLegacyCommittedSubmitter struct {
-	recordingLegacyCommittedSubmitter
+type recordingFlushingConversationSubmitter struct {
+	recordingConversationSubmitter
 	flushCalls int
 }
 
-func (r *recordingFlushingLegacyCommittedSubmitter) Flush(context.Context) error {
+func (r *recordingFlushingConversationSubmitter) Flush(context.Context) error {
 	r.flushCalls++
 	return nil
 }

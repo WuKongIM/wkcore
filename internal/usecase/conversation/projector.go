@@ -8,7 +8,7 @@ import (
 	"time"
 
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/wklog"
@@ -17,7 +17,7 @@ import (
 type Projector interface {
 	Start() error
 	Stop() error
-	SubmitCommitted(ctx context.Context, msg channellog.Message) error
+	SubmitCommitted(ctx context.Context, msg channel.Message) error
 	BatchGetHotChannelUpdates(ctx context.Context, keys []metadb.ConversationKey) (map[metadb.ConversationKey]metadb.ChannelUpdateLog, error)
 	Flush(ctx context.Context) error
 }
@@ -47,7 +47,7 @@ type projector struct {
 	mu            sync.RWMutex
 	hot           map[metadb.ConversationKey]metadb.ChannelUpdateLog
 	dirty         map[metadb.ConversationKey]struct{}
-	wakeups       map[metadb.ConversationKey]channellog.Message
+	wakeups       map[metadb.ConversationKey]channel.Message
 	wakeupRunning bool
 	running       bool
 	stopCh        chan struct{}
@@ -88,7 +88,7 @@ func NewProjector(opts ProjectorOptions) Projector {
 		logger:             opts.Logger,
 		hot:                make(map[metadb.ConversationKey]metadb.ChannelUpdateLog),
 		dirty:              make(map[metadb.ConversationKey]struct{}),
-		wakeups:            make(map[metadb.ConversationKey]channellog.Message),
+		wakeups:            make(map[metadb.ConversationKey]channel.Message),
 	}
 }
 
@@ -133,7 +133,7 @@ func (p *projector) Stop() error {
 	return p.Flush(context.Background())
 }
 
-func (p *projector) SubmitCommitted(ctx context.Context, msg channellog.Message) error {
+func (p *projector) SubmitCommitted(ctx context.Context, msg channel.Message) error {
 	if p == nil {
 		return nil
 	}
@@ -312,7 +312,7 @@ func (p *projector) run(stopCh <-chan struct{}, doneCh chan<- struct{}) {
 	}
 }
 
-func (p *projector) touchConversationActive(ctx context.Context, msg channellog.Message) error {
+func (p *projector) touchConversationActive(ctx context.Context, msg channel.Message) error {
 	if p.store == nil {
 		return nil
 	}
@@ -366,7 +366,7 @@ func (p *projector) flushWakeups(ctx context.Context) error {
 		p.mu.RUnlock()
 		return nil
 	}
-	pending := make(map[metadb.ConversationKey]channellog.Message, len(p.wakeups))
+	pending := make(map[metadb.ConversationKey]channel.Message, len(p.wakeups))
 	for key, msg := range p.wakeups {
 		pending[key] = msg
 	}
@@ -412,7 +412,7 @@ func (p *projector) isCold(lastMsgAt int64) bool {
 	return lastMsgAt <= p.now().Add(-p.coldThreshold).UnixNano()
 }
 
-func channelUpdateFromMessage(msg channellog.Message) metadb.ChannelUpdateLog {
+func channelUpdateFromMessage(msg channel.Message) metadb.ChannelUpdateLog {
 	updatedAt := time.Unix(int64(msg.Timestamp), 0).UnixNano()
 	return metadb.ChannelUpdateLog{
 		ChannelID:       msg.ChannelID,
@@ -438,15 +438,15 @@ func hotEntryNewerThan(left, right metadb.ChannelUpdateLog) bool {
 	return left.LastClientMsgNo > right.LastClientMsgNo
 }
 
-func shouldReplaceWakeupMessage(current, next channellog.Message) bool {
+func shouldReplaceWakeupMessage(current, next channel.Message) bool {
 	return wakeupMessageNewerThan(next, current)
 }
 
-func wakeupMessageNewerThan(left, right channellog.Message) bool {
+func wakeupMessageNewerThan(left, right channel.Message) bool {
 	return hotEntryNewerThan(channelUpdateFromMessage(left), channelUpdateFromMessage(right))
 }
 
-func personConversationActivePatches(msg channellog.Message) ([]metadb.UserConversationActivePatch, bool) {
+func personConversationActivePatches(msg channel.Message) ([]metadb.UserConversationActivePatch, bool) {
 	left, right, err := runtimechannelid.DecodePersonChannel(msg.ChannelID)
 	if err != nil {
 		return nil, false
@@ -458,7 +458,7 @@ func personConversationActivePatches(msg channellog.Message) ([]metadb.UserConve
 	}, true
 }
 
-func (p *projector) clearWakeupIfNotNewer(key metadb.ConversationKey, msg channellog.Message) {
+func (p *projector) clearWakeupIfNotNewer(key metadb.ConversationKey, msg channel.Message) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 

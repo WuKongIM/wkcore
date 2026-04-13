@@ -13,6 +13,10 @@ type messageChannelClusterAdapter struct {
 	cluster channellog.Cluster
 }
 
+type conversationChannelClusterAdapter struct {
+	cluster channellog.Cluster
+}
+
 func (a messageChannelClusterAdapter) ApplyMeta(meta channel.Meta) error {
 	if a.cluster == nil {
 		return nil
@@ -29,6 +33,49 @@ func (a messageChannelClusterAdapter) Append(ctx context.Context, req channel.Ap
 		return channel.AppendResult{}, mapLegacyChannelError(err)
 	}
 	return legacyAppendResultToRoot(result), nil
+}
+
+func (a conversationChannelClusterAdapter) Status(id channel.ChannelID) (channel.ChannelRuntimeStatus, error) {
+	if a.cluster == nil {
+		return channel.ChannelRuntimeStatus{}, channel.ErrStaleMeta
+	}
+	status, err := a.cluster.Status(channellog.ChannelKey{
+		ChannelID:   id.ID,
+		ChannelType: id.Type,
+	})
+	if err != nil {
+		return channel.ChannelRuntimeStatus{}, mapLegacyChannelError(err)
+	}
+	return channel.ChannelRuntimeStatus{
+		Key:          channelhandler.KeyFromChannelID(id),
+		ID:           id,
+		Status:       channel.Status(status.Status),
+		Leader:       channel.NodeID(status.Leader),
+		LeaderEpoch:  status.LeaderEpoch,
+		HW:           status.HW,
+		CommittedSeq: status.CommittedSeq,
+	}, nil
+}
+
+func (a conversationChannelClusterAdapter) Fetch(ctx context.Context, req channel.FetchRequest) (channel.FetchResult, error) {
+	if a.cluster == nil {
+		return channel.FetchResult{}, channel.ErrStaleMeta
+	}
+	result, err := a.cluster.Fetch(ctx, channellog.FetchRequest{
+		Key: channellog.ChannelKey{
+			ChannelID:   req.ChannelID.ID,
+			ChannelType: req.ChannelID.Type,
+		},
+		FromSeq:              req.FromSeq,
+		Limit:                req.Limit,
+		MaxBytes:             req.MaxBytes,
+		ExpectedChannelEpoch: req.ExpectedChannelEpoch,
+		ExpectedLeaderEpoch:  req.ExpectedLeaderEpoch,
+	})
+	if err != nil {
+		return channel.FetchResult{}, mapLegacyChannelError(err)
+	}
+	return legacyFetchResultToRoot(result), nil
 }
 
 type messageMetaRefresherAdapter struct {
@@ -65,6 +112,18 @@ func legacyAppendResultToRoot(result channellog.AppendResult) channel.AppendResu
 		MessageID:  result.MessageID,
 		MessageSeq: result.MessageSeq,
 		Message:    legacyChannelMessageToRoot(result.Message),
+	}
+}
+
+func legacyFetchResultToRoot(result channellog.FetchResult) channel.FetchResult {
+	messages := make([]channel.Message, 0, len(result.Messages))
+	for _, msg := range result.Messages {
+		messages = append(messages, legacyChannelMessageToRoot(msg))
+	}
+	return channel.FetchResult{
+		Messages:     messages,
+		NextSeq:      result.NextSeq,
+		CommittedSeq: result.CommittedSeq,
 	}
 }
 

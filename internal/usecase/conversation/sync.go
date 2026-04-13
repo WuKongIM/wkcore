@@ -7,7 +7,7 @@ import (
 	"time"
 
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 )
@@ -42,7 +42,7 @@ type retainedIncrementalView struct {
 type retainedIncrementalViewHeap []*retainedIncrementalView
 
 type recentMessageBatchLoader interface {
-	LoadRecentMessagesBatch(ctx context.Context, keys []ConversationKey, limit int) (map[ConversationKey][]channellog.Message, error)
+	LoadRecentMessagesBatch(ctx context.Context, keys []ConversationKey, limit int) (map[ConversationKey][]channel.Message, error)
 }
 
 func (a *App) Sync(ctx context.Context, query SyncQuery) (SyncResult, error) {
@@ -316,7 +316,7 @@ func (a *App) incrementalCandidateLimit(query SyncQuery) int {
 	return limit
 }
 
-func buildSyncConversationView(query SyncQuery, candidate *syncCandidate, latest channellog.Message) (syncConversationView, bool) {
+func buildSyncConversationView(query SyncQuery, candidate *syncCandidate, latest channel.Message) (syncConversationView, bool) {
 	if candidate == nil || latest.MessageSeq == 0 {
 		return syncConversationView{}, false
 	}
@@ -417,11 +417,11 @@ func filterCandidateKeys(candidates map[ConversationKey]*syncCandidate, excluded
 	return keys
 }
 
-func filterVisibleRecents(recents []channellog.Message, deletedToSeq uint64) []channellog.Message {
+func filterVisibleRecents(recents []channel.Message, deletedToSeq uint64) []channel.Message {
 	if deletedToSeq == 0 {
-		return append([]channellog.Message(nil), recents...)
+		return append([]channel.Message(nil), recents...)
 	}
-	out := make([]channellog.Message, 0, len(recents))
+	out := make([]channel.Message, 0, len(recents))
 	for _, msg := range recents {
 		if msg.MessageSeq <= deletedToSeq {
 			continue
@@ -431,7 +431,7 @@ func filterVisibleRecents(recents []channellog.Message, deletedToSeq uint64) []c
 	return out
 }
 
-func assignConversationRecents(view *syncConversationView, recents []channellog.Message) {
+func assignConversationRecents(view *syncConversationView, recents []channel.Message) {
 	if view == nil {
 		return
 	}

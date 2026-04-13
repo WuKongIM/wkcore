@@ -3,7 +3,7 @@ package conversation
 import (
 	"context"
 
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 )
 
@@ -19,8 +19,8 @@ type ChannelUpdateStore interface {
 }
 
 type MessageFactsStore interface {
-	LoadLatestMessages(ctx context.Context, keys []ConversationKey) (map[ConversationKey]channellog.Message, error)
-	LoadRecentMessages(ctx context.Context, key ConversationKey, limit int) ([]channellog.Message, error)
+	LoadLatestMessages(ctx context.Context, keys []ConversationKey) (map[ConversationKey]channel.Message, error)
+	LoadRecentMessages(ctx context.Context, key ConversationKey, limit int) ([]channel.Message, error)
 }
 
 type ProjectorStore interface {

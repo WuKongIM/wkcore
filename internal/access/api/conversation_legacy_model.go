@@ -6,7 +6,7 @@ import (
 
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
 	conversationusecase "github.com/WuKongIM/WuKongIM/internal/usecase/conversation"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
@@ -121,7 +121,7 @@ func newLegacyConversationResponse(uid string, item conversationusecase.SyncConv
 	return resp
 }
 
-func newLegacyMessageResp(uid string, msg channellog.Message) legacyMessageResp {
+func newLegacyMessageResp(uid string, msg channel.Message) legacyMessageResp {
 	return legacyMessageResp{
 		Header: legacyMessageHeader{
 			NoPersist: boolToInt(msg.Framer.NoPersist),

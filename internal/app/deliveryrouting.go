@@ -94,7 +94,7 @@ func (d asyncCommittedDispatcher) submitLocal(ctx context.Context, msg channel.M
 
 func (d asyncCommittedDispatcher) submitConversation(ctx context.Context, msg channel.Message) {
 	if d.conversation != nil {
-		_ = d.conversation.SubmitCommitted(ctx, rootChannelMessageToLegacy(msg))
+		_ = d.conversation.SubmitCommitted(ctx, msg)
 	}
 }
 
@@ -436,7 +436,7 @@ type committedDeliverySubmitter interface {
 }
 
 type committedConversationSubmitter interface {
-	SubmitCommitted(ctx context.Context, msg channellog.Message) error
+	SubmitCommitted(ctx context.Context, msg channel.Message) error
 }
 
 type committedConversationSubmitterFlusher interface {

@@ -15,7 +15,6 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/user"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
@@ -372,7 +371,7 @@ func TestConversationSyncReturnsLegacyArrayResponse(t *testing.T) {
 					LastClientMsgNo: "c1",
 					ReadToMsgSeq:    5,
 					Version:         999,
-					Recents: []channellog.Message{
+					Recents: []channel.Message{
 						{
 							Framer:      frame.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
 							Setting:     3,
