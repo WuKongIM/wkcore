@@ -82,6 +82,25 @@ type FetchResponseEnvelope struct {
 	Records    []core.Record
 }
 
+type FetchBatchRequestEnvelope struct {
+	Items []FetchBatchRequestItem
+}
+
+type FetchBatchRequestItem struct {
+	RequestID uint64
+	Request   FetchRequestEnvelope
+}
+
+type FetchBatchResponseEnvelope struct {
+	Items []FetchBatchResponseItem
+}
+
+type FetchBatchResponseItem struct {
+	RequestID uint64
+	Response  *FetchResponseEnvelope
+	Error     string
+}
+
 type ProgressAckEnvelope struct {
 	ChannelKey  core.ChannelKey
 	Epoch       uint64

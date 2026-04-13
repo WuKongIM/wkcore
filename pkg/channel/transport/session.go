@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
-	isrnode "github.com/WuKongIM/WuKongIM/pkg/channel/node"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
 )
 
 const defaultFetchBatchFlushWindow = 200 * time.Microsecond
@@ -15,15 +15,15 @@ const defaultFetchBatchFlushWindow = 200 * time.Microsecond
 const maxQueuedFetchRequestsPerPendingRPC = 32
 
 type sessionManager struct {
-	adapter *Adapter
+	adapter *Transport
 
 	mu       sync.Mutex
-	sessions map[isr.NodeID]*peerSession
+	sessions map[channel.NodeID]*peerSession
 }
 
 type peerSession struct {
-	adapter *Adapter
-	peer    isr.NodeID
+	adapter *Transport
+	peer    channel.NodeID
 
 	mu              sync.Mutex
 	pendingRequests int
@@ -36,21 +36,21 @@ type peerSession struct {
 }
 
 type queuedFetchRequest struct {
-	env   isrnode.Envelope
+	env   runtime.Envelope
 	bytes int64
 }
 
-var _ isrnode.PeerSessionManager = (*sessionManager)(nil)
-var _ isrnode.PeerSession = (*peerSession)(nil)
+var _ runtime.PeerSessionManager = (*sessionManager)(nil)
+var _ runtime.PeerSession = (*peerSession)(nil)
 
-func newSessionManager(adapter *Adapter) *sessionManager {
+func newSessionManager(adapter *Transport) *sessionManager {
 	return &sessionManager{
 		adapter:  adapter,
-		sessions: make(map[isr.NodeID]*peerSession),
+		sessions: make(map[channel.NodeID]*peerSession),
 	}
 }
 
-func (m *sessionManager) Session(peer isr.NodeID) isrnode.PeerSession {
+func (m *sessionManager) Session(peer channel.NodeID) runtime.PeerSession {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -62,19 +62,19 @@ func (m *sessionManager) Session(peer isr.NodeID) isrnode.PeerSession {
 	return session
 }
 
-func (s *peerSession) Send(env isrnode.Envelope) error {
+func (s *peerSession) Send(env runtime.Envelope) error {
 	switch env.Kind {
-	case isrnode.MessageKindFetchRequest:
+	case runtime.MessageKindFetchRequest:
 		return s.sendFetchRequest(env)
-	case isrnode.MessageKindProgressAck:
+	case runtime.MessageKindProgressAck:
 		return s.sendProgressAck(env)
 	default:
-		return fmt.Errorf("isrnodetransport: unsupported envelope kind %d", env.Kind)
+		return fmt.Errorf("channeltransport: unsupported envelope kind %d", env.Kind)
 	}
 }
 
-func (s *peerSession) TryBatch(env isrnode.Envelope) bool {
-	if env.Kind != isrnode.MessageKindFetchRequest || env.FetchRequest == nil {
+func (s *peerSession) TryBatch(env runtime.Envelope) bool {
+	if env.Kind != runtime.MessageKindFetchRequest || env.FetchRequest == nil {
 		return false
 	}
 	body, err := encodeFetchRequest(*env.FetchRequest)
@@ -114,9 +114,9 @@ func (s *peerSession) Flush() error {
 	return s.flushBatch(batch)
 }
 
-func (s *peerSession) sendFetchRequest(env isrnode.Envelope) error {
+func (s *peerSession) sendFetchRequest(env runtime.Envelope) error {
 	if env.FetchRequest == nil {
-		return fmt.Errorf("isrnodetransport: missing fetch request payload")
+		return fmt.Errorf("channeltransport: missing fetch request payload")
 	}
 
 	body, err := encodeFetchRequest(*env.FetchRequest)
@@ -150,16 +150,16 @@ func (s *peerSession) sendFetchRequest(env isrnode.Envelope) error {
 	return nil
 }
 
-func (s *peerSession) sendFetchBatch(batch []queuedFetchRequest) (isrnode.FetchBatchResponseEnvelope, error) {
-	req := isrnode.FetchBatchRequestEnvelope{
-		Items: make([]isrnode.FetchBatchRequestItem, 0, len(batch)),
+func (s *peerSession) sendFetchBatch(batch []queuedFetchRequest) (runtime.FetchBatchResponseEnvelope, error) {
+	req := runtime.FetchBatchRequestEnvelope{
+		Items: make([]runtime.FetchBatchRequestItem, 0, len(batch)),
 	}
 	for _, item := range batch {
 		env := item.env
 		if env.FetchRequest == nil {
-			return isrnode.FetchBatchResponseEnvelope{}, fmt.Errorf("isrnodetransport: missing fetch request payload")
+			return runtime.FetchBatchResponseEnvelope{}, fmt.Errorf("channeltransport: missing fetch request payload")
 		}
-		req.Items = append(req.Items, isrnode.FetchBatchRequestItem{
+		req.Items = append(req.Items, runtime.FetchBatchRequestItem{
 			RequestID: env.RequestID,
 			Request:   *env.FetchRequest,
 		})
@@ -167,7 +167,7 @@ func (s *peerSession) sendFetchBatch(batch []queuedFetchRequest) (isrnode.FetchB
 
 	body, err := encodeFetchBatchRequest(req)
 	if err != nil {
-		return isrnode.FetchBatchResponseEnvelope{}, err
+		return runtime.FetchBatchResponseEnvelope{}, err
 	}
 
 	pendingBytes := int64(len(body))
@@ -185,11 +185,11 @@ func (s *peerSession) sendFetchBatch(batch []queuedFetchRequest) (isrnode.FetchB
 	shardKey := fetchRPCShardKey(batch[0].env.ChannelKey)
 	respBody, err := s.adapter.client.RPCService(ctx, uint64(s.peer), shardKey, RPCServiceFetchBatch, body)
 	if err != nil {
-		return isrnode.FetchBatchResponseEnvelope{}, err
+		return runtime.FetchBatchResponseEnvelope{}, err
 	}
 	resp, err := decodeFetchBatchResponse(respBody)
 	if err != nil {
-		return isrnode.FetchBatchResponseEnvelope{}, err
+		return runtime.FetchBatchResponseEnvelope{}, err
 	}
 	s.releasePending(pendingBytes)
 	pendingReleased = true
@@ -254,9 +254,9 @@ func (s *peerSession) flushBatch(batch []queuedFetchRequest) error {
 	return firstErr
 }
 
-func (s *peerSession) sendProgressAck(env isrnode.Envelope) error {
+func (s *peerSession) sendProgressAck(env runtime.Envelope) error {
 	if env.ProgressAck == nil {
-		return fmt.Errorf("isrnodetransport: missing progress ack payload")
+		return fmt.Errorf("channeltransport: missing progress ack payload")
 	}
 
 	body, err := encodeProgressAck(*env.ProgressAck)
@@ -270,26 +270,26 @@ func (s *peerSession) sendProgressAck(env isrnode.Envelope) error {
 	return err
 }
 
-func (s *peerSession) deliverFetchResponse(requestID uint64, resp isrnode.FetchResponseEnvelope) {
-	s.adapter.deliver(isrnode.Envelope{
+func (s *peerSession) deliverFetchResponse(requestID uint64, resp runtime.FetchResponseEnvelope) {
+	s.adapter.deliver(runtime.Envelope{
 		Peer:          s.peer,
 		ChannelKey:    resp.ChannelKey,
 		Epoch:         resp.Epoch,
 		Generation:    resp.Generation,
 		RequestID:     requestID,
-		Kind:          isrnode.MessageKindFetchResponse,
+		Kind:          runtime.MessageKindFetchResponse,
 		FetchResponse: &resp,
 	})
 }
 
-func (s *peerSession) deliverFetchFailure(env isrnode.Envelope, err error) {
-	failed := isrnode.Envelope{
+func (s *peerSession) deliverFetchFailure(env runtime.Envelope, err error) {
+	failed := runtime.Envelope{
 		Peer:       s.peer,
 		ChannelKey: env.ChannelKey,
 		Epoch:      env.Epoch,
 		Generation: env.Generation,
 		RequestID:  env.RequestID,
-		Kind:       isrnode.MessageKindFetchFailure,
+		Kind:       runtime.MessageKindFetchFailure,
 	}
 	if err != nil {
 		failed.Payload = []byte(err.Error())
@@ -312,19 +312,19 @@ func (s *peerSession) drainBatchQueue() []queuedFetchRequest {
 	return batch
 }
 
-func (s *peerSession) Backpressure() isrnode.BackpressureState {
+func (s *peerSession) Backpressure() runtime.BackpressureState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	state := isrnode.BackpressureState{
+	state := runtime.BackpressureState{
 		PendingRequests: s.pendingRequests + len(s.batchFetchQueue),
 		PendingBytes:    s.pendingBytes + s.batchQueuedBytes,
 	}
 	if s.adapter.maxPending > 0 && s.pendingRequests >= s.adapter.maxPending {
-		state.Level = isrnode.BackpressureHard
+		state.Level = runtime.BackpressureHard
 	}
 	if len(s.batchFetchQueue) >= s.maxQueuedFetchRequests() {
-		state.Level = isrnode.BackpressureHard
+		state.Level = runtime.BackpressureHard
 	}
 	return state
 }
@@ -367,7 +367,7 @@ func (s *peerSession) releasePending(bytes int64) {
 	}
 }
 
-func fetchRPCShardKey(channelKey isr.ChannelKey) uint64 {
+func fetchRPCShardKey(channelKey channel.ChannelKey) uint64 {
 	const (
 		fnvOffset64 = 14695981039346656037
 		fnvPrime64  = 1099511628211

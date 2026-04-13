@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
-	isrnode "github.com/WuKongIM/WuKongIM/pkg/channel/node"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
 	"github.com/WuKongIM/WuKongIM/pkg/transport"
 )
 
@@ -44,8 +44,8 @@ func TestAdapterRoundTripsFetchRequestAndResponse(t *testing.T) {
 		LocalNode: 1,
 		Client:    client1,
 		RPCMux:    mux1,
-		FetchService: fetchServiceFunc(func(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
-			return isrnode.FetchResponseEnvelope{}, nil
+		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+			return runtime.FetchResponseEnvelope{}, nil
 		}),
 	})
 	if err != nil {
@@ -55,15 +55,15 @@ func TestAdapterRoundTripsFetchRequestAndResponse(t *testing.T) {
 		LocalNode: 2,
 		Client:    client2,
 		RPCMux:    mux2,
-		FetchService: fetchServiceFunc(func(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
+		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
 			truncateTo := uint64(8)
-			return isrnode.FetchResponseEnvelope{
+			return runtime.FetchResponseEnvelope{
 				ChannelKey: req.ChannelKey,
 				Epoch:      req.Epoch + 1,
 				Generation: req.Generation,
 				TruncateTo: &truncateTo,
 				LeaderHW:   12,
-				Records: []isr.Record{
+				Records: []channel.Record{
 					{Payload: []byte("ok"), SizeBytes: 2},
 				},
 			}, nil
@@ -73,24 +73,24 @@ func TestAdapterRoundTripsFetchRequestAndResponse(t *testing.T) {
 		t.Fatalf("New(adapter2) error = %v", err)
 	}
 
-	delivered := make(chan isrnode.Envelope, 1)
-	pressure := make(chan isrnode.BackpressureState, 1)
+	delivered := make(chan runtime.Envelope, 1)
+	pressure := make(chan runtime.BackpressureState, 1)
 	session := adapter1.SessionManager().Session(2)
-	adapter1.RegisterHandler(func(env isrnode.Envelope) {
+	adapter1.RegisterHandler(func(env runtime.Envelope) {
 		pressure <- session.Backpressure()
 		delivered <- env
 	})
-	adapter2.RegisterHandler(func(env isrnode.Envelope) {})
+	adapter2.RegisterHandler(func(env runtime.Envelope) {})
 
-	err = session.Send(isrnode.Envelope{
+	err = session.Send(runtime.Envelope{
 		Peer:       2,
-		ChannelKey: isr.ChannelKey("g1"),
+		ChannelKey: channel.ChannelKey("g1"),
 		Epoch:      3,
 		Generation: 7,
 		RequestID:  9,
-		Kind:       isrnode.MessageKindFetchRequest,
-		FetchRequest: &isrnode.FetchRequestEnvelope{
-			ChannelKey:  isr.ChannelKey("g1"),
+		Kind:       runtime.MessageKindFetchRequest,
+		FetchRequest: &runtime.FetchRequestEnvelope{
+			ChannelKey:  channel.ChannelKey("g1"),
 			Epoch:       3,
 			Generation:  7,
 			ReplicaID:   1,
@@ -106,10 +106,10 @@ func TestAdapterRoundTripsFetchRequestAndResponse(t *testing.T) {
 	select {
 	case env := <-delivered:
 		state := <-pressure
-		if state.Level != isrnode.BackpressureNone {
+		if state.Level != runtime.BackpressureNone {
 			t.Fatalf("handler observed backpressure = %+v, want none", state)
 		}
-		if env.Kind != isrnode.MessageKindFetchResponse {
+		if env.Kind != runtime.MessageKindFetchResponse {
 			t.Fatalf("response kind = %v, want fetch response", env.Kind)
 		}
 		if env.Epoch != 4 {

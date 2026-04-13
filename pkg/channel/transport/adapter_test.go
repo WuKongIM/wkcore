@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
-	isrnode "github.com/WuKongIM/WuKongIM/pkg/channel/node"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
 	"github.com/WuKongIM/WuKongIM/pkg/transport"
 )
 
@@ -27,8 +27,8 @@ func TestSessionManagerReusesSessionPerPeer(t *testing.T) {
 		LocalNode: 1,
 		Client:    client,
 		RPCMux:    mux,
-		FetchService: fetchServiceFunc(func(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
-			return isrnode.FetchResponseEnvelope{}, nil
+		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+			return runtime.FetchResponseEnvelope{}, nil
 		}),
 	})
 	if err != nil {
@@ -65,8 +65,8 @@ func TestNewDoesNotCollideWithClusterManagedSlotRPCService(t *testing.T) {
 		LocalNode: 1,
 		Client:    client,
 		RPCMux:    mux,
-		FetchService: fetchServiceFunc(func(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
-			return isrnode.FetchResponseEnvelope{}, nil
+		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+			return runtime.FetchResponseEnvelope{}, nil
 		}),
 	})
 	if err != nil {
@@ -87,7 +87,7 @@ func TestPeerSessionReportsHardBackpressureWhileRPCInFlight(t *testing.T) {
 	mux.Handle(RPCServiceFetch, func(ctx context.Context, body []byte) ([]byte, error) {
 		started <- struct{}{}
 		<-release
-		return encodeFetchResponse(isrnode.FetchResponseEnvelope{
+		return encodeFetchResponse(runtime.FetchResponseEnvelope{
 			ChannelKey: "g1",
 			Epoch:      3,
 			Generation: 7,
@@ -109,8 +109,8 @@ func TestPeerSessionReportsHardBackpressureWhileRPCInFlight(t *testing.T) {
 		LocalNode: 1,
 		Client:    client,
 		RPCMux:    transport.NewRPCMux(),
-		FetchService: fetchServiceFunc(func(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
-			return isrnode.FetchResponseEnvelope{}, nil
+		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+			return runtime.FetchResponseEnvelope{}, nil
 		}),
 	})
 	if err != nil {
@@ -120,14 +120,14 @@ func TestPeerSessionReportsHardBackpressureWhileRPCInFlight(t *testing.T) {
 	session := adapter.SessionManager().Session(2)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- session.Send(isrnode.Envelope{
+		errCh <- session.Send(runtime.Envelope{
 			Peer:       2,
 			ChannelKey: "g1",
 			Epoch:      3,
 			Generation: 7,
 			RequestID:  1,
-			Kind:       isrnode.MessageKindFetchRequest,
-			FetchRequest: &isrnode.FetchRequestEnvelope{
+			Kind:       runtime.MessageKindFetchRequest,
+			FetchRequest: &runtime.FetchRequestEnvelope{
 				ChannelKey:  "g1",
 				Epoch:       3,
 				Generation:  7,
@@ -146,7 +146,7 @@ func TestPeerSessionReportsHardBackpressureWhileRPCInFlight(t *testing.T) {
 	}
 
 	state := session.Backpressure()
-	if state.Level != isrnode.BackpressureHard {
+	if state.Level != runtime.BackpressureHard {
 		t.Fatalf("Backpressure().Level = %v, want hard", state.Level)
 	}
 	if state.PendingRequests != 1 {
@@ -166,7 +166,7 @@ func TestPeerSessionReportsHardBackpressureWhileRPCInFlight(t *testing.T) {
 		t.Fatal("timeout waiting for session.Send()")
 	}
 
-	if state := session.Backpressure(); state.Level != isrnode.BackpressureNone {
+	if state := session.Backpressure(); state.Level != runtime.BackpressureNone {
 		t.Fatalf("Backpressure().Level after response = %v, want none", state.Level)
 	}
 }
@@ -181,7 +181,7 @@ func TestPeerSessionBackpressureAllowsConfiguredConcurrentInflightRPCs(t *testin
 	mux.Handle(RPCServiceFetch, func(ctx context.Context, body []byte) ([]byte, error) {
 		started <- struct{}{}
 		<-release
-		return encodeFetchResponse(isrnode.FetchResponseEnvelope{
+		return encodeFetchResponse(runtime.FetchResponseEnvelope{
 			ChannelKey: "g-concurrent",
 			Epoch:      3,
 			Generation: 7,
@@ -203,8 +203,8 @@ func TestPeerSessionBackpressureAllowsConfiguredConcurrentInflightRPCs(t *testin
 		LocalNode: 1,
 		Client:    client,
 		RPCMux:    transport.NewRPCMux(),
-		FetchService: fetchServiceFunc(func(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
-			return isrnode.FetchResponseEnvelope{}, nil
+		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+			return runtime.FetchResponseEnvelope{}, nil
 		}),
 		MaxPendingFetchRPC: 2,
 	})
@@ -225,7 +225,7 @@ func TestPeerSessionBackpressureAllowsConfiguredConcurrentInflightRPCs(t *testin
 	}
 
 	state := session.Backpressure()
-	if state.Level != isrnode.BackpressureNone {
+	if state.Level != runtime.BackpressureNone {
 		t.Fatalf("Backpressure().Level after first in-flight request = %v, want none", state.Level)
 	}
 	if state.PendingRequests != 1 {
@@ -244,7 +244,7 @@ func TestPeerSessionBackpressureAllowsConfiguredConcurrentInflightRPCs(t *testin
 	}
 
 	state = session.Backpressure()
-	if state.Level != isrnode.BackpressureHard {
+	if state.Level != runtime.BackpressureHard {
 		t.Fatalf("Backpressure().Level after reaching configured in-flight limit = %v, want hard", state.Level)
 	}
 	if state.PendingRequests != 2 {
@@ -263,7 +263,7 @@ func TestPeerSessionBackpressureAllowsConfiguredConcurrentInflightRPCs(t *testin
 		}
 	}
 
-	if state := session.Backpressure(); state.Level != isrnode.BackpressureNone {
+	if state := session.Backpressure(); state.Level != runtime.BackpressureNone {
 		t.Fatalf("Backpressure().Level after responses = %v, want none", state.Level)
 	}
 }
@@ -311,7 +311,7 @@ func TestPeerSessionDistributesConcurrentFetchRPCsAcrossPoolShards(t *testing.T)
 					started <- struct{}{}
 					<-release
 
-					respPayload, err := encodeFetchResponse(isrnode.FetchResponseEnvelope{
+					respPayload, err := encodeFetchResponse(runtime.FetchResponseEnvelope{
 						ChannelKey: "g-ok",
 						Epoch:      3,
 						Generation: 7,
@@ -336,8 +336,8 @@ func TestPeerSessionDistributesConcurrentFetchRPCsAcrossPoolShards(t *testing.T)
 		LocalNode: 1,
 		Client:    client,
 		RPCMux:    transport.NewRPCMux(),
-		FetchService: fetchServiceFunc(func(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
-			return isrnode.FetchResponseEnvelope{}, nil
+		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+			return runtime.FetchResponseEnvelope{}, nil
 		}),
 		MaxPendingFetchRPC: 2,
 		RPCTimeout:         2 * time.Second,
@@ -389,7 +389,7 @@ func TestPeerSessionUsesConfiguredRPCTimeout(t *testing.T) {
 	mux.Handle(RPCServiceFetch, func(ctx context.Context, body []byte) ([]byte, error) {
 		started <- struct{}{}
 		<-release
-		return encodeFetchResponse(isrnode.FetchResponseEnvelope{
+		return encodeFetchResponse(runtime.FetchResponseEnvelope{
 			ChannelKey: "g-timeout",
 			Epoch:      3,
 			Generation: 7,
@@ -442,7 +442,7 @@ func TestPeerSessionSendReturnsErrStoppedWhenClientStops(t *testing.T) {
 	mux.Handle(RPCServiceFetch, func(ctx context.Context, body []byte) ([]byte, error) {
 		started <- struct{}{}
 		<-release
-		return encodeFetchResponse(isrnode.FetchResponseEnvelope{
+		return encodeFetchResponse(runtime.FetchResponseEnvelope{
 			ChannelKey: "g-stop",
 			Epoch:      3,
 			Generation: 7,
@@ -487,7 +487,7 @@ func TestPeerSessionSendReturnsErrStoppedWhenClientStops(t *testing.T) {
 		t.Fatal("expected client.Stop to abort pending fetch rpc")
 	}
 
-	if state := session.Backpressure(); state.Level != isrnode.BackpressureNone {
+	if state := session.Backpressure(); state.Level != runtime.BackpressureNone {
 		t.Fatalf("Backpressure().Level after stop = %v, want none", state.Level)
 	}
 }
@@ -495,7 +495,7 @@ func TestPeerSessionSendReturnsErrStoppedWhenClientStops(t *testing.T) {
 func TestPeerSessionSendDispatchesProgressAckRPC(t *testing.T) {
 	server := transport.NewServer()
 	mux := transport.NewRPCMux()
-	got := make(chan isrnode.ProgressAckEnvelope, 1)
+	got := make(chan runtime.ProgressAckEnvelope, 1)
 	mux.Handle(RPCServiceProgressAck, func(ctx context.Context, body []byte) ([]byte, error) {
 		ack, err := decodeProgressAck(body)
 		if err != nil {
@@ -517,14 +517,14 @@ func TestPeerSessionSendDispatchesProgressAckRPC(t *testing.T) {
 
 	adapter := newAdapterWithTestTimeout(t, client, time.Second)
 	session := adapter.SessionManager().Session(2)
-	env := isrnode.Envelope{
+	env := runtime.Envelope{
 		Peer:       2,
 		ChannelKey: "g-progress",
 		Epoch:      3,
 		Generation: 7,
 		RequestID:  1,
-		Kind:       isrnode.MessageKindProgressAck,
-		ProgressAck: &isrnode.ProgressAckEnvelope{
+		Kind:       runtime.MessageKindProgressAck,
+		ProgressAck: &runtime.ProgressAckEnvelope{
 			ChannelKey:  "g-progress",
 			Epoch:       3,
 			Generation:  7,
@@ -558,20 +558,20 @@ func TestAdapterHandleProgressAckInvokesRegisteredHandler(t *testing.T) {
 		LocalNode: 1,
 		Client:    client,
 		RPCMux:    mux,
-		FetchService: fetchServiceFunc(func(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
-			return isrnode.FetchResponseEnvelope{}, nil
+		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+			return runtime.FetchResponseEnvelope{}, nil
 		}),
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	delivered := make(chan isrnode.Envelope, 1)
-	adapter.RegisterHandler(func(env isrnode.Envelope) {
+	delivered := make(chan runtime.Envelope, 1)
+	adapter.RegisterHandler(func(env runtime.Envelope) {
 		delivered <- env
 	})
 
-	body, err := encodeProgressAck(isrnode.ProgressAckEnvelope{
+	body, err := encodeProgressAck(runtime.ProgressAckEnvelope{
 		ChannelKey:  "g-progress",
 		Epoch:       3,
 		Generation:  7,
@@ -589,7 +589,7 @@ func TestAdapterHandleProgressAckInvokesRegisteredHandler(t *testing.T) {
 
 	select {
 	case env := <-delivered:
-		if env.Kind != isrnode.MessageKindProgressAck {
+		if env.Kind != runtime.MessageKindProgressAck {
 			t.Fatalf("Kind = %v, want progress ack", env.Kind)
 		}
 		if env.ProgressAck == nil || env.ProgressAck.MatchOffset != 19 {
@@ -610,8 +610,8 @@ func TestPeerSessionTryBatchQueuesMultipleFetchRequests(t *testing.T) {
 		LocalNode: 1,
 		Client:    client,
 		RPCMux:    transport.NewRPCMux(),
-		FetchService: fetchServiceFunc(func(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
-			return isrnode.FetchResponseEnvelope{}, nil
+		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+			return runtime.FetchResponseEnvelope{}, nil
 		}),
 	})
 	if err != nil {
@@ -650,7 +650,7 @@ func TestPeerSessionFlushSendsSingleFetchBatchRPC(t *testing.T) {
 		mu.Lock()
 		singleCalls++
 		mu.Unlock()
-		return encodeFetchResponse(isrnode.FetchResponseEnvelope{
+		return encodeFetchResponse(runtime.FetchResponseEnvelope{
 			ChannelKey: "g-single",
 			Epoch:      3,
 			Generation: 7,
@@ -668,13 +668,13 @@ func TestPeerSessionFlushSendsSingleFetchBatchRPC(t *testing.T) {
 		batchItems = len(req.Items)
 		mu.Unlock()
 
-		resp := isrnode.FetchBatchResponseEnvelope{
-			Items: make([]isrnode.FetchBatchResponseItem, 0, len(req.Items)),
+		resp := runtime.FetchBatchResponseEnvelope{
+			Items: make([]runtime.FetchBatchResponseItem, 0, len(req.Items)),
 		}
 		for _, item := range req.Items {
-			resp.Items = append(resp.Items, isrnode.FetchBatchResponseItem{
+			resp.Items = append(resp.Items, runtime.FetchBatchResponseItem{
 				RequestID: item.RequestID,
-				Response: &isrnode.FetchResponseEnvelope{
+				Response: &runtime.FetchResponseEnvelope{
 					ChannelKey: item.Request.ChannelKey,
 					Epoch:      item.Request.Epoch,
 					Generation: item.Request.Generation,
@@ -733,13 +733,13 @@ func TestBatchedFetchResponseFansOutResultsPerGroup(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		resp := isrnode.FetchBatchResponseEnvelope{
-			Items: make([]isrnode.FetchBatchResponseItem, 0, len(req.Items)),
+		resp := runtime.FetchBatchResponseEnvelope{
+			Items: make([]runtime.FetchBatchResponseItem, 0, len(req.Items)),
 		}
 		for _, item := range req.Items {
-			resp.Items = append(resp.Items, isrnode.FetchBatchResponseItem{
+			resp.Items = append(resp.Items, runtime.FetchBatchResponseItem{
 				RequestID: item.RequestID,
-				Response: &isrnode.FetchResponseEnvelope{
+				Response: &runtime.FetchResponseEnvelope{
 					ChannelKey: item.Request.ChannelKey,
 					Epoch:      item.Request.Epoch,
 					Generation: item.Request.Generation,
@@ -761,8 +761,8 @@ func TestBatchedFetchResponseFansOutResultsPerGroup(t *testing.T) {
 	defer client.Stop()
 
 	adapter := newAdapterWithTestTimeout(t, client, time.Second)
-	delivered := make(chan isrnode.Envelope, 2)
-	adapter.RegisterHandler(func(env isrnode.Envelope) {
+	delivered := make(chan runtime.Envelope, 2)
+	adapter.RegisterHandler(func(env runtime.Envelope) {
 		delivered <- env
 	})
 
@@ -781,7 +781,7 @@ func TestBatchedFetchResponseFansOutResultsPerGroup(t *testing.T) {
 		t.Fatalf("session.Flush() error = %v", err)
 	}
 
-	got := make(map[isr.ChannelKey]isrnode.Envelope, 2)
+	got := make(map[channel.ChannelKey]runtime.Envelope, 2)
 	for i := 0; i < 2; i++ {
 		select {
 		case env := <-delivered:
@@ -791,11 +791,11 @@ func TestBatchedFetchResponseFansOutResultsPerGroup(t *testing.T) {
 		}
 	}
 
-	env1, ok := got[isr.ChannelKey("g-fanout-1")]
+	env1, ok := got[channel.ChannelKey("g-fanout-1")]
 	if !ok {
 		t.Fatal("missing fanout response for g-fanout-1")
 	}
-	if env1.Kind != isrnode.MessageKindFetchResponse {
+	if env1.Kind != runtime.MessageKindFetchResponse {
 		t.Fatalf("g-fanout-1 kind = %v, want fetch response", env1.Kind)
 	}
 	if env1.RequestID != 101 {
@@ -805,11 +805,11 @@ func TestBatchedFetchResponseFansOutResultsPerGroup(t *testing.T) {
 		t.Fatalf("g-fanout-1 response = %+v, want LeaderHW=111", env1.FetchResponse)
 	}
 
-	env2, ok := got[isr.ChannelKey("g-fanout-2")]
+	env2, ok := got[channel.ChannelKey("g-fanout-2")]
 	if !ok {
 		t.Fatal("missing fanout response for g-fanout-2")
 	}
-	if env2.Kind != isrnode.MessageKindFetchResponse {
+	if env2.Kind != runtime.MessageKindFetchResponse {
 		t.Fatalf("g-fanout-2 kind = %v, want fetch response", env2.Kind)
 	}
 	if env2.RequestID != 102 {
@@ -827,8 +827,8 @@ func TestPeerSessionFlushBatchFailureDeliversFetchFailureEnvelope(t *testing.T) 
 	defer client.Stop()
 
 	adapter := newAdapterWithTestTimeout(t, client, 20*time.Millisecond)
-	delivered := make(chan isrnode.Envelope, 1)
-	adapter.RegisterHandler(func(env isrnode.Envelope) {
+	delivered := make(chan runtime.Envelope, 1)
+	adapter.RegisterHandler(func(env runtime.Envelope) {
 		delivered <- env
 	})
 
@@ -844,10 +844,10 @@ func TestPeerSessionFlushBatchFailureDeliversFetchFailureEnvelope(t *testing.T) 
 
 	select {
 	case env := <-delivered:
-		if env.Kind != isrnode.MessageKindFetchFailure {
+		if env.Kind != runtime.MessageKindFetchFailure {
 			t.Fatalf("kind = %v, want fetch failure", env.Kind)
 		}
-		if env.RequestID != 99 || env.ChannelKey != isr.ChannelKey("g-batch-fail") {
+		if env.RequestID != 99 || env.ChannelKey != channel.ChannelKey("g-batch-fail") {
 			t.Fatalf("failure envelope = %+v", env)
 		}
 	case <-time.After(2 * time.Second):
@@ -879,7 +879,7 @@ func TestPeerSessionBackpressureIncludesQueuedBatchRequests(t *testing.T) {
 	if state.PendingBytes <= 0 {
 		t.Fatalf("PendingBytes = %d, want > 0", state.PendingBytes)
 	}
-	if state.Level != isrnode.BackpressureHard {
+	if state.Level != runtime.BackpressureHard {
 		t.Fatalf("Backpressure().Level = %v, want hard", state.Level)
 	}
 }
@@ -896,13 +896,13 @@ func (d staticDiscovery) Resolve(nodeID uint64) (string, error) {
 	return addr, nil
 }
 
-type fetchServiceFunc func(context.Context, isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error)
+type fetchServiceFunc func(context.Context, runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error)
 
-func (f fetchServiceFunc) ServeFetch(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
+func (f fetchServiceFunc) ServeFetch(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
 	return f(ctx, req)
 }
 
-func newAdapterWithTestTimeout(t *testing.T, client *transport.Client, timeout time.Duration) *Adapter {
+func newAdapterWithTestTimeout(t *testing.T, client *transport.Client, timeout time.Duration) *Transport {
 	t.Helper()
 
 	opts := Options{
@@ -910,8 +910,8 @@ func newAdapterWithTestTimeout(t *testing.T, client *transport.Client, timeout t
 		Client:     client,
 		RPCMux:     transport.NewRPCMux(),
 		RPCTimeout: timeout,
-		FetchService: fetchServiceFunc(func(ctx context.Context, req isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
-			return isrnode.FetchResponseEnvelope{}, nil
+		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+			return runtime.FetchResponseEnvelope{}, nil
 		}),
 	}
 
@@ -922,16 +922,16 @@ func newAdapterWithTestTimeout(t *testing.T, client *transport.Client, timeout t
 	return adapter
 }
 
-func fetchRequestEnvelopeForTest(channelKey string) isrnode.Envelope {
-	key := isr.ChannelKey(channelKey)
-	return isrnode.Envelope{
+func fetchRequestEnvelopeForTest(channelKey string) runtime.Envelope {
+	key := channel.ChannelKey(channelKey)
+	return runtime.Envelope{
 		Peer:       2,
 		ChannelKey: key,
 		Epoch:      3,
 		Generation: 7,
 		RequestID:  1,
-		Kind:       isrnode.MessageKindFetchRequest,
-		FetchRequest: &isrnode.FetchRequestEnvelope{
+		Kind:       runtime.MessageKindFetchRequest,
+		FetchRequest: &runtime.FetchRequestEnvelope{
 			ChannelKey:  key,
 			Epoch:       3,
 			Generation:  7,
@@ -943,11 +943,11 @@ func fetchRequestEnvelopeForTest(channelKey string) isrnode.Envelope {
 	}
 }
 
-func channelKeyForShard(t *testing.T, shard int, poolSize int) isr.ChannelKey {
+func channelKeyForShard(t *testing.T, shard int, poolSize int) channel.ChannelKey {
 	t.Helper()
 
 	for i := 0; i < 1024; i++ {
-		key := isr.ChannelKey(fmt.Sprintf("g-shard-%d", i))
+		key := channel.ChannelKey(fmt.Sprintf("g-shard-%d", i))
 		if fetchShardForTest(key, poolSize) == shard {
 			return key
 		}
@@ -956,7 +956,7 @@ func channelKeyForShard(t *testing.T, shard int, poolSize int) isr.ChannelKey {
 	return ""
 }
 
-func fetchShardForTest(channelKey isr.ChannelKey, poolSize int) int {
+func fetchShardForTest(channelKey channel.ChannelKey, poolSize int) int {
 	hasher := fnv.New64a()
 	_, _ = hasher.Write([]byte(channelKey))
 	return int(hasher.Sum64() % uint64(poolSize))

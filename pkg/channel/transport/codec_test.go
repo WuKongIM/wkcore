@@ -3,13 +3,37 @@ package transport
 import (
 	"testing"
 
-	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
-	isrnode "github.com/WuKongIM/WuKongIM/pkg/channel/node"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
 )
 
+func TestTransportCodecUsesRootTypes(t *testing.T) {
+	req := runtime.FetchRequestEnvelope{
+		ChannelKey:  channel.ChannelKey("channel/1/dTE="),
+		Epoch:       3,
+		Generation:  7,
+		ReplicaID:   2,
+		FetchOffset: 11,
+		OffsetEpoch: 5,
+		MaxBytes:    4096,
+	}
+
+	data, err := encodeFetchRequest(req)
+	if err != nil {
+		t.Fatalf("encodeFetchRequest() error = %v", err)
+	}
+	got, err := decodeFetchRequest(data)
+	if err != nil {
+		t.Fatalf("decodeFetchRequest() error = %v", err)
+	}
+	if got.ChannelKey != req.ChannelKey {
+		t.Fatalf("ChannelKey = %q, want %q", got.ChannelKey, req.ChannelKey)
+	}
+}
+
 func TestFetchRequestCodecRoundTrip(t *testing.T) {
-	req := isrnode.FetchRequestEnvelope{
-		ChannelKey:  isr.ChannelKey("g1"),
+	req := runtime.FetchRequestEnvelope{
+		ChannelKey:  channel.ChannelKey("g1"),
 		Epoch:       3,
 		Generation:  7,
 		ReplicaID:   2,
@@ -33,13 +57,13 @@ func TestFetchRequestCodecRoundTrip(t *testing.T) {
 
 func TestFetchResponseCodecRoundTrip(t *testing.T) {
 	truncateTo := uint64(9)
-	resp := isrnode.FetchResponseEnvelope{
-		ChannelKey: isr.ChannelKey("g1"),
+	resp := runtime.FetchResponseEnvelope{
+		ChannelKey: channel.ChannelKey("g1"),
 		Epoch:      3,
 		Generation: 7,
 		TruncateTo: &truncateTo,
 		LeaderHW:   12,
-		Records: []isr.Record{
+		Records: []channel.Record{
 			{Payload: []byte("a"), SizeBytes: 1},
 			{Payload: []byte("bc"), SizeBytes: 2},
 		},
@@ -65,12 +89,12 @@ func TestFetchResponseCodecRoundTrip(t *testing.T) {
 }
 
 func TestFetchBatchRequestCodecRoundTrip(t *testing.T) {
-	req := isrnode.FetchBatchRequestEnvelope{
-		Items: []isrnode.FetchBatchRequestItem{
+	req := runtime.FetchBatchRequestEnvelope{
+		Items: []runtime.FetchBatchRequestItem{
 			{
 				RequestID: 11,
-				Request: isrnode.FetchRequestEnvelope{
-					ChannelKey:  isr.ChannelKey("g1"),
+				Request: runtime.FetchRequestEnvelope{
+					ChannelKey:  channel.ChannelKey("g1"),
 					Epoch:       3,
 					Generation:  7,
 					ReplicaID:   2,
@@ -81,8 +105,8 @@ func TestFetchBatchRequestCodecRoundTrip(t *testing.T) {
 			},
 			{
 				RequestID: 12,
-				Request: isrnode.FetchRequestEnvelope{
-					ChannelKey:  isr.ChannelKey("g2"),
+				Request: runtime.FetchRequestEnvelope{
+					ChannelKey:  channel.ChannelKey("g2"),
 					Epoch:       4,
 					Generation:  8,
 					ReplicaID:   3,
@@ -114,17 +138,17 @@ func TestFetchBatchRequestCodecRoundTrip(t *testing.T) {
 
 func TestFetchBatchResponseCodecRoundTrip(t *testing.T) {
 	truncateTo := uint64(9)
-	resp := isrnode.FetchBatchResponseEnvelope{
-		Items: []isrnode.FetchBatchResponseItem{
+	resp := runtime.FetchBatchResponseEnvelope{
+		Items: []runtime.FetchBatchResponseItem{
 			{
 				RequestID: 11,
-				Response: &isrnode.FetchResponseEnvelope{
-					ChannelKey: isr.ChannelKey("g1"),
+				Response: &runtime.FetchResponseEnvelope{
+					ChannelKey: channel.ChannelKey("g1"),
 					Epoch:      3,
 					Generation: 7,
 					TruncateTo: &truncateTo,
 					LeaderHW:   12,
-					Records: []isr.Record{
+					Records: []channel.Record{
 						{Payload: []byte("a"), SizeBytes: 1},
 						{Payload: []byte("bc"), SizeBytes: 2},
 					},
@@ -151,7 +175,7 @@ func TestFetchBatchResponseCodecRoundTrip(t *testing.T) {
 	if got.Items[0].RequestID != 11 || got.Items[0].Response == nil {
 		t.Fatalf("first item = %+v", got.Items[0])
 	}
-	if got.Items[0].Response.ChannelKey != isr.ChannelKey("g1") || got.Items[0].Response.LeaderHW != 12 {
+	if got.Items[0].Response.ChannelKey != channel.ChannelKey("g1") || got.Items[0].Response.LeaderHW != 12 {
 		t.Fatalf("first response = %+v", got.Items[0].Response)
 	}
 	if got.Items[0].Response.TruncateTo == nil || *got.Items[0].Response.TruncateTo != truncateTo {
@@ -166,8 +190,8 @@ func TestFetchBatchResponseCodecRoundTrip(t *testing.T) {
 }
 
 func TestProgressAckCodecRoundTrip(t *testing.T) {
-	ack := isrnode.ProgressAckEnvelope{
-		ChannelKey:  isr.ChannelKey("g1"),
+	ack := runtime.ProgressAckEnvelope{
+		ChannelKey:  channel.ChannelKey("g1"),
 		Epoch:       3,
 		Generation:  7,
 		ReplicaID:   2,
