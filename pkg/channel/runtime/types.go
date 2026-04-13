@@ -129,12 +129,7 @@ type FetchService interface {
 	ServeFetch(ctx context.Context, req FetchRequestEnvelope) (FetchResponseEnvelope, error)
 }
 
-type ChannelHandle interface {
-	ID() core.ChannelKey
-	Meta() core.Meta
-	Status() core.ReplicaState
-	Append(ctx context.Context, records []core.Record) (core.CommitResult, error)
-}
+type ChannelHandle = core.HandlerChannel
 
 type ChannelConfig struct {
 	ChannelKey core.ChannelKey

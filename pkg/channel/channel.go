@@ -3,6 +3,7 @@ package channel
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"strconv"
 	"time"
 )
@@ -21,16 +22,37 @@ type Service interface {
 	Status(id ChannelID) (ChannelRuntimeStatus, error)
 }
 
+type MetaRollbackService interface {
+	Service
+	MetaSnapshot(key ChannelKey) (Meta, bool)
+	RestoreMeta(key ChannelKey, meta Meta, ok bool)
+}
+
 type Runtime interface {
 	UpsertMeta(meta Meta) error
 	RemoveChannel(key ChannelKey) error
+}
+
+type HandlerRuntime interface {
+	Channel(key ChannelKey) (HandlerChannel, bool)
+}
+
+type HandlerChannel interface {
+	ID() ChannelKey
+	Meta() Meta
+	Status() ReplicaState
+	Append(ctx context.Context, records []Record) (CommitResult, error)
+}
+
+type MessageIDGenerator interface {
+	Next() uint64
 }
 
 type Config struct {
 	LocalNode       NodeID
 	Store           any
 	GenerationStore any
-	MessageIDs      any
+	MessageIDs      MessageIDGenerator
 	Transport       TransportConfig
 	Runtime         RuntimeConfig
 	Handler         HandlerConfig
@@ -62,11 +84,11 @@ type RuntimeConfig struct {
 	FollowerReplicationRetryInterval time.Duration
 	Limits                           RuntimeLimits
 	Tombstones                       RuntimeTombstones
-	Build                            func(RuntimeBuildConfig) (Runtime, any, error)
+	Build                            func(RuntimeBuildConfig) (Runtime, HandlerRuntime, error)
 }
 
 type HandlerConfig struct {
-	Build func(HandlerBuildConfig) (Service, error)
+	Build func(HandlerBuildConfig) (MetaRollbackService, error)
 }
 
 type TransportBuildConfig struct {
@@ -91,12 +113,12 @@ type RuntimeBuildConfig struct {
 
 type HandlerBuildConfig struct {
 	Store      any
-	Runtime    any
-	MessageIDs any
+	Runtime    HandlerRuntime
+	MessageIDs MessageIDGenerator
 }
 
 type cluster struct {
-	service Service
+	service MetaRollbackService
 	runtime Runtime
 }
 
@@ -137,7 +159,7 @@ func New(cfg Config) (Cluster, error) {
 		Now:                              cfg.Now,
 	})
 	if err != nil {
-		return nil, err
+		return nil, joinBuildError(err, closeBuildError(transportValue))
 	}
 
 	service, err := cfg.Handler.Build(HandlerBuildConfig{
@@ -146,7 +168,7 @@ func New(cfg Config) (Cluster, error) {
 		MessageIDs: cfg.MessageIDs,
 	})
 	if err != nil {
-		return nil, err
+		return nil, joinBuildError(err, closeBuiltRuntime(runtimeControl, runtimeValue), closeBuildError(transportValue))
 	}
 
 	return &cluster{service: service, runtime: runtimeControl}, nil
@@ -154,13 +176,21 @@ func New(cfg Config) (Cluster, error) {
 
 func (c *cluster) ApplyMeta(meta Meta) error {
 	meta.Key = effectiveChannelKey(meta)
+	previous, ok := c.service.MetaSnapshot(meta.Key)
 	if err := c.service.ApplyMeta(meta); err != nil {
 		return err
 	}
+	var runtimeErr error
 	if meta.Status == StatusDeleted {
-		return c.runtime.RemoveChannel(meta.Key)
+		runtimeErr = c.runtime.RemoveChannel(meta.Key)
+	} else {
+		runtimeErr = c.runtime.UpsertMeta(meta)
 	}
-	return c.runtime.UpsertMeta(meta)
+	if runtimeErr == nil {
+		return nil
+	}
+	c.service.RestoreMeta(meta.Key, previous, ok)
+	return runtimeErr
 }
 
 func (c *cluster) Append(ctx context.Context, req AppendRequest) (AppendResult, error) {
@@ -186,4 +216,42 @@ func effectiveChannelKey(meta Meta) ChannelKey {
 	buf = append(buf, '/')
 	buf = append(buf, encodedID...)
 	return ChannelKey(buf)
+}
+
+type buildCloser interface {
+	Close() error
+}
+
+func closeBuiltRuntime(control Runtime, value HandlerRuntime) error {
+	if err, ok := closeBuildValue(value); ok {
+		return err
+	}
+	if err, ok := closeBuildValue(control); ok {
+		return err
+	}
+	return nil
+}
+
+func closeBuildValue(value any) (error, bool) {
+	closer, ok := value.(buildCloser)
+	if !ok || closer == nil {
+		return nil, false
+	}
+	return closer.Close(), true
+}
+
+func closeBuildError(value any) error {
+	err, _ := closeBuildValue(value)
+	return err
+}
+
+func joinBuildError(primary error, cleanup ...error) error {
+	err := primary
+	for _, cleanupErr := range cleanup {
+		if cleanupErr == nil {
+			continue
+		}
+		err = errors.Join(err, cleanupErr)
+	}
+	return err
 }

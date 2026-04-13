@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	core "github.com/WuKongIM/WuKongIM/pkg/channel"
-	"github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
 	"github.com/WuKongIM/WuKongIM/pkg/channel/store"
 )
 
@@ -316,10 +315,7 @@ func (r *fakeRuntime) EnsureChannel(meta core.Meta) error      { return nil }
 func (r *fakeRuntime) RemoveChannel(key core.ChannelKey) error { return nil }
 func (r *fakeRuntime) ApplyMeta(meta core.Meta) error          { return nil }
 func (r *fakeRuntime) Close() error                            { return nil }
-func (r *fakeRuntime) ServeFetch(context.Context, runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
-	return runtime.FetchResponseEnvelope{}, nil
-}
-func (r *fakeRuntime) Channel(key core.ChannelKey) (runtime.ChannelHandle, bool) {
+func (r *fakeRuntime) Channel(key core.ChannelKey) (core.HandlerChannel, bool) {
 	r.lastChannelKey = key
 	h, ok := r.channels[key]
 	return h, ok

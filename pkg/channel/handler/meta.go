@@ -1,31 +1,20 @@
 package handler
 
 import (
-	"context"
 	"slices"
 	"sync"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
-	"github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
 	"github.com/WuKongIM/WuKongIM/pkg/channel/store"
 )
 
-type MessageIDGenerator interface {
-	Next() uint64
-}
-
 type Config struct {
-	Runtime    runtime.Runtime
+	Runtime    channel.HandlerRuntime
 	Store      *store.Engine
-	MessageIDs MessageIDGenerator
+	MessageIDs channel.MessageIDGenerator
 }
 
-type Service interface {
-	ApplyMeta(meta channel.Meta) error
-	Append(ctx context.Context, req channel.AppendRequest) (channel.AppendResult, error)
-	Fetch(ctx context.Context, req channel.FetchRequest) (channel.FetchResult, error)
-	Status(id channel.ChannelID) (channel.ChannelRuntimeStatus, error)
-}
+type Service interface{ channel.MetaRollbackService }
 
 type service struct {
 	cfg Config
@@ -75,6 +64,26 @@ func (s *service) ApplyMeta(meta channel.Meta) error {
 	}
 }
 
+func (s *service) MetaSnapshot(key channel.ChannelKey) (channel.Meta, bool) {
+	s.mu.RLock()
+	meta, ok := s.metas[key]
+	s.mu.RUnlock()
+	if !ok {
+		return channel.Meta{}, false
+	}
+	return cloneMeta(meta), true
+}
+
+func (s *service) RestoreMeta(key channel.ChannelKey, meta channel.Meta, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !ok {
+		delete(s.metas, key)
+		return
+	}
+	s.metas[key] = cloneMeta(meta)
+}
+
 func (s *service) Status(id channel.ChannelID) (channel.ChannelRuntimeStatus, error) {
 	key := KeyFromChannelID(id)
 	meta, err := s.metaForKey(key)
@@ -104,7 +113,7 @@ func (s *service) metaForKey(key channel.ChannelKey) (channel.Meta, error) {
 	if !ok {
 		return channel.Meta{}, channel.ErrStaleMeta
 	}
-	return meta, nil
+	return cloneMeta(meta), nil
 }
 
 func normalizeMeta(meta channel.Meta) (channel.ChannelKey, channel.Meta, error) {
@@ -116,9 +125,7 @@ func normalizeMeta(meta channel.Meta) (channel.ChannelKey, channel.Meta, error) 
 		return "", channel.Meta{}, channel.ErrInvalidMeta
 	}
 	meta.Key = key
-	meta.Replicas = slices.Clone(meta.Replicas)
-	meta.ISR = slices.Clone(meta.ISR)
-	return key, meta, nil
+	return key, cloneMeta(meta), nil
 }
 
 func compatibleWithExpectation(meta channel.Meta, expectedChannelEpoch, expectedLeaderEpoch uint64) error {
@@ -145,4 +152,10 @@ func metaEqual(a, b channel.Meta) bool {
 		a.MinISR == b.MinISR &&
 		a.Status == b.Status &&
 		a.Features == b.Features
+}
+
+func cloneMeta(meta channel.Meta) channel.Meta {
+	meta.Replicas = slices.Clone(meta.Replicas)
+	meta.ISR = slices.Clone(meta.ISR)
+	return meta
 }
