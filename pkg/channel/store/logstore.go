@@ -95,6 +95,10 @@ func (s *ChannelStore) Read(from uint64, maxBytes int) ([]channel.Record, error)
 	return records, nil
 }
 
+func (s *ChannelStore) ReadOffsets(fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
+	return s.readOffsets(fromOffset, limit, maxBytes)
+}
+
 func (s *ChannelStore) readOffsets(fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
 	if err := s.validate(); err != nil {
 		return nil, err

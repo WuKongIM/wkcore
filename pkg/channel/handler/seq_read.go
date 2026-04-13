@@ -20,18 +20,17 @@ func LoadMsg(st *store.ChannelStore, seq uint64) (channel.Message, error) {
 	if seq > hw {
 		return channel.Message{}, channel.ErrMessageNotFound
 	}
-	records, err := st.Read(seq-1, math.MaxInt)
+	records, err := st.ReadOffsets(seq-1, 1, math.MaxInt)
 	if err != nil {
 		return channel.Message{}, err
 	}
 	if len(records) == 0 {
 		return channel.Message{}, channel.ErrMessageNotFound
 	}
-	msg, err := decodeMessage(records[0].Payload)
+	msg, err := decodeMessageRecord(records[0])
 	if err != nil {
 		return channel.Message{}, err
 	}
-	msg.MessageSeq = seq
 	return msg, nil
 }
 
@@ -116,37 +115,53 @@ func loadRangeMsgs(st *store.ChannelStore, startSeq, endSeq uint64, limit int) (
 	remaining := limit
 	for nextSeq <= endSeq {
 		batchLimit := nextSeqReadBatchLimit(nextSeq, endSeq, remaining)
-		records, err := st.Read(nextSeq-1, math.MaxInt)
+		records, err := st.ReadOffsets(nextSeq-1, batchLimit, math.MaxInt)
 		if err != nil {
 			return nil, err
 		}
 		if len(records) == 0 {
 			return msgs, nil
 		}
-		if len(records) > batchLimit {
-			records = records[:batchLimit]
+		decoded, err := messagesFromLogRecords(records, endSeq, remaining)
+		if err != nil {
+			return nil, err
 		}
-		for i, record := range records {
-			seq := nextSeq + uint64(i)
-			if seq > endSeq {
+		if len(decoded) == 0 {
+			return msgs, nil
+		}
+		msgs = append(msgs, decoded...)
+		nextSeq = decoded[len(decoded)-1].MessageSeq + 1
+		if remaining > 0 {
+			remaining -= len(decoded)
+			if remaining <= 0 {
 				return msgs, nil
 			}
-			msg, err := decodeMessage(record.Payload)
-			if err != nil {
-				return nil, err
-			}
-			msg.MessageSeq = seq
-			msgs = append(msgs, msg)
-			if remaining > 0 {
-				remaining--
-				if remaining == 0 {
-					return msgs, nil
-				}
-			}
 		}
-		nextSeq += uint64(len(records))
-		if len(records) < batchLimit {
+		if len(records) < batchLimit || len(decoded) < len(records) {
 			return msgs, nil
+		}
+	}
+	return msgs, nil
+}
+
+func messagesFromLogRecords(records []store.LogRecord, endSeq uint64, limit int) ([]channel.Message, error) {
+	msgs := make([]channel.Message, 0, len(records))
+	remaining := limit
+	for _, record := range records {
+		seq := record.Offset + 1
+		if seq > endSeq {
+			break
+		}
+		msg, err := decodeMessageRecord(record)
+		if err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, msg)
+		if remaining > 0 {
+			remaining--
+			if remaining == 0 {
+				break
+			}
 		}
 	}
 	return msgs, nil

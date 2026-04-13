@@ -37,9 +37,6 @@ func (s *service) Append(ctx context.Context, req channel.AppendRequest) (channe
 	if state.Role != channel.ReplicaRoleLeader {
 		return channel.AppendResult{}, channel.ErrNotLeader
 	}
-	if meta.Features.MessageSeqFormat == channel.MessageSeqFormatLegacyU32 && state.HW >= maxLegacyMessageSeq {
-		return channel.AppendResult{}, channel.ErrMessageSeqExhausted
-	}
 
 	draft := req.Message
 	draft.ChannelID = req.ChannelID.ID
@@ -68,6 +65,9 @@ func (s *service) Append(ctx context.Context, req channel.AppendRequest) (channe
 			msg.MessageSeq = entry.MessageSeq
 			return channel.AppendResult{MessageID: msg.MessageID, MessageSeq: msg.MessageSeq, Message: msg}, nil
 		}
+	}
+	if meta.Features.MessageSeqFormat == channel.MessageSeqFormatLegacyU32 && state.HW >= maxLegacyMessageSeq {
+		return channel.AppendResult{}, channel.ErrMessageSeqExhausted
 	}
 
 	draft.MessageID = s.cfg.MessageIDs.Next()

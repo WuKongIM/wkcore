@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/channel/store"
 )
 
 type messageView struct {
@@ -119,7 +120,7 @@ func decodeMessageView(payload []byte) (messageView, error) {
 	return view, nil
 }
 
-func decodeMessageRecord(record storeRecord) (channel.Message, error) {
+func decodeMessageRecord(record store.LogRecord) (channel.Message, error) {
 	view, err := decodeMessageView(record.Payload)
 	if err != nil {
 		return channel.Message{}, err
@@ -127,11 +128,6 @@ func decodeMessageRecord(record storeRecord) (channel.Message, error) {
 	msg := view.Message
 	msg.MessageSeq = record.Offset + 1
 	return msg, nil
-}
-
-type storeRecord struct {
-	Offset  uint64
-	Payload []byte
 }
 
 func readSizedBytesView(payload []byte, pos int) ([]byte, int, error) {

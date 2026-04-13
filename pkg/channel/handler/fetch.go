@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"math"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 )
@@ -60,7 +59,7 @@ func (s *service) Fetch(_ context.Context, req channel.FetchRequest) (channel.Fe
 		if record.Offset >= state.HW {
 			break
 		}
-		msg, err := decodeMessageRecord(storeRecord{Offset: record.Offset, Payload: record.Payload})
+		msg, err := decodeMessageRecord(record)
 		if err != nil {
 			return channel.FetchResult{}, err
 		}
@@ -75,16 +74,4 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
-}
-
-func readAll(s *service, key channel.ChannelKey, fromOffset uint64) ([]storeRecord, error) {
-	records, err := s.cfg.Store.Read(key, fromOffset, math.MaxInt, math.MaxInt)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]storeRecord, 0, len(records))
-	for _, record := range records {
-		out = append(out, storeRecord{Offset: record.Offset, Payload: record.Payload})
-	}
-	return out, nil
 }

@@ -172,6 +172,59 @@ func TestAppendReturnsErrProtocolUpgradeRequiredForLegacyClientOnU64Channel(t *t
 	}
 }
 
+func TestAppendReturnsExistingEntryAtLegacySeqCeiling(t *testing.T) {
+	id := core.ChannelID{ID: "room-1", Type: 2}
+	svc, rt, _ := newAppendService(t, id)
+
+	if err := svc.ApplyMeta(core.Meta{
+		ID:          id,
+		Epoch:       8,
+		LeaderEpoch: 10,
+		Leader:      1,
+		Replicas:    []core.NodeID{1},
+		ISR:         []core.NodeID{1},
+		MinISR:      1,
+		Status:      core.StatusActive,
+		Features:    core.Features{MessageSeqFormat: core.MessageSeqFormatLegacyU32},
+	}); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+
+	first, err := svc.Append(context.Background(), core.AppendRequest{
+		ChannelID:             id,
+		SupportsMessageSeqU64: true,
+		Message: core.Message{
+			FromUID:     "u1",
+			ClientMsgNo: "m-legacy",
+			Payload:     []byte("payload"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("first Append() error = %v", err)
+	}
+
+	rt.channels[KeyFromChannelID(id)].status.HW = maxLegacyMessageSeq
+
+	second, err := svc.Append(context.Background(), core.AppendRequest{
+		ChannelID:             id,
+		SupportsMessageSeqU64: true,
+		Message: core.Message{
+			FromUID:     "u1",
+			ClientMsgNo: "m-legacy",
+			Payload:     []byte("payload"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("retry Append() error = %v", err)
+	}
+	if second.MessageID != first.MessageID || second.MessageSeq != first.MessageSeq {
+		t.Fatalf("retry result = %+v, want %+v", second, first)
+	}
+	if rt.channels[KeyFromChannelID(id)].appendCalls != 1 {
+		t.Fatalf("Append() calls = %d, want 1", rt.channels[KeyFromChannelID(id)].appendCalls)
+	}
+}
+
 func newAppendService(t *testing.T, id core.ChannelID) (Service, *fakeRuntime, *store.Engine) {
 	t.Helper()
 
