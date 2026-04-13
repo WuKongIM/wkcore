@@ -358,6 +358,7 @@ func TestNewBindsFetchServiceAndClusterCloseOwnsBuiltResources(t *testing.T) {
 	runtimeControl := &stubRuntimeControl{}
 	runtimeValue := &stubClosableRuntimeValue{}
 	transportValue := &stubTransportBuildValue{}
+	service := newStubMetaService()
 
 	got, err := channel.New(channel.Config{
 		LocalNode:       1,
@@ -377,7 +378,7 @@ func TestNewBindsFetchServiceAndClusterCloseOwnsBuiltResources(t *testing.T) {
 		},
 		Handler: channel.HandlerConfig{
 			Build: func(channel.HandlerBuildConfig) (channel.MetaRollbackService, error) {
-				return newStubMetaService(), nil
+				return service, nil
 			},
 		},
 	})
@@ -404,6 +405,9 @@ func TestNewBindsFetchServiceAndClusterCloseOwnsBuiltResources(t *testing.T) {
 	}
 	if runtimeValue.closeCalls != 1 {
 		t.Fatalf("runtime value close calls = %d, want 1", runtimeValue.closeCalls)
+	}
+	if service.closeCalls != 1 {
+		t.Fatalf("service close calls = %d, want 1", service.closeCalls)
 	}
 	if transportValue.closeCalls != 1 {
 		t.Fatalf("transport close calls = %d, want 1", transportValue.closeCalls)
@@ -806,6 +810,8 @@ func (stubHandlerRuntime) Channel(channel.ChannelKey) (channel.HandlerChannel, b
 type stubMetaService struct {
 	mu    sync.RWMutex
 	metas map[channel.ChannelKey]channel.Meta
+
+	closeCalls int
 }
 
 func newStubMetaService() *stubMetaService {
@@ -852,4 +858,11 @@ func (s *stubMetaService) ForceSetMeta(key channel.ChannelKey, meta channel.Meta
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.metas[key] = meta
+}
+
+func (s *stubMetaService) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeCalls++
+	return nil
 }
