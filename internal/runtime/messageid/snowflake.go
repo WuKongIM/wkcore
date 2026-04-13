@@ -3,7 +3,7 @@ package messageid
 import (
 	"fmt"
 
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/bwmarrin/snowflake"
 )
 
@@ -13,7 +13,7 @@ type SnowflakeGenerator struct {
 	node *snowflake.Node
 }
 
-var _ channellog.MessageIDGenerator = (*SnowflakeGenerator)(nil)
+var _ channel.MessageIDGenerator = (*SnowflakeGenerator)(nil)
 
 func NewSnowflakeGenerator(nodeID uint64) (*SnowflakeGenerator, error) {
 	if nodeID > MaxNodeID {

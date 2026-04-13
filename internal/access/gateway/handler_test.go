@@ -13,9 +13,10 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
-	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/stretchr/testify/require"
 )
 
@@ -296,32 +297,32 @@ func TestHandlerOnFrameSendMapsChannelclusterErrorsToSendack(t *testing.T) {
 	}{
 		{
 			name:   "channel deleting",
-			err:    channellog.ErrChannelDeleting,
+			err:    channel.ErrChannelDeleting,
 			reason: frame.ReasonChannelDeleting,
 		},
 		{
 			name:   "protocol upgrade required",
-			err:    channellog.ErrProtocolUpgradeRequired,
+			err:    channel.ErrProtocolUpgradeRequired,
 			reason: frame.ReasonProtocolUpgradeRequired,
 		},
 		{
 			name:   "idempotency conflict",
-			err:    channellog.ErrIdempotencyConflict,
+			err:    channel.ErrIdempotencyConflict,
 			reason: frame.ReasonIdempotencyConflict,
 		},
 		{
 			name:   "message seq exhausted",
-			err:    channellog.ErrMessageSeqExhausted,
+			err:    channel.ErrMessageSeqExhausted,
 			reason: frame.ReasonMessageSeqExhausted,
 		},
 		{
 			name:   "stale meta",
-			err:    channellog.ErrStaleMeta,
+			err:    channel.ErrStaleMeta,
 			reason: frame.ReasonNodeNotMatch,
 		},
 		{
 			name:   "not leader",
-			err:    channellog.ErrNotLeader,
+			err:    channel.ErrNotLeader,
 			reason: frame.ReasonNodeNotMatch,
 		},
 	}

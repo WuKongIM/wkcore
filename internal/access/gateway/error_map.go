@@ -5,23 +5,23 @@ import (
 	"errors"
 
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
 func mapSendErrorReason(err error) (frame.ReasonCode, bool) {
 	switch {
-	case errors.Is(err, channellog.ErrChannelNotFound):
+	case errors.Is(err, channel.ErrChannelNotFound):
 		return frame.ReasonChannelNotExist, true
-	case errors.Is(err, channellog.ErrChannelDeleting):
+	case errors.Is(err, channel.ErrChannelDeleting):
 		return frame.ReasonChannelDeleting, true
-	case errors.Is(err, channellog.ErrProtocolUpgradeRequired):
+	case errors.Is(err, channel.ErrProtocolUpgradeRequired):
 		return frame.ReasonProtocolUpgradeRequired, true
-	case errors.Is(err, channellog.ErrIdempotencyConflict):
+	case errors.Is(err, channel.ErrIdempotencyConflict):
 		return frame.ReasonIdempotencyConflict, true
-	case errors.Is(err, channellog.ErrMessageSeqExhausted):
+	case errors.Is(err, channel.ErrMessageSeqExhausted):
 		return frame.ReasonMessageSeqExhausted, true
-	case errors.Is(err, channellog.ErrStaleMeta), errors.Is(err, channellog.ErrNotLeader):
+	case errors.Is(err, channel.ErrStaleMeta), errors.Is(err, channel.ErrNotLeader):
 		return frame.ReasonNodeNotMatch, true
 	case errors.Is(err, runtimechannelid.ErrInvalidPersonChannel):
 		return frame.ReasonChannelIDError, true

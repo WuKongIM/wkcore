@@ -11,6 +11,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
@@ -78,7 +79,7 @@ func TestGatewayWKProtoHandlerAcknowledgesDurablePersonSend(t *testing.T) {
 }
 
 func TestGatewayVersion5ClientGetsUpgradeRequiredOnSend(t *testing.T) {
-	handler := newGatewayIntegrationHandler(&fakeMessageUsecase{sendErr: channellog.ErrProtocolUpgradeRequired}, nil)
+	handler := newGatewayIntegrationHandler(&fakeMessageUsecase{sendErr: channel.ErrProtocolUpgradeRequired}, nil)
 	gw, err := coregateway.New(coregateway.Options{
 		Handler: handler,
 		Authenticator: coregateway.NewWKProtoAuthenticator(coregateway.WKProtoAuthOptions{

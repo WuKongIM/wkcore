@@ -14,6 +14,7 @@ import (
 	conversationusecase "github.com/WuKongIM/WuKongIM/internal/usecase/conversation"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/user"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
@@ -169,43 +170,43 @@ func TestSendMessageMapsSemanticErrorsToHTTPStatus(t *testing.T) {
 	}{
 		{
 			name:   "channel not found",
-			err:    channellog.ErrChannelNotFound,
+			err:    channel.ErrChannelNotFound,
 			status: http.StatusNotFound,
 			body:   `{"error":"channel not found"}`,
 		},
 		{
 			name:   "channel deleting",
-			err:    channellog.ErrChannelDeleting,
+			err:    channel.ErrChannelDeleting,
 			status: http.StatusConflict,
 			body:   `{"error":"channel deleting"}`,
 		},
 		{
 			name:   "protocol upgrade required",
-			err:    channellog.ErrProtocolUpgradeRequired,
+			err:    channel.ErrProtocolUpgradeRequired,
 			status: http.StatusUpgradeRequired,
 			body:   `{"error":"protocol upgrade required"}`,
 		},
 		{
 			name:   "idempotency conflict",
-			err:    channellog.ErrIdempotencyConflict,
+			err:    channel.ErrIdempotencyConflict,
 			status: http.StatusConflict,
 			body:   `{"error":"idempotency conflict"}`,
 		},
 		{
 			name:   "message seq exhausted",
-			err:    channellog.ErrMessageSeqExhausted,
+			err:    channel.ErrMessageSeqExhausted,
 			status: http.StatusConflict,
 			body:   `{"error":"message seq exhausted"}`,
 		},
 		{
 			name:   "stale meta",
-			err:    channellog.ErrStaleMeta,
+			err:    channel.ErrStaleMeta,
 			status: http.StatusServiceUnavailable,
 			body:   `{"error":"retry required"}`,
 		},
 		{
 			name:   "not leader",
-			err:    channellog.ErrNotLeader,
+			err:    channel.ErrNotLeader,
 			status: http.StatusServiceUnavailable,
 			body:   `{"error":"retry required"}`,
 		},
