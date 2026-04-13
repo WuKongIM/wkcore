@@ -1,6 +1,10 @@
 package channel
 
-import "time"
+import (
+	"time"
+
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+)
 
 type NodeID uint64
 type ChannelKey string
@@ -31,12 +35,23 @@ type Features struct {
 }
 
 type Message struct {
-	MessageID   uint64
-	MessageSeq  uint64
+	MessageID  uint64
+	MessageSeq uint64
+	Framer     frame.Framer
+	Setting    frame.Setting
+	MsgKey     string
+	Expire     uint32
+	ClientSeq  uint64
+
+	ClientMsgNo string
+	StreamNo    string
+	StreamID    uint64
+	StreamFlag  frame.StreamFlag
+	Timestamp   int32
 	ChannelID   string
 	ChannelType uint8
+	Topic       string
 	FromUID     string
-	ClientMsgNo string
 	Payload     []byte
 }
 
