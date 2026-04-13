@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -208,6 +209,69 @@ func TestApplyMetaRollsBackHandlerStateWhenRuntimeMutationFails(t *testing.T) {
 			t.Fatalf("handler meta after rollback = %+v, want %+v", got, meta)
 		}
 	})
+}
+
+func TestApplyMetaKeepsNewerMetaWhenOlderSameChannelUpdateFails(t *testing.T) {
+	initial := channel.Meta{
+		ID:          channel.ChannelID{ID: "overlap", Type: 1},
+		Epoch:       1,
+		LeaderEpoch: 1,
+		Leader:      1,
+		Replicas:    []channel.NodeID{1},
+		ISR:         []channel.NodeID{1},
+		MinISR:      1,
+		Status:      channel.StatusActive,
+		Features:    channel.Features{MessageSeqFormat: channel.MessageSeqFormatU64},
+	}
+	older := initial
+	older.Epoch = 2
+	older.LeaderEpoch = 2
+	newer := initial
+	newer.Epoch = 3
+	newer.LeaderEpoch = 3
+
+	service := newStubMetaService()
+	key := encodedTestChannelKey(initial.ID)
+	service.ForceSetMeta(key, initial)
+
+	runtimeControl := newSequencedRuntimeControl(older, errors.New("older upsert failed"))
+	cluster := mustBuildStubCluster(t, service, runtimeControl)
+
+	olderErrCh := make(chan error, 1)
+	go func() {
+		olderErrCh <- cluster.ApplyMeta(older)
+	}()
+
+	runtimeControl.waitForBlockedOlder(t)
+
+	newerErrCh := make(chan error, 1)
+	go func() {
+		newerErrCh <- cluster.ApplyMeta(newer)
+	}()
+
+	runtimeControl.waitForNewerAttempt()
+
+	runtimeControl.releaseOlder()
+
+	if err := <-olderErrCh; err == nil {
+		t.Fatal("older ApplyMeta() error = nil, want failure")
+	}
+	if err := <-newerErrCh; err != nil {
+		t.Fatalf("newer ApplyMeta() error = %v", err)
+	}
+
+	got, ok := service.MetaSnapshot(key)
+	if !ok {
+		t.Fatalf("handler meta for %q missing after overlapping ApplyMeta", key)
+	}
+	if got.Epoch != newer.Epoch || got.LeaderEpoch != newer.LeaderEpoch {
+		t.Fatalf("handler meta after overlap = %+v, want %+v", got, newer)
+	}
+	if applied, ok := runtimeControl.LastMeta(key); !ok {
+		t.Fatalf("runtime meta for %q missing after overlapping ApplyMeta", key)
+	} else if applied.Epoch != newer.Epoch || applied.LeaderEpoch != newer.LeaderEpoch {
+		t.Fatalf("runtime meta after overlap = %+v, want %+v", applied, newer)
+	}
 }
 
 func TestNewClosesBuiltRuntimeWhenHandlerBuildFails(t *testing.T) {
@@ -512,6 +576,76 @@ func (r *stubRuntimeControl) Close() error {
 	return nil
 }
 
+type sequencedRuntimeControl struct {
+	mu sync.Mutex
+
+	olderMeta    channel.Meta
+	olderErr     error
+	olderReady   chan struct{}
+	olderRelease chan struct{}
+	olderOnce    sync.Once
+	newerReady   chan struct{}
+	newerOnce    sync.Once
+	lastByKey    map[channel.ChannelKey]channel.Meta
+}
+
+func newSequencedRuntimeControl(olderMeta channel.Meta, olderErr error) *sequencedRuntimeControl {
+	return &sequencedRuntimeControl{
+		olderMeta:    olderMeta,
+		olderErr:     olderErr,
+		olderReady:   make(chan struct{}),
+		olderRelease: make(chan struct{}),
+		newerReady:   make(chan struct{}),
+		lastByKey:    make(map[channel.ChannelKey]channel.Meta),
+	}
+}
+
+func (r *sequencedRuntimeControl) UpsertMeta(meta channel.Meta) error {
+	if meta.Key == "" {
+		meta.Key = encodedTestChannelKey(meta.ID)
+	}
+	if meta.Epoch == r.olderMeta.Epoch && meta.LeaderEpoch == r.olderMeta.LeaderEpoch {
+		r.olderOnce.Do(func() { close(r.olderReady) })
+		<-r.olderRelease
+		return r.olderErr
+	}
+	r.newerOnce.Do(func() { close(r.newerReady) })
+
+	r.mu.Lock()
+	r.lastByKey[meta.Key] = meta
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *sequencedRuntimeControl) RemoveChannel(channel.ChannelKey) error { return nil }
+
+func (r *sequencedRuntimeControl) waitForBlockedOlder(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.olderReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for older runtime update to block")
+	}
+}
+
+func (r *sequencedRuntimeControl) releaseOlder() {
+	close(r.olderRelease)
+}
+
+func (r *sequencedRuntimeControl) waitForNewerAttempt() {
+	select {
+	case <-r.newerReady:
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func (r *sequencedRuntimeControl) LastMeta(key channel.ChannelKey) (channel.Meta, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	meta, ok := r.lastByKey[key]
+	return meta, ok
+}
+
 type stubClosableRuntimeValue struct {
 	closeCalls int
 }
@@ -532,6 +666,7 @@ func (stubHandlerRuntime) Channel(channel.ChannelKey) (channel.HandlerChannel, b
 }
 
 type stubMetaService struct {
+	mu    sync.RWMutex
 	metas map[channel.ChannelKey]channel.Meta
 }
 
@@ -540,6 +675,8 @@ func newStubMetaService() *stubMetaService {
 }
 
 func (s *stubMetaService) ApplyMeta(meta channel.Meta) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.metas[meta.Key] = meta
 	return nil
 }
@@ -557,11 +694,15 @@ func (s *stubMetaService) Status(channel.ChannelID) (channel.ChannelRuntimeStatu
 }
 
 func (s *stubMetaService) MetaSnapshot(key channel.ChannelKey) (channel.Meta, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	meta, ok := s.metas[key]
 	return meta, ok
 }
 
 func (s *stubMetaService) RestoreMeta(key channel.ChannelKey, meta channel.Meta, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !ok {
 		delete(s.metas, key)
 		return
@@ -570,5 +711,7 @@ func (s *stubMetaService) RestoreMeta(key channel.ChannelKey, meta channel.Meta,
 }
 
 func (s *stubMetaService) ForceSetMeta(key channel.ChannelKey, meta channel.Meta) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.metas[key] = meta
 }

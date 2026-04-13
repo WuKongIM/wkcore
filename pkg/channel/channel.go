@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -120,6 +121,14 @@ type HandlerBuildConfig struct {
 type cluster struct {
 	service MetaRollbackService
 	runtime Runtime
+
+	applyMu    sync.Mutex
+	applyLocks map[ChannelKey]*channelApplyLock
+}
+
+type channelApplyLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 func New(cfg Config) (Cluster, error) {
@@ -176,6 +185,9 @@ func New(cfg Config) (Cluster, error) {
 
 func (c *cluster) ApplyMeta(meta Meta) error {
 	meta.Key = effectiveChannelKey(meta)
+	unlock := c.lockApplyMeta(meta.Key)
+	defer unlock()
+
 	previous, ok := c.service.MetaSnapshot(meta.Key)
 	if err := c.service.ApplyMeta(meta); err != nil {
 		return err
@@ -191,6 +203,32 @@ func (c *cluster) ApplyMeta(meta Meta) error {
 	}
 	c.service.RestoreMeta(meta.Key, previous, ok)
 	return runtimeErr
+}
+
+func (c *cluster) lockApplyMeta(key ChannelKey) func() {
+	c.applyMu.Lock()
+	if c.applyLocks == nil {
+		c.applyLocks = make(map[ChannelKey]*channelApplyLock)
+	}
+	lock, ok := c.applyLocks[key]
+	if !ok {
+		lock = &channelApplyLock{}
+		c.applyLocks[key] = lock
+	}
+	lock.refs++
+	c.applyMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+
+		c.applyMu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(c.applyLocks, key)
+		}
+		c.applyMu.Unlock()
+	}
 }
 
 func (c *cluster) Append(ctx context.Context, req AppendRequest) (AppendResult, error) {
