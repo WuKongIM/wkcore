@@ -36,6 +36,7 @@ type Message struct {
 	ChannelID   string
 	ChannelType uint8
 	FromUID     string
+	ClientMsgNo string
 	Payload     []byte
 }
 
@@ -54,10 +55,11 @@ type Meta struct {
 }
 
 type AppendRequest struct {
-	ChannelID            ChannelID
-	Message              Message
-	ExpectedChannelEpoch uint64
-	ExpectedLeaderEpoch  uint64
+	ChannelID             ChannelID
+	Message               Message
+	SupportsMessageSeqU64 bool
+	ExpectedChannelEpoch  uint64
+	ExpectedLeaderEpoch   uint64
 }
 
 type AppendResult struct {
@@ -78,6 +80,16 @@ type FetchRequest struct {
 type FetchResult struct {
 	Messages     []Message
 	NextSeq      uint64
+	CommittedSeq uint64
+}
+
+type ChannelRuntimeStatus struct {
+	Key          ChannelKey
+	ID           ChannelID
+	Status       Status
+	Leader       NodeID
+	LeaderEpoch  uint64
+	HW           uint64
 	CommittedSeq uint64
 }
 
