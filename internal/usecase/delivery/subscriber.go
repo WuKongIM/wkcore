@@ -3,7 +3,7 @@ package delivery
 import (
 	"context"
 
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
@@ -13,12 +13,12 @@ type ChannelSubscriberStore interface {
 }
 
 type SnapshotToken struct {
-	key      channellog.ChannelKey
+	id       channel.ChannelID
 	snapshot []string
 }
 
 type SubscriberResolver interface {
-	BeginSnapshot(ctx context.Context, key channellog.ChannelKey) (SnapshotToken, error)
+	BeginSnapshot(ctx context.Context, id channel.ChannelID) (SnapshotToken, error)
 	NextPage(ctx context.Context, token SnapshotToken, cursor string, limit int) ([]string, string, bool, error)
 }
 
@@ -34,10 +34,10 @@ func NewSubscriberResolver(opts SubscriberResolverOptions) SubscriberResolver {
 	return &subscriberResolver{store: opts.Store}
 }
 
-func (r *subscriberResolver) BeginSnapshot(ctx context.Context, key channellog.ChannelKey) (SnapshotToken, error) {
-	token := SnapshotToken{key: key}
-	if key.ChannelType == frame.ChannelTypePerson {
-		left, right, err := DecodePersonChannel(key.ChannelID)
+func (r *subscriberResolver) BeginSnapshot(ctx context.Context, id channel.ChannelID) (SnapshotToken, error) {
+	token := SnapshotToken{id: id}
+	if id.Type == frame.ChannelTypePerson {
+		left, right, err := DecodePersonChannel(id.ID)
 		if err != nil {
 			return SnapshotToken{}, err
 		}
@@ -47,7 +47,7 @@ func (r *subscriberResolver) BeginSnapshot(ctx context.Context, key channellog.C
 	if r.store == nil {
 		return token, nil
 	}
-	snapshot, err := r.store.SnapshotChannelSubscribers(ctx, key.ChannelID, int64(key.ChannelType))
+	snapshot, err := r.store.SnapshotChannelSubscribers(ctx, id.ID, int64(id.Type))
 	if err != nil {
 		return SnapshotToken{}, err
 	}
@@ -62,7 +62,7 @@ func (r *subscriberResolver) NextPage(ctx context.Context, token SnapshotToken, 
 	if r.store == nil {
 		return nil, cursor, true, nil
 	}
-	return r.store.ListChannelSubscribers(ctx, token.key.ChannelID, int64(token.key.ChannelType), cursor, limit)
+	return r.store.ListChannelSubscribers(ctx, token.id.ID, int64(token.id.Type), cursor, limit)
 }
 
 func nextSubscriberSnapshotPage(uids []string, cursor string, limit int) ([]string, string, bool, error) {

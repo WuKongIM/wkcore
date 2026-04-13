@@ -31,8 +31,8 @@ type asyncCommittedDispatcher struct {
 	localNodeID  uint64
 	preferLocal  bool
 	channelLog   channellog.Cluster
-	delivery     committedSubmitter
-	conversation committedSubmitter
+	delivery     committedDeliverySubmitter
+	conversation committedConversationSubmitter
 	nodeClient   committedNodeSubmitter
 }
 
@@ -52,13 +52,12 @@ func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, msg chann
 }
 
 func (d asyncCommittedDispatcher) routeCommitted(ctx context.Context, msg channel.Message) {
-	legacyMsg := rootChannelMessageToLegacy(msg)
 	if d.preferLocal {
-		d.submitLocal(ctx, legacyMsg)
+		d.submitLocal(ctx, msg)
 		return
 	}
 	if d.channelLog == nil {
-		d.submitLocal(ctx, legacyMsg)
+		d.submitLocal(ctx, msg)
 		return
 	}
 
@@ -70,11 +69,11 @@ func (d asyncCommittedDispatcher) routeCommitted(ctx context.Context, msg channe
 		if err == nil && status.Leader != 0 {
 			ownerNodeID := uint64(status.Leader)
 			if ownerNodeID == d.localNodeID {
-				d.submitLocal(ctx, legacyMsg)
+				d.submitLocal(ctx, msg)
 				return
 			}
 			if d.nodeClient != nil {
-				if err := d.nodeClient.SubmitCommitted(ctx, ownerNodeID, legacyMsg); err == nil {
+				if err := d.nodeClient.SubmitCommitted(ctx, ownerNodeID, msg); err == nil {
 					return
 				}
 			}
@@ -83,25 +82,25 @@ func (d asyncCommittedDispatcher) routeCommitted(ctx context.Context, msg channe
 			time.Sleep(time.Duration(attempt+1) * committedRouteRetryBackoff)
 		}
 	}
-	d.submitConversationFallback(ctx, legacyMsg)
+	d.submitConversationFallback(ctx, msg)
 }
 
-func (d asyncCommittedDispatcher) submitLocal(ctx context.Context, msg channellog.Message) {
+func (d asyncCommittedDispatcher) submitLocal(ctx context.Context, msg channel.Message) {
 	if d.delivery != nil {
 		_ = d.delivery.SubmitCommitted(ctx, msg)
 	}
 	d.submitConversation(ctx, msg)
 }
 
-func (d asyncCommittedDispatcher) submitConversation(ctx context.Context, msg channellog.Message) {
+func (d asyncCommittedDispatcher) submitConversation(ctx context.Context, msg channel.Message) {
 	if d.conversation != nil {
-		_ = d.conversation.SubmitCommitted(ctx, msg)
+		_ = d.conversation.SubmitCommitted(ctx, rootChannelMessageToLegacy(msg))
 	}
 }
 
-func (d asyncCommittedDispatcher) submitConversationFallback(ctx context.Context, msg channellog.Message) {
+func (d asyncCommittedDispatcher) submitConversationFallback(ctx context.Context, msg channel.Message) {
 	d.submitConversation(ctx, msg)
-	if flusher, ok := d.conversation.(committedSubmitterFlusher); ok {
+	if flusher, ok := d.conversation.(committedConversationSubmitterFlusher); ok {
 		_ = flusher.Flush(ctx)
 	}
 }
@@ -122,9 +121,9 @@ func (r localDeliveryResolver) BeginResolve(ctx context.Context, key deliveryrun
 	if r.subscribers == nil {
 		return nil, nil
 	}
-	snapshot, err := r.subscribers.BeginSnapshot(ctx, channellog.ChannelKey{
-		ChannelID:   key.ChannelID,
-		ChannelType: key.ChannelType,
+	snapshot, err := r.subscribers.BeginSnapshot(ctx, channel.ChannelID{
+		ID:   key.ChannelID,
+		Type: key.ChannelType,
 	})
 	if err != nil {
 		return nil, err
@@ -226,12 +225,16 @@ type localDeliveryPush struct {
 }
 
 func (p localDeliveryPush) Push(_ context.Context, cmd deliveryruntime.PushCommand) (deliveryruntime.PushResult, error) {
-	f := buildRealtimeRecvPacket(cmd.Envelope, recipientUIDForRoutes(cmd.Routes))
-	return p.pushFrame(f, cmd.Routes), nil
+	return p.pushEnvelope(cmd.Envelope, cmd.Routes), nil
 }
 
-func (p localDeliveryPush) pushFrame(f frame.Frame, routes []deliveryruntime.RouteKey) deliveryruntime.PushResult {
+func (p localDeliveryPush) pushEnvelope(env channel.Message, routes []deliveryruntime.RouteKey) deliveryruntime.PushResult {
 	result := deliveryruntime.PushResult{}
+	frameCacheCap := len(routes)
+	if frameCacheCap > 2 {
+		frameCacheCap = 2
+	}
+	framesByUID := make(map[string]frame.Frame, frameCacheCap)
 	for _, route := range routes {
 		switch {
 		case p.localNodeID != 0 && route.NodeID != p.localNodeID:
@@ -243,6 +246,11 @@ func (p localDeliveryPush) pushFrame(f frame.Frame, routes []deliveryruntime.Rou
 			if !ok || conn.UID != route.UID || conn.State != online.LocalRouteStateActive || conn.Session == nil {
 				result.Dropped = append(result.Dropped, route)
 				continue
+			}
+			f, ok := framesByUID[route.UID]
+			if !ok {
+				f = buildRealtimeRecvPacket(env, route.UID)
+				framesByUID[route.UID] = f
 			}
 			if err := conn.Session.WriteFrame(f); err != nil {
 				result.Retryable = append(result.Retryable, route)
@@ -265,51 +273,56 @@ func (p distributedDeliveryPush) Push(ctx context.Context, cmd deliveryruntime.P
 	if p.codec == nil {
 		p.codec = codec.New()
 	}
-	f := buildRealtimeRecvPacket(cmd.Envelope, recipientUIDForRoutes(cmd.Routes))
-	frameBytes, err := p.codec.EncodeFrame(f, frame.LatestVersion)
-	if err != nil {
-		return deliveryruntime.PushResult{}, err
-	}
 
 	localRoutes := make([]deliveryruntime.RouteKey, 0, len(cmd.Routes))
-	remoteRoutes := make(map[uint64][]deliveryruntime.RouteKey)
+	remoteRoutes := make(map[uint64]map[string][]deliveryruntime.RouteKey)
 	for _, route := range cmd.Routes {
 		if route.NodeID == p.localNodeID {
 			localRoutes = append(localRoutes, route)
 			continue
 		}
-		remoteRoutes[route.NodeID] = append(remoteRoutes[route.NodeID], route)
+		if remoteRoutes[route.NodeID] == nil {
+			remoteRoutes[route.NodeID] = make(map[string][]deliveryruntime.RouteKey)
+		}
+		remoteRoutes[route.NodeID][route.UID] = append(remoteRoutes[route.NodeID][route.UID], route)
 	}
 
 	result := deliveryruntime.PushResult{}
 	if len(localRoutes) > 0 {
-		localResult := p.local.pushFrame(f, localRoutes)
+		localResult := p.local.pushEnvelope(cmd.Envelope, localRoutes)
 		result.Accepted = append(result.Accepted, localResult.Accepted...)
 		result.Retryable = append(result.Retryable, localResult.Retryable...)
 		result.Dropped = append(result.Dropped, localResult.Dropped...)
 	}
 
-	for nodeID, routes := range remoteRoutes {
-		if p.client == nil {
-			result.Retryable = append(result.Retryable, routes...)
-			continue
+	for nodeID, routesByUID := range remoteRoutes {
+		for uid, routes := range routesByUID {
+			if p.client == nil {
+				result.Retryable = append(result.Retryable, routes...)
+				continue
+			}
+			f := buildRealtimeRecvPacket(cmd.Envelope, uid)
+			frameBytes, err := p.codec.EncodeFrame(f, frame.LatestVersion)
+			if err != nil {
+				return deliveryruntime.PushResult{}, err
+			}
+			resp, err := p.client.PushBatch(ctx, nodeID, accessnode.DeliveryPushCommand{
+				OwnerNodeID: p.localNodeID,
+				ChannelID:   cmd.Envelope.ChannelID,
+				ChannelType: cmd.Envelope.ChannelType,
+				MessageID:   cmd.Envelope.MessageID,
+				MessageSeq:  cmd.Envelope.MessageSeq,
+				Routes:      append([]deliveryruntime.RouteKey(nil), routes...),
+				Frame:       append([]byte(nil), frameBytes...),
+			})
+			if err != nil {
+				result.Retryable = append(result.Retryable, routes...)
+				continue
+			}
+			result.Accepted = append(result.Accepted, resp.Accepted...)
+			result.Retryable = append(result.Retryable, resp.Retryable...)
+			result.Dropped = append(result.Dropped, resp.Dropped...)
 		}
-		resp, err := p.client.PushBatch(ctx, nodeID, accessnode.DeliveryPushCommand{
-			OwnerNodeID: p.localNodeID,
-			ChannelID:   cmd.Envelope.ChannelID,
-			ChannelType: cmd.Envelope.ChannelType,
-			MessageID:   cmd.Envelope.MessageID,
-			MessageSeq:  cmd.Envelope.MessageSeq,
-			Routes:      append([]deliveryruntime.RouteKey(nil), routes...),
-			Frame:       append([]byte(nil), frameBytes...),
-		})
-		if err != nil {
-			result.Retryable = append(result.Retryable, routes...)
-			continue
-		}
-		result.Accepted = append(result.Accepted, resp.Accepted...)
-		result.Retryable = append(result.Retryable, resp.Retryable...)
-		result.Dropped = append(result.Dropped, resp.Dropped...)
 	}
 	return result, nil
 }
@@ -334,7 +347,15 @@ func (r ackRouting) AckRoute(ctx context.Context, cmd message.RouteAckCommand) e
 				r.remoteAcks.Remove(cmd.SessionID, cmd.MessageID)
 				return nil
 			}
+			if r.local == nil {
+				r.remoteAcks.Remove(cmd.SessionID, cmd.MessageID)
+				return nil
+			}
+			if err := r.local.AckRoute(ctx, cmd); err != nil {
+				return err
+			}
 			r.remoteAcks.Remove(cmd.SessionID, cmd.MessageID)
+			return nil
 		}
 	}
 	if r.local == nil {
@@ -352,11 +373,12 @@ type offlineRouting struct {
 
 func (r offlineRouting) SessionClosed(ctx context.Context, cmd message.SessionClosedCommand) error {
 	var err error
+	localBindings := make([]deliveryruntime.AckBinding, 0)
 	if r.remoteAcks != nil {
 		ownerBindings := make(map[uint64][]deliveryruntime.AckBinding)
 		for _, binding := range r.remoteAcks.LookupSession(cmd.SessionID) {
 			if binding.OwnerNodeID == 0 || binding.OwnerNodeID == r.localNodeID {
-				r.remoteAcks.Remove(binding.SessionID, binding.MessageID)
+				localBindings = append(localBindings, binding)
 				continue
 			}
 			ownerBindings[binding.OwnerNodeID] = append(ownerBindings[binding.OwnerNodeID], binding)
@@ -377,7 +399,17 @@ func (r offlineRouting) SessionClosed(ctx context.Context, cmd message.SessionCl
 		}
 	}
 	if r.local != nil {
-		err = errors.Join(err, r.local.SessionClosed(ctx, cmd))
+		localErr := r.local.SessionClosed(ctx, cmd)
+		err = errors.Join(err, localErr)
+		if localErr == nil && r.remoteAcks != nil {
+			for _, binding := range localBindings {
+				r.remoteAcks.Remove(binding.SessionID, binding.MessageID)
+			}
+		}
+	} else if r.remoteAcks != nil {
+		for _, binding := range localBindings {
+			r.remoteAcks.Remove(binding.SessionID, binding.MessageID)
+		}
 	}
 	return err
 }
@@ -396,26 +428,23 @@ type deliveryOwnerNotifier interface {
 }
 
 type committedNodeSubmitter interface {
-	SubmitCommitted(ctx context.Context, nodeID uint64, msg channellog.Message) error
+	SubmitCommitted(ctx context.Context, nodeID uint64, msg channel.Message) error
 }
 
-type committedSubmitter interface {
+type committedDeliverySubmitter interface {
+	SubmitCommitted(ctx context.Context, msg channel.Message) error
+}
+
+type committedConversationSubmitter interface {
 	SubmitCommitted(ctx context.Context, msg channellog.Message) error
 }
 
-type committedSubmitterFlusher interface {
-	committedSubmitter
+type committedConversationSubmitterFlusher interface {
+	committedConversationSubmitter
 	Flush(ctx context.Context) error
 }
 
-func recipientUIDForRoutes(routes []deliveryruntime.RouteKey) string {
-	if len(routes) == 0 {
-		return ""
-	}
-	return routes[0].UID
-}
-
-func buildRealtimeRecvPacket(msg channellog.Message, recipientUID string) *frame.RecvPacket {
+func buildRealtimeRecvPacket(msg channel.Message, recipientUID string) *frame.RecvPacket {
 	framer := msg.Framer
 	framer.FrameType = frame.RECV
 
@@ -439,8 +468,26 @@ func buildRealtimeRecvPacket(msg channellog.Message, recipientUID string) *frame
 		ClientSeq:   msg.ClientSeq,
 	}
 	if msg.ChannelType == frame.ChannelTypePerson && recipientUID != "" {
-		packet.ChannelID = msg.FromUID
+		packet.ChannelID = recipientChannelView(msg, recipientUID)
 		packet.ChannelType = frame.ChannelTypePerson
 	}
 	return packet
+}
+
+func recipientChannelView(msg channel.Message, recipientUID string) string {
+	if recipientUID == "" {
+		return msg.ChannelID
+	}
+	left, right, err := deliveryusecase.DecodePersonChannel(msg.ChannelID)
+	if err != nil {
+		return msg.FromUID
+	}
+	switch recipientUID {
+	case left:
+		return right
+	case right:
+		return left
+	default:
+		return msg.FromUID
+	}
 }

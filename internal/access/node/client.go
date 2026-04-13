@@ -7,6 +7,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
@@ -107,7 +108,7 @@ func (c *Client) ApplyRouteAction(ctx context.Context, action presence.RouteActi
 	return nil
 }
 
-func (c *Client) SubmitCommitted(ctx context.Context, nodeID uint64, msg channellog.Message) error {
+func (c *Client) SubmitCommitted(ctx context.Context, nodeID uint64, msg channel.Message) error {
 	resp, err := callDeliveryDirect(ctx, c, nodeID, deliverySubmitRPCServiceID, deliverySubmitRequest{
 		Message: msg,
 	}, decodeDeliveryResponse)

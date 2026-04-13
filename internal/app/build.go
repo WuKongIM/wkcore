@@ -224,7 +224,7 @@ func build(cfg Config) (_ *App, err error) {
 		GatewayBootID:    app.gatewayBootID,
 		LocalNodeID:      cfg.Node.ID,
 		ChannelLog:       app.channelLog,
-		DeliverySubmit:   legacyCommittedDispatcherAdapter{dispatcher: committedDispatcher},
+		DeliverySubmit:   committedDispatcher,
 		DeliveryAck:      app.deliveryApp,
 		DeliveryOffline:  app.deliveryApp,
 		DeliveryAckIndex: app.deliveryAcks,

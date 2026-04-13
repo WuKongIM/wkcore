@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 )
 
 type deliverySubmitRequest struct {
-	Message channellog.Message `json:"message"`
+	Message channel.Message `json:"message"`
 }
 
 func (a *Adapter) handleDeliverySubmitRPC(ctx context.Context, body []byte) ([]byte, error) {

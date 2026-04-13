@@ -7,6 +7,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
@@ -30,7 +31,7 @@ type Presence interface {
 }
 
 type DeliverySubmit interface {
-	SubmitCommitted(ctx context.Context, msg channellog.Message) error
+	SubmitCommitted(ctx context.Context, msg channel.Message) error
 }
 
 type DeliveryAck interface {

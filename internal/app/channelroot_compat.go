@@ -35,12 +35,6 @@ type messageMetaRefresherAdapter struct {
 	refresher *channelMetaSync
 }
 
-type legacyCommittedDispatcherAdapter struct {
-	dispatcher interface {
-		SubmitCommitted(ctx context.Context, msg channel.Message) error
-	}
-}
-
 func (a messageMetaRefresherAdapter) RefreshChannelMeta(ctx context.Context, id channel.ChannelID) (channel.Meta, error) {
 	if a.refresher == nil {
 		return channel.Meta{}, nil
@@ -53,13 +47,6 @@ func (a messageMetaRefresherAdapter) RefreshChannelMeta(ctx context.Context, id 
 		return channel.Meta{}, mapLegacyChannelError(err)
 	}
 	return legacyChannelMetaToRoot(meta), nil
-}
-
-func (a legacyCommittedDispatcherAdapter) SubmitCommitted(ctx context.Context, msg channellog.Message) error {
-	if a.dispatcher == nil {
-		return nil
-	}
-	return a.dispatcher.SubmitCommitted(ctx, legacyChannelMessageToRoot(msg))
 }
 
 func rootAppendRequestToLegacy(req channel.AppendRequest) channellog.AppendRequest {

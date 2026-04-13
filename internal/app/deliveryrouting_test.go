@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	gatewaysession "github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
+	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
@@ -108,6 +110,36 @@ func TestAckRoutingKeepsRemoteBindingWhenNotifierMissing(t *testing.T) {
 	require.Empty(t, local.acks)
 }
 
+func TestAckRoutingKeepsLocalBindingWhenLocalAckFails(t *testing.T) {
+	remoteAcks := deliveryruntime.NewAckIndex()
+	remoteAcks.Bind(deliveryruntime.AckBinding{
+		SessionID:   7,
+		MessageID:   101,
+		ChannelID:   "c1",
+		ChannelType: 2,
+		OwnerNodeID: 1,
+		Route:       deliveryruntime.RouteKey{UID: "u2", SessionID: 7},
+	})
+	local := &recordingRouteAcker{err: errors.New("local ack failed")}
+
+	router := ackRouting{
+		localNodeID: 1,
+		local:       local,
+		remoteAcks:  remoteAcks,
+	}
+
+	err := router.AckRoute(context.Background(), message.RouteAckCommand{
+		UID:        "u2",
+		SessionID:  7,
+		MessageID:  101,
+		MessageSeq: 1,
+	})
+
+	require.Error(t, err)
+	require.Len(t, local.acks, 1)
+	require.True(t, remoteAcksHas(remoteAcks, 7, 101))
+}
+
 func TestOfflineRoutingKeepsRemoteBindingsWhenOwnerNotifyFails(t *testing.T) {
 	remoteAcks := deliveryruntime.NewAckIndex()
 	remoteAcks.Bind(deliveryruntime.AckBinding{
@@ -194,9 +226,37 @@ func TestOfflineRoutingKeepsRemoteBindingsWhenNotifierMissing(t *testing.T) {
 	require.Len(t, local.closed, 1)
 }
 
+func TestOfflineRoutingKeepsLocalBindingsWhenLocalCloseFails(t *testing.T) {
+	remoteAcks := deliveryruntime.NewAckIndex()
+	remoteAcks.Bind(deliveryruntime.AckBinding{
+		SessionID:   8,
+		MessageID:   201,
+		ChannelID:   "c2",
+		ChannelType: 2,
+		OwnerNodeID: 1,
+		Route:       deliveryruntime.RouteKey{UID: "u2", SessionID: 8},
+	})
+	local := &recordingSessionCloser{err: errors.New("local close failed")}
+
+	router := offlineRouting{
+		localNodeID: 1,
+		local:       local,
+		remoteAcks:  remoteAcks,
+	}
+
+	err := router.SessionClosed(context.Background(), message.SessionClosedCommand{
+		UID:       "u2",
+		SessionID: 8,
+	})
+
+	require.Error(t, err)
+	require.Len(t, local.closed, 1)
+	require.True(t, remoteAcksHas(remoteAcks, 8, 201))
+}
+
 func TestAsyncCommittedDispatcherFallsBackToLocalConversationWhenOwnerIsUnknown(t *testing.T) {
 	delivery := &recordingCommittedSubmitter{}
-	conversation := &recordingFlushingCommittedSubmitter{}
+	conversation := &recordingFlushingLegacyCommittedSubmitter{}
 	dispatcher := asyncCommittedDispatcher{
 		localNodeID: 1,
 		channelLog: &stubChannelLogCluster{
@@ -249,7 +309,7 @@ func TestAsyncCommittedDispatcherSubmitsDurableMessageToLocalDelivery(t *testing
 	require.Eventually(t, func() bool {
 		return len(delivery.calls) == 1
 	}, time.Second, 10*time.Millisecond)
-	require.Equal(t, channellog.Message{
+	require.Equal(t, channel.Message{
 		ChannelID:   "u1@u2",
 		ChannelType: 1,
 		MessageID:   88,
@@ -268,7 +328,7 @@ func TestAsyncCommittedDispatcherSubmitsDurableMessageToLocalDelivery(t *testing
 
 func TestAsyncCommittedDispatcherSubmitsToConversationProjector(t *testing.T) {
 	delivery := &recordingCommittedSubmitter{}
-	conversation := &recordingCommittedSubmitter{}
+	conversation := &recordingLegacyCommittedSubmitter{}
 	dispatcher := asyncCommittedDispatcher{
 		localNodeID: 1,
 		channelLog: &stubChannelLogCluster{
@@ -294,13 +354,13 @@ func TestAsyncCommittedDispatcherSubmitsToConversationProjector(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(delivery.calls) == 1 && len(conversation.calls) == 1
 	}, time.Second, 10*time.Millisecond)
-	require.Equal(t, rootChannelMessageToLegacy(msg), delivery.calls[0])
+	require.Equal(t, msg, delivery.calls[0])
 	require.Equal(t, rootChannelMessageToLegacy(msg), conversation.calls[0])
 }
 
 func TestAsyncCommittedDispatcherPrefersLocalDeliveryWithoutOwnerLookup(t *testing.T) {
 	delivery := &recordingCommittedSubmitter{}
-	conversation := &recordingCommittedSubmitter{}
+	conversation := &recordingLegacyCommittedSubmitter{}
 	channelLog := &stubChannelLogCluster{
 		statusErr: errors.New("status should not be called in local-preferred mode"),
 	}
@@ -327,12 +387,12 @@ func TestAsyncCommittedDispatcherPrefersLocalDeliveryWithoutOwnerLookup(t *testi
 		return len(delivery.calls) == 1 && len(conversation.calls) == 1
 	}, time.Second, 10*time.Millisecond)
 	require.Equal(t, 0, channelLog.StatusCalls())
-	require.Equal(t, rootChannelMessageToLegacy(msg), delivery.calls[0])
+	require.Equal(t, msg, delivery.calls[0])
 	require.Equal(t, rootChannelMessageToLegacy(msg), conversation.calls[0])
 }
 
 func TestBuildRealtimeRecvPacketUsesDurableTimestampAndPersonChannelView(t *testing.T) {
-	packet := buildRealtimeRecvPacket(channellog.Message{
+	packet := buildRealtimeRecvPacket(channel.Message{
 		MessageID:   88,
 		MessageSeq:  7,
 		Setting:     1,
@@ -353,6 +413,62 @@ func TestBuildRealtimeRecvPacketUsesDurableTimestampAndPersonChannelView(t *test
 	require.Equal(t, frame.ChannelTypePerson, packet.ChannelType)
 	require.Equal(t, "u1", packet.FromUID)
 	require.Equal(t, []byte("hello"), packet.Payload)
+}
+
+func TestLocalDeliveryPushBuildsPersonChannelViewPerRouteUID(t *testing.T) {
+	sender := newOptionRecordingSession(1, "tcp")
+	sender.SetValue("uid", "u1")
+	recipient := newOptionRecordingSession(2, "tcp")
+	recipient.SetValue("uid", "u2")
+	registry := online.NewRegistry()
+	require.NoError(t, registry.Register(online.OnlineConn{
+		SessionID: 1,
+		UID:       "u1",
+		State:     online.LocalRouteStateActive,
+		Session:   sender.Session,
+	}))
+	require.NoError(t, registry.Register(online.OnlineConn{
+		SessionID: 2,
+		UID:       "u2",
+		State:     online.LocalRouteStateActive,
+		Session:   recipient.Session,
+	}))
+
+	push := localDeliveryPush{
+		online:        registry,
+		localNodeID:   1,
+		gatewayBootID: 11,
+	}
+
+	result, err := push.Push(context.Background(), deliveryruntime.PushCommand{
+		Envelope: channel.Message{
+			MessageID:   88,
+			MessageSeq:  7,
+			ChannelID:   "u1@u2",
+			ChannelType: frame.ChannelTypePerson,
+			FromUID:     "u1",
+			Payload:     []byte("hello"),
+		},
+		Routes: []deliveryruntime.RouteKey{
+			{UID: "u1", NodeID: 1, BootID: 11, SessionID: 1},
+			{UID: "u2", NodeID: 1, BootID: 11, SessionID: 2},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Accepted, 2)
+
+	senderWrites := sender.Writes()
+	recipientWrites := recipient.Writes()
+	require.Len(t, senderWrites, 1)
+	require.Len(t, recipientWrites, 1)
+
+	senderPacket, ok := senderWrites[0].f.(*frame.RecvPacket)
+	require.True(t, ok)
+	recipientPacket, ok := recipientWrites[0].f.(*frame.RecvPacket)
+	require.True(t, ok)
+
+	require.Equal(t, "u2", senderPacket.ChannelID)
+	require.Equal(t, "u1", recipientPacket.ChannelID)
 }
 
 func TestLocalDeliveryResolverSplitsExpandedRoutesAcrossPages(t *testing.T) {
@@ -423,30 +539,66 @@ func remoteAcksHas(idx *deliveryruntime.AckIndex, sessionID, messageID uint64) b
 	return ok
 }
 
+type outboundWrite struct {
+	f    frame.Frame
+	meta gatewaysession.OutboundMeta
+}
+
+type optionRecordingSession struct {
+	gatewaysession.Session
+	mu     sync.Mutex
+	writes []outboundWrite
+}
+
+func newOptionRecordingSession(id uint64, listener string) *optionRecordingSession {
+	recorder := &optionRecordingSession{}
+	recorder.Session = gatewaysession.New(gatewaysession.Config{
+		ID:       id,
+		Listener: listener,
+		WriteFrameFn: func(f frame.Frame, meta gatewaysession.OutboundMeta) error {
+			recorder.mu.Lock()
+			defer recorder.mu.Unlock()
+			recorder.writes = append(recorder.writes, outboundWrite{f: f, meta: meta})
+			return nil
+		},
+	})
+	return recorder
+}
+
+func (s *optionRecordingSession) Writes() []outboundWrite {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]outboundWrite, len(s.writes))
+	copy(out, s.writes)
+	return out
+}
+
 type recordingRouteAcker struct {
 	acks []message.RouteAckCommand
+	err  error
 }
 
 func (r *recordingRouteAcker) AckRoute(_ context.Context, cmd message.RouteAckCommand) error {
 	r.acks = append(r.acks, cmd)
-	return nil
+	return r.err
 }
 
 type recordingSessionCloser struct {
 	closed []message.SessionClosedCommand
+	err    error
 }
 
 func (r *recordingSessionCloser) SessionClosed(_ context.Context, cmd message.SessionClosedCommand) error {
 	r.closed = append(r.closed, cmd)
-	return nil
+	return r.err
 }
 
 type recordingCommittedSubmitter struct {
 	submitCalls int
-	calls       []channellog.Message
+	calls       []channel.Message
 }
 
-func (r *recordingCommittedSubmitter) SubmitCommitted(_ context.Context, msg channellog.Message) error {
+func (r *recordingCommittedSubmitter) SubmitCommitted(_ context.Context, msg channel.Message) error {
 	r.submitCalls++
 	copied := msg
 	copied.Payload = append([]byte(nil), msg.Payload...)
@@ -454,12 +606,25 @@ func (r *recordingCommittedSubmitter) SubmitCommitted(_ context.Context, msg cha
 	return nil
 }
 
-type recordingFlushingCommittedSubmitter struct {
-	recordingCommittedSubmitter
+type recordingLegacyCommittedSubmitter struct {
+	submitCalls int
+	calls       []channellog.Message
+}
+
+func (r *recordingLegacyCommittedSubmitter) SubmitCommitted(_ context.Context, msg channellog.Message) error {
+	r.submitCalls++
+	copied := msg
+	copied.Payload = append([]byte(nil), msg.Payload...)
+	r.calls = append(r.calls, copied)
+	return nil
+}
+
+type recordingFlushingLegacyCommittedSubmitter struct {
+	recordingLegacyCommittedSubmitter
 	flushCalls int
 }
 
-func (r *recordingFlushingCommittedSubmitter) Flush(context.Context) error {
+func (r *recordingFlushingLegacyCommittedSubmitter) Flush(context.Context) error {
 	r.flushCalls++
 	return nil
 }

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
@@ -22,9 +22,9 @@ func TestPersonChannelCodecRoundTripsCanonicalIDs(t *testing.T) {
 func TestSubscriberResolverReturnsTwoUIDsForPersonChannel(t *testing.T) {
 	resolver := NewSubscriberResolver(SubscriberResolverOptions{})
 
-	token, err := resolver.BeginSnapshot(context.Background(), channellog.ChannelKey{
-		ChannelID:   EncodePersonChannel("u1", "u2"),
-		ChannelType: frame.ChannelTypePerson,
+	token, err := resolver.BeginSnapshot(context.Background(), channel.ChannelID{
+		ID:   EncodePersonChannel("u1", "u2"),
+		Type: frame.ChannelTypePerson,
 	})
 	require.NoError(t, err)
 
@@ -47,9 +47,9 @@ func TestSubscriberResolverPagesGroupSubscribersFromMetastore(t *testing.T) {
 	}
 	resolver := NewSubscriberResolver(SubscriberResolverOptions{Store: store})
 
-	token, err := resolver.BeginSnapshot(context.Background(), channellog.ChannelKey{
-		ChannelID:   "g1",
-		ChannelType: frame.ChannelTypeGroup,
+	token, err := resolver.BeginSnapshot(context.Background(), channel.ChannelID{
+		ID:   "g1",
+		Type: frame.ChannelTypeGroup,
 	})
 	require.NoError(t, err)
 

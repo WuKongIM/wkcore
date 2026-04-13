@@ -4,11 +4,15 @@ import (
 	"context"
 	"time"
 
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 )
 
-type ChannelKey = channellog.ChannelKey
-type CommittedEnvelope = channellog.Message
+type ChannelKey struct {
+	ChannelID   string
+	ChannelType uint8
+}
+
+type CommittedEnvelope = channel.Message
 
 type RouteKey struct {
 	UID       string

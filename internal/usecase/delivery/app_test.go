@@ -6,7 +6,7 @@ import (
 
 	runtimedelivery "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
@@ -15,7 +15,7 @@ func TestSubmitCommittedDelegatesToRuntimeWithDurableMessage(t *testing.T) {
 	runtime := &recordingRuntime{}
 	app := New(Options{Runtime: runtime})
 
-	err := app.SubmitCommitted(context.Background(), channellog.Message{
+	err := app.SubmitCommitted(context.Background(), channel.Message{
 		ChannelID:   "u1@u2",
 		ChannelType: frame.ChannelTypePerson,
 		MessageID:   101,
@@ -27,7 +27,7 @@ func TestSubmitCommittedDelegatesToRuntimeWithDurableMessage(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, []channellog.Message{{
+	require.Equal(t, []channel.Message{{
 		ChannelID:   "u1@u2",
 		ChannelType: frame.ChannelTypePerson,
 		MessageID:   101,
@@ -76,12 +76,12 @@ func TestSessionClosedDelegatesToRuntime(t *testing.T) {
 }
 
 type recordingRuntime struct {
-	submits []channellog.Message
+	submits []channel.Message
 	acks    []runtimedelivery.RouteAck
 	closed  []runtimedelivery.SessionClosed
 }
 
-func (r *recordingRuntime) Submit(_ context.Context, msg channellog.Message) error {
+func (r *recordingRuntime) Submit(_ context.Context, msg channel.Message) error {
 	copied := msg
 	copied.Payload = append([]byte(nil), msg.Payload...)
 	r.submits = append(r.submits, copied)

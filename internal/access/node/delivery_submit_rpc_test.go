@@ -6,7 +6,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
@@ -29,7 +29,7 @@ func TestSubmitCommittedMessageRPCRoutesToOwnerRuntime(t *testing.T) {
 	})
 
 	client := NewClient(node1)
-	err := client.SubmitCommitted(context.Background(), 2, channellog.Message{
+	err := client.SubmitCommitted(context.Background(), 2, channel.Message{
 		ChannelID:   "u2",
 		ChannelType: frame.ChannelTypePerson,
 		MessageID:   88,
@@ -40,7 +40,7 @@ func TestSubmitCommittedMessageRPCRoutesToOwnerRuntime(t *testing.T) {
 		ClientSeq:   7,
 	})
 	require.NoError(t, err)
-	require.Equal(t, []channellog.Message{{
+	require.Equal(t, []channel.Message{{
 		ChannelID:   "u2",
 		ChannelType: frame.ChannelTypePerson,
 		MessageID:   88,
@@ -53,10 +53,10 @@ func TestSubmitCommittedMessageRPCRoutesToOwnerRuntime(t *testing.T) {
 }
 
 type recordingDeliverySubmit struct {
-	calls []channellog.Message
+	calls []channel.Message
 }
 
-func (r *recordingDeliverySubmit) SubmitCommitted(_ context.Context, msg channellog.Message) error {
+func (r *recordingDeliverySubmit) SubmitCommitted(_ context.Context, msg channel.Message) error {
 	copied := msg
 	copied.Payload = append([]byte(nil), msg.Payload...)
 	r.calls = append(r.calls, copied)
