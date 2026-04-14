@@ -14,7 +14,8 @@ import (
 
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	channelhandler "github.com/WuKongIM/WuKongIM/pkg/channel/handler"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/stretchr/testify/require"
@@ -55,18 +56,18 @@ func TestAppStartPreloadsLocalChannelRuntimeMeta(t *testing.T) {
 	app, err := New(cfg)
 	require.NoError(t, err)
 
-	key := channellog.ChannelKey{ChannelID: "preload-user", ChannelType: 1}
+	id := channel.ChannelID{ID: "preload-user", Type: 1}
 	meta := metadb.ChannelRuntimeMeta{
-		ChannelID:    key.ChannelID,
-		ChannelType:  int64(key.ChannelType),
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
 		ChannelEpoch: 3,
 		LeaderEpoch:  4,
 		Replicas:     []uint64{cfg.Node.ID},
 		ISR:          []uint64{cfg.Node.ID},
 		Leader:       cfg.Node.ID,
 		MinISR:       1,
-		Status:       uint8(channellog.ChannelStatusActive),
-		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
 		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 	}
 	require.NoError(t, app.DB().ForSlot(1).UpsertChannelRuntimeMeta(context.Background(), meta))
@@ -76,11 +77,12 @@ func TestAppStartPreloadsLocalChannelRuntimeMeta(t *testing.T) {
 		require.NoError(t, app.Stop())
 	})
 
-	status, err := app.ChannelLog().Status(key)
+	status, err := app.ChannelLog().Status(id)
 	require.NoError(t, err)
-	require.Equal(t, key, status.Key)
-	require.Equal(t, channellog.ChannelStatusActive, status.Status)
-	require.Equal(t, channellog.NodeID(cfg.Node.ID), status.Leader)
+	require.Equal(t, channelhandler.KeyFromChannelID(id), status.Key)
+	require.Equal(t, id, status.ID)
+	require.Equal(t, channel.StatusActive, status.Status)
+	require.Equal(t, channel.NodeID(cfg.Node.ID), status.Leader)
 	require.Equal(t, uint64(4), status.LeaderEpoch)
 }
 
@@ -90,21 +92,21 @@ func TestAppStartWiresMessageSendThroughDurableChannelLog(t *testing.T) {
 	app, err := New(cfg)
 	require.NoError(t, err)
 
-	key := channellog.ChannelKey{
-		ChannelID:   deliveryusecase.EncodePersonChannel("sender", "durable-user"),
-		ChannelType: frame.ChannelTypePerson,
+	id := channel.ChannelID{
+		ID:   deliveryusecase.EncodePersonChannel("sender", "durable-user"),
+		Type: frame.ChannelTypePerson,
 	}
 	meta := metadb.ChannelRuntimeMeta{
-		ChannelID:    key.ChannelID,
-		ChannelType:  int64(key.ChannelType),
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
 		ChannelEpoch: 9,
 		LeaderEpoch:  10,
 		Replicas:     []uint64{cfg.Node.ID},
 		ISR:          []uint64{cfg.Node.ID},
 		Leader:       cfg.Node.ID,
 		MinISR:       1,
-		Status:       uint8(channellog.ChannelStatusActive),
-		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
 		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 	}
 	require.NoError(t, app.DB().ForSlot(1).UpsertChannelRuntimeMeta(context.Background(), meta))
@@ -117,7 +119,7 @@ func TestAppStartWiresMessageSendThroughDurableChannelLog(t *testing.T) {
 	result, err := app.Message().Send(context.Background(), message.SendCommand{
 		FromUID:     "sender",
 		ChannelID:   "durable-user",
-		ChannelType: key.ChannelType,
+		ChannelType: id.Type,
 		ClientMsgNo: "durable-1",
 		Payload:     []byte("hello durable"),
 	})
@@ -126,11 +128,11 @@ func TestAppStartWiresMessageSendThroughDurableChannelLog(t *testing.T) {
 	require.NotZero(t, result.MessageID)
 	require.Equal(t, uint64(1), result.MessageSeq)
 
-	fetch, err := app.ChannelLog().Fetch(context.Background(), channellog.FetchRequest{
-		Key:      key,
-		FromSeq:  1,
-		Limit:    10,
-		MaxBytes: 1024,
+	fetch, err := app.ChannelLog().Fetch(context.Background(), channel.FetchRequest{
+		ChannelID: id,
+		FromSeq:   1,
+		Limit:     10,
+		MaxBytes:  1024,
 	})
 	require.NoError(t, err)
 	require.Len(t, fetch.Messages, 1)

@@ -16,7 +16,7 @@ import (
 	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	messageusecase "github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/stretchr/testify/require"
@@ -80,27 +80,27 @@ func TestThreeNodeAppGatewaySendUsesDurableCommit(t *testing.T) {
 	recipientUID := "three-node-gateway-user"
 	channelID := deliveryusecase.EncodePersonChannel("sender", recipientUID)
 
-	key := channellog.ChannelKey{
-		ChannelID:   channelID,
-		ChannelType: frame.ChannelTypePerson,
+	id := channel.ChannelID{
+		ID:   channelID,
+		Type: frame.ChannelTypePerson,
 	}
 	meta := metadb.ChannelRuntimeMeta{
-		ChannelID:    key.ChannelID,
-		ChannelType:  int64(key.ChannelType),
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
 		ChannelEpoch: 15,
 		LeaderEpoch:  6,
 		Replicas:     []uint64{1, 2, 3},
 		ISR:          []uint64{1, 2, 3},
 		Leader:       leader.cfg.Node.ID,
 		MinISR:       3,
-		Status:       uint8(channellog.ChannelStatusActive),
-		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
 		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 	}
 	require.NoError(t, leader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
 
 	for _, app := range harness.appsWithLeaderFirst(leaderID) {
-		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), key)
+		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), id)
 		require.NoError(t, err)
 	}
 
@@ -121,7 +121,7 @@ func TestThreeNodeAppGatewaySendUsesDurableCommit(t *testing.T) {
 
 	sendAppWKProtoFrame(t, conn, &frame.SendPacket{
 		ChannelID:   recipientUID,
-		ChannelType: key.ChannelType,
+		ChannelType: id.Type,
 		ClientSeq:   1,
 		ClientMsgNo: "three-node-app-1",
 		Payload:     []byte("hello durable gateway"),
@@ -134,7 +134,7 @@ func TestThreeNodeAppGatewaySendUsesDurableCommit(t *testing.T) {
 	require.NotZero(t, sendack.MessageID)
 
 	for _, app := range harness.orderedApps() {
-		msg := waitForAppCommittedMessage(t, app.ChannelLogDB().ForChannel(key), sendack.MessageSeq, 5*time.Second)
+		msg := waitForAppCommittedMessage(t, channelStoreForID(app.ChannelLogDB(), id), sendack.MessageSeq, 5*time.Second)
 		require.Equal(t, []byte("hello durable gateway"), msg.Payload)
 		require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
 	}
@@ -151,26 +151,26 @@ func TestThreeNodeAppDurableSendReturnsBeforeRemoteAck(t *testing.T) {
 	recipientUID := "remote-recipient"
 	channelID := deliveryusecase.EncodePersonChannel("sender-remote", recipientUID)
 
-	key := channellog.ChannelKey{
-		ChannelID:   channelID,
-		ChannelType: frame.ChannelTypePerson,
+	id := channel.ChannelID{
+		ID:   channelID,
+		Type: frame.ChannelTypePerson,
 	}
 	meta := metadb.ChannelRuntimeMeta{
-		ChannelID:    key.ChannelID,
-		ChannelType:  int64(key.ChannelType),
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
 		ChannelEpoch: 21,
 		LeaderEpoch:  8,
 		Replicas:     []uint64{1, 2, 3},
 		ISR:          []uint64{1, 2, 3},
 		Leader:       owner.cfg.Node.ID,
 		MinISR:       3,
-		Status:       uint8(channellog.ChannelStatusActive),
-		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
 		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 	}
 	require.NoError(t, owner.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
 	for _, app := range harness.appsWithLeaderFirst(ownerID) {
-		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), key)
+		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), id)
 		require.NoError(t, err)
 	}
 
@@ -205,7 +205,7 @@ func TestThreeNodeAppDurableSendReturnsBeforeRemoteAck(t *testing.T) {
 
 	sendAppWKProtoFrame(t, senderConn, &frame.SendPacket{
 		ChannelID:   recipientUID,
-		ChannelType: key.ChannelType,
+		ChannelType: id.Type,
 		ClientSeq:   1,
 		ClientMsgNo: "three-node-async-1",
 		Payload:     []byte("hello realtime"),
@@ -253,28 +253,28 @@ func TestThreeNodeAppGroupChannelRealtimeDeliveryUsesStoredSubscribers(t *testin
 	recipientNodeA := harness.apps[ownerID%3+1]
 	recipientNodeB := harness.apps[(ownerID+1)%3+1]
 
-	key := channellog.ChannelKey{
-		ChannelID:   "slot-realtime",
-		ChannelType: frame.ChannelTypeGroup,
+	id := channel.ChannelID{
+		ID:   "slot-realtime",
+		Type: frame.ChannelTypeGroup,
 	}
 	meta := metadb.ChannelRuntimeMeta{
-		ChannelID:    key.ChannelID,
-		ChannelType:  int64(key.ChannelType),
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
 		ChannelEpoch: 31,
 		LeaderEpoch:  9,
 		Replicas:     []uint64{1, 2, 3},
 		ISR:          []uint64{1, 2, 3},
 		Leader:       owner.cfg.Node.ID,
 		MinISR:       3,
-		Status:       uint8(channellog.ChannelStatusActive),
-		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
 		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 	}
 	require.NoError(t, owner.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
-	require.NoError(t, owner.Store().AddChannelSubscribers(context.Background(), key.ChannelID, int64(key.ChannelType), []string{"slot-user-a", "slot-user-b"}))
+	require.NoError(t, owner.Store().AddChannelSubscribers(context.Background(), id.ID, int64(id.Type), []string{"slot-user-a", "slot-user-b"}))
 
 	for _, app := range harness.appsWithLeaderFirst(ownerID) {
-		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), key)
+		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), id)
 		require.NoError(t, err)
 	}
 
@@ -283,8 +283,8 @@ func TestThreeNodeAppGroupChannelRealtimeDeliveryUsesStoredSubscribers(t *testin
 	recipientConnB := connectMultinodeWKProtoClient(t, recipientNodeB, "slot-user-b", "slot-device-b")
 
 	sendAppWKProtoFrame(t, senderConn, &frame.SendPacket{
-		ChannelID:   key.ChannelID,
-		ChannelType: key.ChannelType,
+		ChannelID:   id.ID,
+		ChannelType: id.Type,
 		ClientSeq:   1,
 		ClientMsgNo: "three-node-slot-1",
 		Payload:     []byte("hello slot members"),
@@ -296,14 +296,14 @@ func TestThreeNodeAppGroupChannelRealtimeDeliveryUsesStoredSubscribers(t *testin
 
 	recvA, ok := readAppWKProtoFrameWithin(t, recipientConnA, multinodeAppReadTimeout).(*frame.RecvPacket)
 	require.True(t, ok)
-	require.Equal(t, key.ChannelID, recvA.ChannelID)
-	require.Equal(t, key.ChannelType, recvA.ChannelType)
+	require.Equal(t, id.ID, recvA.ChannelID)
+	require.Equal(t, id.Type, recvA.ChannelType)
 	require.Equal(t, "slot-sender", recvA.FromUID)
 
 	recvB, ok := readAppWKProtoFrameWithin(t, recipientConnB, multinodeAppReadTimeout).(*frame.RecvPacket)
 	require.True(t, ok)
-	require.Equal(t, key.ChannelID, recvB.ChannelID)
-	require.Equal(t, key.ChannelType, recvB.ChannelType)
+	require.Equal(t, id.ID, recvB.ChannelID)
+	require.Equal(t, id.Type, recvB.ChannelType)
 	require.Equal(t, "slot-sender", recvB.FromUID)
 }
 
@@ -313,37 +313,37 @@ func TestThreeNodeAppHotGroupDoesNotBlockNormalGroupDelivery(t *testing.T) {
 	owner := harness.apps[ownerID]
 	recipientNode := harness.apps[ownerID%3+1]
 
-	hotKey := channellog.ChannelKey{ChannelID: "slot-hot", ChannelType: frame.ChannelTypeGroup}
-	normalKey := channellog.ChannelKey{ChannelID: "slot-normal", ChannelType: frame.ChannelTypeGroup}
-	for _, key := range []channellog.ChannelKey{hotKey, normalKey} {
+	hotID := channel.ChannelID{ID: "slot-hot", Type: frame.ChannelTypeGroup}
+	normalID := channel.ChannelID{ID: "slot-normal", Type: frame.ChannelTypeGroup}
+	for _, id := range []channel.ChannelID{hotID, normalID} {
 		require.NoError(t, owner.Store().UpsertChannelRuntimeMeta(context.Background(), metadb.ChannelRuntimeMeta{
-			ChannelID:    key.ChannelID,
-			ChannelType:  int64(key.ChannelType),
+			ChannelID:    id.ID,
+			ChannelType:  int64(id.Type),
 			ChannelEpoch: 41,
 			LeaderEpoch:  10,
 			Replicas:     []uint64{1, 2, 3},
 			ISR:          []uint64{1, 2, 3},
 			Leader:       owner.cfg.Node.ID,
 			MinISR:       3,
-			Status:       uint8(channellog.ChannelStatusActive),
-			Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+			Status:       uint8(channel.StatusActive),
+			Features:     uint64(channel.MessageSeqFormatLegacyU32),
 			LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 		}))
 	}
-	require.NoError(t, owner.Store().AddChannelSubscribers(context.Background(), hotKey.ChannelID, int64(hotKey.ChannelType), []string{"hot-user"}))
-	require.NoError(t, owner.Store().AddChannelSubscribers(context.Background(), normalKey.ChannelID, int64(normalKey.ChannelType), []string{"normal-user"}))
+	require.NoError(t, owner.Store().AddChannelSubscribers(context.Background(), hotID.ID, int64(hotID.Type), []string{"hot-user"}))
+	require.NoError(t, owner.Store().AddChannelSubscribers(context.Background(), normalID.ID, int64(normalID.Type), []string{"normal-user"}))
 
 	for _, app := range harness.appsWithLeaderFirst(ownerID) {
-		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), hotKey)
+		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), hotID)
 		require.NoError(t, err)
-		_, err = app.channelMetaSync.RefreshChannelMeta(context.Background(), normalKey)
+		_, err = app.channelMetaSync.RefreshChannelMeta(context.Background(), normalID)
 		require.NoError(t, err)
 	}
 
 	for i := 0; i < 20; i++ {
 		require.NoError(t, owner.deliveryRuntime.Submit(context.Background(), deliveryruntime.CommittedEnvelope{
-			ChannelID:   hotKey.ChannelID,
-			ChannelType: hotKey.ChannelType,
+			ChannelID:   hotID.ID,
+			ChannelType: hotID.Type,
 			MessageID:   uint64(i + 1),
 			MessageSeq:  uint64(i + 1),
 			FromUID:     "hot-sender",
@@ -351,15 +351,15 @@ func TestThreeNodeAppHotGroupDoesNotBlockNormalGroupDelivery(t *testing.T) {
 		}))
 	}
 	require.Eventually(t, func() bool {
-		return owner.deliveryRuntime.ActorLane(hotKey.ChannelID, hotKey.ChannelType) == deliveryruntime.LaneDedicated
+		return owner.deliveryRuntime.ActorLane(hotID.ID, hotID.Type) == deliveryruntime.LaneDedicated
 	}, 5*time.Second, 20*time.Millisecond)
 
 	senderConn := connectMultinodeWKProtoClient(t, owner, "normal-sender", "normal-sender-device")
 	normalRecipientConn := connectMultinodeWKProtoClient(t, recipientNode, "normal-user", "normal-user-device")
 
 	sendAppWKProtoFrame(t, senderConn, &frame.SendPacket{
-		ChannelID:   normalKey.ChannelID,
-		ChannelType: normalKey.ChannelType,
+		ChannelID:   normalID.ID,
+		ChannelType: normalID.Type,
 		ClientSeq:   100,
 		ClientMsgNo: "normal-1",
 		Payload:     []byte("normal"),
@@ -369,7 +369,7 @@ func TestThreeNodeAppHotGroupDoesNotBlockNormalGroupDelivery(t *testing.T) {
 
 	recvNormal, ok := readAppWKProtoFrameWithin(t, normalRecipientConn, multinodeAppReadTimeout).(*frame.RecvPacket)
 	require.True(t, ok)
-	require.Equal(t, normalKey.ChannelID, recvNormal.ChannelID)
+	require.Equal(t, normalID.ID, recvNormal.ChannelID)
 }
 
 func TestThreeNodeAppUserTokenEndpointPersistsThroughClusterForwarding(t *testing.T) {
@@ -426,33 +426,33 @@ func TestThreeNodeAppSendAckSurvivesLeaderCrash(t *testing.T) {
 	recipientUID := "crash-recipient"
 	channelID := deliveryusecase.EncodePersonChannel("crash-sender", recipientUID)
 
-	key := channellog.ChannelKey{
-		ChannelID:   channelID,
-		ChannelType: frame.ChannelTypePerson,
+	id := channel.ChannelID{
+		ID:   channelID,
+		Type: frame.ChannelTypePerson,
 	}
 	meta := metadb.ChannelRuntimeMeta{
-		ChannelID:    key.ChannelID,
-		ChannelType:  int64(key.ChannelType),
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
 		ChannelEpoch: 41,
 		LeaderEpoch:  12,
 		Replicas:     []uint64{1, 2, 3},
 		ISR:          []uint64{1, 2, 3},
 		Leader:       leader.cfg.Node.ID,
 		MinISR:       3,
-		Status:       uint8(channellog.ChannelStatusActive),
-		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
 		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 	}
 	require.NoError(t, leader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
 	for _, app := range harness.appsWithLeaderFirst(leaderID) {
-		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), key)
+		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), id)
 		require.NoError(t, err)
 	}
 
 	conn := connectMultinodeWKProtoClient(t, leader, "crash-sender", "crash-sender-device")
 	sendAppWKProtoFrame(t, conn, &frame.SendPacket{
 		ChannelID:   recipientUID,
-		ChannelType: key.ChannelType,
+		ChannelType: id.Type,
 		ClientSeq:   1,
 		ClientMsgNo: "sendack-crash-1",
 		Payload:     []byte("survive leader crash"),
@@ -468,7 +468,7 @@ func TestThreeNodeAppSendAckSurvivesLeaderCrash(t *testing.T) {
 	require.NotZero(t, newLeaderID)
 
 	for _, app := range harness.runningApps() {
-		msg := waitForAppCommittedMessage(t, app.ChannelLogDB().ForChannel(key), sendack.MessageSeq, 5*time.Second)
+		msg := waitForAppCommittedMessage(t, channelStoreForID(app.ChannelLogDB(), id), sendack.MessageSeq, 5*time.Second)
 		require.Equal(t, []byte("survive leader crash"), msg.Payload)
 		require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
 	}
@@ -476,7 +476,7 @@ func TestThreeNodeAppSendAckSurvivesLeaderCrash(t *testing.T) {
 	harness.restartNode(t, leaderID)
 	harness.waitForStableLeader(t, 1)
 
-	msg := waitForAppCommittedMessage(t, harness.apps[leaderID].ChannelLogDB().ForChannel(key), sendack.MessageSeq, 5*time.Second)
+	msg := waitForAppCommittedMessage(t, channelStoreForID(harness.apps[leaderID].ChannelLogDB(), id), sendack.MessageSeq, 5*time.Second)
 	require.Equal(t, []byte("survive leader crash"), msg.Payload)
 	require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
 }
@@ -488,26 +488,26 @@ func TestThreeNodeAppRollingRestartPreservesWriteAvailability(t *testing.T) {
 	recipientUID := "rolling-recipient"
 	channelID := deliveryusecase.EncodePersonChannel("rolling-sender", recipientUID)
 
-	key := channellog.ChannelKey{
-		ChannelID:   channelID,
-		ChannelType: frame.ChannelTypePerson,
+	id := channel.ChannelID{
+		ID:   channelID,
+		Type: frame.ChannelTypePerson,
 	}
 	meta := metadb.ChannelRuntimeMeta{
-		ChannelID:    key.ChannelID,
-		ChannelType:  int64(key.ChannelType),
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
 		ChannelEpoch: 51,
 		LeaderEpoch:  13,
 		Replicas:     []uint64{1, 2, 3},
 		ISR:          []uint64{1, 2, 3},
 		Leader:       owner.cfg.Node.ID,
 		MinISR:       3,
-		Status:       uint8(channellog.ChannelStatusActive),
-		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
 		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 	}
 	require.NoError(t, owner.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
 	for _, app := range harness.appsWithLeaderFirst(ownerID) {
-		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), key)
+		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), id)
 		require.NoError(t, err)
 	}
 
@@ -526,7 +526,7 @@ func TestThreeNodeAppRollingRestartPreservesWriteAvailability(t *testing.T) {
 		result, err := harness.apps[ownerID].Message().Send(ctx, messageusecase.SendCommand{
 			FromUID:     "rolling-sender",
 			ChannelID:   recipientUID,
-			ChannelType: key.ChannelType,
+			ChannelType: id.Type,
 			ClientSeq:   clientSeq,
 			ClientMsgNo: clientMsgNo,
 			Payload:     payload,
@@ -564,7 +564,7 @@ func TestThreeNodeAppRollingRestartPreservesWriteAvailability(t *testing.T) {
 
 	for _, item := range sent {
 		for _, app := range harness.orderedApps() {
-			msg := waitForAppCommittedMessage(t, app.ChannelLogDB().ForChannel(key), item.seq, 5*time.Second)
+			msg := waitForAppCommittedMessage(t, channelStoreForID(app.ChannelLogDB(), id), item.seq, 5*time.Second)
 			require.Equal(t, item.payload, msg.Payload)
 			require.Equal(t, item.seq, msg.MessageSeq)
 		}

@@ -21,15 +21,16 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	userusecase "github.com/WuKongIM/WuKongIM/internal/usecase/user"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
-	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
-	isrnode "github.com/WuKongIM/WuKongIM/pkg/channel/node"
+	channelruntime "github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
+	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
+	channeltransport "github.com/WuKongIM/WuKongIM/pkg/channel/transport"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
 	metafsm "github.com/WuKongIM/WuKongIM/pkg/slot/fsm"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	metastore "github.com/WuKongIM/WuKongIM/pkg/slot/proxy"
+	"github.com/WuKongIM/WuKongIM/pkg/transport"
 	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
@@ -89,9 +90,9 @@ func build(cfg Config) (_ *App, err error) {
 		return nil, fmt.Errorf("app: create cluster: %w", err)
 	}
 
-	app.channelLogDB, err = channellog.Open(cfg.Storage.ChannelLogPath)
+	app.channelLogDB, err = channelstore.Open(cfg.Storage.ChannelLogPath)
 	if err != nil {
-		return nil, fmt.Errorf("app: open channel log db: %w", err)
+		return nil, fmt.Errorf("app: open channel store: %w", err)
 	}
 
 	messageIDs, err := messageid.NewSnowflakeGenerator(cfg.Node.ID)
@@ -103,37 +104,49 @@ func build(cfg Config) (_ *App, err error) {
 		return nil, fmt.Errorf("app: create gateway boot id: %w", err)
 	}
 
-	app.isrTransport = newISRTransportBridge()
-	app.replicaFactory = newChannelReplicaFactory(app.channelLogDB, isr.NodeID(cfg.Node.ID), nil)
-	app.isrRuntime, err = isrnode.New(isrnode.Config{
-		LocalNode:        isr.NodeID(cfg.Node.ID),
-		ReplicaFactory:   app.replicaFactory,
-		GenerationStore:  newMemoryGenerationStore(),
-		Transport:        app.isrTransport,
-		PeerSessions:     app.isrTransport,
-		AutoRunScheduler: true,
-		Logger:           app.logger.Named("channel.node"),
-		Limits: isrnode.Limits{
-			MaxFetchInflightPeer: cfg.Cluster.DataPlaneMaxFetchInflight,
-			MaxSnapshotInflight:  1,
-		},
-		Tombstones: isrnode.TombstonePolicy{
-			TombstoneTTL: time.Minute,
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("app: create isr runtime: %w", err)
+	discovery := raftcluster.NewStaticDiscovery(cfg.Cluster.runtimeNodes())
+	poolSize := effectiveDataPlanePoolSize(cfg.Cluster.PoolSize, cfg.Cluster.DataPlanePoolSize)
+	dialTimeout := cfg.Cluster.DialTimeout
+	if dialTimeout <= 0 {
+		dialTimeout = defaultDataPlaneDialTimeout
 	}
-
-	app.channelLog, err = channellog.New(channellog.Config{
-		Runtime:    newChannelLogRuntimeAdapter(app.isrRuntime),
-		Log:        app.channelLogDB,
-		States:     app.channelLogDB.StateStoreFactory(),
-		MessageIDs: messageIDs,
-		Logger:     app.logger.Named("channel.log"),
+	app.dataPlanePool = transport.NewPool(discovery, poolSize, dialTimeout)
+	app.dataPlaneClient = transport.NewClient(app.dataPlanePool)
+	app.isrTransport, err = channeltransport.New(channeltransport.Options{
+		LocalNode:          channel.NodeID(cfg.Node.ID),
+		Client:             app.dataPlaneClient,
+		RPCMux:             app.cluster.RPCMux(),
+		RPCTimeout:         cfg.Cluster.DataPlaneRPCTimeout,
+		MaxPendingFetchRPC: effectiveDataPlaneMaxPendingFetch(cfg.Cluster.PoolSize, cfg.Cluster.DataPlaneMaxPendingFetch),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("app: create channel log cluster: %w", err)
+		return nil, fmt.Errorf("app: create channel transport: %w", err)
+	}
+	app.isrRuntime, err = channelruntime.New(channelruntime.Config{
+		LocalNode:                        channel.NodeID(cfg.Node.ID),
+		ReplicaFactory:                   newChannelReplicaFactory(app.channelLogDB, channel.NodeID(cfg.Node.ID), nil),
+		GenerationStore:                  newMemoryGenerationStore(),
+		Transport:                        app.isrTransport,
+		PeerSessions:                     app.isrTransport,
+		AutoRunScheduler:                 true,
+		FollowerReplicationRetryInterval: time.Second,
+		Limits: channelruntime.Limits{
+			MaxFetchInflightPeer:      effectiveDataPlaneMaxFetchInflight(cfg.Cluster.PoolSize, cfg.Cluster.DataPlaneMaxFetchInflight),
+			MaxSnapshotInflight:       1,
+			MaxRecoveryBytesPerSecond: 0,
+		},
+		Tombstones: channelruntime.TombstonePolicy{
+			TombstoneTTL:    time.Minute,
+			CleanupInterval: time.Minute,
+		},
+		Now: time.Now,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("app: create channel runtime: %w", err)
+	}
+	app.channelLog, err = newAppChannelCluster(app.channelLogDB, app.isrRuntime, app.isrTransport, messageIDs)
+	if err != nil {
+		return nil, fmt.Errorf("app: create channel cluster: %w", err)
 	}
 
 	app.store = metastore.New(app.cluster, app.db)
@@ -151,7 +164,7 @@ func build(cfg Config) (_ *App, err error) {
 		States:        app.store,
 		ChannelUpdate: app.store,
 		Facts: channelLogConversationFacts{
-			cluster: conversationChannelClusterAdapter{cluster: app.channelLog},
+			cluster: app.channelLog,
 			metas:   app.store,
 			remote:  app.nodeClient,
 		},
@@ -163,9 +176,7 @@ func build(cfg Config) (_ *App, err error) {
 	})
 	app.channelMetaSync = &channelMetaSync{
 		source:          app.store,
-		runtime:         app.isrRuntime,
 		cluster:         app.channelLog,
-		replicaFactory:  app.replicaFactory,
 		localNode:       cfg.Node.ID,
 		refreshInterval: time.Second,
 	}
@@ -224,7 +235,7 @@ func build(cfg Config) (_ *App, err error) {
 		Online:           onlineRegistry,
 		GatewayBootID:    app.gatewayBootID,
 		LocalNodeID:      cfg.Node.ID,
-		ChannelLog:       conversationChannelClusterAdapter{cluster: app.channelLog},
+		ChannelLog:       app.channelLog,
 		DeliverySubmit:   committedDispatcher,
 		DeliveryAck:      app.deliveryApp,
 		DeliveryOffline:  app.deliveryApp,
@@ -234,8 +245,8 @@ func build(cfg Config) (_ *App, err error) {
 	app.messageApp = message.New(message.Options{
 		IdentityStore:       app.store,
 		ChannelStore:        app.store,
-		Cluster:             messageChannelClusterAdapter{cluster: app.channelLog},
-		MetaRefresher:       messageMetaRefresherAdapter{refresher: app.channelMetaSync},
+		Cluster:             app.channelLog,
+		MetaRefresher:       app.channelMetaSync,
 		Online:              onlineRegistry,
 		CommittedDispatcher: committedDispatcher,
 		DeliveryAck: ackRouting{

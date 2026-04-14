@@ -14,7 +14,6 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
@@ -283,7 +282,7 @@ func TestAsyncCommittedDispatcherSubmitsDurableMessageToLocalDelivery(t *testing
 	dispatcher := asyncCommittedDispatcher{
 		localNodeID: 1,
 		channelLog: &stubChannelLogCluster{
-			status: channellog.ChannelRuntimeStatus{
+			status: channel.ChannelRuntimeStatus{
 				Leader: 1,
 			},
 		},
@@ -332,7 +331,7 @@ func TestAsyncCommittedDispatcherSubmitsToConversationProjector(t *testing.T) {
 	dispatcher := asyncCommittedDispatcher{
 		localNodeID: 1,
 		channelLog: &stubChannelLogCluster{
-			status: channellog.ChannelRuntimeStatus{
+			status: channel.ChannelRuntimeStatus{
 				Leader: 1,
 			},
 		},
@@ -679,24 +678,12 @@ func (r *recordingAuthoritative) EndpointsByUIDs(_ context.Context, uids []strin
 
 type stubChannelLogCluster struct {
 	mu          sync.Mutex
-	status      channellog.ChannelRuntimeStatus
+	status      channel.ChannelRuntimeStatus
 	statusErr   error
 	statusCalls int
 }
 
-func (s *stubChannelLogCluster) ApplyMeta(channellog.ChannelMeta) error {
-	return nil
-}
-
-func (s *stubChannelLogCluster) Append(context.Context, channellog.AppendRequest) (channellog.AppendResult, error) {
-	return channellog.AppendResult{}, nil
-}
-
-func (s *stubChannelLogCluster) Fetch(context.Context, channellog.FetchRequest) (channellog.FetchResult, error) {
-	return channellog.FetchResult{}, nil
-}
-
-func (s *stubChannelLogCluster) Status(channellog.ChannelKey) (channellog.ChannelRuntimeStatus, error) {
+func (s *stubChannelLogCluster) Status(channel.ChannelID) (channel.ChannelRuntimeStatus, error) {
 	s.mu.Lock()
 	s.statusCalls++
 	s.mu.Unlock()

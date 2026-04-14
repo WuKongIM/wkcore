@@ -13,8 +13,10 @@ import (
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
-	isrnode "github.com/WuKongIM/WuKongIM/pkg/channel/node"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	channelruntime "github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
+	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
+	channeltransport "github.com/WuKongIM/WuKongIM/pkg/channel/transport"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
@@ -29,10 +31,10 @@ type App struct {
 
 	db                    *metadb.DB
 	raftDB                *raftstorage.DB
-	channelLogDB          *channellog.DB
+	channelLogDB          *channelstore.Engine
 	cluster               *raftcluster.Cluster
-	isrRuntime            isrnode.Runtime
-	channelLog            channellog.Cluster
+	isrRuntime            channelruntime.Runtime
+	channelLog            *appChannelCluster
 	channelMetaSync       *channelMetaSync
 	store                 *metastore.Store
 	presenceApp           *presence.App
@@ -50,8 +52,7 @@ type App struct {
 	gateway               *gateway.Gateway
 	gatewayBootID         uint64
 
-	isrTransport    *isrTransportBridge
-	replicaFactory  *channelReplicaFactory
+	isrTransport    *channeltransport.Transport
 	dataPlanePool   *transport.Pool
 	dataPlaneClient *transport.Client
 
@@ -108,21 +109,21 @@ func (a *App) Cluster() *raftcluster.Cluster {
 	return a.cluster
 }
 
-func (a *App) ChannelLogDB() *channellog.DB {
+func (a *App) ChannelLogDB() *channelstore.Engine {
 	if a == nil {
 		return nil
 	}
 	return a.channelLogDB
 }
 
-func (a *App) ISRRuntime() isrnode.Runtime {
+func (a *App) ISRRuntime() channelruntime.Runtime {
 	if a == nil {
 		return nil
 	}
 	return a.isrRuntime
 }
 
-func (a *App) ChannelLog() channellog.Cluster {
+func (a *App) ChannelLog() channel.Cluster {
 	if a == nil {
 		return nil
 	}

@@ -4,11 +4,6 @@ import (
 	"context"
 	"errors"
 	"time"
-
-	"github.com/WuKongIM/WuKongIM/pkg/channel"
-	channeltransport "github.com/WuKongIM/WuKongIM/pkg/channel/transport"
-	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
-	"github.com/WuKongIM/WuKongIM/pkg/transport"
 )
 
 const (
@@ -143,48 +138,10 @@ func (a *App) startChannelMetaSync() error {
 	if a.channelMetaSync == nil {
 		return nil
 	}
-	if a.cluster == nil || a.isrTransport == nil || a.isrRuntime == nil {
+	if a.cluster == nil || a.isrRuntime == nil || a.channelLog == nil {
 		return ErrNotBuilt
 	}
-	if a.dataPlanePool == nil || a.dataPlaneClient == nil {
-		discovery := raftcluster.NewStaticDiscovery(a.cfg.Cluster.runtimeNodes())
-		poolSize := a.cfg.Cluster.DataPlanePoolSize
-		dialTimeout := a.cfg.Cluster.DialTimeout
-		if dialTimeout <= 0 {
-			dialTimeout = defaultDataPlaneDialTimeout
-		}
-		a.dataPlanePool = transport.NewPool(discovery, poolSize, dialTimeout)
-		a.dataPlaneClient = transport.NewClient(a.dataPlanePool)
-		adapter, err := channeltransport.New(channeltransport.Options{
-			LocalNode:          channel.NodeID(a.cfg.Node.ID),
-			Client:             a.dataPlaneClient,
-			RPCMux:             a.cluster.RPCMux(),
-			FetchService:       legacyFetchServiceAdapter{runtime: a.isrRuntime},
-			RPCTimeout:         a.cfg.Cluster.DataPlaneRPCTimeout,
-			MaxPendingFetchRPC: a.cfg.Cluster.DataPlaneMaxPendingFetch,
-		})
-		if err != nil {
-			a.dataPlaneClient.Stop()
-			a.dataPlaneClient = nil
-			a.dataPlanePool.Close()
-			a.dataPlanePool = nil
-			return err
-		}
-		a.isrTransport.Bind(adapter)
-	}
-	if err := a.channelMetaSync.Start(); err != nil {
-		if a.dataPlaneClient != nil {
-			a.dataPlaneClient.Stop()
-			a.dataPlaneClient = nil
-		}
-		if a.dataPlanePool != nil {
-			a.dataPlanePool.Close()
-			a.dataPlanePool = nil
-		}
-		a.isrTransport.Unbind()
-		return err
-	}
-	return nil
+	return a.channelMetaSync.Start()
 }
 
 func (a *App) startAPI() error {
@@ -268,17 +225,6 @@ func (a *App) stopChannelMetaSync() error {
 	if a.channelMetaSync != nil {
 		err = errors.Join(err, a.channelMetaSync.Stop())
 	}
-	if a.dataPlaneClient != nil {
-		a.dataPlaneClient.Stop()
-		a.dataPlaneClient = nil
-	}
-	if a.dataPlanePool != nil {
-		a.dataPlanePool.Close()
-		a.dataPlanePool = nil
-	}
-	if a.isrTransport != nil {
-		a.isrTransport.Unbind()
-	}
 	return err
 }
 
@@ -346,10 +292,22 @@ func (a *App) closeChannelLogDB() error {
 	if a.closeChannelLogDBFn != nil {
 		return a.closeChannelLogDBFn()
 	}
-	if a.channelLogDB == nil {
-		return nil
+	var err error
+	if a.channelLog != nil {
+		err = errors.Join(err, a.channelLog.Close())
 	}
-	return a.channelLogDB.Close()
+	if a.dataPlaneClient != nil {
+		a.dataPlaneClient.Stop()
+		a.dataPlaneClient = nil
+	}
+	if a.dataPlanePool != nil {
+		a.dataPlanePool.Close()
+		a.dataPlanePool = nil
+	}
+	if a.channelLogDB != nil {
+		err = errors.Join(err, a.channelLogDB.Close())
+	}
+	return err
 }
 
 func (a *App) closeWKDB() error {

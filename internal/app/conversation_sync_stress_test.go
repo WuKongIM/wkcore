@@ -22,7 +22,7 @@ import (
 
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/stretchr/testify/require"
@@ -182,7 +182,7 @@ func TestSendConversationSyncStressMessageFallsBackToReplicaAfterNotLeader(t *te
 	}, func(_ context.Context, nodeID uint64, cmd message.SendCommand) error {
 		calls = append(calls, nodeID)
 		if nodeID == 2 {
-			return channellog.ErrNotLeader
+			return channel.ErrNotLeader
 		}
 		if nodeID == 3 && cmd.ClientMsgNo == "node-3" {
 			return nil
@@ -496,15 +496,15 @@ func preloadConversationSyncStressData(t *testing.T, harness *threeNodeAppHarnes
 				ISR:          []uint64{2, 3},
 				Leader:       ownerNodeID,
 				MinISR:       1,
-				Status:       uint8(channellog.ChannelStatusActive),
-				Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+				Status:       uint8(channel.StatusActive),
+				Features:     uint64(channel.MessageSeqFormatLegacyU32),
 				LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 			}
 			require.NoError(t, groupLeader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
 
-			key := channellog.ChannelKey{ChannelID: channelID, ChannelType: frame.ChannelTypePerson}
+			id := channel.ChannelID{ID: channelID, Type: frame.ChannelTypePerson}
 			for _, nodeID := range []uint64{2, 3} {
-				_, err := harness.apps[nodeID].channelMetaSync.RefreshChannelMeta(context.Background(), key)
+				_, err := harness.apps[nodeID].channelMetaSync.RefreshChannelMeta(context.Background(), id)
 				require.NoError(t, err)
 			}
 
@@ -614,7 +614,7 @@ func sendConversationSyncStressMessage(ctx context.Context, replicas []uint64, o
 		if err == nil {
 			return nil
 		}
-		if errors.Is(err, channellog.ErrNotLeader) {
+		if errors.Is(err, channel.ErrNotLeader) {
 			lastErr = err
 			continue
 		}

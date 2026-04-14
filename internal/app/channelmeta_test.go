@@ -2,17 +2,17 @@ package app
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
-	isrnode "github.com/WuKongIM/WuKongIM/pkg/channel/node"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	channelhandler "github.com/WuKongIM/WuKongIM/pkg/channel/handler"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/stretchr/testify/require"
 )
 
-func TestChannelMetaSyncRefreshProjectsLeaderEpochLeaseAndApplyOrder(t *testing.T) {
+func TestChannelMetaSyncRefreshProjectsLeaderEpochLeaseAndApply(t *testing.T) {
 	leaseUntil := time.UnixMilli(1_700_000_123_000).UTC()
 	meta := metadb.ChannelRuntimeMeta{
 		ChannelID:    "u1",
@@ -23,89 +23,48 @@ func TestChannelMetaSyncRefreshProjectsLeaderEpochLeaseAndApplyOrder(t *testing.
 		ISR:          []uint64{2, 3},
 		Leader:       2,
 		MinISR:       2,
-		Status:       uint8(channellog.ChannelStatusActive),
-		Features:     uint64(channellog.MessageSeqFormatU64),
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatU64),
 		LeaseUntilMS: leaseUntil.UnixMilli(),
 	}
 
-	var calls []string
 	source := &fakeChannelMetaSource{
-		get: map[channellog.ChannelKey]metadb.ChannelRuntimeMeta{
-			{ChannelID: "u1", ChannelType: 1}: meta,
+		get: map[channel.ChannelID]metadb.ChannelRuntimeMeta{
+			{ID: "u1", Type: 1}: meta,
 		},
 	}
-	runtime := newFakeChannelRuntime(&calls)
-	cluster := newFakeChannelMetaCluster(&calls)
+	cluster := &fakeChannelMetaCluster{}
 	syncer := &channelMetaSync{
 		source:    source,
-		runtime:   runtime,
 		cluster:   cluster,
 		localNode: 2,
 	}
 
-	got, err := syncer.RefreshChannelMeta(context.Background(), channellog.ChannelKey{
-		ChannelID:   "u1",
-		ChannelType: 1,
-	})
+	got, err := syncer.RefreshChannelMeta(context.Background(), channel.ChannelID{ID: "u1", Type: 1})
 	require.NoError(t, err)
-	require.Equal(t, []string{"runtime.ensure", "cluster.apply"}, calls)
-	require.Len(t, runtime.ensured, 1)
-	require.Empty(t, runtime.applied)
-	require.Equal(t, uint64(7), runtime.ensured[0].Epoch)
-	require.Equal(t, leaseUntil, runtime.ensured[0].LeaseUntil)
-	require.Len(t, cluster.applied, 1)
-	require.Equal(t, cluster.applied[0], got)
-	require.Equal(t, channellog.MessageSeqFormatU64, got.Features.MessageSeqFormat)
-}
-
-func TestChannelMetaSyncRefreshUpdatesExistingGroupBeforeChannelLog(t *testing.T) {
-	meta := metadb.ChannelRuntimeMeta{
-		ChannelID:    "u2",
-		ChannelType:  1,
-		ChannelEpoch: 8,
-		LeaderEpoch:  9,
-		Replicas:     []uint64{2, 4},
-		ISR:          []uint64{2, 4},
-		Leader:       4,
-		MinISR:       1,
-		Status:       uint8(channellog.ChannelStatusActive),
-		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
-		LeaseUntilMS: time.UnixMilli(1_700_000_456_000).UnixMilli(),
-	}
-
-	var calls []string
-	source := &fakeChannelMetaSource{
-		get: map[channellog.ChannelKey]metadb.ChannelRuntimeMeta{
-			{ChannelID: "u2", ChannelType: 1}: meta,
+	require.Equal(t, channel.Meta{
+		Key:         channelhandler.KeyFromChannelID(channel.ChannelID{ID: "u1", Type: 1}),
+		ID:          channel.ChannelID{ID: "u1", Type: 1},
+		Epoch:       5,
+		LeaderEpoch: 7,
+		Replicas:    []channel.NodeID{2, 3},
+		ISR:         []channel.NodeID{2, 3},
+		Leader:      2,
+		MinISR:      2,
+		LeaseUntil:  leaseUntil,
+		Status:      channel.StatusActive,
+		Features: channel.Features{
+			MessageSeqFormat: channel.MessageSeqFormatU64,
 		},
-	}
-	runtime := newFakeChannelRuntime(&calls)
-	runtime.groups[channellog.ISRChannelKeyForChannel(channellog.ChannelKey{ChannelID: "u2", ChannelType: 1})] = struct{}{}
-	cluster := newFakeChannelMetaCluster(&calls)
-	syncer := &channelMetaSync{
-		source:    source,
-		runtime:   runtime,
-		cluster:   cluster,
-		localNode: 2,
-	}
-
-	_, err := syncer.RefreshChannelMeta(context.Background(), channellog.ChannelKey{
-		ChannelID:   "u2",
-		ChannelType: 1,
-	})
-	require.NoError(t, err)
-	require.Equal(t, []string{"runtime.apply", "cluster.apply"}, calls)
-	require.Empty(t, runtime.ensured)
-	require.Len(t, runtime.applied, 1)
-	require.Equal(t, uint64(9), runtime.applied[0].Epoch)
+	}, got)
+	require.Equal(t, []channel.Meta{got}, cluster.applied)
+	require.Equal(t, map[channel.ChannelKey]struct{}{got.Key: {}}, cloneAppliedLocalSet(syncer.appliedLocal))
 }
 
-func TestProjectISRChannelMetaKeepsZeroLeaseUnset(t *testing.T) {
-	key := channellog.ChannelKey{ChannelID: "u0", ChannelType: 1}
-
-	meta := projectISRChannelMeta(key, metadb.ChannelRuntimeMeta{
-		ChannelID:   key.ChannelID,
-		ChannelType: int64(key.ChannelType),
+func TestProjectChannelMetaKeepsZeroLeaseUnset(t *testing.T) {
+	meta := projectChannelMeta(metadb.ChannelRuntimeMeta{
+		ChannelID:   "u0",
+		ChannelType: 1,
 		LeaderEpoch: 3,
 		Leader:      2,
 		Replicas:    []uint64{2, 3},
@@ -114,10 +73,10 @@ func TestProjectISRChannelMetaKeepsZeroLeaseUnset(t *testing.T) {
 	})
 
 	require.True(t, meta.LeaseUntil.IsZero())
+	require.Equal(t, channelhandler.KeyFromChannelID(channel.ChannelID{ID: "u0", Type: 1}), meta.Key)
 }
 
-func TestChannelMetaSyncSyncOncePreloadsOnlyLocalReplicaMetas(t *testing.T) {
-	var calls []string
+func TestChannelMetaSyncSyncOnceAppliesOnlyLocalReplicaMetas(t *testing.T) {
 	source := &fakeChannelMetaSource{
 		list: []metadb.ChannelRuntimeMeta{
 			{
@@ -129,8 +88,8 @@ func TestChannelMetaSyncSyncOncePreloadsOnlyLocalReplicaMetas(t *testing.T) {
 				ISR:          []uint64{2, 3},
 				Leader:       2,
 				MinISR:       1,
-				Status:       uint8(channellog.ChannelStatusActive),
-				Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+				Status:       uint8(channel.StatusActive),
+				Features:     uint64(channel.MessageSeqFormatLegacyU32),
 			},
 			{
 				ChannelID:    "remote",
@@ -141,29 +100,30 @@ func TestChannelMetaSyncSyncOncePreloadsOnlyLocalReplicaMetas(t *testing.T) {
 				ISR:          []uint64{7, 8},
 				Leader:       7,
 				MinISR:       1,
-				Status:       uint8(channellog.ChannelStatusActive),
-				Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+				Status:       uint8(channel.StatusActive),
+				Features:     uint64(channel.MessageSeqFormatLegacyU32),
 			},
 		},
 	}
-	runtime := newFakeChannelRuntime(&calls)
-	cluster := newFakeChannelMetaCluster(&calls)
+	cluster := &fakeChannelMetaCluster{}
 	syncer := &channelMetaSync{
 		source:    source,
-		runtime:   runtime,
 		cluster:   cluster,
 		localNode: 2,
 	}
 
 	require.NoError(t, syncer.syncOnce(context.Background()))
-	require.Len(t, runtime.ensured, 1)
-	require.Equal(t, "local", cluster.applied[0].ChannelID)
+	require.Len(t, cluster.applied, 1)
+	require.Equal(t, channel.ChannelID{ID: "local", Type: 1}, cluster.applied[0].ID)
+	require.Equal(t, map[channel.ChannelKey]struct{}{
+		cluster.applied[0].Key: {},
+	}, cloneAppliedLocalSet(syncer.appliedLocal))
 }
 
 func TestChannelMetaSyncRefreshRejectsNonLocalReplicaMeta(t *testing.T) {
 	source := &fakeChannelMetaSource{
-		get: map[channellog.ChannelKey]metadb.ChannelRuntimeMeta{
-			{ChannelID: "remote", ChannelType: 1}: {
+		get: map[channel.ChannelID]metadb.ChannelRuntimeMeta{
+			{ID: "remote", Type: 1}: {
 				ChannelID:    "remote",
 				ChannelType:  1,
 				ChannelEpoch: 2,
@@ -172,34 +132,26 @@ func TestChannelMetaSyncRefreshRejectsNonLocalReplicaMeta(t *testing.T) {
 				ISR:          []uint64{7, 8},
 				Leader:       7,
 				MinISR:       1,
-				Status:       uint8(channellog.ChannelStatusActive),
-				Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+				Status:       uint8(channel.StatusActive),
+				Features:     uint64(channel.MessageSeqFormatLegacyU32),
 			},
 		},
 	}
-	runtime := newFakeChannelRuntime(nil)
-	cluster := newFakeChannelMetaCluster(nil)
+	cluster := &fakeChannelMetaCluster{}
 	syncer := &channelMetaSync{
 		source:    source,
-		runtime:   runtime,
 		cluster:   cluster,
 		localNode: 2,
 	}
 
-	_, err := syncer.RefreshChannelMeta(context.Background(), channellog.ChannelKey{
-		ChannelID:   "remote",
-		ChannelType: 1,
-	})
-	require.ErrorIs(t, err, channellog.ErrStaleMeta)
+	_, err := syncer.RefreshChannelMeta(context.Background(), channel.ChannelID{ID: "remote", Type: 1})
+	require.ErrorIs(t, err, channel.ErrStaleMeta)
 	require.Empty(t, cluster.applied)
-	require.Empty(t, runtime.ensured)
-	require.Empty(t, runtime.applied)
+	require.Nil(t, cloneAppliedLocalSet(syncer.appliedLocal))
 }
 
-func TestChannelMetaSyncSyncOnceRemovesGroupsAndMetaNoLongerAssignedLocally(t *testing.T) {
-	var calls []string
-	key := channellog.ChannelKey{ChannelID: "local", ChannelType: 1}
-	channelKey := channellog.ISRChannelKeyForChannel(key)
+func TestChannelMetaSyncSyncOnceRemovesChannelsNoLongerAssignedLocally(t *testing.T) {
+	key := channelhandler.KeyFromChannelID(channel.ChannelID{ID: "local", Type: 1})
 	source := &fakeChannelMetaSource{
 		list: []metadb.ChannelRuntimeMeta{
 			{
@@ -211,399 +163,155 @@ func TestChannelMetaSyncSyncOnceRemovesGroupsAndMetaNoLongerAssignedLocally(t *t
 				ISR:          []uint64{9},
 				Leader:       9,
 				MinISR:       1,
-				Status:       uint8(channellog.ChannelStatusActive),
-				Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+				Status:       uint8(channel.StatusActive),
+				Features:     uint64(channel.MessageSeqFormatLegacyU32),
 			},
 		},
 	}
-	runtime := newFakeChannelRuntime(&calls)
-	runtime.groups[channelKey] = struct{}{}
-	cluster := newFakeChannelMetaCluster(&calls)
+	cluster := &fakeChannelMetaCluster{}
 	syncer := &channelMetaSync{
 		source:    source,
-		runtime:   runtime,
 		cluster:   cluster,
 		localNode: 2,
-		appliedLocal: map[channellog.ChannelKey]struct{}{
+		appliedLocal: map[channel.ChannelKey]struct{}{
 			key: {},
 		},
 	}
 
 	require.NoError(t, syncer.syncOnce(context.Background()))
-	require.Equal(t, []string{"runtime.remove", "cluster.remove"}, calls)
-	require.Equal(t, []isr.ChannelKey{channelKey}, runtime.removed)
-	require.Equal(t, []channellog.ChannelKey{key}, cluster.removed)
+	require.Equal(t, []channel.ChannelKey{key}, cluster.removed)
+	require.Equal(t, map[channel.ChannelKey]struct{}{}, nonNilAppliedLocal(syncer.appliedLocal))
 }
 
-func TestChannelMetaSyncStopRemovesAppliedLocalGroups(t *testing.T) {
-	var calls []string
-	key := channellog.ChannelKey{ChannelID: "local", ChannelType: 1}
-	channelKey := channellog.ISRChannelKeyForChannel(key)
-
-	runtime := newFakeChannelRuntime(&calls)
-	runtime.groups[channelKey] = struct{}{}
-	cluster := newFakeChannelMetaCluster(&calls)
+func TestChannelMetaSyncStopRemovesAppliedLocalChannels(t *testing.T) {
+	key := channelhandler.KeyFromChannelID(channel.ChannelID{ID: "local", Type: 1})
 	done := make(chan struct{})
+	cluster := &fakeChannelMetaCluster{}
 	syncer := &channelMetaSync{
-		runtime:   runtime,
-		cluster:   cluster,
-		localNode: 2,
+		cluster: cluster,
 		cancel: func() {
 			close(done)
 		},
 		done: done,
-		appliedLocal: map[channellog.ChannelKey]struct{}{
+		appliedLocal: map[channel.ChannelKey]struct{}{
 			key: {},
 		},
 	}
 
 	require.NoError(t, syncer.Stop())
-	require.Equal(t, []string{"runtime.remove", "cluster.remove"}, calls)
-	require.Equal(t, []isr.ChannelKey{channelKey}, runtime.removed)
-	require.Equal(t, []channellog.ChannelKey{key}, cluster.removed)
-	require.Nil(t, syncer.snapshotAppliedLocal())
+	require.Equal(t, []channel.ChannelKey{key}, cluster.removed)
+	require.Nil(t, cloneAppliedLocalSet(syncer.appliedLocal))
 }
 
-func TestChannelMetaSyncStopRemovesRuntimeGroupLeftByClusterApplyFailure(t *testing.T) {
-	var calls []string
-	key := channellog.ChannelKey{ChannelID: "local", ChannelType: 1}
+func TestMemoryGenerationStoreConcurrentAccess(t *testing.T) {
+	store := newMemoryGenerationStore()
+	keys := []channel.ChannelKey{
+		"a",
+		"b",
+		"c",
+		"d",
+	}
+
+	var wg sync.WaitGroup
+	for worker := 0; worker < 8; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				key := keys[(worker+i)%len(keys)]
+				require.NoError(t, store.Store(key, uint64(worker+i)))
+				_, err := store.Load(key)
+				require.NoError(t, err)
+			}
+		}(worker)
+	}
+	wg.Wait()
+}
+
+func TestChannelMetaSyncConcurrentRefreshAndStop(t *testing.T) {
+	id := channel.ChannelID{ID: "race", Type: 1}
 	meta := metadb.ChannelRuntimeMeta{
-		ChannelID:    key.ChannelID,
-		ChannelType:  int64(key.ChannelType),
-		ChannelEpoch: 1,
-		LeaderEpoch:  2,
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 5,
+		LeaderEpoch:  7,
 		Replicas:     []uint64{2, 3},
 		ISR:          []uint64{2, 3},
 		Leader:       2,
 		MinISR:       2,
-		Status:       uint8(channellog.ChannelStatusActive),
-		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatU64),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 	}
 	source := &fakeChannelMetaSource{
-		get: map[channellog.ChannelKey]metadb.ChannelRuntimeMeta{
-			key: meta,
+		get: map[channel.ChannelID]metadb.ChannelRuntimeMeta{
+			id: meta,
 		},
+		list: []metadb.ChannelRuntimeMeta{meta},
 	}
-	runtime := newFakeChannelRuntime(&calls)
-	cluster := newFakeChannelMetaCluster(&calls)
-	cluster.applyErr = channellog.ErrConflictingMeta
-	done := make(chan struct{})
+	cluster := &fakeChannelMetaCluster{}
 	syncer := &channelMetaSync{
-		source:    source,
-		runtime:   runtime,
-		cluster:   cluster,
-		localNode: 2,
-		cancel: func() {
-			close(done)
-		},
-		done: done,
+		source:          source,
+		cluster:         cluster,
+		localNode:       2,
+		refreshInterval: time.Millisecond,
 	}
 
-	_, err := syncer.RefreshChannelMeta(context.Background(), key)
-	require.ErrorIs(t, err, channellog.ErrConflictingMeta)
+	require.NoError(t, syncer.Start())
+
+	var wg sync.WaitGroup
+	for worker := 0; worker < 4; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				_, _ = syncer.RefreshChannelMeta(context.Background(), id)
+			}
+		}()
+	}
 
 	require.NoError(t, syncer.Stop())
-	require.Equal(t, []string{"runtime.ensure", "cluster.apply", "runtime.remove", "cluster.remove"}, calls)
-	require.Equal(t, []isr.ChannelKey{channellog.ISRChannelKeyForChannel(key)}, runtime.removed)
-	require.Equal(t, []channellog.ChannelKey{key}, cluster.removed)
-}
-
-func TestChannelMetaSyncRefreshRollsBackNewRuntimeGroupWhenClusterApplyFails(t *testing.T) {
-	var calls []string
-	key := channellog.ChannelKey{ChannelID: "local", ChannelType: 1}
-	meta := metadb.ChannelRuntimeMeta{
-		ChannelID:    key.ChannelID,
-		ChannelType:  int64(key.ChannelType),
-		ChannelEpoch: 1,
-		LeaderEpoch:  2,
-		Replicas:     []uint64{2, 3},
-		ISR:          []uint64{2, 3},
-		Leader:       2,
-		MinISR:       2,
-		Status:       uint8(channellog.ChannelStatusActive),
-		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
-	}
-	source := &fakeChannelMetaSource{
-		get: map[channellog.ChannelKey]metadb.ChannelRuntimeMeta{
-			key: meta,
-		},
-	}
-	runtime := newFakeChannelRuntime(&calls)
-	cluster := newFakeChannelMetaCluster(&calls)
-	cluster.applyErr = channellog.ErrConflictingMeta
-	syncer := &channelMetaSync{
-		source:    source,
-		runtime:   runtime,
-		cluster:   cluster,
-		localNode: 2,
-	}
-
-	_, err := syncer.RefreshChannelMeta(context.Background(), key)
-	require.ErrorIs(t, err, channellog.ErrConflictingMeta)
-	require.Equal(t, []string{"runtime.ensure", "cluster.apply", "runtime.remove", "cluster.remove"}, calls)
-	require.Equal(t, []isr.ChannelKey{channellog.ISRChannelKeyForChannel(key)}, runtime.removed)
-	require.Equal(t, []channellog.ChannelKey{key}, cluster.removed)
-	require.Nil(t, syncer.snapshotAppliedLocal())
-}
-
-func TestChannelMetaSyncStartCleansAppliedLocalStateWhenInitialSyncFails(t *testing.T) {
-	var calls []string
-	key := channellog.ChannelKey{ChannelID: "local", ChannelType: 1}
-	channelKey := channellog.ISRChannelKeyForChannel(key)
-
-	source := &fakeChannelMetaSource{
-		list: []metadb.ChannelRuntimeMeta{
-			{
-				ChannelID:    key.ChannelID,
-				ChannelType:  int64(key.ChannelType),
-				ChannelEpoch: 1,
-				LeaderEpoch:  2,
-				Replicas:     []uint64{2, 3},
-				ISR:          []uint64{2, 3},
-				Leader:       2,
-				MinISR:       2,
-				Status:       uint8(channellog.ChannelStatusActive),
-				Features:     uint64(channellog.MessageSeqFormatLegacyU32),
-			},
-		},
-	}
-	runtime := newFakeChannelRuntime(&calls)
-	cluster := newFakeChannelMetaCluster(&calls)
-	cluster.applyErr = channellog.ErrConflictingMeta
-	syncer := &channelMetaSync{
-		source:    source,
-		runtime:   runtime,
-		cluster:   cluster,
-		localNode: 2,
-	}
-
-	err := syncer.Start()
-	require.ErrorIs(t, err, channellog.ErrConflictingMeta)
-	require.Equal(t, []string{"runtime.ensure", "cluster.apply", "runtime.remove", "cluster.remove"}, calls)
-	require.Equal(t, []isr.ChannelKey{channelKey}, runtime.removed)
-	require.Equal(t, []channellog.ChannelKey{key}, cluster.removed)
-	require.Nil(t, syncer.snapshotAppliedLocal())
-}
-
-func TestChannelMetaSyncRefreshRollsBackExistingRuntimeGroupWhenClusterApplyFails(t *testing.T) {
-	var calls []string
-	key := channellog.ChannelKey{ChannelID: "local", ChannelType: 1}
-	channelKey := channellog.ISRChannelKeyForChannel(key)
-	previous := projectISRChannelMeta(key, metadb.ChannelRuntimeMeta{
-		ChannelID:    key.ChannelID,
-		ChannelType:  int64(key.ChannelType),
-		ChannelEpoch: 1,
-		LeaderEpoch:  2,
-		Replicas:     []uint64{2, 3},
-		ISR:          []uint64{2, 3},
-		Leader:       2,
-		MinISR:       2,
-		Status:       uint8(channellog.ChannelStatusActive),
-		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
-	})
-	source := &fakeChannelMetaSource{
-		get: map[channellog.ChannelKey]metadb.ChannelRuntimeMeta{
-			key: {
-				ChannelID:    key.ChannelID,
-				ChannelType:  int64(key.ChannelType),
-				ChannelEpoch: 1,
-				LeaderEpoch:  3,
-				Replicas:     []uint64{2, 3},
-				ISR:          []uint64{2, 3},
-				Leader:       3,
-				MinISR:       2,
-				Status:       uint8(channellog.ChannelStatusActive),
-				Features:     uint64(channellog.MessageSeqFormatLegacyU32),
-			},
-		},
-	}
-	runtime := newFakeChannelRuntime(&calls)
-	runtime.groups[channelKey] = struct{}{}
-	runtime.current[channelKey] = previous
-	cluster := newFakeChannelMetaCluster(&calls)
-	cluster.applyErr = channellog.ErrConflictingMeta
-	syncer := &channelMetaSync{
-		source:    source,
-		runtime:   runtime,
-		cluster:   cluster,
-		localNode: 2,
-		appliedLocal: map[channellog.ChannelKey]struct{}{
-			key: {},
-		},
-	}
-
-	_, err := syncer.RefreshChannelMeta(context.Background(), key)
-	require.ErrorIs(t, err, channellog.ErrConflictingMeta)
-	require.Equal(t, []string{"runtime.apply", "cluster.apply", "runtime.apply"}, calls)
-	require.Equal(t, previous, runtime.current[channelKey])
-	require.Equal(t, map[channellog.ChannelKey]struct{}{key: {}}, syncer.snapshotAppliedLocal())
-}
-
-func TestChannelMetaSyncRefreshKeepsAppliedLocalTrackingWhenRollbackFails(t *testing.T) {
-	key := channellog.ChannelKey{ChannelID: "local", ChannelType: 1}
-	source := &fakeChannelMetaSource{
-		get: map[channellog.ChannelKey]metadb.ChannelRuntimeMeta{
-			key: {
-				ChannelID:    key.ChannelID,
-				ChannelType:  int64(key.ChannelType),
-				ChannelEpoch: 1,
-				LeaderEpoch:  2,
-				Replicas:     []uint64{2, 3},
-				ISR:          []uint64{2, 3},
-				Leader:       2,
-				MinISR:       2,
-				Status:       uint8(channellog.ChannelStatusActive),
-				Features:     uint64(channellog.MessageSeqFormatLegacyU32),
-			},
-		},
-	}
-	runtime := newFakeChannelRuntime(nil)
-	runtime.removeErr = context.DeadlineExceeded
-	cluster := newFakeChannelMetaCluster(nil)
-	cluster.applyErr = channellog.ErrConflictingMeta
-	syncer := &channelMetaSync{
-		source:    source,
-		runtime:   runtime,
-		cluster:   cluster,
-		localNode: 2,
-	}
-
-	_, err := syncer.RefreshChannelMeta(context.Background(), key)
-	require.ErrorIs(t, err, channellog.ErrConflictingMeta)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-	require.Equal(t, map[channellog.ChannelKey]struct{}{key: {}}, syncer.snapshotAppliedLocal())
+	wg.Wait()
 }
 
 type fakeChannelMetaSource struct {
-	get  map[channellog.ChannelKey]metadb.ChannelRuntimeMeta
+	get  map[channel.ChannelID]metadb.ChannelRuntimeMeta
 	list []metadb.ChannelRuntimeMeta
 }
 
 func (f *fakeChannelMetaSource) GetChannelRuntimeMeta(_ context.Context, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error) {
-	return f.get[channellog.ChannelKey{ChannelID: channelID, ChannelType: uint8(channelType)}], nil
+	return f.get[channel.ChannelID{ID: channelID, Type: uint8(channelType)}], nil
 }
 
 func (f *fakeChannelMetaSource) ListChannelRuntimeMeta(context.Context) ([]metadb.ChannelRuntimeMeta, error) {
 	return append([]metadb.ChannelRuntimeMeta(nil), f.list...), nil
 }
 
-type fakeChannelRuntime struct {
-	groups    map[isr.ChannelKey]struct{}
-	current   map[isr.ChannelKey]isr.ChannelMeta
-	ensured   []isr.ChannelMeta
-	applied   []isr.ChannelMeta
-	removed   []isr.ChannelKey
-	removeErr error
-	callSink  *[]string
-}
-
-func newFakeChannelRuntime(callSink *[]string) *fakeChannelRuntime {
-	return &fakeChannelRuntime{
-		groups:   make(map[isr.ChannelKey]struct{}),
-		current:  make(map[isr.ChannelKey]isr.ChannelMeta),
-		callSink: callSink,
-	}
-}
-
-func (f *fakeChannelRuntime) EnsureChannel(meta isr.ChannelMeta) error {
-	if f.callSink != nil {
-		*f.callSink = append(*f.callSink, "runtime.ensure")
-	}
-	f.groups[meta.ChannelKey] = struct{}{}
-	f.current[meta.ChannelKey] = meta
-	f.ensured = append(f.ensured, meta)
-	return nil
-}
-
-func (f *fakeChannelRuntime) RemoveChannel(channelKey isr.ChannelKey) error {
-	if f.callSink != nil {
-		*f.callSink = append(*f.callSink, "runtime.remove")
-	}
-	if f.removeErr != nil {
-		return f.removeErr
-	}
-	f.removed = append(f.removed, channelKey)
-	delete(f.groups, channelKey)
-	delete(f.current, channelKey)
-	return nil
-}
-
-func (f *fakeChannelRuntime) ApplyMeta(meta isr.ChannelMeta) error {
-	if f.callSink != nil {
-		*f.callSink = append(*f.callSink, "runtime.apply")
-	}
-	f.current[meta.ChannelKey] = meta
-	f.applied = append(f.applied, meta)
-	return nil
-}
-
-func (f *fakeChannelRuntime) Channel(channelKey isr.ChannelKey) (isrnode.ChannelHandle, bool) {
-	if _, ok := f.groups[channelKey]; !ok {
-		return nil, false
-	}
-	return fakeRuntimeChannelHandle{meta: f.current[channelKey]}, true
-}
-
-func (f *fakeChannelRuntime) ServeFetch(context.Context, isrnode.FetchRequestEnvelope) (isrnode.FetchResponseEnvelope, error) {
-	return isrnode.FetchResponseEnvelope{}, nil
-}
-
-type fakeRuntimeChannelHandle struct {
-	meta isr.ChannelMeta
-}
-
-func (fakeRuntimeChannelHandle) ID() isr.ChannelKey {
-	return ""
-}
-
-func (fakeRuntimeChannelHandle) Status() isr.ReplicaState {
-	return isr.ReplicaState{}
-}
-
-func (f fakeRuntimeChannelHandle) Meta() isr.ChannelMeta {
-	return f.meta
-}
-
-func (fakeRuntimeChannelHandle) Append(context.Context, []isr.Record) (isr.CommitResult, error) {
-	return isr.CommitResult{}, nil
-}
-
 type fakeChannelMetaCluster struct {
-	applied   []channellog.ChannelMeta
-	removed   []channellog.ChannelKey
+	mu        sync.Mutex
+	applied   []channel.Meta
+	removed   []channel.ChannelKey
 	applyErr  error
 	removeErr error
-	callSink  *[]string
 }
 
-func newFakeChannelMetaCluster(callSink *[]string) *fakeChannelMetaCluster {
-	return &fakeChannelMetaCluster{callSink: callSink}
-}
-
-func (f *fakeChannelMetaCluster) ApplyMeta(meta channellog.ChannelMeta) error {
-	if f.callSink != nil {
-		*f.callSink = append(*f.callSink, "cluster.apply")
-	}
+func (f *fakeChannelMetaCluster) ApplyMeta(meta channel.Meta) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.applied = append(f.applied, meta)
 	return f.applyErr
 }
 
-func (f *fakeChannelMetaCluster) Append(context.Context, channellog.AppendRequest) (channellog.AppendResult, error) {
-	return channellog.AppendResult{}, nil
-}
-
-func (f *fakeChannelMetaCluster) Fetch(context.Context, channellog.FetchRequest) (channellog.FetchResult, error) {
-	return channellog.FetchResult{}, nil
-}
-
-func (f *fakeChannelMetaCluster) Status(channellog.ChannelKey) (channellog.ChannelRuntimeStatus, error) {
-	return channellog.ChannelRuntimeStatus{}, nil
-}
-
-func (f *fakeChannelMetaCluster) RemoveMeta(key channellog.ChannelKey) error {
-	if f.callSink != nil {
-		*f.callSink = append(*f.callSink, "cluster.remove")
-	}
+func (f *fakeChannelMetaCluster) RemoveLocal(key channel.ChannelKey) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.removed = append(f.removed, key)
 	return f.removeErr
+}
+
+func nonNilAppliedLocal(values map[channel.ChannelKey]struct{}) map[channel.ChannelKey]struct{} {
+	if len(values) == 0 {
+		return map[channel.ChannelKey]struct{}{}
+	}
+	return cloneAppliedLocalSet(values)
 }

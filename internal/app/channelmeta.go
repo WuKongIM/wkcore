@@ -3,182 +3,109 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
-	"github.com/WuKongIM/WuKongIM/pkg/channel/isr"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
-	isrnode "github.com/WuKongIM/WuKongIM/pkg/channel/node"
+	channelhandler "github.com/WuKongIM/WuKongIM/pkg/channel/handler"
+	channelreplica "github.com/WuKongIM/WuKongIM/pkg/channel/replica"
 	channelruntime "github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
-	channeltransport "github.com/WuKongIM/WuKongIM/pkg/channel/transport"
-	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
+	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 )
-
-var errChannelDataPlaneNotReady = fmt.Errorf("app: channel data plane not ready")
 
 type channelMetaSource interface {
 	GetChannelRuntimeMeta(ctx context.Context, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error)
 	ListChannelRuntimeMeta(ctx context.Context) ([]metadb.ChannelRuntimeMeta, error)
 }
 
-type isrTransportBridge struct {
-	mu      sync.RWMutex
-	handler func(isrnode.Envelope)
-	adapter *channeltransport.Transport
-}
-
-type noopPeerSession struct{}
-
 type memoryGenerationStore struct {
-	mu     sync.Mutex
-	values map[isr.ChannelKey]uint64
+	mu     sync.RWMutex
+	values map[channel.ChannelKey]uint64
 }
 
 type channelReplicaFactory struct {
-	mu        sync.RWMutex
-	db        *channellog.DB
-	localNode isr.NodeID
+	db        *channelstore.Engine
+	localNode channel.NodeID
 	now       func() time.Time
-	keys      map[isr.ChannelKey]channellog.ChannelKey
 }
 
-type channelLogRuntimeAdapter struct {
-	runtime isrnode.Runtime
-}
-
-type channelLogChannelHandleAdapter struct {
-	handle isrnode.ChannelHandle
-}
-
-type removableChannelMeta interface {
-	RemoveMeta(key channellog.ChannelKey) error
+type channelMetaCluster interface {
+	ApplyMeta(meta channel.Meta) error
+	RemoveLocal(key channel.ChannelKey) error
 }
 
 type channelMetaSync struct {
 	source          channelMetaSource
-	runtime         isrnode.Runtime
-	cluster         channellog.Cluster
-	replicaFactory  *channelReplicaFactory
+	cluster         channelMetaCluster
 	localNode       uint64
 	refreshInterval time.Duration
 
 	mu           sync.Mutex
 	cancel       context.CancelFunc
 	done         chan struct{}
-	appliedLocal map[channellog.ChannelKey]struct{}
-}
-
-func newISRTransportBridge() *isrTransportBridge {
-	return &isrTransportBridge{}
-}
-
-func (t *isrTransportBridge) Send(peer isr.NodeID, env isrnode.Envelope) error {
-	t.mu.RLock()
-	adapter := t.adapter
-	t.mu.RUnlock()
-	if adapter == nil {
-		return errChannelDataPlaneNotReady
-	}
-	return adapter.Send(channel.NodeID(peer), runtimeEnvelopeFromISR(env))
-}
-
-func (t *isrTransportBridge) RegisterHandler(fn func(isrnode.Envelope)) {
-	t.mu.Lock()
-	t.handler = fn
-	adapter := t.adapter
-	t.mu.Unlock()
-	if adapter != nil {
-		adapter.RegisterHandler(func(env channelruntime.Envelope) {
-			fn(isrEnvelopeFromRuntime(env))
-		})
-	}
-}
-
-func (t *isrTransportBridge) Session(peer isr.NodeID) isrnode.PeerSession {
-	t.mu.RLock()
-	adapter := t.adapter
-	t.mu.RUnlock()
-	if adapter != nil {
-		return legacyPeerSessionAdapter{session: adapter.SessionManager().Session(channel.NodeID(peer))}
-	}
-	return noopPeerSession{}
-}
-
-func (noopPeerSession) Send(isrnode.Envelope) error {
-	return errChannelDataPlaneNotReady
-}
-
-func (noopPeerSession) TryBatch(isrnode.Envelope) bool {
-	return false
-}
-
-func (noopPeerSession) Flush() error {
-	return nil
-}
-
-func (noopPeerSession) Backpressure() isrnode.BackpressureState {
-	return isrnode.BackpressureState{}
-}
-
-func (noopPeerSession) Close() error {
-	return nil
+	appliedLocal map[channel.ChannelKey]struct{}
 }
 
 func newMemoryGenerationStore() *memoryGenerationStore {
-	return &memoryGenerationStore{
-		values: make(map[isr.ChannelKey]uint64),
-	}
+	return &memoryGenerationStore{values: make(map[channel.ChannelKey]uint64)}
 }
 
-func (s *memoryGenerationStore) Load(channelKey isr.ChannelKey) (uint64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *memoryGenerationStore) Load(channelKey channel.ChannelKey) (uint64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.values[channelKey], nil
 }
 
-func (s *memoryGenerationStore) Store(channelKey isr.ChannelKey, generation uint64) error {
+func (s *memoryGenerationStore) Store(channelKey channel.ChannelKey, generation uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.values[channelKey] = generation
 	return nil
 }
 
-func newChannelReplicaFactory(db *channellog.DB, localNode isr.NodeID, now func() time.Time) *channelReplicaFactory {
-	return &channelReplicaFactory{
-		db:        db,
-		localNode: localNode,
-		now:       now,
-		keys:      make(map[isr.ChannelKey]channellog.ChannelKey),
-	}
+func newChannelReplicaFactory(db *channelstore.Engine, localNode channel.NodeID, now func() time.Time) *channelReplicaFactory {
+	return &channelReplicaFactory{db: db, localNode: localNode, now: now}
 }
 
-func (f *channelReplicaFactory) Register(key channellog.ChannelKey) {
-	if f == nil {
-		return
-	}
-	channelKey := channellog.ISRChannelKeyForChannel(key)
-	f.mu.Lock()
-	f.keys[channelKey] = key
-	f.mu.Unlock()
+func (f *channelReplicaFactory) New(cfg channelruntime.ChannelConfig) (channelreplica.Replica, error) {
+	store := f.db.ForChannel(cfg.ChannelKey, cfg.Meta.ID)
+	return channelreplica.NewReplica(channelreplica.ReplicaConfig{
+		LocalNode:         f.localNode,
+		LogStore:          store,
+		CheckpointStore:   channelCheckpointStore{store: store},
+		ApplyFetchStore:   store,
+		EpochHistoryStore: channelEpochHistoryStore{store: store},
+		SnapshotApplier:   channelSnapshotApplier{store: store},
+		Now:               f.now,
+	})
 }
 
-func (f *channelReplicaFactory) New(cfg isrnode.ChannelConfig) (isr.Replica, error) {
-	f.mu.RLock()
-	key, ok := f.keys[cfg.ChannelKey]
-	f.mu.RUnlock()
-	if !ok {
-		return nil, errChannelDataPlaneNotReady
-	}
-	return channellog.NewReplica(f.db.ForChannel(key), f.localNode, f.now)
+type channelCheckpointStore struct{ store *channelstore.ChannelStore }
+
+func (s channelCheckpointStore) Load() (channel.Checkpoint, error) { return s.store.LoadCheckpoint() }
+func (s channelCheckpointStore) Store(cp channel.Checkpoint) error {
+	return s.store.StoreCheckpoint(cp)
 }
 
-func (s *channelMetaSync) RefreshChannelMeta(ctx context.Context, key channellog.ChannelKey) (channellog.ChannelMeta, error) {
-	meta, err := s.source.GetChannelRuntimeMeta(ctx, key.ChannelID, int64(key.ChannelType))
+type channelEpochHistoryStore struct{ store *channelstore.ChannelStore }
+
+func (s channelEpochHistoryStore) Load() ([]channel.EpochPoint, error) { return s.store.LoadHistory() }
+func (s channelEpochHistoryStore) Append(point channel.EpochPoint) error {
+	return s.store.AppendHistory(point)
+}
+func (s channelEpochHistoryStore) TruncateTo(leo uint64) error { return s.store.TruncateHistoryTo(leo) }
+
+type channelSnapshotApplier struct{ store *channelstore.ChannelStore }
+
+func (s channelSnapshotApplier) InstallSnapshot(_ context.Context, snap channel.Snapshot) error {
+	return s.store.StoreSnapshotPayload(snap.Payload)
+}
+
+func (s *channelMetaSync) RefreshChannelMeta(ctx context.Context, id channel.ChannelID) (channel.Meta, error) {
+	meta, err := s.source.GetChannelRuntimeMeta(ctx, id.ID, int64(id.Type))
 	if err != nil {
-		return channellog.ChannelMeta{}, err
+		return channel.Meta{}, err
 	}
 	return s.apply(meta)
 }
@@ -187,7 +114,6 @@ func (s *channelMetaSync) Start() error {
 	if s == nil {
 		return nil
 	}
-
 	s.mu.Lock()
 	if s.cancel != nil {
 		s.mu.Unlock()
@@ -203,18 +129,15 @@ func (s *channelMetaSync) Start() error {
 	s.done = done
 	s.mu.Unlock()
 
-	err := s.syncOnce(ctx)
-	if errors.Is(err, raftcluster.ErrNoLeader) {
-		err = nil
-	}
-	if err != nil {
+	if err := s.syncOnce(ctx); err != nil {
 		cancel()
-		err = errors.Join(err, s.cleanupAppliedLocal())
 		s.mu.Lock()
-		s.cancel = nil
-		s.done = nil
+		if s.done == done {
+			s.cancel = nil
+			s.done = nil
+		}
 		s.mu.Unlock()
-		return err
+		return errors.Join(err, s.cleanupAppliedLocal())
 	}
 
 	go func() {
@@ -237,7 +160,6 @@ func (s *channelMetaSync) Stop() error {
 	if s == nil {
 		return nil
 	}
-
 	s.mu.Lock()
 	cancel := s.cancel
 	done := s.done
@@ -257,19 +179,16 @@ func (s *channelMetaSync) syncOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	currentLocal := make(map[channellog.ChannelKey]struct{})
+	currentLocal := make(map[channel.ChannelKey]struct{})
 	for _, meta := range metas {
 		if !containsUint64(meta.Replicas, s.localNode) {
 			continue
 		}
-		key := channellog.ChannelKey{
-			ChannelID:   meta.ChannelID,
-			ChannelType: uint8(meta.ChannelType),
-		}
-		if _, err := s.apply(meta); err != nil {
+		applied, err := s.apply(meta)
+		if err != nil {
 			return err
 		}
-		currentLocal[key] = struct{}{}
+		currentLocal[applied.Key] = struct{}{}
 	}
 	for key := range s.snapshotAppliedLocal() {
 		if _, ok := currentLocal[key]; ok {
@@ -279,117 +198,54 @@ func (s *channelMetaSync) syncOnce(ctx context.Context) error {
 			return err
 		}
 	}
-	s.replaceAppliedLocal(currentLocal)
+	s.setAppliedLocal(currentLocal)
 	return nil
 }
 
-func newChannelLogRuntimeAdapter(runtime isrnode.Runtime) channellog.Runtime {
-	return &channelLogRuntimeAdapter{runtime: runtime}
-}
-
-func (a *channelLogRuntimeAdapter) Channel(channelKey isr.ChannelKey) (channellog.ChannelHandle, bool) {
-	if a == nil || a.runtime == nil {
-		return nil, false
-	}
-	handle, ok := a.runtime.Channel(channelKey)
-	if !ok {
-		return nil, false
-	}
-	return &channelLogChannelHandleAdapter{handle: handle}, true
-}
-
-func (a *channelLogChannelHandleAdapter) Append(ctx context.Context, records []isr.Record) (isr.CommitResult, error) {
-	return a.handle.Append(ctx, records)
-}
-
-func (a *channelLogChannelHandleAdapter) Status() isr.ReplicaState {
-	return a.handle.Status()
-}
-
-func (s *channelMetaSync) apply(meta metadb.ChannelRuntimeMeta) (channellog.ChannelMeta, error) {
-	key := channellog.ChannelKey{
-		ChannelID:   meta.ChannelID,
-		ChannelType: uint8(meta.ChannelType),
-	}
+func (s *channelMetaSync) apply(meta metadb.ChannelRuntimeMeta) (channel.Meta, error) {
 	if !containsUint64(meta.Replicas, s.localNode) {
-		return channellog.ChannelMeta{}, channellog.ErrStaleMeta
+		return channel.Meta{}, channel.ErrStaleMeta
 	}
-	if s.replicaFactory != nil {
-		s.replicaFactory.Register(key)
+	rootMeta := projectChannelMeta(meta)
+	if err := s.cluster.ApplyMeta(rootMeta); err != nil {
+		return channel.Meta{}, err
 	}
-	runtimeMeta := projectISRChannelMeta(key, meta)
-	handle, runtimeExists := s.runtime.Channel(runtimeMeta.ChannelKey)
-	hadAppliedLocal := s.hasAppliedLocalKey(key)
-	var previousMeta isr.ChannelMeta
-	if runtimeExists {
-		previousMeta = handle.Meta()
+	s.mu.Lock()
+	if s.appliedLocal == nil {
+		s.appliedLocal = make(map[channel.ChannelKey]struct{})
 	}
-	if runtimeExists {
-		if err := s.runtime.ApplyMeta(runtimeMeta); err != nil {
-			return channellog.ChannelMeta{}, err
-		}
-	} else {
-		if err := s.runtime.EnsureChannel(runtimeMeta); err != nil {
-			return channellog.ChannelMeta{}, err
-		}
-	}
-
-	s.storeAppliedLocalKey(key)
-	channelMeta := projectChannelMeta(meta)
-	if err := s.cluster.ApplyMeta(channelMeta); err != nil {
-		if rollbackErr := s.rollbackClusterApplyFailure(key, previousMeta, runtimeExists, hadAppliedLocal); rollbackErr != nil {
-			return channellog.ChannelMeta{}, errors.Join(err, rollbackErr)
-		}
-		return channellog.ChannelMeta{}, err
-	}
-	return channelMeta, nil
+	s.appliedLocal[rootMeta.Key] = struct{}{}
+	s.mu.Unlock()
+	return rootMeta, nil
 }
 
-func projectISRChannelMeta(key channellog.ChannelKey, meta metadb.ChannelRuntimeMeta) isr.ChannelMeta {
+func projectChannelMeta(meta metadb.ChannelRuntimeMeta) channel.Meta {
+	id := channel.ChannelID{ID: meta.ChannelID, Type: uint8(meta.ChannelType)}
 	var leaseUntil time.Time
 	if meta.LeaseUntilMS > 0 {
 		leaseUntil = time.UnixMilli(meta.LeaseUntilMS).UTC()
 	}
-	return isr.ChannelMeta{
-		ChannelKey: channellog.ISRChannelKeyForChannel(key),
-		Epoch:      meta.LeaderEpoch,
-		Leader:     isr.NodeID(meta.Leader),
-		Replicas:   projectNodeIDs(meta.Replicas),
-		ISR:        projectNodeIDs(meta.ISR),
-		MinISR:     int(meta.MinISR),
-		LeaseUntil: leaseUntil,
-	}
-}
-
-func projectChannelMeta(meta metadb.ChannelRuntimeMeta) channellog.ChannelMeta {
-	return channellog.ChannelMeta{
-		ChannelID:    meta.ChannelID,
-		ChannelType:  uint8(meta.ChannelType),
-		ChannelEpoch: meta.ChannelEpoch,
-		LeaderEpoch:  meta.LeaderEpoch,
-		Replicas:     projectChannelNodeIDs(meta.Replicas),
-		ISR:          projectChannelNodeIDs(meta.ISR),
-		Leader:       channellog.NodeID(meta.Leader),
-		MinISR:       int(meta.MinISR),
-		Status:       channellog.ChannelStatus(meta.Status),
-		Features: channellog.ChannelFeatures{
-			MessageSeqFormat: channellog.MessageSeqFormat(meta.Features),
+	return channel.Meta{
+		Key:         channelhandler.KeyFromChannelID(id),
+		ID:          id,
+		Epoch:       meta.ChannelEpoch,
+		LeaderEpoch: meta.LeaderEpoch,
+		Replicas:    projectNodeIDs(meta.Replicas),
+		ISR:         projectNodeIDs(meta.ISR),
+		Leader:      channel.NodeID(meta.Leader),
+		MinISR:      int(meta.MinISR),
+		LeaseUntil:  leaseUntil,
+		Status:      channel.Status(meta.Status),
+		Features: channel.Features{
+			MessageSeqFormat: channel.MessageSeqFormat(meta.Features),
 		},
 	}
 }
 
-func projectNodeIDs(ids []uint64) []isr.NodeID {
-	out := make([]isr.NodeID, 0, len(ids))
+func projectNodeIDs(ids []uint64) []channel.NodeID {
+	out := make([]channel.NodeID, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, isr.NodeID(id))
-	}
-	return out
-}
-
-func projectChannelNodeIDs(ids []uint64) []channellog.NodeID {
-	out := make([]channellog.NodeID, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, channellog.NodeID(id))
+		out = append(out, channel.NodeID(id))
 	}
 	return out
 }
@@ -403,71 +259,18 @@ func containsUint64(values []uint64, target uint64) bool {
 	return false
 }
 
-func (s *channelMetaSync) snapshotAppliedLocal() map[channellog.ChannelKey]struct{} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return cloneAppliedLocalSet(s.appliedLocal)
-}
-
-func (s *channelMetaSync) replaceAppliedLocal(values map[channellog.ChannelKey]struct{}) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.appliedLocal = cloneAppliedLocalSet(values)
-}
-
-func (s *channelMetaSync) storeAppliedLocalKey(key channellog.ChannelKey) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.appliedLocal == nil {
-		s.appliedLocal = make(map[channellog.ChannelKey]struct{})
+func (s *channelMetaSync) removeLocal(key channel.ChannelKey) error {
+	if s.cluster == nil {
+		return nil
 	}
-	s.appliedLocal[key] = struct{}{}
-}
-
-func (s *channelMetaSync) hasAppliedLocalKey(key channellog.ChannelKey) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, ok := s.appliedLocal[key]
-	return ok
-}
-
-func (s *channelMetaSync) deleteAppliedLocalKey(key channellog.ChannelKey) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.appliedLocal) == 0 {
-		return
+	if err := s.cluster.RemoveLocal(key); err != nil {
+		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	delete(s.appliedLocal, key)
 	if len(s.appliedLocal) == 0 {
 		s.appliedLocal = nil
-	}
-}
-
-func (s *channelMetaSync) rollbackClusterApplyFailure(key channellog.ChannelKey, previousMeta isr.ChannelMeta, runtimeExists, hadAppliedLocal bool) error {
-	var err error
-	if runtimeExists {
-		err = s.runtime.ApplyMeta(previousMeta)
-	} else {
-		err = s.removeLocal(key)
-	}
-	if err != nil {
-		return err
-	}
-	if !hadAppliedLocal {
-		s.deleteAppliedLocalKey(key)
-	}
-	return nil
-}
-
-func (s *channelMetaSync) removeLocal(key channellog.ChannelKey) error {
-	channelKey := channellog.ISRChannelKeyForChannel(key)
-	if err := s.runtime.RemoveChannel(channelKey); err != nil && !errors.Is(err, isrnode.ErrChannelNotFound) {
-		return err
-	}
-	if cluster, ok := s.cluster.(removableChannelMeta); ok {
-		if err := cluster.RemoveMeta(key); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -477,205 +280,31 @@ func (s *channelMetaSync) cleanupAppliedLocal() error {
 	for key := range s.snapshotAppliedLocal() {
 		err = errors.Join(err, s.removeLocal(key))
 	}
-	s.replaceAppliedLocal(nil)
+	s.mu.Lock()
+	s.appliedLocal = nil
+	s.mu.Unlock()
 	return err
 }
 
-func cloneAppliedLocalSet(values map[channellog.ChannelKey]struct{}) map[channellog.ChannelKey]struct{} {
+func (s *channelMetaSync) snapshotAppliedLocal() map[channel.ChannelKey]struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneAppliedLocalSet(s.appliedLocal)
+}
+
+func (s *channelMetaSync) setAppliedLocal(values map[channel.ChannelKey]struct{}) {
+	s.mu.Lock()
+	s.appliedLocal = cloneAppliedLocalSet(values)
+	s.mu.Unlock()
+}
+
+func cloneAppliedLocalSet(values map[channel.ChannelKey]struct{}) map[channel.ChannelKey]struct{} {
 	if len(values) == 0 {
 		return nil
 	}
-	cloned := make(map[channellog.ChannelKey]struct{}, len(values))
+	cloned := make(map[channel.ChannelKey]struct{}, len(values))
 	for key := range values {
 		cloned[key] = struct{}{}
 	}
 	return cloned
-}
-
-func (t *isrTransportBridge) Bind(adapter *channeltransport.Transport) {
-	t.mu.Lock()
-	t.adapter = adapter
-	handler := t.handler
-	t.mu.Unlock()
-	if adapter != nil && handler != nil {
-		adapter.RegisterHandler(func(env channelruntime.Envelope) {
-			handler(isrEnvelopeFromRuntime(env))
-		})
-	}
-}
-
-func (t *isrTransportBridge) Unbind() {
-	t.mu.Lock()
-	t.adapter = nil
-	t.mu.Unlock()
-}
-
-type legacyPeerSessionAdapter struct {
-	session channelruntime.PeerSession
-}
-
-func (s legacyPeerSessionAdapter) Send(env isrnode.Envelope) error {
-	return s.session.Send(runtimeEnvelopeFromISR(env))
-}
-
-func (s legacyPeerSessionAdapter) TryBatch(env isrnode.Envelope) bool {
-	return s.session.TryBatch(runtimeEnvelopeFromISR(env))
-}
-
-func (s legacyPeerSessionAdapter) Flush() error {
-	return s.session.Flush()
-}
-
-func (s legacyPeerSessionAdapter) Backpressure() isrnode.BackpressureState {
-	state := s.session.Backpressure()
-	return isrnode.BackpressureState{
-		Level:           isrnode.BackpressureLevel(state.Level),
-		PendingRequests: state.PendingRequests,
-		PendingBytes:    state.PendingBytes,
-	}
-}
-
-func (s legacyPeerSessionAdapter) Close() error {
-	return s.session.Close()
-}
-
-type legacyFetchServiceAdapter struct {
-	runtime isrnode.Runtime
-}
-
-func (a legacyFetchServiceAdapter) ServeFetch(ctx context.Context, req channelruntime.FetchRequestEnvelope) (channelruntime.FetchResponseEnvelope, error) {
-	resp, err := a.runtime.ServeFetch(ctx, isrnode.FetchRequestEnvelope{
-		ChannelKey:  isr.ChannelKey(req.ChannelKey),
-		Epoch:       req.Epoch,
-		Generation:  req.Generation,
-		ReplicaID:   isr.NodeID(req.ReplicaID),
-		FetchOffset: req.FetchOffset,
-		OffsetEpoch: req.OffsetEpoch,
-		MaxBytes:    req.MaxBytes,
-	})
-	if err != nil {
-		return channelruntime.FetchResponseEnvelope{}, err
-	}
-	return channelruntime.FetchResponseEnvelope{
-		ChannelKey: channel.ChannelKey(resp.ChannelKey),
-		Epoch:      resp.Epoch,
-		Generation: resp.Generation,
-		TruncateTo: resp.TruncateTo,
-		LeaderHW:   resp.LeaderHW,
-		Records:    recordsFromISR(resp.Records),
-	}, nil
-}
-
-func runtimeEnvelopeFromISR(env isrnode.Envelope) channelruntime.Envelope {
-	out := channelruntime.Envelope{
-		Peer:       channel.NodeID(env.Peer),
-		ChannelKey: channel.ChannelKey(env.ChannelKey),
-		Epoch:      env.Epoch,
-		Generation: env.Generation,
-		RequestID:  env.RequestID,
-		Kind:       channelruntime.MessageKind(env.Kind),
-		Payload:    append([]byte(nil), env.Payload...),
-	}
-	if env.FetchRequest != nil {
-		out.FetchRequest = &channelruntime.FetchRequestEnvelope{
-			ChannelKey:  channel.ChannelKey(env.FetchRequest.ChannelKey),
-			Epoch:       env.FetchRequest.Epoch,
-			Generation:  env.FetchRequest.Generation,
-			ReplicaID:   channel.NodeID(env.FetchRequest.ReplicaID),
-			FetchOffset: env.FetchRequest.FetchOffset,
-			OffsetEpoch: env.FetchRequest.OffsetEpoch,
-			MaxBytes:    env.FetchRequest.MaxBytes,
-		}
-	}
-	if env.FetchResponse != nil {
-		out.FetchResponse = &channelruntime.FetchResponseEnvelope{
-			ChannelKey: channel.ChannelKey(env.FetchResponse.ChannelKey),
-			Epoch:      env.FetchResponse.Epoch,
-			Generation: env.FetchResponse.Generation,
-			TruncateTo: env.FetchResponse.TruncateTo,
-			LeaderHW:   env.FetchResponse.LeaderHW,
-			Records:    recordsFromISR(env.FetchResponse.Records),
-		}
-	}
-	if env.ProgressAck != nil {
-		out.ProgressAck = &channelruntime.ProgressAckEnvelope{
-			ChannelKey:  channel.ChannelKey(env.ProgressAck.ChannelKey),
-			Epoch:       env.ProgressAck.Epoch,
-			Generation:  env.ProgressAck.Generation,
-			ReplicaID:   channel.NodeID(env.ProgressAck.ReplicaID),
-			MatchOffset: env.ProgressAck.MatchOffset,
-		}
-	}
-	return out
-}
-
-func isrEnvelopeFromRuntime(env channelruntime.Envelope) isrnode.Envelope {
-	out := isrnode.Envelope{
-		Peer:       isr.NodeID(env.Peer),
-		ChannelKey: isr.ChannelKey(env.ChannelKey),
-		Epoch:      env.Epoch,
-		Generation: env.Generation,
-		RequestID:  env.RequestID,
-		Kind:       isrnode.MessageKind(env.Kind),
-		Payload:    append([]byte(nil), env.Payload...),
-	}
-	if env.FetchRequest != nil {
-		out.FetchRequest = &isrnode.FetchRequestEnvelope{
-			ChannelKey:  isr.ChannelKey(env.FetchRequest.ChannelKey),
-			Epoch:       env.FetchRequest.Epoch,
-			Generation:  env.FetchRequest.Generation,
-			ReplicaID:   isr.NodeID(env.FetchRequest.ReplicaID),
-			FetchOffset: env.FetchRequest.FetchOffset,
-			OffsetEpoch: env.FetchRequest.OffsetEpoch,
-			MaxBytes:    env.FetchRequest.MaxBytes,
-		}
-	}
-	if env.FetchResponse != nil {
-		out.FetchResponse = &isrnode.FetchResponseEnvelope{
-			ChannelKey: isr.ChannelKey(env.FetchResponse.ChannelKey),
-			Epoch:      env.FetchResponse.Epoch,
-			Generation: env.FetchResponse.Generation,
-			TruncateTo: env.FetchResponse.TruncateTo,
-			LeaderHW:   env.FetchResponse.LeaderHW,
-			Records:    recordsToISR(env.FetchResponse.Records),
-		}
-	}
-	if env.ProgressAck != nil {
-		out.ProgressAck = &isrnode.ProgressAckEnvelope{
-			ChannelKey:  isr.ChannelKey(env.ProgressAck.ChannelKey),
-			Epoch:       env.ProgressAck.Epoch,
-			Generation:  env.ProgressAck.Generation,
-			ReplicaID:   isr.NodeID(env.ProgressAck.ReplicaID),
-			MatchOffset: env.ProgressAck.MatchOffset,
-		}
-	}
-	return out
-}
-
-func recordsFromISR(records []isr.Record) []channel.Record {
-	if len(records) == 0 {
-		return nil
-	}
-	out := make([]channel.Record, 0, len(records))
-	for _, record := range records {
-		out = append(out, channel.Record{
-			Payload:   append([]byte(nil), record.Payload...),
-			SizeBytes: record.SizeBytes,
-		})
-	}
-	return out
-}
-
-func recordsToISR(records []channel.Record) []isr.Record {
-	if len(records) == 0 {
-		return nil
-	}
-	out := make([]isr.Record, 0, len(records))
-	for _, record := range records {
-		out = append(out, isr.Record{
-			Payload:   append([]byte(nil), record.Payload...),
-			SizeBytes: record.SizeBytes,
-		})
-	}
-	return out
 }

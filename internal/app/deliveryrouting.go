@@ -12,7 +12,6 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
@@ -28,9 +27,11 @@ const (
 )
 
 type asyncCommittedDispatcher struct {
-	localNodeID  uint64
-	preferLocal  bool
-	channelLog   channellog.Cluster
+	localNodeID uint64
+	preferLocal bool
+	channelLog  interface {
+		Status(id channel.ChannelID) (channel.ChannelRuntimeStatus, error)
+	}
 	delivery     committedDeliverySubmitter
 	conversation committedConversationSubmitter
 	nodeClient   committedNodeSubmitter
@@ -62,9 +63,9 @@ func (d asyncCommittedDispatcher) routeCommitted(ctx context.Context, msg channe
 	}
 
 	for attempt := 0; attempt < committedRouteRetryAttempts; attempt++ {
-		status, err := d.channelLog.Status(channellog.ChannelKey{
-			ChannelID:   msg.ChannelID,
-			ChannelType: msg.ChannelType,
+		status, err := d.channelLog.Status(channel.ChannelID{
+			ID:   msg.ChannelID,
+			Type: msg.ChannelType,
 		})
 		if err == nil && status.Leader != 0 {
 			ownerNodeID := uint64(status.Leader)

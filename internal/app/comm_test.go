@@ -14,7 +14,9 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	channelhandler "github.com/WuKongIM/WuKongIM/pkg/channel/handler"
+	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
@@ -409,12 +411,12 @@ func readAppWKProtoFrameWithin(t *testing.T, conn net.Conn, timeout time.Duratio
 	return f
 }
 
-func waitForAppCommittedMessage(t *testing.T, store *channellog.Store, seq uint64, timeout time.Duration) channellog.Message {
+func waitForAppCommittedMessage(t *testing.T, store *channelstore.ChannelStore, seq uint64, timeout time.Duration) channel.Message {
 	t.Helper()
 
-	var msg channellog.Message
+	var msg channel.Message
 	require.Eventually(t, func() bool {
-		loaded, err := store.LoadMsg(seq)
+		loaded, err := channelhandler.LoadMsg(store, seq)
 		if err != nil {
 			return false
 		}
@@ -422,6 +424,10 @@ func waitForAppCommittedMessage(t *testing.T, store *channellog.Store, seq uint6
 		return true
 	}, timeout, 10*time.Millisecond)
 	return msg
+}
+
+func channelStoreForID(db *channelstore.Engine, id channel.ChannelID) *channelstore.ChannelStore {
+	return db.ForChannel(channelhandler.KeyFromChannelID(id), id)
 }
 
 func sendAppWKProtoFrame(t *testing.T, conn net.Conn, f frame.Frame) {
@@ -505,8 +511,8 @@ func seedChannelRuntimeMeta(t *testing.T, app *App, channelID string, channelTyp
 		ISR:          []uint64{app.cfg.Node.ID},
 		Leader:       app.cfg.Node.ID,
 		MinISR:       1,
-		Status:       uint8(channellog.ChannelStatusActive),
-		Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
 		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 	}
 	require.NoError(t, app.DB().ForSlot(1).UpsertChannelRuntimeMeta(context.Background(), meta))

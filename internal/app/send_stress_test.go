@@ -20,7 +20,7 @@ import (
 	"time"
 
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
-	channellog "github.com/WuKongIM/WuKongIM/pkg/channel/log"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
@@ -940,15 +940,15 @@ func preloadSendStressChannels(t *testing.T, harness *threeNodeAppHarness, leade
 			ISR:          []uint64{1, 2, 3},
 			Leader:       leaderID,
 			MinISR:       3,
-			Status:       uint8(channellog.ChannelStatusActive),
-			Features:     uint64(channellog.MessageSeqFormatLegacyU32),
+			Status:       uint8(channel.StatusActive),
+			Features:     uint64(channel.MessageSeqFormatLegacyU32),
 			LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 		}
 		require.NoError(t, leader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
 
-		key := channellog.ChannelKey{ChannelID: channelID, ChannelType: channelType}
+		id := channel.ChannelID{ID: channelID, Type: channelType}
 		for _, app := range harness.appsWithLeaderFirst(leaderID) {
-			_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), key)
+			_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), id)
 			require.NoError(t, err)
 		}
 
@@ -1353,14 +1353,14 @@ func verifySendStressCommittedRecords(t *testing.T, harness *threeNodeAppHarness
 
 	verificationCount := 0
 	for _, record := range records {
-		key := channellog.ChannelKey{
-			ChannelID:   record.ChannelID,
-			ChannelType: record.ChannelType,
+		id := channel.ChannelID{
+			ID:   record.ChannelID,
+			Type: record.ChannelType,
 		}
 		owner := harness.apps[record.OwnerNodeID]
 		require.NotNil(t, owner, "owner node %d is not running", record.OwnerNodeID)
 
-		ownerMsg := waitForAppCommittedMessage(t, owner.ChannelLogDB().ForChannel(key), record.MessageSeq, 5*time.Second)
+		ownerMsg := waitForAppCommittedMessage(t, channelStoreForID(owner.ChannelLogDB(), id), record.MessageSeq, 5*time.Second)
 		require.Equalf(t, record.Payload, ownerMsg.Payload, "owner mismatch worker=%d iteration=%d sender=%s recipient=%s connect_node=%d message_seq=%d message_id=%d client_seq=%d client_msg_no=%s frames_before_ack=%v owner_from=%s owner_client_msg_no=%s owner_payload=%q", record.Worker, record.Iteration, record.SenderUID, record.RecipientUID, record.ConnectNodeID, record.MessageSeq, record.MessageID, record.ClientSeq, record.ClientMsgNo, record.FramesBeforeAck, ownerMsg.FromUID, ownerMsg.ClientMsgNo, string(ownerMsg.Payload))
 		require.Equalf(t, record.SenderUID, ownerMsg.FromUID, "owner sender mismatch worker=%d iteration=%d message_seq=%d client_msg_no=%s frames_before_ack=%v owner_from=%s owner_payload=%q", record.Worker, record.Iteration, record.MessageSeq, record.ClientMsgNo, record.FramesBeforeAck, ownerMsg.FromUID, string(ownerMsg.Payload))
 		require.Equalf(t, record.ClientMsgNo, ownerMsg.ClientMsgNo, "owner client_msg_no mismatch worker=%d iteration=%d message_seq=%d client_msg_no=%s frames_before_ack=%v owner_client_msg_no=%s owner_payload=%q", record.Worker, record.Iteration, record.MessageSeq, record.ClientMsgNo, record.FramesBeforeAck, ownerMsg.ClientMsgNo, string(ownerMsg.Payload))
@@ -1368,7 +1368,7 @@ func verifySendStressCommittedRecords(t *testing.T, harness *threeNodeAppHarness
 		require.Equalf(t, record.ChannelType, ownerMsg.ChannelType, "owner channel type mismatch worker=%d iteration=%d message_seq=%d client_msg_no=%s", record.Worker, record.Iteration, record.MessageSeq, record.ClientMsgNo)
 
 		for _, app := range harness.orderedApps() {
-			msg := waitForAppCommittedMessage(t, app.ChannelLogDB().ForChannel(key), record.MessageSeq, 5*time.Second)
+			msg := waitForAppCommittedMessage(t, channelStoreForID(app.ChannelLogDB(), id), record.MessageSeq, 5*time.Second)
 			require.Equalf(t, record.Payload, msg.Payload, "replica mismatch node=%d worker=%d iteration=%d sender=%s recipient=%s connect_node=%d message_seq=%d message_id=%d client_seq=%d client_msg_no=%s frames_before_ack=%v replica_from=%s replica_client_msg_no=%s replica_payload=%q", app.cfg.Node.ID, record.Worker, record.Iteration, record.SenderUID, record.RecipientUID, record.ConnectNodeID, record.MessageSeq, record.MessageID, record.ClientSeq, record.ClientMsgNo, record.FramesBeforeAck, msg.FromUID, msg.ClientMsgNo, string(msg.Payload))
 			require.Equalf(t, record.SenderUID, msg.FromUID, "replica sender mismatch node=%d worker=%d iteration=%d message_seq=%d client_msg_no=%s", app.cfg.Node.ID, record.Worker, record.Iteration, record.MessageSeq, record.ClientMsgNo)
 			require.Equalf(t, record.ClientMsgNo, msg.ClientMsgNo, "replica client_msg_no mismatch node=%d worker=%d iteration=%d message_seq=%d client_msg_no=%s replica_client_msg_no=%s", app.cfg.Node.ID, record.Worker, record.Iteration, record.MessageSeq, record.ClientMsgNo, msg.ClientMsgNo)
@@ -1514,7 +1514,7 @@ func waitForSendStressSendack(client sendStressWorkerClient, timeout time.Durati
 	}
 }
 
-func runScriptedSendStressAckServer(conn net.Conn, expected int, started chan<- struct{}, releaseAcks <-chan struct{}, maxInflight *atomic.Int64) error {
+func runScriptedSendStressAckServer(conn net.Conn, expected int, started chan<- struct{}, releaseAcks <-chan struct{}, maxInflightBeforeRelease *atomic.Int64) error {
 	type ackEnvelope struct {
 		packet *frame.SendackPacket
 	}
@@ -1522,6 +1522,7 @@ func runScriptedSendStressAckServer(conn net.Conn, expected int, started chan<- 
 	acks := make(chan ackEnvelope, expected)
 	readerErrCh := make(chan error, 1)
 	var currentInflight atomic.Int64
+	var releaseObserved atomic.Bool
 
 	go func() {
 		for i := 0; i < expected; i++ {
@@ -1538,10 +1539,10 @@ func runScriptedSendStressAckServer(conn net.Conn, expected int, started chan<- 
 				return
 			}
 			inflight := currentInflight.Add(1)
-			if maxInflight != nil {
+			if maxInflightBeforeRelease != nil && !releaseObserved.Load() {
 				for {
-					prev := maxInflight.Load()
-					if inflight <= prev || maxInflight.CompareAndSwap(prev, inflight) {
+					prev := maxInflightBeforeRelease.Load()
+					if inflight <= prev || maxInflightBeforeRelease.CompareAndSwap(prev, inflight) {
 						break
 					}
 				}
@@ -1599,6 +1600,7 @@ func runScriptedSendStressAckServer(conn net.Conn, expected int, started chan<- 
 			}
 			pending = append(pending, env)
 		case <-releaseCh:
+			releaseObserved.Store(true)
 			released = true
 			releaseCh = nil
 			if err := flushPending(); err != nil {

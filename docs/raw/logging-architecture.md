@@ -518,8 +518,12 @@ func (a *Agent) handlePeer(peerID string) {
 | `pkg/slot/proxy`                | `slot.proxy`         |
 | `pkg/slot/fsm`                  | `slot.fsm`           |
 | `pkg/slot/multiraft`            | `slot.multiraft`     |
-| `pkg/channel/isr`               | `channel.isr`        |
-| `pkg/channel/node`              | `channel.node`       |
+| `pkg/channel`                   | `channel`            |
+| `pkg/channel/replica`           | `channel.replica`    |
+| `pkg/channel/runtime`           | `channel.runtime`    |
+| `pkg/channel/store`             | `channel.store`      |
+| `pkg/channel/handler`           | `channel.handler`    |
+| `pkg/channel/transport`         | `channel.transport`  |
 | `pkg/raftlog`                   | `raftlog`            |
 | `pkg/transport`                 | `transport`          |
 | `internal/app`                  | `app`                |

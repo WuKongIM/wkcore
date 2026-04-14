@@ -827,18 +827,10 @@ func appDataPlaneAdapterMaxPendingFetch(t *testing.T, app *App) int {
 	t.Helper()
 
 	require.NotNil(t, app.isrTransport)
-	bridge := reflect.ValueOf(app.isrTransport).Elem()
-	adapterField := bridge.FieldByName("adapter")
-	if !adapterField.IsValid() {
-		t.Fatal("isrTransportBridge is missing adapter field")
-	}
-	if adapterField.IsNil() {
-		t.Fatal("isr transport adapter is nil")
-	}
-	adapter := adapterField.Elem()
-	maxPending := adapter.FieldByName("maxPending")
+	transport := reflect.ValueOf(app.isrTransport).Elem()
+	maxPending := transport.FieldByName("maxPending")
 	if !maxPending.IsValid() {
-		t.Fatal("data plane adapter is missing maxPending field")
+		t.Fatal("channel transport is missing maxPending field")
 	}
 	return int(maxPending.Int())
 }
