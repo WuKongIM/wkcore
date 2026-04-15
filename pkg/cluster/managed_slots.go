@@ -2,14 +2,12 @@ package cluster
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sync"
 	"time"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
-	raft "go.etcd.io/raft/v3"
 )
 
 const (
@@ -17,9 +15,6 @@ const (
 	managedSlotRPCStatus         string = "status"
 	managedSlotRPCChangeConfig   string = "change_config"
 	managedSlotRPCTransferLeader string = "transfer_leader"
-	managedSlotLeaderWaitTimeout        = 5 * time.Second
-	managedSlotCatchUpTimeout           = 5 * time.Second
-	managedSlotLeaderMoveTimeout        = 5 * time.Second
 )
 
 type managedSlotRPCRequest struct {
@@ -51,486 +46,187 @@ type managedSlotStatus struct {
 type managedSlotStatusTestHook func(c *Cluster, nodeID multiraft.NodeID, slotID multiraft.SlotID) (managedSlotStatus, error, bool)
 type managedSlotLeaderTestHook func(c *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool)
 
-var managedSlotExecutionTestHook struct {
-	mu   sync.RWMutex
-	hook ManagedSlotExecutionTestHook
+type managedSlotHooks struct {
+	mu        sync.RWMutex
+	execution ManagedSlotExecutionTestHook
+	status    managedSlotStatusTestHook
+	leader    managedSlotLeaderTestHook
 }
 
-var managedSlotStatusHooks struct {
-	mu   sync.RWMutex
-	hook managedSlotStatusTestHook
-}
-
-var managedSlotLeaderHooks struct {
-	mu   sync.RWMutex
-	hook managedSlotLeaderTestHook
-}
-
-func SetManagedSlotExecutionTestHook(hook ManagedSlotExecutionTestHook) func() {
-	managedSlotExecutionTestHook.mu.Lock()
-	prev := managedSlotExecutionTestHook.hook
-	managedSlotExecutionTestHook.hook = hook
-	managedSlotExecutionTestHook.mu.Unlock()
+func (c *Cluster) SetManagedSlotExecutionTestHook(hook ManagedSlotExecutionTestHook) func() {
+	if c == nil {
+		return func() {}
+	}
+	c.managedSlotHooks.mu.Lock()
+	prev := c.managedSlotHooks.execution
+	c.managedSlotHooks.execution = hook
+	c.managedSlotHooks.mu.Unlock()
 	return func() {
-		managedSlotExecutionTestHook.mu.Lock()
-		managedSlotExecutionTestHook.hook = prev
-		managedSlotExecutionTestHook.mu.Unlock()
+		c.managedSlotHooks.mu.Lock()
+		c.managedSlotHooks.execution = prev
+		c.managedSlotHooks.mu.Unlock()
 	}
 }
 
-func setManagedSlotStatusTestHook(hook managedSlotStatusTestHook) func() {
-	managedSlotStatusHooks.mu.Lock()
-	prev := managedSlotStatusHooks.hook
-	managedSlotStatusHooks.hook = hook
-	managedSlotStatusHooks.mu.Unlock()
+func (c *Cluster) setManagedSlotStatusTestHook(hook managedSlotStatusTestHook) func() {
+	if c == nil {
+		return func() {}
+	}
+	c.managedSlotHooks.mu.Lock()
+	prev := c.managedSlotHooks.status
+	c.managedSlotHooks.status = hook
+	c.managedSlotHooks.mu.Unlock()
 	return func() {
-		managedSlotStatusHooks.mu.Lock()
-		managedSlotStatusHooks.hook = prev
-		managedSlotStatusHooks.mu.Unlock()
+		c.managedSlotHooks.mu.Lock()
+		c.managedSlotHooks.status = prev
+		c.managedSlotHooks.mu.Unlock()
 	}
 }
 
-func setManagedSlotLeaderTestHook(hook managedSlotLeaderTestHook) func() {
-	managedSlotLeaderHooks.mu.Lock()
-	prev := managedSlotLeaderHooks.hook
-	managedSlotLeaderHooks.hook = hook
-	managedSlotLeaderHooks.mu.Unlock()
+func (c *Cluster) setManagedSlotLeaderTestHook(hook managedSlotLeaderTestHook) func() {
+	if c == nil {
+		return func() {}
+	}
+	c.managedSlotHooks.mu.Lock()
+	prev := c.managedSlotHooks.leader
+	c.managedSlotHooks.leader = hook
+	c.managedSlotHooks.mu.Unlock()
 	return func() {
-		managedSlotLeaderHooks.mu.Lock()
-		managedSlotLeaderHooks.hook = prev
-		managedSlotLeaderHooks.mu.Unlock()
+		c.managedSlotHooks.mu.Lock()
+		c.managedSlotHooks.leader = prev
+		c.managedSlotHooks.mu.Unlock()
 	}
 }
 
 func (c *Cluster) handleManagedSlotRPC(ctx context.Context, body []byte) ([]byte, error) {
-	var req managedSlotRPCRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		return nil, err
-	}
+	return (&slotHandler{cluster: c}).Handle(ctx, body)
+}
 
-	switch req.Kind {
-	case managedSlotRPCStatus:
-		status, err := c.runtime.Status(multiraft.SlotID(req.SlotID))
-		switch {
-		case err == nil:
-			return json.Marshal(managedSlotRPCResponse{
-				LeaderID:     uint64(status.LeaderID),
-				CommitIndex:  status.CommitIndex,
-				AppliedIndex: status.AppliedIndex,
-			})
-		case errors.Is(err, multiraft.ErrSlotNotFound):
-			return json.Marshal(managedSlotRPCResponse{NotFound: true})
-		default:
-			return json.Marshal(managedSlotRPCResponse{Message: err.Error()})
-		}
-	case managedSlotRPCChangeConfig:
-		err := c.changeSlotConfigLocal(ctx, multiraft.SlotID(req.SlotID), multiraft.ConfigChange{
-			Type:   req.ChangeType,
-			NodeID: multiraft.NodeID(req.NodeID),
-		})
-		return marshalManagedSlotError(err)
-	case managedSlotRPCTransferLeader:
-		err := c.transferSlotLeaderLocal(ctx, multiraft.SlotID(req.SlotID), multiraft.NodeID(req.TargetNode))
-		return marshalManagedSlotError(err)
-	default:
-		return nil, ErrInvalidConfig
+func (c *Cluster) slotExecution() *slotExecutor {
+	if c == nil {
+		return nil
 	}
+	if c.slotExecutor == nil {
+		c.slotExecutor = newSlotExecutor(c)
+	}
+	return c.slotExecutor
+}
+
+func (c *Cluster) managedSlots() *slotManager {
+	if c == nil {
+		return nil
+	}
+	if c.slotMgr == nil {
+		c.slotMgr = newSlotManager(c)
+	}
+	return c.slotMgr
 }
 
 func marshalManagedSlotError(err error) ([]byte, error) {
 	switch {
 	case err == nil:
-		return json.Marshal(managedSlotRPCResponse{})
+		return encodeManagedSlotResponse(managedSlotRPCResponse{})
 	case errors.Is(err, ErrNotLeader):
-		return json.Marshal(managedSlotRPCResponse{NotLeader: true})
+		return encodeManagedSlotResponse(managedSlotRPCResponse{NotLeader: true})
 	case errors.Is(err, ErrSlotNotFound), errors.Is(err, multiraft.ErrSlotNotFound):
-		return json.Marshal(managedSlotRPCResponse{NotFound: true})
+		return encodeManagedSlotResponse(managedSlotRPCResponse{NotFound: true})
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
-		return json.Marshal(managedSlotRPCResponse{Timeout: true})
+		return encodeManagedSlotResponse(managedSlotRPCResponse{Timeout: true})
 	default:
-		return json.Marshal(managedSlotRPCResponse{Message: err.Error()})
+		return encodeManagedSlotResponse(managedSlotRPCResponse{Message: err.Error()})
 	}
 }
 
 func (c *Cluster) ensureManagedSlotLocal(ctx context.Context, slotID multiraft.SlotID, desiredPeers []uint64, hasRuntimeView bool, bootstrapAuthorized bool) error {
-	if c.runtime == nil {
-		return ErrNotStarted
-	}
-	if _, err := c.runtime.Status(slotID); err == nil {
-		c.setRuntimePeers(slotID, nodeIDsFromUint64s(desiredPeers))
-		return nil
-	} else if !errors.Is(err, multiraft.ErrSlotNotFound) {
-		return err
-	}
-
-	storage, err := c.cfg.NewStorage(slotID)
-	if err != nil {
-		return err
-	}
-	sm, err := c.cfg.NewStateMachine(slotID)
-	if err != nil {
-		return err
-	}
-	opts := multiraft.SlotOptions{
-		ID:           slotID,
-		Storage:      storage,
-		StateMachine: sm,
-	}
-
-	initialState, err := storage.InitialState(ctx)
-	if err != nil {
-		return err
-	}
-	if !raft.IsEmptyHardState(initialState.HardState) {
-		peers := nodeIDsFromUint64s(initialState.ConfState.Voters)
-		if len(peers) == 0 {
-			peers = nodeIDsFromUint64s(desiredPeers)
-		}
-		c.setRuntimePeers(slotID, peers)
-		if err := c.runtime.OpenSlot(ctx, opts); err != nil && !errors.Is(err, multiraft.ErrSlotExists) {
-			return err
-		}
-		return nil
-	}
-
-	peers := nodeIDsFromUint64s(desiredPeers)
-	if bootstrapAuthorized {
-		c.setRuntimePeers(slotID, peers)
-		if err := c.runtime.BootstrapSlot(ctx, multiraft.BootstrapSlotRequest{
-			Slot:   opts,
-			Voters: peers,
-		}); err != nil && !errors.Is(err, multiraft.ErrSlotExists) {
-			return err
-		}
-		return nil
-	}
-	if !hasRuntimeView {
-		return nil
-	}
-	c.setRuntimePeers(slotID, peers)
-	if err := c.runtime.OpenSlot(ctx, opts); err != nil && !errors.Is(err, multiraft.ErrSlotExists) {
-		return err
-	}
-	return nil
+	return c.managedSlots().ensureLocal(ctx, slotID, desiredPeers, hasRuntimeView, bootstrapAuthorized)
 }
 
-func (c *Cluster) executeReconcileTask(ctx context.Context, assignment assignmentTaskState) error {
-	slotID := multiraft.SlotID(assignment.assignment.SlotID)
-	c.setRuntimePeers(slotID, nodeIDsFromUint64s(assignment.assignment.DesiredPeers))
-
-	managedSlotExecutionTestHook.mu.RLock()
-	hook := managedSlotExecutionTestHook.hook
-	managedSlotExecutionTestHook.mu.RUnlock()
-	if hook != nil {
-		if err := hook(uint32(slotID), assignment.task); err != nil {
-			return err
-		}
+func (c *Cluster) executeReconcileTask(ctx context.Context, assignment assignmentTaskState) (err error) {
+	executor := c.slotExecution()
+	if executor == nil {
+		return ErrNotStarted
 	}
-
-	switch assignment.task.Kind {
-	case controllermeta.TaskKindBootstrap:
-		return c.waitForManagedSlotLeader(ctx, slotID)
-	case controllermeta.TaskKindRepair, controllermeta.TaskKindRebalance:
-		if err := c.changeSlotConfig(ctx, slotID, multiraft.ConfigChange{
-			Type:   multiraft.AddLearner,
-			NodeID: multiraft.NodeID(assignment.task.TargetNode),
-		}); err != nil {
-			return err
-		}
-		if err := c.waitForManagedSlotCatchUp(ctx, slotID, multiraft.NodeID(assignment.task.TargetNode)); err != nil {
-			return err
-		}
-		if err := c.changeSlotConfig(ctx, slotID, multiraft.ConfigChange{
-			Type:   multiraft.PromoteLearner,
-			NodeID: multiraft.NodeID(assignment.task.TargetNode),
-		}); err != nil {
-			return err
-		}
-		if err := c.waitForManagedSlotCatchUp(ctx, slotID, multiraft.NodeID(assignment.task.TargetNode)); err != nil {
-			return err
-		}
-		if err := c.ensureLeaderMovedOffSource(
-			ctx,
-			slotID,
-			multiraft.NodeID(assignment.task.SourceNode),
-			multiraft.NodeID(assignment.task.TargetNode),
-		); err != nil {
-			return err
-		}
-		if assignment.task.SourceNode != 0 {
-			if err := c.changeSlotConfig(ctx, slotID, multiraft.ConfigChange{
-				Type:   multiraft.RemoveVoter,
-				NodeID: multiraft.NodeID(assignment.task.SourceNode),
-			}); err != nil {
-				return err
-			}
-		}
-		return nil
-	default:
-		return nil
-	}
+	return executor.Execute(ctx, assignment)
 }
 
 func (c *Cluster) changeSlotConfig(ctx context.Context, slotID multiraft.SlotID, change multiraft.ConfigChange) error {
-	const retries = 3
-	for attempt := 0; attempt < retries; attempt++ {
-		leaderID, err := c.LeaderOf(slotID)
-		if err != nil {
-			return err
-		}
-		if c.IsLocal(leaderID) {
-			err = c.changeSlotConfigLocal(ctx, slotID, change)
-		} else {
-			err = c.changeSlotConfigRemote(ctx, leaderID, slotID, change)
-		}
-		if !errors.Is(err, ErrNotLeader) {
-			return err
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return ErrLeaderNotStable
+	return c.managedSlots().changeConfig(ctx, slotID, change)
 }
 
 func (c *Cluster) changeSlotConfigLocal(ctx context.Context, slotID multiraft.SlotID, change multiraft.ConfigChange) error {
-	future, err := c.runtime.ChangeConfig(ctx, slotID, change)
-	if err != nil {
-		if errors.Is(err, multiraft.ErrSlotNotFound) {
-			return ErrSlotNotFound
-		}
-		if errors.Is(err, multiraft.ErrNotLeader) {
-			return ErrNotLeader
-		}
-		return err
-	}
-	_, err = future.Wait(ctx)
-	if errors.Is(err, multiraft.ErrNotLeader) {
-		return ErrNotLeader
-	}
-	if errors.Is(err, multiraft.ErrSlotNotFound) {
-		return ErrSlotNotFound
-	}
-	return err
+	return c.managedSlots().changeConfigLocal(ctx, slotID, change)
 }
 
 func (c *Cluster) changeSlotConfigRemote(ctx context.Context, leaderID multiraft.NodeID, slotID multiraft.SlotID, change multiraft.ConfigChange) error {
-	body, err := json.Marshal(managedSlotRPCRequest{
-		Kind:       managedSlotRPCChangeConfig,
-		SlotID:     uint32(slotID),
-		ChangeType: change.Type,
-		NodeID:     uint64(change.NodeID),
-	})
-	if err != nil {
-		return err
-	}
-	respBody, err := c.RPCService(ctx, leaderID, slotID, rpcServiceManagedSlot, body)
-	if err != nil {
-		return err
-	}
-	return decodeManagedSlotResponse(respBody)
+	return c.managedSlots().changeConfigRemote(ctx, leaderID, slotID, change)
 }
 
 func (c *Cluster) transferSlotLeadership(ctx context.Context, slotID multiraft.SlotID, target multiraft.NodeID) error {
-	const retries = 3
-	for attempt := 0; attempt < retries; attempt++ {
-		leaderID, err := c.LeaderOf(slotID)
-		if err != nil {
-			return err
-		}
-		if c.IsLocal(leaderID) {
-			err = c.transferSlotLeaderLocal(ctx, slotID, target)
-		} else {
-			err = c.transferSlotLeaderRemote(ctx, leaderID, slotID, target)
-		}
-		if !errors.Is(err, ErrNotLeader) {
-			return err
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return ErrLeaderNotStable
+	return c.managedSlots().transferLeadership(ctx, slotID, target)
 }
 
 func (c *Cluster) transferSlotLeaderLocal(ctx context.Context, slotID multiraft.SlotID, target multiraft.NodeID) error {
-	err := c.runtime.TransferLeadership(ctx, slotID, target)
-	if errors.Is(err, multiraft.ErrSlotNotFound) {
-		return ErrSlotNotFound
-	}
-	return err
+	return c.managedSlots().transferLeaderLocal(ctx, slotID, target)
 }
 
 func (c *Cluster) transferSlotLeaderRemote(ctx context.Context, leaderID multiraft.NodeID, slotID multiraft.SlotID, target multiraft.NodeID) error {
-	body, err := json.Marshal(managedSlotRPCRequest{
-		Kind:       managedSlotRPCTransferLeader,
-		SlotID:     uint32(slotID),
-		TargetNode: uint64(target),
-	})
-	if err != nil {
-		return err
-	}
-	respBody, err := c.RPCService(ctx, leaderID, slotID, rpcServiceManagedSlot, body)
-	if err != nil {
-		return err
-	}
-	return decodeManagedSlotResponse(respBody)
+	return c.managedSlots().transferLeaderRemote(ctx, leaderID, slotID, target)
 }
 
 func (c *Cluster) waitForManagedSlotLeader(ctx context.Context, slotID multiraft.SlotID) error {
-	deadline := time.Now().Add(managedSlotLeaderWaitTimeout)
-	for {
-		if time.Now().After(deadline) {
-			return context.DeadlineExceeded
-		}
-		if _, err := c.LeaderOf(slotID); err == nil {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
+	return c.managedSlots().waitForLeader(ctx, slotID)
 }
 
 func (c *Cluster) waitForManagedSlotCatchUp(ctx context.Context, slotID multiraft.SlotID, targetNode multiraft.NodeID) error {
-	deadline := time.Now().Add(managedSlotCatchUpTimeout)
-	for {
-		if time.Now().After(deadline) {
-			return context.DeadlineExceeded
-		}
-		targetStatus, err := c.managedSlotStatusOnNode(ctx, targetNode, slotID)
-		if err == nil {
-			leaderID, leaderErr := c.currentManagedSlotLeader(slotID)
-			if leaderErr == nil && leaderID != 0 {
-				leaderStatus, statusErr := c.managedSlotStatusOnNode(ctx, leaderID, slotID)
-				if statusErr == nil && targetStatus.AppliedIndex >= leaderStatus.CommitIndex {
-					return nil
-				}
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
+	return c.managedSlots().waitForCatchUp(ctx, slotID, targetNode)
 }
 
 func (c *Cluster) currentManagedSlotLeader(slotID multiraft.SlotID) (multiraft.NodeID, error) {
-	managedSlotLeaderHooks.mu.RLock()
-	hook := managedSlotLeaderHooks.hook
-	managedSlotLeaderHooks.mu.RUnlock()
-	if hook != nil {
-		if leaderID, err, handled := hook(c, slotID); handled {
-			return leaderID, err
-		}
-	}
-	return c.LeaderOf(slotID)
+	return c.managedSlots().currentLeader(slotID)
 }
 
 func (c *Cluster) ensureLeaderMovedOffSource(ctx context.Context, slotID multiraft.SlotID, sourceNode, targetNode multiraft.NodeID) error {
-	if sourceNode == 0 || targetNode == 0 {
-		return nil
-	}
-	deadline := time.Now().Add(managedSlotLeaderMoveTimeout)
-	for {
-		if time.Now().After(deadline) {
-			return ErrLeaderNotStable
-		}
-		leaderID, err := c.LeaderOf(slotID)
-		if err != nil {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(100 * time.Millisecond):
-			}
-			continue
-		}
-		if leaderID != sourceNode {
-			return nil
-		}
-		if err := c.transferSlotLeadership(ctx, slotID, targetNode); err != nil && !errors.Is(err, ErrNotLeader) {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
+	return c.managedSlots().ensureLeaderMovedOffSource(ctx, slotID, sourceNode, targetNode)
 }
 
 func (c *Cluster) managedSlotStatusOnNode(ctx context.Context, nodeID multiraft.NodeID, slotID multiraft.SlotID) (managedSlotStatus, error) {
-	managedSlotStatusHooks.mu.RLock()
-	hook := managedSlotStatusHooks.hook
-	managedSlotStatusHooks.mu.RUnlock()
-	if hook != nil {
-		if status, err, handled := hook(c, nodeID, slotID); handled {
-			return status, err
-		}
-	}
-
-	if c.IsLocal(nodeID) {
-		return c.localManagedSlotStatus(slotID)
-	}
-
-	body, err := json.Marshal(managedSlotRPCRequest{
-		Kind:   managedSlotRPCStatus,
-		SlotID: uint32(slotID),
-	})
-	if err != nil {
-		return managedSlotStatus{}, err
-	}
-	respBody, err := c.RPCService(ctx, nodeID, slotID, rpcServiceManagedSlot, body)
-	if err != nil {
-		return managedSlotStatus{}, err
-	}
-	var resp managedSlotRPCResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return managedSlotStatus{}, err
-	}
-	if err := decodeManagedSlotResponse(respBody); err != nil {
-		return managedSlotStatus{}, err
-	}
-	return managedSlotStatus{
-		LeaderID:     multiraft.NodeID(resp.LeaderID),
-		CommitIndex:  resp.CommitIndex,
-		AppliedIndex: resp.AppliedIndex,
-	}, nil
+	return c.managedSlots().statusOnNode(ctx, nodeID, slotID)
 }
 
 func (c *Cluster) localManagedSlotStatus(slotID multiraft.SlotID) (managedSlotStatus, error) {
-	if c.runtime == nil {
-		return managedSlotStatus{}, ErrNotStarted
-	}
-	status, err := c.runtime.Status(slotID)
-	if err != nil {
-		if errors.Is(err, multiraft.ErrSlotNotFound) {
-			return managedSlotStatus{}, ErrSlotNotFound
-		}
-		return managedSlotStatus{}, err
-	}
-	return managedSlotStatus{
-		LeaderID:     status.LeaderID,
-		CommitIndex:  status.CommitIndex,
-		AppliedIndex: status.AppliedIndex,
-	}, nil
+	return c.managedSlots().localStatus(slotID)
 }
 
-func decodeManagedSlotResponse(body []byte) error {
-	var resp managedSlotRPCResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return err
+func reconcileStepName(task controllermeta.ReconcileTask) string {
+	if name := taskStepName(task.Step); name != "" {
+		return name
 	}
-	switch {
-	case resp.NotLeader:
-		return ErrNotLeader
-	case resp.NotFound:
-		return ErrSlotNotFound
-	case resp.Timeout:
-		return context.DeadlineExceeded
-	case resp.Message != "":
-		return errors.New(resp.Message)
+	switch task.Kind {
+	case controllermeta.TaskKindBootstrap:
+		return "bootstrap"
+	case controllermeta.TaskKindRepair:
+		return "repair"
+	case controllermeta.TaskKindRebalance:
+		return "rebalance"
 	default:
-		return nil
+		return "unknown"
+	}
+}
+
+func taskStepName(step controllermeta.TaskStep) string {
+	switch step {
+	case controllermeta.TaskStepAddLearner:
+		return "add_learner"
+	case controllermeta.TaskStepCatchUp:
+		return "catch_up"
+	case controllermeta.TaskStepPromote:
+		return "promote"
+	case controllermeta.TaskStepTransferLeader:
+		return "transfer_leader"
+	case controllermeta.TaskStepRemoveOld:
+		return "remove_old"
+	default:
+		return ""
 	}
 }
 
@@ -541,6 +237,30 @@ func assignmentContainsPeer(peers []uint64, nodeID uint64) bool {
 		}
 	}
 	return false
+}
+
+func nodeIDsContain(ids []multiraft.NodeID, nodeID multiraft.NodeID) bool {
+	for _, id := range ids {
+		if id == nodeID {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Cluster) runtimePeersForLocalSlot(slotID multiraft.SlotID, desiredPeers []uint64) []multiraft.NodeID {
+	peers := nodeIDsFromUint64s(desiredPeers)
+	if c == nil {
+		return peers
+	}
+	if assignmentContainsPeer(desiredPeers, uint64(c.cfg.NodeID)) {
+		return peers
+	}
+	currentPeers, ok := c.getRuntimePeers(slotID)
+	if ok && nodeIDsContain(currentPeers, c.cfg.NodeID) {
+		return currentPeers
+	}
+	return peers
 }
 
 func reconcileTaskRunnable(now time.Time, task controllermeta.ReconcileTask) bool {

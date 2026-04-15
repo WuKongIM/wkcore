@@ -1,0 +1,164 @@
+package cluster
+
+import (
+	"reflect"
+	"testing"
+	"time"
+
+	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
+	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
+)
+
+func TestControllerCodecRoundTripRequest(t *testing.T) {
+	reportedAt := time.Unix(1710000000, 1234)
+	body, err := encodeControllerRequest(controllerRPCRequest{
+		Kind:   controllerRPCHeartbeat,
+		SlotID: 7,
+		Report: &slotcontroller.AgentReport{
+			NodeID:         9,
+			Addr:           "10.0.0.9:1111",
+			ObservedAt:     reportedAt,
+			CapacityWeight: 3,
+			Runtime: &controllermeta.SlotRuntimeView{
+				SlotID:              7,
+				CurrentPeers:        []uint64{1, 2, 3},
+				LeaderID:            2,
+				HealthyVoters:       2,
+				HasQuorum:           true,
+				ObservedConfigEpoch: 11,
+				LastReportAt:        reportedAt.Add(time.Second),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("encodeControllerRequest() error = %v", err)
+	}
+
+	req, err := decodeControllerRequest(body)
+	if err != nil {
+		t.Fatalf("decodeControllerRequest() error = %v", err)
+	}
+	if req.Kind != controllerRPCHeartbeat || req.SlotID != 7 {
+		t.Fatalf("decoded request header = %+v", req)
+	}
+	if req.Report == nil || !reflect.DeepEqual(*req.Report, slotcontroller.AgentReport{
+		NodeID:         9,
+		Addr:           "10.0.0.9:1111",
+		ObservedAt:     reportedAt,
+		CapacityWeight: 3,
+		Runtime: &controllermeta.SlotRuntimeView{
+			SlotID:              7,
+			CurrentPeers:        []uint64{1, 2, 3},
+			LeaderID:            2,
+			HealthyVoters:       2,
+			HasQuorum:           true,
+			ObservedConfigEpoch: 11,
+			LastReportAt:        reportedAt.Add(time.Second),
+		},
+	}) {
+		t.Fatalf("decoded report = %+v", req.Report)
+	}
+}
+
+func TestControllerCodecRoundTripResponsePayloads(t *testing.T) {
+	nextRunAt := time.Unix(1710001111, 9876)
+	cases := []struct {
+		name string
+		kind string
+		resp controllerRPCResponse
+	}{
+		{
+			name: "assignments",
+			kind: controllerRPCListAssignments,
+			resp: controllerRPCResponse{
+				Assignments: []controllermeta.SlotAssignment{{
+					SlotID:         3,
+					DesiredPeers:   []uint64{2, 4, 6},
+					ConfigEpoch:    7,
+					BalanceVersion: 8,
+				}},
+			},
+		},
+		{
+			name: "nodes",
+			kind: controllerRPCListNodes,
+			resp: controllerRPCResponse{
+				Nodes: []controllermeta.ClusterNode{{
+					NodeID:          4,
+					Addr:            "10.0.0.4:1111",
+					Status:          controllermeta.NodeStatusDraining,
+					LastHeartbeatAt: time.Unix(1710002222, 10),
+					CapacityWeight:  5,
+				}},
+			},
+		},
+		{
+			name: "runtime views",
+			kind: controllerRPCListRuntimeViews,
+			resp: controllerRPCResponse{
+				RuntimeViews: []controllermeta.SlotRuntimeView{{
+					SlotID:              8,
+					CurrentPeers:        []uint64{1, 3, 8},
+					LeaderID:            3,
+					HealthyVoters:       2,
+					HasQuorum:           true,
+					ObservedConfigEpoch: 21,
+					LastReportAt:        time.Unix(1710003333, 20),
+				}},
+			},
+		},
+		{
+			name: "task",
+			kind: controllerRPCGetTask,
+			resp: controllerRPCResponse{
+				Task: &controllermeta.ReconcileTask{
+					SlotID:     9,
+					Kind:       controllermeta.TaskKindRepair,
+					Step:       controllermeta.TaskStepTransferLeader,
+					SourceNode: 1,
+					TargetNode: 2,
+					Attempt:    3,
+					NextRunAt:  nextRunAt,
+					Status:     controllermeta.TaskStatusRetrying,
+					LastError:  "retry me",
+				},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := encodeControllerResponse(tc.kind, tc.resp)
+			if err != nil {
+				t.Fatalf("encodeControllerResponse() error = %v", err)
+			}
+
+			got, err := decodeControllerResponse(tc.kind, body)
+			if err != nil {
+				t.Fatalf("decodeControllerResponse() error = %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.resp) {
+				t.Fatalf("decoded response = %+v, want %+v", got, tc.resp)
+			}
+		})
+	}
+}
+
+func TestControllerCodecResponseFlags(t *testing.T) {
+	body, err := encodeControllerResponse(controllerRPCGetTask, controllerRPCResponse{
+		NotLeader: true,
+		NotFound:  true,
+		LeaderID:  12,
+	})
+	if err != nil {
+		t.Fatalf("encodeControllerResponse() error = %v", err)
+	}
+
+	resp, err := decodeControllerResponse(controllerRPCGetTask, body)
+	if err != nil {
+		t.Fatalf("decodeControllerResponse() error = %v", err)
+	}
+	if !resp.NotLeader || !resp.NotFound || resp.LeaderID != 12 {
+		t.Fatalf("decoded response flags = %+v", resp)
+	}
+}

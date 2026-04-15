@@ -23,8 +23,8 @@ func TestObservationPeersForGroupPreferRuntimeMembership(t *testing.T) {
 				{SlotID: 7, Peers: []multiraft.NodeID{1, 2, 3}},
 			},
 		},
-		assignments:  newAssignmentCache(),
-		runtimePeers: make(map[multiraft.SlotID][]multiraft.NodeID),
+		assignments: newAssignmentCache(),
+		runState:    newRuntimeState(),
 	}
 	cluster.assignments.SetAssignments([]controllermeta.SlotAssignment{
 		{SlotID: 7, DesiredPeers: []uint64{2, 3}},
@@ -41,8 +41,10 @@ func TestControllerReportAddrUsesBoundListener(t *testing.T) {
 	srv := newStartedTestServer(t)
 
 	cluster := &Cluster{
-		cfg:    Config{ListenAddr: "127.0.0.1:0"},
-		server: srv,
+		cfg: Config{ListenAddr: "127.0.0.1:0"},
+		transportResources: transportResources{
+			server: srv,
+		},
 	}
 
 	if got, want := cluster.controllerReportAddr(), srv.Listener().Addr().String(); got != want {
@@ -69,10 +71,7 @@ func TestListObservedRuntimeViewsUsesControllerClientWhenAvailable(t *testing.T)
 	}
 
 	sentinel := errors.New("controller client called")
-	cluster := &Cluster{
-		controllerMeta:   store,
-		controllerClient: fakeControllerClient{listRuntimeViewsErr: sentinel},
-	}
+	cluster := newTestClusterWithController(store, 0, fakeControllerClient{listRuntimeViewsErr: sentinel})
 
 	_, err = cluster.ListObservedRuntimeViews(context.Background())
 	if !errors.Is(err, sentinel) {
@@ -99,11 +98,7 @@ func TestListObservedRuntimeViewsFallsBackToLocalControllerMetaWhenLeaderUnavail
 		t.Fatalf("UpsertRuntimeView() error = %v", err)
 	}
 
-	cluster := &Cluster{
-		controllerMeta:              store,
-		controllerLeaderWaitTimeout: testControllerLeaderWaitTimeout,
-		controllerClient:            fakeControllerClient{listRuntimeViewsErr: ErrNoLeader},
-	}
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, fakeControllerClient{listRuntimeViewsErr: ErrNoLeader})
 
 	views, err := cluster.ListObservedRuntimeViews(context.Background())
 	if err != nil {
@@ -132,11 +127,7 @@ func TestListObservedRuntimeViewsFallsBackToLocalControllerMetaWhenControllerRea
 	if err := store.UpsertRuntimeView(context.Background(), view); err != nil {
 		t.Fatalf("UpsertRuntimeView() error = %v", err)
 	}
-	cluster := &Cluster{
-		controllerMeta:              store,
-		controllerLeaderWaitTimeout: testControllerLeaderWaitTimeout,
-		controllerClient:            fakeControllerClient{listRuntimeViewsErr: context.DeadlineExceeded},
-	}
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, fakeControllerClient{listRuntimeViewsErr: context.DeadlineExceeded})
 
 	views, err := cluster.ListObservedRuntimeViews(context.Background())
 	if err != nil {
@@ -166,11 +157,7 @@ func TestListSlotAssignmentsFallsBackToLocalControllerMetaWhenLeaderUnavailable(
 		t.Fatalf("UpsertAssignment() error = %v", err)
 	}
 
-	cluster := &Cluster{
-		controllerMeta:              store,
-		controllerLeaderWaitTimeout: testControllerLeaderWaitTimeout,
-		controllerClient:            fakeControllerClient{assignmentsErr: ErrNoLeader},
-	}
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, fakeControllerClient{assignmentsErr: ErrNoLeader})
 
 	assignments, err := cluster.ListSlotAssignments(context.Background())
 	if err != nil {
@@ -200,11 +187,7 @@ func TestListSlotAssignmentsFallsBackToLocalControllerMetaWhenControllerReadTime
 		t.Fatalf("UpsertAssignment() error = %v", err)
 	}
 
-	cluster := &Cluster{
-		controllerMeta:              store,
-		controllerLeaderWaitTimeout: testControllerLeaderWaitTimeout,
-		controllerClient:            fakeControllerClient{assignmentsErr: context.DeadlineExceeded},
-	}
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, fakeControllerClient{assignmentsErr: context.DeadlineExceeded})
 
 	assignments, err := cluster.ListSlotAssignments(context.Background())
 	if err != nil {
@@ -221,10 +204,12 @@ func TestManagedSlotsReadyAllowsIdleLocalNode(t *testing.T) {
 			NodeID:    1,
 			SlotCount: 2,
 		},
-		controllerClient: fakeControllerClient{
-			assignments: []controllermeta.SlotAssignment{
-				{SlotID: 1, DesiredPeers: []uint64{2, 3}},
-				{SlotID: 2, DesiredPeers: []uint64{2, 3}},
+		controllerResources: controllerResources{
+			controllerClient: fakeControllerClient{
+				assignments: []controllermeta.SlotAssignment{
+					{SlotID: 1, DesiredPeers: []uint64{2, 3}},
+					{SlotID: 2, DesiredPeers: []uint64{2, 3}},
+				},
 			},
 		},
 	}
@@ -235,6 +220,38 @@ func TestManagedSlotsReadyAllowsIdleLocalNode(t *testing.T) {
 	}
 	if !ready {
 		t.Fatal("managedSlotsReady() = false, want true when local node has no assigned slots")
+	}
+}
+
+func TestWaitForManagedSlotsReadyUsesConfiguredObservationInterval(t *testing.T) {
+	start := time.Now()
+	cluster := &Cluster{
+		cfg: Config{
+			NodeID:    1,
+			SlotCount: 1,
+			Timeouts: Timeouts{
+				ControllerObservation: 40 * time.Millisecond,
+			},
+		},
+		controllerResources: controllerResources{
+			controllerClient: fakeControllerClient{
+				refreshAssignmentsFn: func(context.Context) ([]controllermeta.SlotAssignment, error) {
+					if time.Since(start) < 15*time.Millisecond {
+						return nil, nil
+					}
+					return []controllermeta.SlotAssignment{
+						{SlotID: 1, DesiredPeers: []uint64{2, 3}},
+					}, nil
+				},
+			},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+
+	if err := cluster.WaitForManagedSlotsReady(ctx); err != nil {
+		t.Fatalf("WaitForManagedSlotsReady() error = %v, want nil", err)
 	}
 }
 
@@ -260,7 +277,7 @@ func TestLocalAssignedGroupIDsFiltersAssignmentsToLocalNode(t *testing.T) {
 	}
 }
 
-func TestGetReconcileTaskFallsBackToLocalControllerMetaWhenLeaderUnavailable(t *testing.T) {
+func TestGetReconcileTaskReturnsLeaderUnavailableWhenControllerLeaderIsUnavailable(t *testing.T) {
 	dir := t.TempDir()
 	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
 	if err != nil {
@@ -281,22 +298,18 @@ func TestGetReconcileTaskFallsBackToLocalControllerMetaWhenLeaderUnavailable(t *
 		t.Fatalf("UpsertTask() error = %v", err)
 	}
 
-	cluster := &Cluster{
-		controllerMeta:              store,
-		controllerLeaderWaitTimeout: testControllerLeaderWaitTimeout,
-		controllerClient:            fakeControllerClient{getTaskErr: ErrNoLeader},
-	}
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, fakeControllerClient{getTaskErr: ErrNoLeader})
 
 	got, err := cluster.GetReconcileTask(context.Background(), task.SlotID)
-	if err != nil {
-		t.Fatalf("GetReconcileTask() error = %v", err)
+	if !errors.Is(err, ErrNoLeader) {
+		t.Fatalf("GetReconcileTask() error = %v, want %v", err, ErrNoLeader)
 	}
-	if got.SlotID != task.SlotID || got.Kind != task.Kind {
-		t.Fatalf("GetReconcileTask() = %+v", got)
+	if got != (controllermeta.ReconcileTask{}) {
+		t.Fatalf("GetReconcileTask() = %+v, want zero task on leader-unavailable read", got)
 	}
 }
 
-func TestGetReconcileTaskFallsBackToLocalControllerMetaWhenControllerReadTimesOut(t *testing.T) {
+func TestGetReconcileTaskReturnsReadTimeoutWhenControllerReadTimesOut(t *testing.T) {
 	dir := t.TempDir()
 	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
 	if err != nil {
@@ -320,18 +333,14 @@ func TestGetReconcileTaskFallsBackToLocalControllerMetaWhenControllerReadTimesOu
 		t.Fatalf("UpsertTask() error = %v", err)
 	}
 
-	cluster := &Cluster{
-		controllerMeta:              store,
-		controllerLeaderWaitTimeout: testControllerLeaderWaitTimeout,
-		controllerClient:            fakeControllerClient{getTaskErr: context.DeadlineExceeded},
-	}
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, fakeControllerClient{getTaskErr: context.DeadlineExceeded})
 
 	got, err := cluster.GetReconcileTask(context.Background(), task.SlotID)
-	if err != nil {
-		t.Fatalf("GetReconcileTask() error = %v", err)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("GetReconcileTask() error = %v, want %v", err, context.DeadlineExceeded)
 	}
-	if got.SlotID != task.SlotID || got.Kind != task.Kind || got.Attempt != task.Attempt {
-		t.Fatalf("GetReconcileTask() = %+v", got)
+	if got != (controllermeta.ReconcileTask{}) {
+		t.Fatalf("GetReconcileTask() = %+v, want zero task on timeout read", got)
 	}
 }
 
@@ -355,11 +364,8 @@ func TestGroupAgentSyncAssignmentsFallsBackToLocalControllerMetaWhenControllerRe
 	}
 
 	cache := newAssignmentCache()
-	cluster := &Cluster{
-		controllerMeta:              store,
-		controllerLeaderWaitTimeout: testControllerLeaderWaitTimeout,
-		assignments:                 cache,
-	}
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, nil)
+	cluster.assignments = cache
 	agent := &slotAgent{
 		cluster: cluster,
 		client:  fakeControllerClient{assignmentsErr: context.DeadlineExceeded},
@@ -465,13 +471,14 @@ func TestGroupAgentShouldExecuteTaskUsesLowestAliveAssignedPeerForBootstrap(t *t
 		4: {NodeID: 4, Status: controllermeta.NodeStatusAlive},
 	}
 
-	if !agent.shouldExecuteTask(assignment, task, nodes) {
+	if !newReconciler(agent).shouldExecuteTask(assignment, task, nodes) {
 		t.Fatal("shouldExecuteTask() = false, want true when local node is lowest alive peer")
 	}
 }
 
 func TestGroupAgentShouldExecuteRepairTaskOnCurrentGroupLeader(t *testing.T) {
-	restoreLeader := setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+	cluster := &Cluster{cfg: Config{NodeID: 4}}
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
 		if slotID != 1 {
 			return 0, nil, false
 		}
@@ -480,7 +487,7 @@ func TestGroupAgentShouldExecuteRepairTaskOnCurrentGroupLeader(t *testing.T) {
 	defer restoreLeader()
 
 	agent := &slotAgent{
-		cluster: &Cluster{cfg: Config{NodeID: 4}},
+		cluster: cluster,
 	}
 	assignment := controllermeta.SlotAssignment{
 		SlotID:       1,
@@ -494,13 +501,14 @@ func TestGroupAgentShouldExecuteRepairTaskOnCurrentGroupLeader(t *testing.T) {
 		Status:     controllermeta.TaskStatusPending,
 	}
 
-	if !agent.shouldExecuteTask(assignment, task, nil) {
+	if !newReconciler(agent).shouldExecuteTask(assignment, task, nil) {
 		t.Fatal("shouldExecuteTask() = false, want true when local node is current slot leader")
 	}
 }
 
 func TestGroupAgentShouldExecuteRepairTaskOnSourceNodeWhenSourceIsAlive(t *testing.T) {
-	restoreLeader := setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+	cluster := &Cluster{cfg: Config{NodeID: 2}}
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
 		if slotID != 1 {
 			return 0, nil, false
 		}
@@ -509,7 +517,7 @@ func TestGroupAgentShouldExecuteRepairTaskOnSourceNodeWhenSourceIsAlive(t *testi
 	defer restoreLeader()
 
 	agent := &slotAgent{
-		cluster: &Cluster{cfg: Config{NodeID: 2}},
+		cluster: cluster,
 	}
 	assignment := controllermeta.SlotAssignment{
 		SlotID:       1,
@@ -526,13 +534,14 @@ func TestGroupAgentShouldExecuteRepairTaskOnSourceNodeWhenSourceIsAlive(t *testi
 		2: {NodeID: 2, Status: controllermeta.NodeStatusDraining},
 	}
 
-	if !agent.shouldExecuteTask(assignment, task, nodes) {
+	if !newReconciler(agent).shouldExecuteTask(assignment, task, nodes) {
 		t.Fatal("shouldExecuteTask() = false, want true when local node is the alive source node")
 	}
 }
 
 func TestGroupAgentShouldExecuteRepairTaskOnLocalSourceWithoutNodeSnapshot(t *testing.T) {
-	restoreLeader := setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+	cluster := &Cluster{cfg: Config{NodeID: 2}}
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
 		if slotID != 1 {
 			return 0, nil, false
 		}
@@ -541,7 +550,7 @@ func TestGroupAgentShouldExecuteRepairTaskOnLocalSourceWithoutNodeSnapshot(t *te
 	defer restoreLeader()
 
 	agent := &slotAgent{
-		cluster: &Cluster{cfg: Config{NodeID: 2}},
+		cluster: cluster,
 	}
 	assignment := controllermeta.SlotAssignment{
 		SlotID:       1,
@@ -556,13 +565,14 @@ func TestGroupAgentShouldExecuteRepairTaskOnLocalSourceWithoutNodeSnapshot(t *te
 		NextRunAt:  time.Now(),
 	}
 
-	if !agent.shouldExecuteTask(assignment, task, nil) {
+	if !newReconciler(agent).shouldExecuteTask(assignment, task, nil) {
 		t.Fatal("shouldExecuteTask() = false, want true when local node is the task source")
 	}
 }
 
 func TestGroupAgentShouldExecuteRepairTaskOnCurrentGroupLeaderWhenSourceUnavailable(t *testing.T) {
-	restoreLeader := setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+	cluster := &Cluster{cfg: Config{NodeID: 3}}
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
 		if slotID != 1 {
 			return 0, nil, false
 		}
@@ -571,7 +581,7 @@ func TestGroupAgentShouldExecuteRepairTaskOnCurrentGroupLeaderWhenSourceUnavaila
 	defer restoreLeader()
 
 	agent := &slotAgent{
-		cluster: &Cluster{cfg: Config{NodeID: 3}},
+		cluster: cluster,
 	}
 	assignment := controllermeta.SlotAssignment{
 		SlotID:       1,
@@ -588,7 +598,7 @@ func TestGroupAgentShouldExecuteRepairTaskOnCurrentGroupLeaderWhenSourceUnavaila
 		2: {NodeID: 2, Status: controllermeta.NodeStatusDead},
 	}
 
-	if !agent.shouldExecuteTask(assignment, task, nodes) {
+	if !newReconciler(agent).shouldExecuteTask(assignment, task, nodes) {
 		t.Fatal("shouldExecuteTask() = false, want true when source node is unavailable and local node is current slot leader")
 	}
 }
@@ -618,7 +628,8 @@ func (c *standaloneAgentTestCluster) Close() {
 }
 
 func TestWaitForManagedSlotCatchUpRequiresTargetToReachLeaderCommit(t *testing.T) {
-	restoreLeader := setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+	cluster := &Cluster{}
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
 		if slotID != 1 {
 			return 0, nil, false
 		}
@@ -626,7 +637,7 @@ func TestWaitForManagedSlotCatchUpRequiresTargetToReachLeaderCommit(t *testing.T
 	})
 	defer restoreLeader()
 
-	restore := setManagedSlotStatusTestHook(func(_ *Cluster, nodeID multiraft.NodeID, slotID multiraft.SlotID) (managedSlotStatus, error, bool) {
+	restore := cluster.setManagedSlotStatusTestHook(func(_ *Cluster, nodeID multiraft.NodeID, slotID multiraft.SlotID) (managedSlotStatus, error, bool) {
 		if slotID != 1 {
 			return managedSlotStatus{}, nil, false
 		}
@@ -644,14 +655,15 @@ func TestWaitForManagedSlotCatchUpRequiresTargetToReachLeaderCommit(t *testing.T
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	err := (&Cluster{}).waitForManagedSlotCatchUp(ctx, 1, 4)
+	err := cluster.waitForManagedSlotCatchUp(ctx, 1, 4)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("waitForManagedSlotCatchUp() error = %v, want %v", err, context.DeadlineExceeded)
 	}
 }
 
 func TestWaitForManagedSlotCatchUpAllowsSlowLearnerCatchUp(t *testing.T) {
-	restoreLeader := setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+	cluster := &Cluster{}
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
 		if slotID != 1 {
 			return 0, nil, false
 		}
@@ -660,7 +672,7 @@ func TestWaitForManagedSlotCatchUpAllowsSlowLearnerCatchUp(t *testing.T) {
 	defer restoreLeader()
 
 	start := time.Now()
-	restore := setManagedSlotStatusTestHook(func(_ *Cluster, nodeID multiraft.NodeID, slotID multiraft.SlotID) (managedSlotStatus, error, bool) {
+	restore := cluster.setManagedSlotStatusTestHook(func(_ *Cluster, nodeID multiraft.NodeID, slotID multiraft.SlotID) (managedSlotStatus, error, bool) {
 		if slotID != 1 {
 			return managedSlotStatus{}, nil, false
 		}
@@ -682,8 +694,124 @@ func TestWaitForManagedSlotCatchUpAllowsSlowLearnerCatchUp(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3500*time.Millisecond)
 	defer cancel()
 
-	if err := (&Cluster{}).waitForManagedSlotCatchUp(ctx, 1, 4); err != nil {
+	if err := cluster.waitForManagedSlotCatchUp(ctx, 1, 4); err != nil {
 		t.Fatalf("waitForManagedSlotCatchUp() error = %v, want nil", err)
+	}
+}
+
+func TestWaitForManagedSlotCatchUpUsesConfiguredPollInterval(t *testing.T) {
+	cluster := &Cluster{
+		cfg: Config{
+			Timeouts: Timeouts{
+				ManagedSlotCatchUp: 60 * time.Millisecond,
+			},
+		},
+	}
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+		if slotID != 1 {
+			return 0, nil, false
+		}
+		return 1, nil, true
+	})
+	defer restoreLeader()
+
+	start := time.Now()
+	restore := cluster.setManagedSlotStatusTestHook(func(_ *Cluster, nodeID multiraft.NodeID, slotID multiraft.SlotID) (managedSlotStatus, error, bool) {
+		if slotID != 1 {
+			return managedSlotStatus{}, nil, false
+		}
+		switch nodeID {
+		case 1:
+			return managedSlotStatus{LeaderID: 1, CommitIndex: 9, AppliedIndex: 9}, nil, true
+		case 4:
+			applied := uint64(3)
+			if time.Since(start) >= 15*time.Millisecond {
+				applied = 9
+			}
+			return managedSlotStatus{LeaderID: 1, CommitIndex: 9, AppliedIndex: applied}, nil, true
+		default:
+			return managedSlotStatus{}, ErrSlotNotFound, true
+		}
+	})
+	defer restore()
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+
+	if err := cluster.waitForManagedSlotCatchUp(ctx, 1, 4); err != nil {
+		t.Fatalf("waitForManagedSlotCatchUp() error = %v, want nil", err)
+	}
+}
+
+func TestManagedSlotExecutionTestHookIsClusterScoped(t *testing.T) {
+	clusterA := &Cluster{}
+	clusterB := &Cluster{}
+	sentinel := errors.New("cluster scoped execution hook")
+
+	restore := clusterA.SetManagedSlotExecutionTestHook(func(slotID uint32, task controllermeta.ReconcileTask) error {
+		if slotID != 1 {
+			t.Fatalf("hook slotID = %d, want 1", slotID)
+		}
+		if task.SlotID != 1 {
+			t.Fatalf("hook task slotID = %d, want 1", task.SlotID)
+		}
+		return sentinel
+	})
+	defer restore()
+
+	state := assignmentTaskState{
+		assignment: controllermeta.SlotAssignment{SlotID: 1},
+		task:       controllermeta.ReconcileTask{SlotID: 1},
+	}
+
+	if err := clusterA.executeReconcileTask(context.Background(), state); !errors.Is(err, sentinel) {
+		t.Fatalf("clusterA.executeReconcileTask() error = %v, want %v", err, sentinel)
+	}
+	if err := clusterB.executeReconcileTask(context.Background(), state); err != nil {
+		t.Fatalf("clusterB.executeReconcileTask() error = %v, want nil", err)
+	}
+}
+
+func TestTimeoutDerivedIntervalsScaleWithOverrides(t *testing.T) {
+	cluster := &Cluster{
+		cfg: Config{
+			Timeouts: Timeouts{
+				ControllerObservation:     40 * time.Millisecond,
+				ForwardRetryBudget:        60 * time.Millisecond,
+				ManagedSlotLeaderWait:     250 * time.Millisecond,
+				ManagedSlotCatchUp:        250 * time.Millisecond,
+				ManagedSlotLeaderMove:     250 * time.Millisecond,
+				ConfigChangeRetryBudget:   60 * time.Millisecond,
+				LeaderTransferRetryBudget: 60 * time.Millisecond,
+			},
+		},
+		controllerResources: controllerResources{
+			controllerLeaderWaitTimeout: 25 * time.Millisecond,
+		},
+	}
+
+	if got := cluster.controllerRetryInterval(); got >= 100*time.Millisecond {
+		t.Fatalf("controllerRetryInterval() = %v, want < %v", got, 100*time.Millisecond)
+	}
+	if got := cluster.managedSlotsReadyPollInterval(); got >= 100*time.Millisecond {
+		t.Fatalf("managedSlotsReadyPollInterval() = %v, want < %v", got, 100*time.Millisecond)
+	}
+	if got := cluster.forwardRetryInterval(); got >= 50*time.Millisecond {
+		t.Fatalf("forwardRetryInterval() = %v, want < %v", got, 50*time.Millisecond)
+	}
+	if got := cluster.configChangeRetryInterval(); got >= 50*time.Millisecond {
+		t.Fatalf("configChangeRetryInterval() = %v, want < %v", got, 50*time.Millisecond)
+	}
+	if got := cluster.leaderTransferRetryInterval(); got >= 50*time.Millisecond {
+		t.Fatalf("leaderTransferRetryInterval() = %v, want < %v", got, 50*time.Millisecond)
+	}
+	if got := cluster.managedSlotLeaderPollInterval(); got >= 100*time.Millisecond {
+		t.Fatalf("managedSlotLeaderPollInterval() = %v, want < %v", got, 100*time.Millisecond)
+	}
+	if got := cluster.managedSlotCatchUpPollInterval(); got >= 100*time.Millisecond {
+		t.Fatalf("managedSlotCatchUpPollInterval() = %v, want < %v", got, 100*time.Millisecond)
+	}
+	if got := cluster.managedSlotLeaderMovePollInterval(); got >= 100*time.Millisecond {
+		t.Fatalf("managedSlotLeaderMovePollInterval() = %v, want < %v", got, 100*time.Millisecond)
 	}
 }
 
@@ -702,4 +830,14 @@ func newStartedTestServer(t *testing.T) *transport.Server {
 	}
 	t.Cleanup(srv.Stop)
 	return srv
+}
+
+func newTestClusterWithController(store *controllermeta.Store, timeout time.Duration, client controllerAPI) *Cluster {
+	return &Cluster{
+		controllerResources: controllerResources{
+			controllerMeta:              store,
+			controllerLeaderWaitTimeout: timeout,
+			controllerClient:            client,
+		},
+	}
 }

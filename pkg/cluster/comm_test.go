@@ -2,7 +2,7 @@ package cluster_test
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -48,6 +48,7 @@ const (
 	testLeaderPollInterval    = 50 * time.Millisecond
 	testLeaderConfirmations   = 4
 	testManagedSlotProbeWait  = 300 * time.Millisecond
+	testControllerProbeTimeout = 250 * time.Millisecond
 )
 
 func testClusterTimingConfig() raftcluster.Config {
@@ -401,7 +402,7 @@ func startFourNodesWithInjectedRepairFailure(t testing.TB, slotCount int, replic
 	t.Helper()
 	nodes := startFourNodesWithController(t, slotCount, replicaN)
 	waitForStableLeader(t, assignedNodesForSlot(t, nodes, 1), 1)
-	restore := raftcluster.SetManagedSlotExecutionTestHook(func(slotID uint32, task controllermeta.ReconcileTask) error {
+	restore := setManagedSlotExecutionHookOnNodes(t, nodes, func(slotID uint32, task controllermeta.ReconcileTask) error {
 		if slotID == 1 && task.Kind == controllermeta.TaskKindRepair {
 			return errors.New("injected repair failure")
 		}
@@ -425,6 +426,23 @@ func startFourNodesWithInjectedRepairFailure(t testing.TB, slotCount int, replic
 func startFourNodesWithPermanentRepairFailure(t testing.TB, slotCount int, replicaN int) []*testNode {
 	t.Helper()
 	return startFourNodesWithInjectedRepairFailure(t, slotCount, replicaN)
+}
+
+func setManagedSlotExecutionHookOnNodes(t testing.TB, nodes []*testNode, hook raftcluster.ManagedSlotExecutionTestHook) func() {
+	t.Helper()
+
+	restores := make([]func(), 0, len(nodes))
+	for _, node := range nodes {
+		if node == nil || node.cluster == nil {
+			continue
+		}
+		restores = append(restores, node.cluster.SetManagedSlotExecutionTestHook(hook))
+	}
+	return func() {
+		for i := len(restores) - 1; i >= 0; i-- {
+			restores[i]()
+		}
+	}
 }
 
 func stopNodes(nodes []*testNode) {
@@ -612,7 +630,7 @@ func stableLeaderWithin(testNodes []*testNode, slotID uint64, timeout time.Durat
 				break
 			}
 		}
-		if allAgree && leaderID != 0 {
+		if allAgree && leaderID != 0 && activeNodePresent(testNodes, leaderID) {
 			if leaderID == stableLeader {
 				stableCount++
 			} else {
@@ -629,6 +647,18 @@ func stableLeaderWithin(testNodes []*testNode, slotID uint64, timeout time.Durat
 		time.Sleep(testLeaderPollInterval)
 	}
 	return 0, fmt.Errorf("no stable leader for slot %d", slotID)
+}
+
+func activeNodePresent(testNodes []*testNode, nodeID multiraft.NodeID) bool {
+	for _, node := range testNodes {
+		if node == nil || node.cluster == nil {
+			continue
+		}
+		if node.nodeID == nodeID {
+			return true
+		}
+	}
+	return false
 }
 
 func snapshotAssignments(t testing.TB, nodes []*testNode, slotCount int) []controllermeta.SlotAssignment {
@@ -709,68 +739,111 @@ func slotForControllerLeader(assignments []controllermeta.SlotAssignment, contro
 	return 0, 0
 }
 
-type controllerProbeRequest struct {
-	Kind string `json:"kind"`
-}
-
-type controllerProbeResponse struct {
-	NotLeader bool   `json:"not_leader,omitempty"`
-	LeaderID  uint64 `json:"leader_id,omitempty"`
-}
+const (
+	controllerProbeCodecVersion      byte  = 1
+	controllerProbeKindAssignments   byte  = 2
+	controllerProbeFlagNotLeader     byte  = 1 << 0
+	controllerProbeServiceID         uint8 = 14
+	controllerProbePayloadHeaderSize       = 10
+)
 
 func waitForControllerLeader(t testing.TB, nodes []*testNode) uint64 {
 	t.Helper()
 
-	payload, err := json.Marshal(controllerProbeRequest{Kind: "list_assignments"})
-	require.NoError(t, err)
-
 	var leaderID uint64
 	require.Eventually(t, func() bool {
-		for _, node := range nodes {
-			if node == nil || node.cluster == nil {
-				continue
-			}
-			controllerPeers := append([]raftcluster.NodeConfig(nil), node.nodes...)
-			sort.Slice(controllerPeers, func(i, j int) bool {
-				return controllerPeers[i].NodeID < controllerPeers[j].NodeID
-			})
-			if len(controllerPeers) > node.controllerReplicaN {
-				controllerPeers = controllerPeers[:node.controllerReplicaN]
-			}
-			for _, peer := range controllerPeers {
-				respBody, err := node.cluster.RPCService(
-					context.Background(),
-					peer.NodeID,
-					multiraft.SlotID(^uint32(0)),
-					14,
-					payload,
-				)
-				if err != nil {
-					continue
-				}
-				var resp controllerProbeResponse
-				if err := json.Unmarshal(respBody, &resp); err != nil {
-					continue
-				}
-				if resp.NotLeader && resp.LeaderID != 0 {
-					leaderID = resp.LeaderID
-					return true
-				}
-				leaderID = uint64(peer.NodeID)
-				return true
-			}
+		controller, ok := currentControllerLeaderNode(nodes)
+		if !ok {
+			return false
 		}
-		return false
+		leaderID = uint64(controller.nodeID)
+		return true
 	}, 10*time.Second, 100*time.Millisecond)
 	return leaderID
 }
 
-func currentControllerLeaderNode(nodes []*testNode) (*testNode, bool) {
-	payload, err := json.Marshal(controllerProbeRequest{Kind: "list_assignments"})
-	if err != nil {
-		return nil, false
+func TestProbeControllerLeaderReturnsQuicklyWhenPeerIsStopped(t *testing.T) {
+	nodes := startThreeNodesWithController(t, 1, 3)
+	defer stopNodes(nodes)
+
+	waitForControllerLeader(t, nodes)
+	nodes[1].stop()
+
+	start := time.Now()
+	leaderID, ok := probeControllerLeader(nodes[0].cluster, 2)
+
+	require.False(t, ok)
+	require.Zero(t, leaderID)
+	require.Less(t, time.Since(start), 500*time.Millisecond)
+}
+
+func TestProbeControllerLeaderDoesNotBlockOnUnresponsivePeer(t *testing.T) {
+	hangLn, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer hangLn.Close()
+
+	blockConn := make(chan struct{})
+	defer close(blockConn)
+	go func() {
+		conn, err := hangLn.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		<-blockConn
+	}()
+
+	nodeLn, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	nodeAddr := nodeLn.Addr().String()
+	require.NoError(t, nodeLn.Close())
+
+	nodes := []raftcluster.NodeConfig{
+		{NodeID: 1, Addr: nodeAddr},
+		{NodeID: 2, Addr: hangLn.Addr().String()},
 	}
 
+	node := newStartedTestNode(
+		t,
+		filepath.Join(t.TempDir(), "n1"),
+		1,
+		nodeAddr,
+		nodes,
+		nil,
+		1,
+		1,
+		1,
+		true,
+	)
+	defer stopNodes([]*testNode{node})
+
+	done := make(chan struct{})
+	defer close(done)
+	result := make(chan struct {
+		leaderID multiraft.NodeID
+		ok       bool
+	}, 1)
+	go func() {
+		leaderID, ok := probeControllerLeader(node.cluster, 2)
+		select {
+		case result <- struct {
+			leaderID multiraft.NodeID
+			ok       bool
+		}{leaderID: leaderID, ok: ok}:
+		case <-done:
+		}
+	}()
+
+	select {
+	case got := <-result:
+		require.Zero(t, got.leaderID)
+		require.False(t, got.ok)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("probeControllerLeader blocked on unresponsive peer")
+	}
+}
+
+func currentControllerLeaderNode(nodes []*testNode) (*testNode, bool) {
 	for _, node := range nodes {
 		if node == nil || node.cluster == nil {
 			continue
@@ -783,26 +856,9 @@ func currentControllerLeaderNode(nodes []*testNode) (*testNode, bool) {
 			controllerPeers = controllerPeers[:node.controllerReplicaN]
 		}
 		for _, peer := range controllerPeers {
-			respBody, err := node.cluster.RPCService(
-				context.Background(),
-				peer.NodeID,
-				multiraft.SlotID(^uint32(0)),
-				14,
-				payload,
-			)
-			if err != nil {
+			leaderID, ok := probeControllerLeader(node.cluster, peer.NodeID)
+			if !ok {
 				continue
-			}
-			var resp controllerProbeResponse
-			if err := json.Unmarshal(respBody, &resp); err != nil {
-				continue
-			}
-			leaderID := peer.NodeID
-			if resp.NotLeader {
-				if resp.LeaderID == 0 {
-					continue
-				}
-				leaderID = multiraft.NodeID(resp.LeaderID)
 			}
 			idx := int(leaderID) - 1
 			if idx >= 0 && idx < len(nodes) && nodes[idx] != nil && nodes[idx].cluster != nil {
@@ -813,15 +869,34 @@ func currentControllerLeaderNode(nodes []*testNode) (*testNode, bool) {
 	return nil, false
 }
 
-func controllerLeaderNode(t testing.TB, nodes []*testNode) *testNode {
-	t.Helper()
-	leaderID := waitForControllerLeader(t, nodes)
-	idx := int(leaderID) - 1
-	require.GreaterOrEqual(t, idx, 0)
-	require.Less(t, idx, len(nodes))
-	require.NotNil(t, nodes[idx])
-	require.NotNil(t, nodes[idx].cluster)
-	return nodes[idx]
+func probeControllerLeader(cluster *raftcluster.Cluster, peerID multiraft.NodeID) (multiraft.NodeID, bool) {
+	if cluster == nil {
+		return 0, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testControllerProbeTimeout)
+	defer cancel()
+	respBody, err := cluster.RPCService(
+		ctx,
+		peerID,
+		multiraft.SlotID(^uint32(0)),
+		controllerProbeServiceID,
+		[]byte{controllerProbeCodecVersion, controllerProbeKindAssignments, 0, 0, 0, 0, 0},
+	)
+	if err != nil {
+		return 0, false
+	}
+	if len(respBody) < controllerProbePayloadHeaderSize+1 || respBody[0] != controllerProbeCodecVersion {
+		return 0, false
+	}
+	payloadLen, n := binary.Uvarint(respBody[controllerProbePayloadHeaderSize:])
+	if n <= 0 || len(respBody) != controllerProbePayloadHeaderSize+n+int(payloadLen) {
+		return 0, false
+	}
+	if respBody[1]&controllerProbeFlagNotLeader != 0 {
+		leaderID := multiraft.NodeID(binary.BigEndian.Uint64(respBody[2:10]))
+		return leaderID, leaderID != 0
+	}
+	return peerID, true
 }
 
 func requireControllerCommand(t testing.TB, nodes []*testNode, fn func(*raftcluster.Cluster) error) {

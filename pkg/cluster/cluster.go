@@ -2,10 +2,8 @@ package cluster
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,32 +18,47 @@ import (
 	"go.etcd.io/raft/v3/raftpb"
 )
 
-type Cluster struct {
-	cfg                         Config
-	logger                      wklog.Logger
-	server                      *transport.Server
-	rpcMux                      *transport.RPCMux
-	raftPool                    *transport.Pool
-	rpcPool                     *transport.Pool
-	raftClient                  *transport.Client
-	fwdClient                   *transport.Client
-	runtime                     *multiraft.Runtime
-	router                      *Router
-	discovery                   *StaticDiscovery
+type transportResources struct {
+	transportLayer *transportLayer
+	server         *transport.Server
+	rpcMux         *transport.RPCMux
+	raftPool       *transport.Pool
+	rpcPool        *transport.Pool
+	raftClient     *transport.Client
+	fwdClient      *transport.Client
+	discovery      *StaticDiscovery
+}
+
+type controllerResources struct {
+	controllerHost              *controllerHost
 	controllerMeta              *controllermeta.Store
 	controllerRaftDB            *raftstorage.DB
 	controllerSM                *slotcontroller.StateMachine
 	controller                  *controllerraft.Service
 	controllerClient            controllerAPI
 	controllerLeaderWaitTimeout time.Duration
-	agent                       *slotAgent
-	assignments                 *assignmentCache
-	runtimePeersMu              sync.RWMutex
-	runtimePeers                map[multiraft.SlotID][]multiraft.NodeID
-	observationStop             chan struct{}
-	observationDone             chan struct{}
-	observationCancel           context.CancelFunc
-	stopped                     atomic.Bool
+}
+
+type managedSlotResources struct {
+	managedSlotHooks managedSlotHooks
+	slotMgr          *slotManager
+	slotExecutor     *slotExecutor
+}
+
+type Cluster struct {
+	cfg    Config
+	logger wklog.Logger
+	obs    ObserverHooks
+	transportResources
+	runtime *multiraft.Runtime
+	router  *Router
+	controllerResources
+	agent       *slotAgent
+	assignments *assignmentCache
+	runState    *runtimeState
+	observer    *observerLoop
+	managedSlotResources
+	stopped atomic.Bool
 }
 
 func NewCluster(cfg Config) (*Cluster, error) {
@@ -53,14 +66,20 @@ func NewCluster(cfg Config) (*Cluster, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	return &Cluster{
-		cfg:          cfg,
-		logger:       defaultLogger(cfg.Logger),
-		rpcMux:       transport.NewRPCMux(),
-		router:       NewRouter(cfg.SlotCount, cfg.NodeID, nil),
-		assignments:  newAssignmentCache(),
-		runtimePeers: make(map[multiraft.SlotID][]multiraft.NodeID),
-	}, nil
+	cluster := &Cluster{
+		cfg:    cfg,
+		logger: defaultLogger(cfg.Logger),
+		obs:    cfg.Observer,
+		transportResources: transportResources{
+			rpcMux: transport.NewRPCMux(),
+		},
+		router:      NewRouter(cfg.SlotCount, cfg.NodeID, nil),
+		assignments: newAssignmentCache(),
+		runState:    newRuntimeState(),
+	}
+	cluster.slotMgr = newSlotManager(cluster)
+	cluster.slotExecutor = newSlotExecutor(cluster)
+	return cluster, nil
 }
 
 func defaultLogger(logger wklog.Logger) wklog.Logger {
@@ -71,13 +90,9 @@ func defaultLogger(logger wklog.Logger) wklog.Logger {
 }
 
 func (c *Cluster) Start() error {
-	c.discovery = NewStaticDiscovery(c.cfg.Nodes)
-	c.observationStop = make(chan struct{})
-
-	if err := c.startServer(); err != nil {
+	if err := c.startTransportLayer(); err != nil {
 		return err
 	}
-	c.startPools()
 	if err := c.startControllerRaftIfLocalPeer(); err != nil {
 		c.Stop()
 		return err
@@ -92,6 +107,23 @@ func (c *Cluster) Start() error {
 		c.Stop()
 		return err
 	}
+	return nil
+}
+
+func (c *Cluster) startTransportLayer() error {
+	layer := newTransportLayer(c.cfg, NewStaticDiscovery(c.cfg.Nodes), c.rpcMux)
+	if err := layer.Start(c.cfg.ListenAddr, c.handleRaftMessage, c.handleForwardRPC, c.handleControllerRPC, c.handleManagedSlotRPC); err != nil {
+		return err
+	}
+
+	c.transportLayer = layer
+	c.server = layer.server
+	c.rpcMux = layer.rpcMux
+	c.raftPool = layer.raftPool
+	c.rpcPool = layer.rpcPool
+	c.raftClient = layer.raftClient
+	c.fwdClient = layer.fwdClient
+	c.discovery = layer.discovery
 	return nil
 }
 
@@ -135,46 +167,20 @@ func (c *Cluster) startControllerRaftIfLocalPeer() error {
 		return nil
 	}
 
-	meta, err := controllermeta.Open(c.cfg.ControllerMetaPath)
+	host, err := newControllerHost(c.cfg, c.transportLayer)
 	if err != nil {
-		return fmt.Errorf("open controller meta: %w", err)
+		return err
 	}
-	logDB, err := raftstorage.Open(c.cfg.ControllerRaftPath)
-	if err != nil {
-		_ = meta.Close()
-		return fmt.Errorf("open controller raft: %w", err)
-	}
-
-	peers := c.cfg.DerivedControllerNodes()
-	controllerPeers := make([]controllerraft.Peer, 0, len(peers))
-	for _, peer := range peers {
-		controllerPeers = append(controllerPeers, controllerraft.Peer{
-			NodeID: uint64(peer.NodeID),
-			Addr:   peer.Addr,
-		})
-	}
-
-	sm := slotcontroller.NewStateMachine(meta, slotcontroller.StateMachineConfig{})
-	service := controllerraft.NewService(controllerraft.Config{
-		NodeID:         uint64(c.cfg.NodeID),
-		Peers:          controllerPeers,
-		AllowBootstrap: true,
-		LogDB:          logDB,
-		StateMachine:   sm,
-		Server:         c.server,
-		RPCMux:         c.rpcMux,
-		Pool:           c.raftPool,
-	})
-	if err := service.Start(context.Background()); err != nil {
-		_ = logDB.Close()
-		_ = meta.Close()
+	if err := host.Start(context.Background()); err != nil {
+		host.Stop()
 		return fmt.Errorf("start controller raft: %w", err)
 	}
 
-	c.controllerMeta = meta
-	c.controllerRaftDB = logDB
-	c.controllerSM = sm
-	c.controller = service
+	c.controllerHost = host
+	c.controllerMeta = host.meta
+	c.controllerRaftDB = host.raftDB
+	c.controllerSM = host.sm
+	c.controller = host.service
 	return nil
 }
 
@@ -219,25 +225,11 @@ func (c *Cluster) startObservationLoop() {
 	if c.controllerClient == nil {
 		return
 	}
-
-	c.observationDone = make(chan struct{})
-	ctx, cancel := context.WithCancel(context.Background())
-	c.observationCancel = cancel
-	go func() {
-		defer close(c.observationDone)
-		ticker := time.NewTicker(controllerObservationInterval)
-		defer ticker.Stop()
-
-		for {
-			c.observeOnce(ctx)
-			c.controllerTickOnce(ctx)
-			select {
-			case <-c.observationStop:
-				return
-			case <-ticker.C:
-			}
-		}
-	}()
+	c.observer = newObserverLoop(c.controllerObservationInterval(), func(ctx context.Context) {
+		c.observeOnce(ctx)
+		c.controllerTickOnce(ctx)
+	})
+	c.observer.Start(context.Background())
 }
 
 func (c *Cluster) seedLegacySlotsIfConfigured() error {
@@ -276,7 +268,13 @@ func (c *Cluster) openOrBootstrapSlot(ctx context.Context, g SlotConfig) error {
 		c.setRuntimePeers(g.SlotID, nodeIDsFromUint64s(initialState.ConfState.Voters))
 		if err := c.runtime.OpenSlot(ctx, opts); err != nil {
 			c.deleteRuntimePeers(g.SlotID)
+			if hook := c.obs.OnSlotEnsure; hook != nil {
+				hook(uint32(g.SlotID), "open", err)
+			}
 			return err
+		}
+		if hook := c.obs.OnSlotEnsure; hook != nil {
+			hook(uint32(g.SlotID), "open", nil)
 		}
 		return nil
 	}
@@ -286,52 +284,60 @@ func (c *Cluster) openOrBootstrapSlot(ctx context.Context, g SlotConfig) error {
 		Voters: g.Peers,
 	}); err != nil {
 		c.deleteRuntimePeers(g.SlotID)
+		if hook := c.obs.OnSlotEnsure; hook != nil {
+			hook(uint32(g.SlotID), "bootstrap", err)
+		}
 		return err
+	}
+	if hook := c.obs.OnSlotEnsure; hook != nil {
+		hook(uint32(g.SlotID), "bootstrap", nil)
 	}
 	return nil
 }
 
 func (c *Cluster) Stop() {
 	c.stopped.Store(true)
-	if c.observationStop != nil {
-		if c.observationCancel != nil {
-			c.observationCancel()
-			c.observationCancel = nil
-		}
-		close(c.observationStop)
-		if c.observationDone != nil {
-			<-c.observationDone
-			c.observationDone = nil
-		}
-		c.observationStop = nil
+	if c.observer != nil {
+		c.observer.Stop()
+		c.observer = nil
 	}
 
-	if c.server != nil {
-		c.server.Stop()
-	}
-	if c.controller != nil {
-		_ = c.controller.Stop()
-	}
 	if c.runtime != nil {
 		_ = c.runtime.Close()
 	}
-	if c.fwdClient != nil {
-		c.fwdClient.Stop()
+	if c.controllerHost != nil {
+		c.controllerHost.Stop()
+		c.controllerHost = nil
+	} else {
+		if c.controller != nil {
+			_ = c.controller.Stop()
+		}
+		if c.controllerRaftDB != nil {
+			_ = c.controllerRaftDB.Close()
+		}
+		if c.controllerMeta != nil {
+			_ = c.controllerMeta.Close()
+		}
 	}
-	if c.raftClient != nil {
-		c.raftClient.Stop()
-	}
-	if c.raftPool != nil {
-		c.raftPool.Close()
-	}
-	if c.rpcPool != nil {
-		c.rpcPool.Close()
-	}
-	if c.controllerRaftDB != nil {
-		_ = c.controllerRaftDB.Close()
-	}
-	if c.controllerMeta != nil {
-		_ = c.controllerMeta.Close()
+	if c.transportLayer != nil {
+		c.transportLayer.Stop()
+		c.transportLayer = nil
+	} else {
+		if c.fwdClient != nil {
+			c.fwdClient.Stop()
+		}
+		if c.raftClient != nil {
+			c.raftClient.Stop()
+		}
+		if c.raftPool != nil {
+			c.raftPool.Close()
+		}
+		if c.rpcPool != nil {
+			c.rpcPool.Close()
+		}
+		if c.server != nil {
+			c.server.Stop()
+		}
 	}
 }
 
@@ -340,7 +346,7 @@ func (c *Cluster) observeOnce(ctx context.Context) {
 		return
 	}
 	_ = c.agent.HeartbeatOnce(ctx)
-	assignCtx, cancel := withControllerTimeout(ctx)
+	assignCtx, cancel := c.withControllerTimeout(ctx)
 	err := c.agent.SyncAssignments(assignCtx)
 	cancel()
 	shouldApply := err == nil
@@ -360,7 +366,7 @@ func (c *Cluster) controllerTickOnce(ctx context.Context) {
 		return
 	}
 
-	tickCtx, cancel := withControllerTimeout(ctx)
+	tickCtx, cancel := c.withControllerTimeout(ctx)
 	_ = c.controller.Propose(tickCtx, slotcontroller.Command{
 		Kind:    slotcontroller.CommandKindEvaluateTimeouts,
 		Advance: &slotcontroller.TaskAdvance{Now: time.Now()},
@@ -383,7 +389,7 @@ func (c *Cluster) controllerTickOnce(ctx context.Context) {
 		return
 	}
 
-	proposeCtx, cancel := withControllerTimeout(ctx)
+	proposeCtx, cancel := c.withControllerTimeout(ctx)
 	_ = c.controller.Propose(proposeCtx, slotcontroller.Command{
 		Kind:       slotcontroller.CommandKindAssignmentTaskUpdate,
 		Assignment: &decision.Assignment,
@@ -452,42 +458,62 @@ func (c *Cluster) handleRaftMessage(body []byte) {
 
 // Propose submits a command to the specified slot, automatically handling leader forwarding.
 func (c *Cluster) Propose(ctx context.Context, slotID multiraft.SlotID, cmd []byte) error {
+	start := time.Now()
+	attempts := 0
+	var proposeErr error
+	defer func() {
+		if hook := c.obs.OnForwardPropose; hook != nil {
+			hook(uint32(slotID), attempts, observerElapsed(start), proposeErr)
+		}
+	}()
+
 	if c.stopped.Load() {
-		return transport.ErrStopped
+		proposeErr = transport.ErrStopped
+		return proposeErr
 	}
 	if c.router == nil || c.runtime == nil {
-		return ErrNotStarted
+		proposeErr = ErrNotStarted
+		return proposeErr
 	}
-	const maxRetries = 3
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			// Exponential backoff: 50ms, 100ms
-			backoff := time.Duration(attempt) * 50 * time.Millisecond
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
+	retry := Retry{
+		Interval: c.forwardRetryInterval(),
+		MaxWait:  c.timeoutConfig().ForwardRetryBudget,
+		IsRetryable: func(err error) bool {
+			return errors.Is(err, ErrNotLeader)
+		},
+	}
+	proposeErr = retry.Do(ctx, func(attemptCtx context.Context) error {
+		attempts++
 		leaderID, err := c.router.LeaderOf(slotID)
 		if err != nil {
 			return err
 		}
 		if c.router.IsLocal(leaderID) {
-			future, err := c.runtime.Propose(ctx, slotID, cmd)
+			future, err := c.runtime.Propose(attemptCtx, slotID, cmd)
 			if err != nil {
 				return err
 			}
-			_, err = future.Wait(ctx)
+			_, err = future.Wait(attemptCtx)
 			return err
 		}
-		err = c.forwardToLeader(ctx, leaderID, slotID, cmd)
-		if errors.Is(err, ErrNotLeader) {
-			continue
-		}
-		return err
+		return c.forwardToLeader(attemptCtx, leaderID, slotID, cmd)
+	})
+	return proposeErr
+}
+
+func observerElapsed(start time.Time) time.Duration {
+	elapsed := time.Since(start)
+	if elapsed <= 0 {
+		return time.Nanosecond
 	}
-	return ErrLeaderNotStable
+	return elapsed
+}
+
+func (c *Cluster) NodeID() multiraft.NodeID {
+	if c == nil {
+		return 0
+	}
+	return c.cfg.NodeID
 }
 
 // SlotForKey maps a key to a raft slot via CRC32 hashing.
@@ -557,7 +583,7 @@ func (c *Cluster) WaitForManagedSlotsReady(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(c.managedSlotsReadyPollInterval())
 	defer ticker.Stop()
 
 	var lastErr error
@@ -689,12 +715,12 @@ func (c *Cluster) managedSlotsReady(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
-	assignmentByGroup := make(map[uint32]struct{}, len(assignments))
+	assignmentByGroup := make(map[uint32]controllermeta.SlotAssignment, len(assignments))
 	for _, assignment := range assignments {
 		if len(assignment.DesiredPeers) == 0 {
 			return false, nil
 		}
-		assignmentByGroup[assignment.SlotID] = struct{}{}
+		assignmentByGroup[assignment.SlotID] = assignment
 	}
 	for _, slotID := range slotIDs {
 		if _, ok := assignmentByGroup[uint32(slotID)]; !ok {
@@ -736,34 +762,27 @@ func (c *Cluster) setRuntimePeers(slotID multiraft.SlotID, peers []multiraft.Nod
 	if c == nil {
 		return
 	}
-
-	c.runtimePeersMu.Lock()
-	c.runtimePeers[slotID] = append([]multiraft.NodeID(nil), peers...)
-	c.runtimePeersMu.Unlock()
+	if c.runState == nil {
+		c.runState = newRuntimeState()
+	}
+	c.runState.Set(slotID, peers)
 }
 
 func (c *Cluster) getRuntimePeers(slotID multiraft.SlotID) ([]multiraft.NodeID, bool) {
 	if c == nil {
 		return nil, false
 	}
-
-	c.runtimePeersMu.RLock()
-	peers, ok := c.runtimePeers[slotID]
-	c.runtimePeersMu.RUnlock()
-	if !ok {
-		return nil, false
-	}
-	return append([]multiraft.NodeID(nil), peers...), true
+	return c.runState.Get(slotID)
 }
 
 func (c *Cluster) deleteRuntimePeers(slotID multiraft.SlotID) {
 	if c == nil {
 		return
 	}
-
-	c.runtimePeersMu.Lock()
-	delete(c.runtimePeers, slotID)
-	c.runtimePeersMu.Unlock()
+	if c.runState == nil {
+		return
+	}
+	c.runState.Delete(slotID)
 }
 
 func nodeIDsFromUint64s(ids []uint64) []multiraft.NodeID {
@@ -775,135 +794,5 @@ func nodeIDsFromUint64s(ids []uint64) []multiraft.NodeID {
 }
 
 func (c *Cluster) handleControllerRPC(ctx context.Context, body []byte) ([]byte, error) {
-	var req controllerRPCRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		return nil, err
-	}
-	if c.controller == nil || c.controllerMeta == nil {
-		return nil, ErrNotStarted
-	}
-
-	marshalRedirect := func() ([]byte, error) {
-		return json.Marshal(controllerRPCResponse{
-			NotLeader: true,
-			LeaderID:  c.controller.LeaderID(),
-		})
-	}
-
-	switch req.Kind {
-	case controllerRPCHeartbeat:
-		if req.Report == nil {
-			return nil, ErrInvalidConfig
-		}
-		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
-			return marshalRedirect()
-		}
-		proposeCtx, cancel := withControllerTimeout(ctx)
-		defer cancel()
-		if err := c.controller.Propose(proposeCtx, slotcontroller.Command{
-			Kind:   slotcontroller.CommandKindNodeHeartbeat,
-			Report: req.Report,
-		}); err != nil {
-			if errors.Is(err, controllerraft.ErrNotLeader) {
-				return marshalRedirect()
-			}
-			return nil, err
-		}
-		return json.Marshal(controllerRPCResponse{})
-	case controllerRPCTaskResult:
-		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
-			return marshalRedirect()
-		}
-		if req.Advance == nil {
-			return nil, ErrInvalidConfig
-		}
-		advance := &slotcontroller.TaskAdvance{
-			SlotID:  req.Advance.SlotID,
-			Attempt: req.Advance.Attempt,
-			Now:     req.Advance.Now,
-		}
-		if req.Advance.Err != "" {
-			advance.Err = errors.New(req.Advance.Err)
-		}
-		proposeCtx, cancel := withControllerTimeout(ctx)
-		defer cancel()
-		if err := c.controller.Propose(proposeCtx, slotcontroller.Command{
-			Kind:    slotcontroller.CommandKindTaskResult,
-			Advance: advance,
-		}); err != nil {
-			if errors.Is(err, controllerraft.ErrNotLeader) {
-				return marshalRedirect()
-			}
-			return nil, err
-		}
-		return json.Marshal(controllerRPCResponse{})
-	case controllerRPCListAssignments:
-		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
-			return marshalRedirect()
-		}
-		assignments, err := c.controllerMeta.ListAssignments(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(controllerRPCResponse{Assignments: assignments})
-	case controllerRPCListNodes:
-		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
-			return marshalRedirect()
-		}
-		nodes, err := c.controllerMeta.ListNodes(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(controllerRPCResponse{Nodes: nodes})
-	case controllerRPCListRuntimeViews:
-		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
-			return marshalRedirect()
-		}
-		views, err := c.controllerMeta.ListRuntimeViews(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(controllerRPCResponse{RuntimeViews: views})
-	case controllerRPCOperator:
-		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
-			return marshalRedirect()
-		}
-		if req.Op == nil {
-			return nil, ErrInvalidConfig
-		}
-		proposeCtx, cancel := withControllerTimeout(ctx)
-		defer cancel()
-		if err := c.controller.Propose(proposeCtx, slotcontroller.Command{
-			Kind: slotcontroller.CommandKindOperatorRequest,
-			Op:   req.Op,
-		}); err != nil {
-			if errors.Is(err, controllerraft.ErrNotLeader) {
-				return marshalRedirect()
-			}
-			return nil, err
-		}
-		return json.Marshal(controllerRPCResponse{})
-	case controllerRPCGetTask:
-		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
-			return marshalRedirect()
-		}
-		task, err := c.controllerMeta.GetTask(ctx, req.SlotID)
-		if errors.Is(err, controllermeta.ErrNotFound) {
-			return json.Marshal(controllerRPCResponse{NotFound: true})
-		}
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(controllerRPCResponse{Task: &task})
-	case controllerRPCForceReconcile:
-		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
-			return marshalRedirect()
-		}
-		if err := c.forceReconcileOnLeader(ctx, req.SlotID); err != nil {
-			return nil, err
-		}
-		return json.Marshal(controllerRPCResponse{})
-	default:
-		return nil, ErrInvalidConfig
-	}
+	return (&controllerHandler{cluster: c}).Handle(ctx, body)
 }

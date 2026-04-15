@@ -2,53 +2,14 @@ package cluster
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
-
-const (
-	rpcServiceController          uint8            = 14
-	controllerRPCShardKey         multiraft.SlotID = multiraft.SlotID(^uint32(0))
-	controllerRPCHeartbeat        string           = "heartbeat"
-	controllerRPCListAssignments  string           = "list_assignments"
-	controllerRPCListNodes        string           = "list_nodes"
-	controllerRPCListRuntimeViews string           = "list_runtime_views"
-	controllerRPCOperator         string           = "operator"
-	controllerRPCGetTask          string           = "get_task"
-	controllerRPCForceReconcile   string           = "force_reconcile"
-	controllerRPCTaskResult       string           = "task_result"
-)
-
-type controllerRPCRequest struct {
-	Kind    string                          `json:"kind"`
-	SlotID  uint32                          `json:"slot_id,omitempty"`
-	Report  *slotcontroller.AgentReport     `json:"report,omitempty"`
-	Op      *slotcontroller.OperatorRequest `json:"op,omitempty"`
-	Advance *controllerTaskAdvance          `json:"advance,omitempty"`
-}
-
-type controllerTaskAdvance struct {
-	SlotID  uint32    `json:"slot_id"`
-	Attempt uint32    `json:"attempt,omitempty"`
-	Now     time.Time `json:"now"`
-	Err     string    `json:"err,omitempty"`
-}
-
-type controllerRPCResponse struct {
-	NotLeader    bool                             `json:"not_leader,omitempty"`
-	NotFound     bool                             `json:"not_found,omitempty"`
-	LeaderID     uint64                           `json:"leader_id,omitempty"`
-	Nodes        []controllermeta.ClusterNode     `json:"nodes,omitempty"`
-	Assignments  []controllermeta.SlotAssignment  `json:"assignments,omitempty"`
-	RuntimeViews []controllermeta.SlotRuntimeView `json:"runtime_views,omitempty"`
-	Task         *controllermeta.ReconcileTask    `json:"task,omitempty"`
-}
 
 type controllerAPI interface {
 	Report(ctx context.Context, report slotcontroller.AgentReport) error
@@ -66,8 +27,7 @@ type controllerClient struct {
 	cache   *assignmentCache
 	peers   []multiraft.NodeID
 
-	mu     sync.RWMutex
-	leader multiraft.NodeID
+	leader atomic.Uint64
 }
 
 func newControllerClient(cluster *Cluster, peers []NodeConfig, cache *assignmentCache) *controllerClient {
@@ -158,27 +118,39 @@ func (c *controllerClient) ReportTaskResult(ctx context.Context, task controller
 	}
 	_, err := c.call(ctx, controllerRPCRequest{
 		Kind:    controllerRPCTaskResult,
+		SlotID:  task.SlotID,
 		Advance: advance,
 	})
 	return err
 }
 
-func (c *controllerClient) call(ctx context.Context, req controllerRPCRequest) (controllerRPCResponse, error) {
+func (c *controllerClient) call(ctx context.Context, req controllerRPCRequest) (resp controllerRPCResponse, err error) {
+	start := time.Now()
+	defer func() {
+		if c != nil && c.cluster != nil {
+			if hook := c.cluster.obs.OnControllerCall; hook != nil {
+				hook(req.Kind, observerElapsed(start), err)
+			}
+		}
+	}()
+
 	if c == nil || c.cluster == nil {
-		return controllerRPCResponse{}, ErrNotStarted
+		err = ErrNotStarted
+		return controllerRPCResponse{}, err
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	body, err := json.Marshal(req)
+	body, err := encodeControllerRequest(req)
 	if err != nil {
 		return controllerRPCResponse{}, err
 	}
 
 	targets := c.targets()
 	if len(targets) == 0 {
-		return controllerRPCResponse{}, ErrNoLeader
+		err = ErrNoLeader
+		return controllerRPCResponse{}, err
 	}
 
 	tried := make(map[multiraft.NodeID]struct{}, len(targets))
@@ -194,7 +166,7 @@ func (c *controllerClient) call(ctx context.Context, req controllerRPCRequest) (
 		// Give each peer probe its own budget so a slow stale leader does not
 		// consume the entire controller retry window before we reach the current
 		// leader.
-		rpcCtx, cancel := withControllerTimeout(ctx)
+		rpcCtx, cancel := c.cluster.withControllerTimeout(ctx)
 		respBody, err := c.cluster.RPCService(rpcCtx, target, controllerRPCShardKey, rpcServiceController, body)
 		cancel()
 		if err != nil {
@@ -205,8 +177,8 @@ func (c *controllerClient) call(ctx context.Context, req controllerRPCRequest) (
 			continue
 		}
 
-		var resp controllerRPCResponse
-		if err := json.Unmarshal(respBody, &resp); err != nil {
+		resp, err := decodeControllerResponse(req.Kind, respBody)
+		if err != nil {
 			return controllerRPCResponse{}, err
 		}
 		if resp.NotLeader {
@@ -230,7 +202,8 @@ func (c *controllerClient) call(ctx context.Context, req controllerRPCRequest) (
 	if lastErr == nil {
 		lastErr = ErrNoLeader
 	}
-	return controllerRPCResponse{}, lastErr
+	err = lastErr
+	return controllerRPCResponse{}, err
 }
 
 func (c *controllerClient) targets() []multiraft.NodeID {
@@ -238,9 +211,10 @@ func (c *controllerClient) targets() []multiraft.NodeID {
 		return nil
 	}
 
-	c.mu.RLock()
-	leader := c.leader
-	c.mu.RUnlock()
+	leader := c.cachedLeader()
+	if hintedLeader, ok := c.localLeaderHint(); ok {
+		leader = hintedLeader
+	}
 
 	targets := make([]multiraft.NodeID, 0, len(c.peers)+1)
 	if leader != 0 {
@@ -255,22 +229,41 @@ func (c *controllerClient) targets() []multiraft.NodeID {
 	return targets
 }
 
+func (c *controllerClient) localLeaderHint() (multiraft.NodeID, bool) {
+	if c == nil || c.cluster == nil || c.cluster.controller == nil {
+		return 0, false
+	}
+	leader := multiraft.NodeID(c.cluster.controller.LeaderID())
+	if leader == 0 {
+		return 0, false
+	}
+	for _, peer := range c.peers {
+		if peer == leader {
+			return leader, true
+		}
+	}
+	return 0, false
+}
+
 func (c *controllerClient) cachedLeader() multiraft.NodeID {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.leader
+	if c == nil {
+		return 0
+	}
+	return multiraft.NodeID(c.leader.Load())
 }
 
 func (c *controllerClient) setLeader(nodeID multiraft.NodeID) {
-	c.mu.Lock()
-	c.leader = nodeID
-	c.mu.Unlock()
+	if c == nil {
+		return
+	}
+	c.leader.Store(uint64(nodeID))
 }
 
 func (c *controllerClient) clearLeader() {
-	c.mu.Lock()
-	c.leader = 0
-	c.mu.Unlock()
+	if c == nil {
+		return
+	}
+	c.leader.Store(0)
 }
 
 func isControllerRedirect(err error) bool {

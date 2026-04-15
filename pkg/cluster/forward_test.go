@@ -32,7 +32,7 @@ func TestForwardToLeader_RoundTrip(t *testing.T) {
 	client := transport.NewClient(pool)
 	defer client.Stop()
 
-	c := &Cluster{fwdClient: client}
+	c := &Cluster{transportResources: transportResources{fwdClient: client}}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -61,7 +61,7 @@ func TestForwardToLeader_NotLeader(t *testing.T) {
 	client := transport.NewClient(pool)
 	defer client.Stop()
 
-	c := &Cluster{fwdClient: client}
+	c := &Cluster{transportResources: transportResources{fwdClient: client}}
 
 	ctx := context.Background()
 	err := c.forwardToLeader(ctx, 2, 1, []byte("test"))

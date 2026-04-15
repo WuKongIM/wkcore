@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -23,15 +22,18 @@ const (
 type RecoverStrategy uint8
 
 const (
-	RecoverStrategyLatestLiveReplica   RecoverStrategy = iota + 1
-	defaultControllerLeaderWaitTimeout                 = 10 * time.Second
+	RecoverStrategyLatestLiveReplica RecoverStrategy = iota + 1
 )
 
 func (c *Cluster) controllerLeaderWaitDuration() time.Duration {
 	if c != nil && c.controllerLeaderWaitTimeout > 0 {
 		return c.controllerLeaderWaitTimeout
 	}
-	return defaultControllerLeaderWaitTimeout
+	return c.timeoutConfig().ControllerLeaderWait
+}
+
+func (c *Cluster) isLocalControllerLeader() bool {
+	return c != nil && c.controller != nil && c.controller.LeaderID() == uint64(c.cfg.NodeID)
 }
 
 func (c *Cluster) MarkNodeDraining(ctx context.Context, nodeID uint64) error {
@@ -59,6 +61,9 @@ func (c *Cluster) ResumeNode(ctx context.Context, nodeID uint64) error {
 }
 
 func (c *Cluster) GetReconcileTask(ctx context.Context, slotID uint32) (controllermeta.ReconcileTask, error) {
+	if c.controllerMeta != nil && c.isLocalControllerLeader() {
+		return c.controllerMeta.GetTask(ctx, slotID)
+	}
 	if c.controllerClient != nil {
 		var task controllermeta.ReconcileTask
 		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
@@ -69,9 +74,10 @@ func (c *Cluster) GetReconcileTask(ctx context.Context, slotID uint32) (controll
 		if err == nil {
 			return task, nil
 		}
-		if !controllerReadFallbackAllowed(err) || c.controllerMeta == nil {
+		if !controllerReadFallbackAllowed(err) || c.controllerMeta == nil || !c.isLocalControllerLeader() {
 			return controllermeta.ReconcileTask{}, err
 		}
+		return c.controllerMeta.GetTask(ctx, slotID)
 	}
 	if c.controllerMeta != nil {
 		return c.controllerMeta.GetTask(ctx, slotID)
@@ -80,12 +86,18 @@ func (c *Cluster) GetReconcileTask(ctx context.Context, slotID uint32) (controll
 }
 
 func (c *Cluster) ForceReconcile(ctx context.Context, slotID uint32) error {
-	if c.controllerClient != nil {
+	if c.controllerClient != nil || c.controller != nil {
 		return c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
+			if c.isLocalControllerLeader() {
+				return c.forceReconcileOnLeader(attemptCtx, slotID)
+			}
+			if c.controllerClient == nil {
+				return ErrNotLeader
+			}
 			return c.controllerClient.ForceReconcile(attemptCtx, slotID)
 		})
 	}
-	if c.controller != nil && c.controller.LeaderID() == uint64(c.cfg.NodeID) {
+	if c.isLocalControllerLeader() {
 		return c.forceReconcileOnLeader(ctx, slotID)
 	}
 	return ErrNotStarted
@@ -126,7 +138,7 @@ func (c *Cluster) RecoverSlot(ctx context.Context, slotID uint32, strategy Recov
 			continue
 		}
 
-		body, err := json.Marshal(managedSlotRPCRequest{
+		body, err := encodeManagedSlotRequest(managedSlotRPCRequest{
 			Kind:   managedSlotRPCStatus,
 			SlotID: slotID,
 		})
@@ -137,7 +149,7 @@ func (c *Cluster) RecoverSlot(ctx context.Context, slotID uint32, strategy Recov
 		if err != nil {
 			continue
 		}
-		if decodeManagedSlotResponse(respBody) == nil {
+		if _, err := decodeManagedSlotResponse(respBody); err == nil {
 			reachable++
 		}
 	}
@@ -158,13 +170,20 @@ func (c *Cluster) forceReconcileOnLeader(ctx context.Context, slotID uint32) err
 
 	switch {
 	case taskErr == nil:
+		var assignmentPtr *controllermeta.SlotAssignment
+		switch {
+		case assignmentErr == nil:
+			assignmentPtr = &assignment
+		case !errors.Is(assignmentErr, controllermeta.ErrNotFound):
+			return assignmentErr
+		}
 		task.Status = controllermeta.TaskStatusPending
 		task.NextRunAt = now
-		proposeCtx, cancel := withControllerTimeout(ctx)
+		proposeCtx, cancel := c.withControllerTimeout(ctx)
 		defer cancel()
 		if err := c.controller.Propose(proposeCtx, slotcontroller.Command{
 			Kind:       slotcontroller.CommandKindAssignmentTaskUpdate,
-			Assignment: &assignment,
+			Assignment: assignmentPtr,
 			Task:       &task,
 		}); err != nil {
 			if errors.Is(err, controllerraft.ErrNotLeader) {
@@ -199,7 +218,7 @@ func (c *Cluster) forceReconcileOnLeader(ctx context.Context, slotID uint32) err
 		return nil
 	}
 
-	proposeCtx, cancel := withControllerTimeout(ctx)
+	proposeCtx, cancel := c.withControllerTimeout(ctx)
 	defer cancel()
 	if err := c.controller.Propose(proposeCtx, slotcontroller.Command{
 		Kind:       slotcontroller.CommandKindAssignmentTaskUpdate,
@@ -214,38 +233,38 @@ func (c *Cluster) forceReconcileOnLeader(ctx context.Context, slotID uint32) err
 	return nil
 }
 
+func (c *Cluster) proposeTaskResultOnLeader(ctx context.Context, task controllermeta.ReconcileTask, taskErr error) error {
+	if c == nil || c.controller == nil {
+		return ErrNotStarted
+	}
+
+	advance := &slotcontroller.TaskAdvance{
+		SlotID:  task.SlotID,
+		Attempt: task.Attempt,
+		Now:     time.Now(),
+	}
+	if taskErr != nil {
+		advance.Err = taskErr
+	}
+
+	proposeCtx, cancel := c.withControllerTimeout(ctx)
+	defer cancel()
+	if err := c.controller.Propose(proposeCtx, slotcontroller.Command{
+		Kind:    slotcontroller.CommandKindTaskResult,
+		Advance: advance,
+	}); err != nil {
+		if errors.Is(err, controllerraft.ErrNotLeader) {
+			return ErrNotLeader
+		}
+		return err
+	}
+	return nil
+}
+
 func (c *Cluster) retryControllerCommand(ctx context.Context, fn func(context.Context) error) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	retryCtx := ctx
-	var cancel context.CancelFunc
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		retryCtx, cancel = context.WithTimeout(ctx, c.controllerLeaderWaitDuration())
-		defer cancel()
-	}
-
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	var lastErr error
-	for {
-		err := fn(retryCtx)
-		if err == nil {
-			return nil
-		}
-		if !controllerCommandRetryAllowed(err) {
-			return err
-		}
-		lastErr = err
-
-		select {
-		case <-retryCtx.Done():
-			if lastErr != nil {
-				return lastErr
-			}
-			return retryCtx.Err()
-		case <-ticker.C:
-		}
-	}
+	return Retry{
+		Interval:    c.controllerRetryInterval(),
+		MaxWait:     c.controllerLeaderWaitDuration(),
+		IsRetryable: controllerCommandRetryAllowed,
+	}.Do(ctx, fn)
 }
