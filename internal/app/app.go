@@ -32,7 +32,7 @@ type App struct {
 	db                    *metadb.DB
 	raftDB                *raftstorage.DB
 	channelLogDB          *channelstore.Engine
-	cluster               *raftcluster.Cluster
+	cluster               raftcluster.API
 	isrRuntime            channelruntime.Runtime
 	channelLog            *appChannelCluster
 	channelMetaSync       *channelMetaSync
@@ -102,7 +102,7 @@ func (a *App) RaftDB() *raftstorage.DB {
 	return a.raftDB
 }
 
-func (a *App) Cluster() *raftcluster.Cluster {
+func (a *App) Cluster() raftcluster.API {
 	if a == nil {
 		return nil
 	}

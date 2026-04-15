@@ -696,7 +696,7 @@ func newStorageFactory(raftDB *raftstorage.DB) func(slotID multiraft.SlotID) (mu
 }
 
 type presenceRouter struct {
-	cluster *raftcluster.Cluster
+	cluster raftcluster.API
 }
 
 func (r presenceRouter) SlotForKey(key string) uint64 {

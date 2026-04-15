@@ -212,7 +212,7 @@ func (s *Store) batchGetChannelRuntimeMetaAuthoritative(ctx context.Context, slo
 	return out, nil
 }
 
-func filterChannelRuntimeMetaBySlot(cluster *raftcluster.Cluster, slotID multiraft.SlotID, metas []metadb.ChannelRuntimeMeta) []metadb.ChannelRuntimeMeta {
+func filterChannelRuntimeMetaBySlot(cluster raftcluster.API, slotID multiraft.SlotID, metas []metadb.ChannelRuntimeMeta) []metadb.ChannelRuntimeMeta {
 	filtered := make([]metadb.ChannelRuntimeMeta, 0, len(metas))
 	for _, meta := range metas {
 		if cluster.SlotForKey(meta.ChannelID) != slotID {

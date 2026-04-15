@@ -10,7 +10,7 @@ import (
 )
 
 type presenceAuthorityClient struct {
-	cluster     *raftcluster.Cluster
+	cluster     raftcluster.API
 	local       *presence.App
 	remote      *accessnode.Client
 	localNodeID uint64

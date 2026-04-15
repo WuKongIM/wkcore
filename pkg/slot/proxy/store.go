@@ -12,7 +12,7 @@ import (
 // Store provides business-level distributed storage APIs
 // built on top of raftcluster's generic Propose mechanism.
 type Store struct {
-	cluster              *raftcluster.Cluster
+	cluster              raftcluster.API
 	db                   *metadb.DB
 	channelUpdateOverlay ChannelUpdateOverlay
 }
@@ -22,7 +22,7 @@ type ChannelUpdateOverlay interface {
 }
 
 // New creates a Store.
-func New(cluster *raftcluster.Cluster, db *metadb.DB) *Store {
+func New(cluster raftcluster.API, db *metadb.DB) *Store {
 	store := &Store{cluster: cluster, db: db}
 	if cluster != nil && cluster.RPCMux() != nil {
 		cluster.RPCMux().Handle(runtimeMetaRPCServiceID, store.handleRuntimeMetaRPC)

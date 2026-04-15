@@ -36,7 +36,7 @@ func (d messageRecipientDirectory) EndpointsByUID(ctx context.Context, uid strin
 }
 
 type messageRemoteDelivery struct {
-	cluster *raftcluster.Cluster
+	cluster raftcluster.API
 	client  *accessnode.Client
 }
 
