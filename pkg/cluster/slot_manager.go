@@ -36,7 +36,7 @@ func (m *slotManager) ensureLocal(ctx context.Context, slotID multiraft.SlotID, 
 	if err != nil {
 		return err
 	}
-	sm, err := c.cfg.NewStateMachine(slotID)
+	sm, err := c.newStateMachine(slotID)
 	if err != nil {
 		return err
 	}

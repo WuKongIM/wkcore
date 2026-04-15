@@ -92,8 +92,10 @@ func TestObservationPeersForGroupPreferRuntimeMembership(t *testing.T) {
 				{SlotID: 7, Peers: []multiraft.NodeID{1, 2, 3}},
 			},
 		},
-		assignments: newAssignmentCache(),
-		runState:    newRuntimeState(),
+		runState: newRuntimeState(),
+		agentResources: agentResources{
+			assignments: newAssignmentCache(),
+		},
 	}
 	cluster.assignments.SetAssignments([]controllermeta.SlotAssignment{
 		{SlotID: 7, DesiredPeers: []uint64{2, 3}},
@@ -379,8 +381,10 @@ func TestApplyHashSlotTablePayloadUpdatesRegisteredStateMachineOwnership(t *test
 	updater := &testHashSlotOwnershipUpdater{}
 	cluster := &Cluster{
 		router: NewRouter(NewHashSlotTable(8, 2), 1, nil),
-		runtimeStateMachines: map[multiraft.SlotID]hashSlotOwnershipUpdater{
-			2: updater,
+		hashSlotRuntimeResources: hashSlotRuntimeResources{
+			runtimeStateMachines: map[multiraft.SlotID]hashSlotOwnershipUpdater{
+				2: updater,
+			},
 		},
 	}
 
@@ -411,9 +415,11 @@ func TestApplyHashSlotTablePayloadPublishesDeltaMigrationRuntime(t *testing.T) {
 	target := &testHashSlotOwnershipUpdater{}
 	cluster := &Cluster{
 		router: NewRouter(NewHashSlotTable(8, 2), 1, nil),
-		runtimeStateMachines: map[multiraft.SlotID]hashSlotOwnershipUpdater{
-			1: source,
-			2: target,
+		hashSlotRuntimeResources: hashSlotRuntimeResources{
+			runtimeStateMachines: map[multiraft.SlotID]hashSlotOwnershipUpdater{
+				1: source,
+				2: target,
+			},
 		},
 	}
 
@@ -1197,9 +1203,11 @@ func TestObserveHashSlotMigrationsCompletesSnapshotViaRegisteredStateMachines(t 
 				},
 			},
 		},
-		runtimeStateMachines: map[multiraft.SlotID]hashSlotOwnershipUpdater{
-			1: sourceSM,
-			2: targetSM,
+		hashSlotRuntimeResources: hashSlotRuntimeResources{
+			runtimeStateMachines: map[multiraft.SlotID]hashSlotOwnershipUpdater{
+				1: sourceSM,
+				2: targetSM,
+			},
 		},
 	}
 
@@ -1267,8 +1275,10 @@ func TestHandleManagedSlotRPCImportSnapshotRequiresLeader(t *testing.T) {
 	cluster := &Cluster{
 		cfg:    Config{NodeID: 1},
 		router: NewRouter(NewHashSlotTable(8, 2), 1, nil),
-		runtimeStateMachines: map[multiraft.SlotID]hashSlotOwnershipUpdater{
-			2: targetSM,
+		hashSlotRuntimeResources: hashSlotRuntimeResources{
+			runtimeStateMachines: map[multiraft.SlotID]hashSlotOwnershipUpdater{
+				2: targetSM,
+			},
 		},
 	}
 
@@ -1310,7 +1320,9 @@ func TestStartControllerClientInitializesDefaultMigrationWorker(t *testing.T) {
 			ControllerRaftPath: "raft",
 			Nodes:              []NodeConfig{{NodeID: 1, Addr: "127.0.0.1:1111"}},
 		},
-		assignments: newAssignmentCache(),
+		agentResources: agentResources{
+			assignments: newAssignmentCache(),
+		},
 	}
 
 	cluster.startControllerClient()

@@ -46,6 +46,16 @@ type managedSlotResources struct {
 	slotExecutor     *slotExecutor
 }
 
+type agentResources struct {
+	agent       *slotAgent
+	assignments *assignmentCache
+}
+
+type hashSlotRuntimeResources struct {
+	runtimeStateMachinesMu sync.RWMutex
+	runtimeStateMachines   map[multiraft.SlotID]hashSlotOwnershipUpdater
+}
+
 type Cluster struct {
 	cfg    Config
 	logger wklog.Logger
@@ -54,14 +64,12 @@ type Cluster struct {
 	runtime *multiraft.Runtime
 	router  *Router
 	controllerResources
-	agent                  *slotAgent
-	migrationWorker        hashSlotMigrationWorker
-	pendingHashSlotAborts  map[uint16]pendingHashSlotAbort
-	assignments            *assignmentCache
-	runState               *runtimeState
-	runtimeStateMachinesMu sync.RWMutex
-	runtimeStateMachines   map[multiraft.SlotID]hashSlotOwnershipUpdater
-	observer               *observerLoop
+	agentResources
+	migrationWorker       hashSlotMigrationWorker
+	pendingHashSlotAborts map[uint16]pendingHashSlotAbort
+	runState              *runtimeState
+	hashSlotRuntimeResources
+	observer *observerLoop
 	managedSlotResources
 	stopped atomic.Bool
 }
@@ -96,10 +104,14 @@ func NewCluster(cfg Config) (*Cluster, error) {
 		transportResources: transportResources{
 			rpcMux: transport.NewRPCMux(),
 		},
-		router:               NewRouter(NewHashSlotTable(cfg.effectiveHashSlotCount(), int(cfg.effectiveInitialSlotCount())), cfg.NodeID, nil),
-		assignments:          newAssignmentCache(),
-		runState:             newRuntimeState(),
-		runtimeStateMachines: make(map[multiraft.SlotID]hashSlotOwnershipUpdater),
+		router:   NewRouter(NewHashSlotTable(cfg.effectiveHashSlotCount(), int(cfg.effectiveInitialSlotCount())), cfg.NodeID, nil),
+		runState: newRuntimeState(),
+		agentResources: agentResources{
+			assignments: newAssignmentCache(),
+		},
+		hashSlotRuntimeResources: hashSlotRuntimeResources{
+			runtimeStateMachines: make(map[multiraft.SlotID]hashSlotOwnershipUpdater),
+		},
 	}
 	cluster.slotMgr = newSlotManager(cluster)
 	cluster.slotExecutor = newSlotExecutor(cluster)

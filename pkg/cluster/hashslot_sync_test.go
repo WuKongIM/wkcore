@@ -137,8 +137,10 @@ func TestSlotAgentSyncAssignmentsFallbackUpdatesRouterHashSlotTableFromLocalCont
 			controllerMeta:              store,
 			controllerLeaderWaitTimeout: testControllerLeaderWaitTimeout,
 		},
-		assignments: cache,
-		router:      NewRouter(base, 1, nil),
+		router: NewRouter(base, 1, nil),
+		agentResources: agentResources{
+			assignments: cache,
+		},
 	}
 	agent := &slotAgent{
 		cluster: cluster,

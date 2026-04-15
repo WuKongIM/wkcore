@@ -182,6 +182,9 @@ func TestReconcilerTickLoadsTasksWithBoundedConcurrency(t *testing.T) {
 		NewStateMachine: func(multiraft.SlotID) (multiraft.StateMachine, error) {
 			return observerTestStateMachine{}, nil
 		},
+		NewStateMachineWithHashSlots: func(multiraft.SlotID, []uint16) (multiraft.StateMachine, error) {
+			return observerTestStateMachine{}, nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewCluster() error = %v", err)
