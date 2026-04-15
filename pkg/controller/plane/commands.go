@@ -15,6 +15,12 @@ const (
 	CommandKindEvaluateTimeouts
 	CommandKindTaskResult
 	CommandKindAssignmentTaskUpdate
+	CommandKindStartMigration
+	CommandKindAdvanceMigration
+	CommandKindFinalizeMigration
+	CommandKindAbortMigration
+	CommandKindAddSlot    CommandKind = 14
+	CommandKindRemoveSlot CommandKind = 15
 )
 
 type OperatorKind uint8
@@ -26,11 +32,12 @@ const (
 )
 
 type AgentReport struct {
-	NodeID         uint64
-	Addr           string
-	ObservedAt     time.Time
-	CapacityWeight int
-	Runtime        *controllermeta.SlotRuntimeView
+	NodeID               uint64
+	Addr                 string
+	ObservedAt           time.Time
+	CapacityWeight       int
+	HashSlotTableVersion uint64
+	Runtime              *controllermeta.SlotRuntimeView
 }
 
 type OperatorRequest struct {
@@ -45,6 +52,22 @@ type TaskAdvance struct {
 	Err     error
 }
 
+type MigrationRequest struct {
+	HashSlot uint16
+	Source   uint64
+	Target   uint64
+	Phase    uint8
+}
+
+type AddSlotRequest struct {
+	NewSlotID uint64
+	Peers     []uint64
+}
+
+type RemoveSlotRequest struct {
+	SlotID uint64
+}
+
 type Command struct {
 	Kind       CommandKind
 	Report     *AgentReport
@@ -52,4 +75,7 @@ type Command struct {
 	Advance    *TaskAdvance
 	Assignment *controllermeta.SlotAssignment
 	Task       *controllermeta.ReconcileTask
+	Migration  *MigrationRequest
+	AddSlot    *AddSlotRequest
+	RemoveSlot *RemoveSlotRequest
 }

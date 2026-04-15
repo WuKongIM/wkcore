@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/slotmigration"
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
@@ -15,6 +17,73 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/transport"
 )
+
+type testClusterStateMachine struct{}
+
+func (testClusterStateMachine) Apply(context.Context, multiraft.Command) ([]byte, error) {
+	return nil, nil
+}
+
+func (testClusterStateMachine) Restore(context.Context, multiraft.Snapshot) error {
+	return nil
+}
+
+func (testClusterStateMachine) Snapshot(context.Context) (multiraft.Snapshot, error) {
+	return multiraft.Snapshot{}, nil
+}
+
+type testHashSlotOwnershipUpdater struct {
+	testClusterStateMachine
+	updates [][]uint16
+
+	outgoingDeltaTargets []map[uint16]multiraft.SlotID
+	incomingDeltaSlots   [][]uint16
+	deltaForwarder       func(context.Context, multiraft.SlotID, multiraft.Command) error
+}
+
+func (u *testHashSlotOwnershipUpdater) UpdateOwnedHashSlots(hashSlots []uint16) {
+	u.updates = append(u.updates, append([]uint16(nil), hashSlots...))
+}
+
+func (u *testHashSlotOwnershipUpdater) UpdateOutgoingDeltaTargets(targets map[uint16]multiraft.SlotID) {
+	cloned := make(map[uint16]multiraft.SlotID, len(targets))
+	for hashSlot, target := range targets {
+		cloned[hashSlot] = target
+	}
+	u.outgoingDeltaTargets = append(u.outgoingDeltaTargets, cloned)
+}
+
+func (u *testHashSlotOwnershipUpdater) UpdateIncomingDeltaHashSlots(hashSlots []uint16) {
+	u.incomingDeltaSlots = append(u.incomingDeltaSlots, append([]uint16(nil), hashSlots...))
+}
+
+func (u *testHashSlotOwnershipUpdater) SetDeltaForwarder(fn func(context.Context, multiraft.SlotID, multiraft.Command) error) {
+	u.deltaForwarder = fn
+}
+
+type testHashSlotSnapshotStateMachine struct {
+	testHashSlotOwnershipUpdater
+	exportedHashSlots []uint16
+	importedSnapshots []metadb.SlotSnapshot
+	snapshotData      []byte
+}
+
+func (s *testHashSlotSnapshotStateMachine) ExportHashSlotSnapshot(_ context.Context, hashSlot uint16) (metadb.SlotSnapshot, error) {
+	s.exportedHashSlots = append(s.exportedHashSlots, hashSlot)
+	return metadb.SlotSnapshot{
+		HashSlots: []uint16{hashSlot},
+		Data:      append([]byte(nil), s.snapshotData...),
+	}, nil
+}
+
+func (s *testHashSlotSnapshotStateMachine) ImportHashSlotSnapshot(_ context.Context, snap metadb.SlotSnapshot) error {
+	cloned := metadb.SlotSnapshot{
+		HashSlots: append([]uint16(nil), snap.HashSlots...),
+		Data:      append([]byte(nil), snap.Data...),
+	}
+	s.importedSnapshots = append(s.importedSnapshots, cloned)
+	return nil
+}
 
 func TestObservationPeersForGroupPreferRuntimeMembership(t *testing.T) {
 	cluster := &Cluster{
@@ -255,6 +324,178 @@ func TestWaitForManagedSlotsReadyUsesConfiguredObservationInterval(t *testing.T)
 	}
 }
 
+func TestSlotIDsUseInitialSlotCount(t *testing.T) {
+	cluster := &Cluster{
+		cfg: Config{
+			HashSlotCount:    8,
+			InitialSlotCount: 3,
+		},
+	}
+
+	slotIDs := cluster.SlotIDs()
+	want := []multiraft.SlotID{1, 2, 3}
+	if len(slotIDs) != len(want) {
+		t.Fatalf("SlotIDs() = %v, want %v", slotIDs, want)
+	}
+	for i := range want {
+		if slotIDs[i] != want[i] {
+			t.Fatalf("SlotIDs() = %v, want %v", slotIDs, want)
+		}
+	}
+}
+
+func TestNewStateMachineUsesAssignedHashSlots(t *testing.T) {
+	var gotSlotID multiraft.SlotID
+	var gotHashSlots []uint16
+	cluster := &Cluster{
+		cfg: Config{
+			NewStateMachineWithHashSlots: func(slotID multiraft.SlotID, hashSlots []uint16) (multiraft.StateMachine, error) {
+				gotSlotID = slotID
+				gotHashSlots = append([]uint16(nil), hashSlots...)
+				return testClusterStateMachine{}, nil
+			},
+		},
+		router: NewRouter(NewHashSlotTable(8, 2), 1, nil),
+	}
+
+	if _, err := cluster.newStateMachine(2); err != nil {
+		t.Fatalf("newStateMachine() error = %v", err)
+	}
+	if gotSlotID != 2 {
+		t.Fatalf("slotID = %d, want 2", gotSlotID)
+	}
+	want := []uint16{4, 5, 6, 7}
+	if len(gotHashSlots) != len(want) {
+		t.Fatalf("hashSlots = %v, want %v", gotHashSlots, want)
+	}
+	for i := range want {
+		if gotHashSlots[i] != want[i] {
+			t.Fatalf("hashSlots = %v, want %v", gotHashSlots, want)
+		}
+	}
+}
+
+func TestApplyHashSlotTablePayloadUpdatesRegisteredStateMachineOwnership(t *testing.T) {
+	updater := &testHashSlotOwnershipUpdater{}
+	cluster := &Cluster{
+		router: NewRouter(NewHashSlotTable(8, 2), 1, nil),
+		runtimeStateMachines: map[multiraft.SlotID]hashSlotOwnershipUpdater{
+			2: updater,
+		},
+	}
+
+	updated := NewHashSlotTable(8, 2)
+	updated.Reassign(0, 2)
+
+	if err := cluster.applyHashSlotTablePayload(updated.Encode()); err != nil {
+		t.Fatalf("applyHashSlotTablePayload() error = %v", err)
+	}
+	if len(updater.updates) != 1 {
+		t.Fatalf("UpdateOwnedHashSlots() calls = %d, want 1", len(updater.updates))
+	}
+
+	want := []uint16{0, 4, 5, 6, 7}
+	got := updater.updates[0]
+	if len(got) != len(want) {
+		t.Fatalf("updated hashSlots = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("updated hashSlots = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestApplyHashSlotTablePayloadPublishesDeltaMigrationRuntime(t *testing.T) {
+	source := &testHashSlotOwnershipUpdater{}
+	target := &testHashSlotOwnershipUpdater{}
+	cluster := &Cluster{
+		router: NewRouter(NewHashSlotTable(8, 2), 1, nil),
+		runtimeStateMachines: map[multiraft.SlotID]hashSlotOwnershipUpdater{
+			1: source,
+			2: target,
+		},
+	}
+
+	updated := NewHashSlotTable(8, 2)
+	updated.StartMigration(3, 1, 2)
+	updated.AdvanceMigration(3, PhaseDelta)
+
+	if err := cluster.applyHashSlotTablePayload(updated.Encode()); err != nil {
+		t.Fatalf("applyHashSlotTablePayload() error = %v", err)
+	}
+
+	if len(source.outgoingDeltaTargets) != 1 {
+		t.Fatalf("source UpdateOutgoingDeltaTargets() calls = %d, want 1", len(source.outgoingDeltaTargets))
+	}
+	if len(target.incomingDeltaSlots) != 1 {
+		t.Fatalf("target UpdateIncomingDeltaHashSlots() calls = %d, want 1", len(target.incomingDeltaSlots))
+	}
+
+	if got := source.outgoingDeltaTargets[0][3]; got != 2 {
+		t.Fatalf("source outgoing target for hash slot 3 = %d, want 2", got)
+	}
+	gotIncoming := target.incomingDeltaSlots[0]
+	if len(gotIncoming) != 1 || gotIncoming[0] != 3 {
+		t.Fatalf("target incoming delta hash slots = %v, want [3]", gotIncoming)
+	}
+}
+
+func TestNewStateMachineInstallsDeltaForwarder(t *testing.T) {
+	updater := &testHashSlotOwnershipUpdater{}
+	cluster := &Cluster{
+		cfg: Config{
+			NewStateMachineWithHashSlots: func(slotID multiraft.SlotID, hashSlots []uint16) (multiraft.StateMachine, error) {
+				return updater, nil
+			},
+		},
+		router: NewRouter(NewHashSlotTable(8, 2), 1, nil),
+	}
+
+	if _, err := cluster.newStateMachine(1); err != nil {
+		t.Fatalf("newStateMachine() error = %v", err)
+	}
+	if updater.deltaForwarder == nil {
+		t.Fatal("deltaForwarder = nil, want installed callback")
+	}
+}
+
+func TestLegacyProposeHashSlotUsesSingleAssignedHashSlot(t *testing.T) {
+	cluster := &Cluster{
+		router: NewRouter(NewHashSlotTable(4, 4), 1, nil),
+	}
+
+	hashSlot, err := cluster.legacyProposeHashSlot(2)
+	if err != nil {
+		t.Fatalf("legacyProposeHashSlot() error = %v", err)
+	}
+	if hashSlot != 1 {
+		t.Fatalf("legacyProposeHashSlot() = %d, want 1", hashSlot)
+	}
+}
+
+func TestLegacyProposeHashSlotRejectsAmbiguousAssignment(t *testing.T) {
+	cluster := &Cluster{
+		router: NewRouter(NewHashSlotTable(8, 2), 1, nil),
+	}
+
+	_, err := cluster.legacyProposeHashSlot(1)
+	if !errors.Is(err, ErrHashSlotRequired) {
+		t.Fatalf("legacyProposeHashSlot() error = %v, want %v", err, ErrHashSlotRequired)
+	}
+}
+
+func TestLegacyProposeHashSlotRejectsUnassignedSlot(t *testing.T) {
+	cluster := &Cluster{
+		router: NewRouter(NewHashSlotTable(4, 4), 1, nil),
+	}
+
+	_, err := cluster.legacyProposeHashSlot(9)
+	if !errors.Is(err, ErrSlotNotFound) {
+		t.Fatalf("legacyProposeHashSlot() error = %v, want %v", err, ErrSlotNotFound)
+	}
+}
+
 func TestLocalAssignedGroupIDsFiltersAssignmentsToLocalNode(t *testing.T) {
 	cluster := &Cluster{
 		cfg: Config{NodeID: 2},
@@ -381,6 +622,794 @@ func TestGroupAgentSyncAssignmentsFallsBackToLocalControllerMetaWhenControllerRe
 	}
 }
 
+func TestObserveHashSlotMigrationsAdvancesControllerLifecycle(t *testing.T) {
+	table := NewHashSlotTable(8, 2)
+	table.StartMigration(3, 1, 2)
+
+	var advanced []slotcontroller.MigrationRequest
+	var finalized []slotcontroller.MigrationRequest
+	worker := &fakeHashSlotMigrationWorker{
+		transitionsByTick: [][]slotmigration.Transition{
+			{{HashSlot: 3, Source: 1, Target: 2, To: slotmigration.PhaseDelta}},
+			{{HashSlot: 3, Source: 1, Target: 2, To: slotmigration.PhaseSwitching}},
+			{{HashSlot: 3, Source: 1, Target: 2, To: slotmigration.PhaseDone}},
+		},
+	}
+	cluster := &Cluster{
+		cfg:             Config{NodeID: 1},
+		router:          NewRouter(table, 1, nil),
+		migrationWorker: worker,
+		controllerResources: controllerResources{
+			controllerClient: fakeControllerClient{
+				advanceMigrationFn: func(_ context.Context, req slotcontroller.MigrationRequest) error {
+					advanced = append(advanced, req)
+					return nil
+				},
+				finalizeMigrationFn: func(_ context.Context, req slotcontroller.MigrationRequest) error {
+					finalized = append(finalized, req)
+					return nil
+				},
+			},
+		},
+	}
+
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+		if slotID != 1 {
+			return 0, nil, false
+		}
+		return 1, nil, true
+	})
+	defer restoreLeader()
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err != nil {
+		t.Fatalf("first observeHashSlotMigrations() error = %v", err)
+	}
+	if len(advanced) != 1 || advanced[0].HashSlot != 3 || advanced[0].Phase != uint8(slotmigration.PhaseDelta) {
+		t.Fatalf("advanced after first tick = %#v", advanced)
+	}
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err != nil {
+		t.Fatalf("second observeHashSlotMigrations() error = %v", err)
+	}
+	if len(advanced) != 2 || advanced[1].Phase != uint8(slotmigration.PhaseSwitching) {
+		t.Fatalf("advanced after second tick = %#v", advanced)
+	}
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err != nil {
+		t.Fatalf("third observeHashSlotMigrations() error = %v", err)
+	}
+	if len(finalized) != 1 || finalized[0].HashSlot != 3 {
+		t.Fatalf("finalized after third tick = %#v", finalized)
+	}
+}
+
+func TestObserveHashSlotMigrationsSkipsWhenLocalNodeIsNotSourceLeader(t *testing.T) {
+	table := NewHashSlotTable(8, 2)
+	table.StartMigration(3, 1, 2)
+
+	advanceCalls := 0
+	worker := &fakeHashSlotMigrationWorker{}
+	cluster := &Cluster{
+		cfg:             Config{NodeID: 2},
+		router:          NewRouter(table, 2, nil),
+		migrationWorker: worker,
+		controllerResources: controllerResources{
+			controllerClient: fakeControllerClient{
+				advanceMigrationFn: func(_ context.Context, _ slotcontroller.MigrationRequest) error {
+					advanceCalls++
+					return nil
+				},
+			},
+		},
+	}
+
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+		if slotID != 1 {
+			return 0, nil, false
+		}
+		return 1, nil, true
+	})
+	defer restoreLeader()
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err != nil {
+		t.Fatalf("observeHashSlotMigrations() error = %v", err)
+	}
+	if advanceCalls != 0 {
+		t.Fatalf("advanceCalls = %d, want 0", advanceCalls)
+	}
+	if len(worker.started) != 0 {
+		t.Fatalf("worker started = %#v, want none", worker.started)
+	}
+}
+
+func TestObserveHashSlotMigrationsMarksSwitchCompleteWhenControllerPhaseSwitches(t *testing.T) {
+	table := NewHashSlotTable(8, 2)
+	table.StartMigration(3, 1, 2)
+	table.AdvanceMigration(3, PhaseSwitching)
+
+	worker := &fakeHashSlotMigrationWorker{
+		active: []slotmigration.Migration{{HashSlot: 3, Source: 1, Target: 2, Phase: slotmigration.PhaseSwitching}},
+	}
+	cluster := &Cluster{
+		cfg:             Config{NodeID: 1},
+		router:          NewRouter(table, 1, nil),
+		migrationWorker: worker,
+	}
+
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+		if slotID != 1 {
+			return 0, nil, false
+		}
+		return 1, nil, true
+	})
+	defer restoreLeader()
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err != nil {
+		t.Fatalf("observeHashSlotMigrations() error = %v", err)
+	}
+	if got := worker.switchCompleted; len(got) != 1 || got[0] != 3 {
+		t.Fatalf("worker.MarkSwitchComplete() calls = %v, want [3]", got)
+	}
+}
+
+func TestObserveHashSlotMigrationsAbortsTimedOutMigration(t *testing.T) {
+	table := NewHashSlotTable(8, 2)
+	table.StartMigration(3, 1, 2)
+	table.AdvanceMigration(3, PhaseDelta)
+
+	var aborted []slotcontroller.MigrationRequest
+	worker := &fakeHashSlotMigrationWorker{
+		active: []slotmigration.Migration{
+			{HashSlot: 3, Source: 1, Target: 2, Phase: slotmigration.PhaseDelta},
+		},
+		transitionsByTick: [][]slotmigration.Transition{
+			{{HashSlot: 3, Source: 1, Target: 2, TimedOut: true}},
+		},
+	}
+	cluster := &Cluster{
+		cfg:             Config{NodeID: 1},
+		router:          NewRouter(table, 1, nil),
+		migrationWorker: worker,
+		controllerResources: controllerResources{
+			controllerClient: fakeControllerClient{
+				abortMigrationFn: func(_ context.Context, req slotcontroller.MigrationRequest) error {
+					aborted = append(aborted, req)
+					return nil
+				},
+			},
+		},
+	}
+
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+		if slotID != 1 {
+			return 0, nil, false
+		}
+		return 1, nil, true
+	})
+	defer restoreLeader()
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err != nil {
+		t.Fatalf("observeHashSlotMigrations() error = %v", err)
+	}
+	if len(aborted) != 1 || aborted[0].HashSlot != 3 || aborted[0].Source != 1 || aborted[0].Target != 2 {
+		t.Fatalf("abort migration calls = %#v", aborted)
+	}
+	if len(worker.aborted) != 1 || worker.aborted[0] != 3 {
+		t.Fatalf("worker abort calls = %#v", worker.aborted)
+	}
+	if len(worker.active) != 0 {
+		t.Fatalf("worker active migrations = %#v, want none", worker.active)
+	}
+}
+
+func TestObserveHashSlotMigrationsDoesNotRestartTimedOutMigrationWhileAbortPending(t *testing.T) {
+	table := NewHashSlotTable(8, 2)
+	table.StartMigration(3, 1, 2)
+	table.AdvanceMigration(3, PhaseDelta)
+
+	abortCalls := 0
+	worker := &fakeHashSlotMigrationWorker{
+		active: []slotmigration.Migration{
+			{HashSlot: 3, Source: 1, Target: 2, Phase: slotmigration.PhaseDelta},
+		},
+		removeTimedOutOnTick: true,
+		transitionsByTick: [][]slotmigration.Transition{
+			{{HashSlot: 3, Source: 1, Target: 2, TimedOut: true}},
+		},
+	}
+	cluster := &Cluster{
+		cfg:             Config{NodeID: 1},
+		router:          NewRouter(table, 1, nil),
+		migrationWorker: worker,
+		controllerResources: controllerResources{
+			controllerClient: fakeControllerClient{
+				abortMigrationFn: func(_ context.Context, req slotcontroller.MigrationRequest) error {
+					abortCalls++
+					if req.HashSlot != 3 || req.Source != 1 || req.Target != 2 {
+						t.Fatalf("abort migration req = %#v", req)
+					}
+					if abortCalls == 1 {
+						return errors.New("boom")
+					}
+					return nil
+				},
+			},
+		},
+	}
+
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+		if slotID != 1 {
+			return 0, nil, false
+		}
+		return 1, nil, true
+	})
+	defer restoreLeader()
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err == nil {
+		t.Fatal("first observeHashSlotMigrations() error = nil, want abort failure")
+	}
+	if len(worker.active) != 0 {
+		t.Fatalf("worker active migrations after failed abort = %#v, want none", worker.active)
+	}
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err != nil {
+		t.Fatalf("second observeHashSlotMigrations() error = %v", err)
+	}
+	if abortCalls != 2 {
+		t.Fatalf("abort calls = %d, want 2", abortCalls)
+	}
+	if len(worker.active) != 0 {
+		t.Fatalf("worker restarted timed out migration while abort pending: %#v", worker.active)
+	}
+}
+
+func TestObserveHashSlotMigrationsAllowsReplacementMigrationAfterAbortPending(t *testing.T) {
+	table := NewHashSlotTable(8, 4)
+	table.StartMigration(1, 1, 2)
+	table.AdvanceMigration(1, PhaseDelta)
+
+	worker := &fakeHashSlotMigrationWorker{
+		active: []slotmigration.Migration{
+			{HashSlot: 1, Source: 1, Target: 2, Phase: slotmigration.PhaseDelta},
+		},
+		removeTimedOutOnTick: true,
+		transitionsByTick: [][]slotmigration.Transition{
+			{{HashSlot: 1, Source: 1, Target: 2, TimedOut: true}},
+		},
+	}
+	cluster := &Cluster{
+		cfg:             Config{NodeID: 1},
+		router:          NewRouter(table, 1, nil),
+		migrationWorker: worker,
+		controllerResources: controllerResources{
+			controllerClient: fakeControllerClient{
+				abortMigrationFn: func(_ context.Context, _ slotcontroller.MigrationRequest) error {
+					return nil
+				},
+			},
+		},
+	}
+
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+		if slotID != 1 {
+			return 0, nil, false
+		}
+		return 1, nil, true
+	})
+	defer restoreLeader()
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err != nil {
+		t.Fatalf("first observeHashSlotMigrations() error = %v", err)
+	}
+
+	replanned := NewHashSlotTable(8, 4)
+	replanned.StartMigration(1, 1, 4)
+	cluster.router.UpdateHashSlotTable(replanned)
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err != nil {
+		t.Fatalf("second observeHashSlotMigrations() error = %v", err)
+	}
+	if len(worker.active) != 1 {
+		t.Fatalf("worker active migrations = %#v, want replacement migration", worker.active)
+	}
+	if worker.active[0].HashSlot != 1 || worker.active[0].Source != 1 || worker.active[0].Target != 4 {
+		t.Fatalf("worker replacement migration = %#v, want hash slot 1 source 1 target 4", worker.active[0])
+	}
+}
+
+func TestObserveHashSlotMigrationsContinuesOtherMigrationsWhenPendingAbortRetryFails(t *testing.T) {
+	table := NewHashSlotTable(8, 2)
+	table.StartMigration(1, 1, 2)
+	table.AdvanceMigration(1, PhaseDelta)
+	table.StartMigration(5, 2, 1)
+
+	worker := &fakeHashSlotMigrationWorker{}
+	cluster := &Cluster{
+		cfg:             Config{NodeID: 1},
+		router:          NewRouter(table, 1, nil),
+		migrationWorker: worker,
+		pendingHashSlotAborts: map[uint16]pendingHashSlotAbort{
+			1: {migration: HashSlotMigration{HashSlot: 1, Source: 1, Target: 2, Phase: PhaseDelta}},
+		},
+		controllerResources: controllerResources{
+			controllerClient: fakeControllerClient{
+				abortMigrationFn: func(_ context.Context, req slotcontroller.MigrationRequest) error {
+					if req.HashSlot == 1 {
+						return errors.New("boom")
+					}
+					return nil
+				},
+			},
+		},
+	}
+
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+		switch slotID {
+		case 1, 2:
+			return 1, nil, true
+		default:
+			return 0, nil, false
+		}
+	})
+	defer restoreLeader()
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err == nil {
+		t.Fatal("observeHashSlotMigrations() error = nil, want pending abort retry failure")
+	}
+	if len(worker.active) != 1 {
+		t.Fatalf("worker active migrations = %#v, want unaffected migration to keep progressing", worker.active)
+	}
+	if worker.active[0].HashSlot != 5 || worker.active[0].Source != 2 || worker.active[0].Target != 1 {
+		t.Fatalf("worker active migration = %#v, want hash slot 5 source 2 target 1", worker.active[0])
+	}
+}
+
+func TestObserveHashSlotMigrationsDoesNotRepeatSuccessfulPendingAbortForSameTableVersion(t *testing.T) {
+	table := NewHashSlotTable(8, 2)
+	table.StartMigration(1, 1, 2)
+	table.AdvanceMigration(1, PhaseDelta)
+
+	abortCalls := 0
+	cluster := &Cluster{
+		cfg:             Config{NodeID: 1},
+		router:          NewRouter(table, 1, nil),
+		migrationWorker: &fakeHashSlotMigrationWorker{},
+		pendingHashSlotAborts: map[uint16]pendingHashSlotAbort{
+			1: {migration: HashSlotMigration{HashSlot: 1, Source: 1, Target: 2}},
+		},
+		controllerResources: controllerResources{
+			controllerClient: fakeControllerClient{
+				abortMigrationFn: func(_ context.Context, req slotcontroller.MigrationRequest) error {
+					abortCalls++
+					if req.HashSlot != 1 || req.Source != 1 || req.Target != 2 {
+						t.Fatalf("abort migration req = %#v", req)
+					}
+					return nil
+				},
+			},
+		},
+	}
+
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+		if slotID != 1 {
+			return 0, nil, false
+		}
+		return 1, nil, true
+	})
+	defer restoreLeader()
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err != nil {
+		t.Fatalf("first observeHashSlotMigrations() error = %v", err)
+	}
+	if err := cluster.observeHashSlotMigrations(context.Background()); err != nil {
+		t.Fatalf("second observeHashSlotMigrations() error = %v", err)
+	}
+	if abortCalls != 1 {
+		t.Fatalf("abort calls = %d, want 1 for unchanged table version", abortCalls)
+	}
+}
+
+func TestObserveOnceContinuesHashSlotMigrationObservationWhenAssignmentSyncFails(t *testing.T) {
+	table := NewHashSlotTable(8, 2)
+	table.StartMigration(3, 1, 2)
+	table.AdvanceMigration(3, PhaseDelta)
+
+	abortCalls := 0
+	client := fakeControllerClient{
+		assignmentsErr: errors.New("sync failed"),
+		abortMigrationFn: func(_ context.Context, req slotcontroller.MigrationRequest) error {
+			abortCalls++
+			if req.HashSlot != 3 || req.Source != 1 || req.Target != 2 {
+				t.Fatalf("abort migration req = %#v", req)
+			}
+			return nil
+		},
+	}
+	cluster := &Cluster{
+		cfg:             Config{NodeID: 1},
+		runtime:         &multiraft.Runtime{},
+		router:          NewRouter(table, 1, nil),
+		migrationWorker: &fakeHashSlotMigrationWorker{transitionsByTick: [][]slotmigration.Transition{{{HashSlot: 3, Source: 1, Target: 2, TimedOut: true}}}},
+		controllerResources: controllerResources{
+			controllerClient: client,
+		},
+	}
+	cluster.agent = &slotAgent{
+		cluster: cluster,
+		client:  client,
+		cache:   newAssignmentCache(),
+	}
+
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+		if slotID != 1 {
+			return 0, nil, false
+		}
+		return 1, nil, true
+	})
+	defer restoreLeader()
+
+	cluster.observeOnce(context.Background())
+
+	if abortCalls != 1 {
+		t.Fatalf("abort calls = %d, want 1", abortCalls)
+	}
+}
+
+func TestOrderHashSlotMigrationsForStartInterleavesSources(t *testing.T) {
+	ordered := orderHashSlotMigrationsForStart([]HashSlotMigration{
+		{HashSlot: 1, Source: 1, Target: 10},
+		{HashSlot: 2, Source: 1, Target: 10},
+		{HashSlot: 3, Source: 2, Target: 11},
+		{HashSlot: 4, Source: 2, Target: 11},
+		{HashSlot: 5, Source: 3, Target: 12},
+		{HashSlot: 6, Source: 3, Target: 12},
+		{HashSlot: 7, Source: 4, Target: 13},
+		{HashSlot: 8, Source: 4, Target: 13},
+	})
+
+	want := []uint16{1, 3, 5, 7, 2, 4, 6, 8}
+	if len(ordered) != len(want) {
+		t.Fatalf("ordered migrations len = %d, want %d", len(ordered), len(want))
+	}
+	for i, hashSlot := range want {
+		if ordered[i].HashSlot != hashSlot {
+			t.Fatalf("ordered[%d] = hash slot %d, want %d", i, ordered[i].HashSlot, hashSlot)
+		}
+	}
+}
+
+func TestObserveHashSlotMigrationsStartsFirstBatchAcrossDistinctSources(t *testing.T) {
+	table := NewHashSlotTable(16, 8)
+	table.StartMigration(1, 1, 5)
+	table.StartMigration(2, 1, 6)
+	table.StartMigration(3, 2, 5)
+	table.StartMigration(4, 2, 6)
+	table.StartMigration(5, 3, 7)
+	table.StartMigration(6, 3, 8)
+	table.StartMigration(7, 4, 7)
+	table.StartMigration(8, 4, 8)
+
+	cluster := &Cluster{
+		cfg:             Config{NodeID: 1},
+		router:          NewRouter(table, 1, nil),
+		migrationWorker: slotmigration.NewWorker(100, time.Second),
+	}
+
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+		switch slotID {
+		case 1, 2, 3, 4:
+			return 1, nil, true
+		default:
+			return 0, nil, false
+		}
+	})
+	defer restoreLeader()
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err != nil {
+		t.Fatalf("observeHashSlotMigrations() error = %v", err)
+	}
+
+	worker, ok := cluster.migrationWorker.(*slotmigration.Worker)
+	if !ok {
+		t.Fatalf("migrationWorker type = %T, want *slotmigration.Worker", cluster.migrationWorker)
+	}
+	active := worker.ActiveMigrations()
+	if len(active) != 4 {
+		t.Fatalf("active migrations len = %d, want 4", len(active))
+	}
+
+	gotSources := make(map[multiraft.SlotID]int, len(active))
+	for _, migration := range active {
+		gotSources[migration.Source]++
+	}
+	wantSources := []multiraft.SlotID{1, 2, 3, 4}
+	if len(gotSources) != len(wantSources) {
+		t.Fatalf("active migration sources = %#v, want one migration per source", gotSources)
+	}
+	for _, source := range wantSources {
+		if gotSources[source] != 1 {
+			t.Fatalf("source %d active migrations = %d, want 1", source, gotSources[source])
+		}
+	}
+}
+
+func TestObserveHashSlotMigrationsRealWorkerStaysInSnapshotUntilMarkedComplete(t *testing.T) {
+	table := NewHashSlotTable(8, 2)
+	table.StartMigration(3, 1, 2)
+
+	advanceCalls := 0
+	cluster := &Cluster{
+		cfg:             Config{NodeID: 1},
+		router:          NewRouter(table, 1, nil),
+		migrationWorker: slotmigration.NewWorker(100, time.Second),
+		controllerResources: controllerResources{
+			controllerClient: fakeControllerClient{
+				advanceMigrationFn: func(_ context.Context, _ slotcontroller.MigrationRequest) error {
+					advanceCalls++
+					return nil
+				},
+			},
+		},
+	}
+
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+		if slotID != 1 {
+			return 0, nil, false
+		}
+		return 1, nil, true
+	})
+	defer restoreLeader()
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err != nil {
+		t.Fatalf("observeHashSlotMigrations() error = %v", err)
+	}
+	if advanceCalls != 0 {
+		t.Fatalf("advanceCalls = %d, want 0", advanceCalls)
+	}
+
+	worker, ok := cluster.migrationWorker.(*slotmigration.Worker)
+	if !ok {
+		t.Fatalf("migrationWorker type = %T, want *slotmigration.Worker", cluster.migrationWorker)
+	}
+	active := worker.ActiveMigrations()
+	if len(active) != 1 || active[0].Phase != slotmigration.PhaseSnapshot {
+		t.Fatalf("active migrations = %#v", active)
+	}
+}
+
+func TestObserveHashSlotMigrationsCompletesSnapshotViaRegisteredStateMachines(t *testing.T) {
+	table := NewHashSlotTable(8, 2)
+	table.StartMigration(3, 1, 2)
+
+	sourceSM := &testHashSlotSnapshotStateMachine{snapshotData: []byte("snapshot-3")}
+	targetSM := &testHashSlotSnapshotStateMachine{}
+
+	var advanced []slotcontroller.MigrationRequest
+	cluster := &Cluster{
+		cfg:             Config{NodeID: 1},
+		router:          NewRouter(table, 1, nil),
+		migrationWorker: slotmigration.NewWorker(100, time.Second),
+		controllerResources: controllerResources{
+			controllerClient: fakeControllerClient{
+				advanceMigrationFn: func(_ context.Context, req slotcontroller.MigrationRequest) error {
+					advanced = append(advanced, req)
+					return nil
+				},
+			},
+		},
+		runtimeStateMachines: map[multiraft.SlotID]hashSlotOwnershipUpdater{
+			1: sourceSM,
+			2: targetSM,
+		},
+	}
+
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+		switch slotID {
+		case 1, 2:
+			return 1, nil, true
+		default:
+			return 0, nil, false
+		}
+	})
+	defer restoreLeader()
+
+	restoreStatus := cluster.setManagedSlotStatusTestHook(func(_ *Cluster, nodeID multiraft.NodeID, slotID multiraft.SlotID) (managedSlotStatus, error, bool) {
+		if nodeID != 1 {
+			return managedSlotStatus{}, nil, false
+		}
+		switch slotID {
+		case 1:
+			return managedSlotStatus{LeaderID: 1, AppliedIndex: 42}, nil, true
+		case 2:
+			return managedSlotStatus{LeaderID: 1}, nil, true
+		default:
+			return managedSlotStatus{}, nil, false
+		}
+	})
+	defer restoreStatus()
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err != nil {
+		t.Fatalf("observeHashSlotMigrations() error = %v", err)
+	}
+	if len(sourceSM.exportedHashSlots) != 1 || sourceSM.exportedHashSlots[0] != 3 {
+		t.Fatalf("source exports = %v, want [3]", sourceSM.exportedHashSlots)
+	}
+	if len(targetSM.importedSnapshots) != 1 {
+		t.Fatalf("target imports = %d, want 1", len(targetSM.importedSnapshots))
+	}
+
+	gotSnapshot := targetSM.importedSnapshots[0]
+	if len(gotSnapshot.HashSlots) != 1 || gotSnapshot.HashSlots[0] != 3 {
+		t.Fatalf("imported snapshot hash slots = %v, want [3]", gotSnapshot.HashSlots)
+	}
+	if !bytes.Equal(gotSnapshot.Data, []byte("snapshot-3")) {
+		t.Fatalf("imported snapshot data = %q, want %q", gotSnapshot.Data, []byte("snapshot-3"))
+	}
+	if len(advanced) != 1 {
+		t.Fatalf("advance calls = %d, want 1", len(advanced))
+	}
+	if advanced[0].HashSlot != 3 || advanced[0].Source != 1 || advanced[0].Target != 2 || advanced[0].Phase != uint8(slotmigration.PhaseDelta) {
+		t.Fatalf("advance request = %#v", advanced[0])
+	}
+
+	worker, ok := cluster.migrationWorker.(*slotmigration.Worker)
+	if !ok {
+		t.Fatalf("migrationWorker type = %T, want *slotmigration.Worker", cluster.migrationWorker)
+	}
+	active := worker.ActiveMigrations()
+	if len(active) != 1 || active[0].Phase != slotmigration.PhaseDelta {
+		t.Fatalf("active migrations after snapshot sync = %#v", active)
+	}
+}
+
+func TestHandleManagedSlotRPCImportSnapshotRequiresLeader(t *testing.T) {
+	targetSM := &testHashSlotSnapshotStateMachine{}
+	cluster := &Cluster{
+		cfg:    Config{NodeID: 1},
+		router: NewRouter(NewHashSlotTable(8, 2), 1, nil),
+		runtimeStateMachines: map[multiraft.SlotID]hashSlotOwnershipUpdater{
+			2: targetSM,
+		},
+	}
+
+	restoreLeader := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+		if slotID != 2 {
+			return 0, nil, false
+		}
+		return 2, nil, true
+	})
+	defer restoreLeader()
+
+	body, err := encodeManagedSlotRequest(managedSlotRPCRequest{
+		Kind:     managedSlotRPCImportSnapshot,
+		SlotID:   2,
+		HashSlot: 3,
+		Snapshot: []byte("snapshot-3"),
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	respBody, err := cluster.handleManagedSlotRPC(context.Background(), body)
+	if err != nil {
+		t.Fatalf("handleManagedSlotRPC() error = %v", err)
+	}
+	if _, err := decodeManagedSlotResponse(respBody); !errors.Is(err, ErrNotLeader) {
+		t.Fatalf("decodeManagedSlotResponse() err = %v, want %v", err, ErrNotLeader)
+	}
+	if len(targetSM.importedSnapshots) != 0 {
+		t.Fatalf("target imports = %d, want 0", len(targetSM.importedSnapshots))
+	}
+}
+
+func TestStartControllerClientInitializesDefaultMigrationWorker(t *testing.T) {
+	cluster := &Cluster{
+		cfg: Config{
+			NodeID:             1,
+			ControllerMetaPath: "meta",
+			ControllerRaftPath: "raft",
+			Nodes:              []NodeConfig{{NodeID: 1, Addr: "127.0.0.1:1111"}},
+		},
+		assignments: newAssignmentCache(),
+	}
+
+	cluster.startControllerClient()
+
+	if cluster.migrationWorker == nil {
+		t.Fatal("migrationWorker = nil, want default worker")
+	}
+	if _, ok := cluster.migrationWorker.(*slotmigration.Worker); !ok {
+		t.Fatalf("migrationWorker type = %T, want *slotmigration.Worker", cluster.migrationWorker)
+	}
+}
+
+func TestStartHashSlotMigrationUsesCurrentRouterAssignment(t *testing.T) {
+	table := NewHashSlotTable(8, 2)
+	table.Reassign(3, 2)
+
+	var started []slotcontroller.MigrationRequest
+	cluster := &Cluster{
+		router: NewRouter(table, 1, nil),
+		controllerResources: controllerResources{
+			controllerClient: fakeControllerClient{
+				startMigrationFn: func(_ context.Context, req slotcontroller.MigrationRequest) error {
+					started = append(started, req)
+					return nil
+				},
+			},
+		},
+	}
+
+	if err := cluster.StartHashSlotMigration(context.Background(), 3, 1); err != nil {
+		t.Fatalf("StartHashSlotMigration() error = %v", err)
+	}
+	if len(started) != 1 {
+		t.Fatalf("start migration calls = %d, want 1", len(started))
+	}
+	if started[0].HashSlot != 3 || started[0].Source != 2 || started[0].Target != 1 {
+		t.Fatalf("start migration req = %#v", started[0])
+	}
+}
+
+func TestAbortHashSlotMigrationUsesCurrentMigrationState(t *testing.T) {
+	table := NewHashSlotTable(8, 2)
+	table.StartMigration(3, 1, 2)
+
+	var aborted []slotcontroller.MigrationRequest
+	cluster := &Cluster{
+		router: NewRouter(table, 1, nil),
+		controllerResources: controllerResources{
+			controllerClient: fakeControllerClient{
+				abortMigrationFn: func(_ context.Context, req slotcontroller.MigrationRequest) error {
+					aborted = append(aborted, req)
+					return nil
+				},
+			},
+		},
+	}
+
+	if err := cluster.AbortHashSlotMigration(context.Background(), 3); err != nil {
+		t.Fatalf("AbortHashSlotMigration() error = %v", err)
+	}
+	if len(aborted) != 1 {
+		t.Fatalf("abort migration calls = %d, want 1", len(aborted))
+	}
+	if aborted[0].HashSlot != 3 || aborted[0].Source != 1 || aborted[0].Target != 2 {
+		t.Fatalf("abort migration req = %#v", aborted[0])
+	}
+}
+
+func TestAbortHashSlotMigrationPrefersPendingAbortRequest(t *testing.T) {
+	table := NewHashSlotTable(8, 4)
+	table.StartMigration(1, 1, 4)
+
+	var aborted []slotcontroller.MigrationRequest
+	cluster := &Cluster{
+		router: NewRouter(table, 1, nil),
+		pendingHashSlotAborts: map[uint16]pendingHashSlotAbort{
+			1: {migration: HashSlotMigration{HashSlot: 1, Source: 1, Target: 2}},
+		},
+		controllerResources: controllerResources{
+			controllerClient: fakeControllerClient{
+				abortMigrationFn: func(_ context.Context, req slotcontroller.MigrationRequest) error {
+					aborted = append(aborted, req)
+					return nil
+				},
+			},
+		},
+	}
+
+	if err := cluster.AbortHashSlotMigration(context.Background(), 1); err != nil {
+		t.Fatalf("AbortHashSlotMigration() error = %v", err)
+	}
+	if len(aborted) != 1 {
+		t.Fatalf("abort migration calls = %d, want 1", len(aborted))
+	}
+	if aborted[0].HashSlot != 1 || aborted[0].Source != 1 || aborted[0].Target != 2 {
+		t.Fatalf("abort migration req = %#v, want pending request source 1 target 2", aborted[0])
+	}
+}
+
 type fakeControllerClient struct {
 	reportErr            error
 	listNodesFn          func(context.Context) ([]controllermeta.ClusterNode, error)
@@ -397,6 +1426,101 @@ type fakeControllerClient struct {
 	getTaskErr           error
 	reportTaskResultErr  error
 	reportTaskResultFn   func(context.Context, controllermeta.ReconcileTask, error) error
+	startMigrationFn     func(context.Context, slotcontroller.MigrationRequest) error
+	startMigrationErr    error
+	advanceMigrationFn   func(context.Context, slotcontroller.MigrationRequest) error
+	advanceMigrationErr  error
+	finalizeMigrationFn  func(context.Context, slotcontroller.MigrationRequest) error
+	finalizeMigrationErr error
+	abortMigrationFn     func(context.Context, slotcontroller.MigrationRequest) error
+	abortMigrationErr    error
+	addSlotFn            func(context.Context, slotcontroller.AddSlotRequest) error
+	addSlotErr           error
+	removeSlotFn         func(context.Context, slotcontroller.RemoveSlotRequest) error
+	removeSlotErr        error
+}
+
+type fakeHashSlotMigrationWorker struct {
+	started              []slotmigration.Migration
+	aborted              []uint16
+	switchCompleted      []uint16
+	active               []slotmigration.Migration
+	removeTimedOutOnTick bool
+	transitionsByTick    [][]slotmigration.Transition
+	ticks                int
+}
+
+func (f *fakeHashSlotMigrationWorker) StartMigration(hashSlot uint16, source, target multiraft.SlotID) error {
+	desc := slotmigration.Migration{HashSlot: hashSlot, Source: source, Target: target}
+	f.started = append(f.started, desc)
+	for _, existing := range f.active {
+		if existing.HashSlot == desc.HashSlot && existing.Source == desc.Source && existing.Target == desc.Target {
+			return nil
+		}
+	}
+	f.active = append(f.active, desc)
+	return nil
+}
+
+func (f *fakeHashSlotMigrationWorker) AbortMigration(hashSlot uint16) error {
+	f.aborted = append(f.aborted, hashSlot)
+	filtered := f.active[:0]
+	for _, migration := range f.active {
+		if migration.HashSlot != hashSlot {
+			filtered = append(filtered, migration)
+		}
+	}
+	f.active = filtered
+	return nil
+}
+
+func (f *fakeHashSlotMigrationWorker) MarkSnapshotComplete(hashSlot uint16, _ uint64, _ int64) error {
+	for i := range f.active {
+		if f.active[i].HashSlot == hashSlot {
+			f.active[i].Phase = slotmigration.PhaseDelta
+			return nil
+		}
+	}
+	return nil
+}
+
+func (f *fakeHashSlotMigrationWorker) MarkSwitchComplete(hashSlot uint16) error {
+	f.switchCompleted = append(f.switchCompleted, hashSlot)
+	for i := range f.active {
+		if f.active[i].HashSlot == hashSlot {
+			f.active[i].Phase = slotmigration.PhaseDone
+			return nil
+		}
+	}
+	return nil
+}
+
+func (f *fakeHashSlotMigrationWorker) ActiveMigrations() []slotmigration.Migration {
+	return append([]slotmigration.Migration(nil), f.active...)
+}
+
+func (f *fakeHashSlotMigrationWorker) Tick() []slotmigration.Transition {
+	if f.ticks >= len(f.transitionsByTick) {
+		f.ticks++
+		return nil
+	}
+	transitions := append([]slotmigration.Transition(nil), f.transitionsByTick[f.ticks]...)
+	if f.removeTimedOutOnTick {
+		for _, transition := range transitions {
+			if !transition.TimedOut {
+				continue
+			}
+			filtered := f.active[:0]
+			for _, migration := range f.active {
+				if migration.HashSlot != transition.HashSlot {
+					filtered = append(filtered, migration)
+				}
+			}
+			f.active = filtered
+		}
+	}
+	f.ticks++
+	return transitions
 }
 
 func (f fakeControllerClient) Report(_ context.Context, _ slotcontroller.AgentReport) error {
@@ -450,6 +1574,48 @@ func (f fakeControllerClient) ReportTaskResult(ctx context.Context, task control
 		return f.reportTaskResultFn(ctx, task, taskErr)
 	}
 	return f.reportTaskResultErr
+}
+
+func (f fakeControllerClient) StartMigration(ctx context.Context, req slotcontroller.MigrationRequest) error {
+	if f.startMigrationFn != nil {
+		return f.startMigrationFn(ctx, req)
+	}
+	return f.startMigrationErr
+}
+
+func (f fakeControllerClient) AdvanceMigration(ctx context.Context, req slotcontroller.MigrationRequest) error {
+	if f.advanceMigrationFn != nil {
+		return f.advanceMigrationFn(ctx, req)
+	}
+	return f.advanceMigrationErr
+}
+
+func (f fakeControllerClient) FinalizeMigration(ctx context.Context, req slotcontroller.MigrationRequest) error {
+	if f.finalizeMigrationFn != nil {
+		return f.finalizeMigrationFn(ctx, req)
+	}
+	return f.finalizeMigrationErr
+}
+
+func (f fakeControllerClient) AbortMigration(ctx context.Context, req slotcontroller.MigrationRequest) error {
+	if f.abortMigrationFn != nil {
+		return f.abortMigrationFn(ctx, req)
+	}
+	return f.abortMigrationErr
+}
+
+func (f fakeControllerClient) AddSlot(ctx context.Context, req slotcontroller.AddSlotRequest) error {
+	if f.addSlotFn != nil {
+		return f.addSlotFn(ctx, req)
+	}
+	return f.addSlotErr
+}
+
+func (f fakeControllerClient) RemoveSlot(ctx context.Context, req slotcontroller.RemoveSlotRequest) error {
+	if f.removeSlotFn != nil {
+		return f.removeSlotFn(ctx, req)
+	}
+	return f.removeSlotErr
 }
 
 func TestGroupAgentShouldExecuteTaskUsesLowestAliveAssignedPeerForBootstrap(t *testing.T) {

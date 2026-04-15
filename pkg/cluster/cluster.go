@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -53,12 +54,34 @@ type Cluster struct {
 	runtime *multiraft.Runtime
 	router  *Router
 	controllerResources
-	agent       *slotAgent
-	assignments *assignmentCache
-	runState    *runtimeState
-	observer    *observerLoop
+	agent                  *slotAgent
+	migrationWorker        hashSlotMigrationWorker
+	pendingHashSlotAborts  map[uint16]pendingHashSlotAbort
+	assignments            *assignmentCache
+	runState               *runtimeState
+	runtimeStateMachinesMu sync.RWMutex
+	runtimeStateMachines   map[multiraft.SlotID]hashSlotOwnershipUpdater
+	observer               *observerLoop
 	managedSlotResources
 	stopped atomic.Bool
+}
+
+type pendingHashSlotAbort struct {
+	migration             HashSlotMigration
+	lastAbortTableVersion uint64
+}
+
+type hashSlotOwnershipUpdater interface {
+	UpdateOwnedHashSlots([]uint16)
+}
+
+type hashSlotMigrationRuntimeUpdater interface {
+	UpdateOutgoingDeltaTargets(map[uint16]multiraft.SlotID)
+	UpdateIncomingDeltaHashSlots([]uint16)
+}
+
+type hashSlotDeltaForwarderInstaller interface {
+	SetDeltaForwarder(func(context.Context, multiraft.SlotID, multiraft.Command) error)
 }
 
 func NewCluster(cfg Config) (*Cluster, error) {
@@ -73,9 +96,10 @@ func NewCluster(cfg Config) (*Cluster, error) {
 		transportResources: transportResources{
 			rpcMux: transport.NewRPCMux(),
 		},
-		router:      NewRouter(cfg.SlotCount, cfg.NodeID, nil),
-		assignments: newAssignmentCache(),
-		runState:    newRuntimeState(),
+		router:               NewRouter(NewHashSlotTable(cfg.effectiveHashSlotCount(), int(cfg.effectiveInitialSlotCount())), cfg.NodeID, nil),
+		assignments:          newAssignmentCache(),
+		runState:             newRuntimeState(),
+		runtimeStateMachines: make(map[multiraft.SlotID]hashSlotOwnershipUpdater),
 	}
 	cluster.slotMgr = newSlotManager(cluster)
 	cluster.slotExecutor = newSlotExecutor(cluster)
@@ -171,6 +195,14 @@ func (c *Cluster) startControllerRaftIfLocalPeer() error {
 	if err != nil {
 		return err
 	}
+	table, err := c.ensureControllerHashSlotTable(context.Background(), host.meta)
+	if err != nil {
+		host.Stop()
+		return fmt.Errorf("ensure controller hash slot table: %w", err)
+	}
+	if c.router != nil {
+		c.router.UpdateHashSlotTable(table)
+	}
 	if err := host.Start(context.Background()); err != nil {
 		host.Stop()
 		return fmt.Errorf("start controller raft: %w", err)
@@ -201,7 +233,7 @@ func (c *Cluster) startMultiraftRuntime() error {
 	}
 
 	if c.router == nil {
-		c.router = NewRouter(c.cfg.SlotCount, c.cfg.NodeID, c.runtime)
+		c.router = NewRouter(NewHashSlotTable(c.cfg.effectiveHashSlotCount(), int(c.cfg.effectiveInitialSlotCount())), c.cfg.NodeID, c.runtime)
 	} else {
 		c.router.runtime = c.runtime
 	}
@@ -211,6 +243,9 @@ func (c *Cluster) startMultiraftRuntime() error {
 func (c *Cluster) startControllerClient() {
 	if !c.cfg.ControllerEnabled() {
 		return
+	}
+	if c.migrationWorker == nil {
+		c.migrationWorker = newHashSlotMigrationWorker()
 	}
 	client := newControllerClient(c, c.cfg.DerivedControllerNodes(), c.assignments)
 	c.controllerClient = client
@@ -250,7 +285,7 @@ func (c *Cluster) openOrBootstrapSlot(ctx context.Context, g SlotConfig) error {
 	if err != nil {
 		return fmt.Errorf("create storage for slot %d: %w", g.SlotID, err)
 	}
-	sm, err := c.cfg.NewStateMachine(g.SlotID)
+	sm, err := c.newStateMachine(g.SlotID)
 	if err != nil {
 		return fmt.Errorf("create state machine for slot %d: %w", g.SlotID, err)
 	}
@@ -356,6 +391,7 @@ func (c *Cluster) observeOnce(ctx context.Context) {
 	if shouldApply {
 		_ = c.agent.ApplyAssignments(ctx)
 	}
+	_ = c.observeHashSlotMigrations(ctx)
 }
 
 func (c *Cluster) controllerTickOnce(ctx context.Context) {
@@ -378,7 +414,7 @@ func (c *Cluster) controllerTickOnce(ctx context.Context) {
 		return
 	}
 	planner := slotcontroller.NewPlanner(slotcontroller.PlannerConfig{
-		SlotCount: c.cfg.SlotCount,
+		SlotCount: c.cfg.effectiveInitialSlotCount(),
 		ReplicaN:  c.cfg.SlotReplicaN,
 	})
 	decision, err := planner.NextDecision(ctx, state)
@@ -457,7 +493,18 @@ func (c *Cluster) handleRaftMessage(body []byte) {
 }
 
 // Propose submits a command to the specified slot, automatically handling leader forwarding.
+// It exists for legacy one-hash-slot-per-slot callers; hash-slot-aware callers should use
+// ProposeWithHashSlot so writes remain valid after a physical slot owns multiple hash slots.
 func (c *Cluster) Propose(ctx context.Context, slotID multiraft.SlotID, cmd []byte) error {
+	hashSlot, err := c.legacyProposeHashSlot(slotID)
+	if err != nil {
+		return err
+	}
+	return c.ProposeWithHashSlot(ctx, slotID, hashSlot, cmd)
+}
+
+// ProposeWithHashSlot submits a command envelope carrying the logical hash slot.
+func (c *Cluster) ProposeWithHashSlot(ctx context.Context, slotID multiraft.SlotID, hashSlot uint16, cmd []byte) error {
 	start := time.Now()
 	attempts := 0
 	var proposeErr error
@@ -484,19 +531,20 @@ func (c *Cluster) Propose(ctx context.Context, slotID multiraft.SlotID, cmd []by
 	}
 	proposeErr = retry.Do(ctx, func(attemptCtx context.Context) error {
 		attempts++
+		payload := encodeProposalPayload(hashSlot, cmd)
 		leaderID, err := c.router.LeaderOf(slotID)
 		if err != nil {
 			return err
 		}
 		if c.router.IsLocal(leaderID) {
-			future, err := c.runtime.Propose(attemptCtx, slotID, cmd)
+			future, err := c.runtime.Propose(attemptCtx, slotID, payload)
 			if err != nil {
 				return err
 			}
 			_, err = future.Wait(attemptCtx)
 			return err
 		}
-		return c.forwardToLeader(attemptCtx, leaderID, slotID, cmd)
+		return c.forwardToLeader(attemptCtx, leaderID, slotID, payload)
 	})
 	return proposeErr
 }
@@ -516,9 +564,170 @@ func (c *Cluster) NodeID() multiraft.NodeID {
 	return c.cfg.NodeID
 }
 
+func (c *Cluster) legacyProposeHashSlot(slotID multiraft.SlotID) (uint16, error) {
+	if c == nil || c.router == nil {
+		return 0, ErrNotStarted
+	}
+	hashSlots := c.router.HashSlotsOf(slotID)
+	switch len(hashSlots) {
+	case 0:
+		return 0, ErrSlotNotFound
+	case 1:
+		return hashSlots[0], nil
+	default:
+		return 0, fmt.Errorf("%w for slot %d; use ProposeWithHashSlot", ErrHashSlotRequired, slotID)
+	}
+}
+
 // SlotForKey maps a key to a raft slot via CRC32 hashing.
 func (c *Cluster) SlotForKey(key string) multiraft.SlotID {
 	return c.router.SlotForKey(key)
+}
+
+// HashSlotForKey maps a key to its logical hash slot.
+func (c *Cluster) HashSlotForKey(key string) uint16 {
+	if c == nil || c.router == nil {
+		return 0
+	}
+	return c.router.HashSlotForKey(key)
+}
+
+func (c *Cluster) HashSlotTableVersion() uint64 {
+	if c == nil || c.router == nil {
+		return 0
+	}
+	table := c.router.hashSlotTable.Load()
+	if table == nil {
+		return 0
+	}
+	return table.Version()
+}
+
+func (c *Cluster) defaultHashSlotTable() *HashSlotTable {
+	if c == nil {
+		return nil
+	}
+	return NewHashSlotTable(c.cfg.effectiveHashSlotCount(), int(c.cfg.effectiveInitialSlotCount()))
+}
+
+func (c *Cluster) applyHashSlotTablePayload(data []byte) error {
+	if c == nil || c.router == nil || len(data) == 0 {
+		return nil
+	}
+	table, err := DecodeHashSlotTable(data)
+	if err != nil {
+		return err
+	}
+	c.updateRuntimeHashSlotTable(table)
+	return nil
+}
+
+func (c *Cluster) ensureControllerHashSlotTable(ctx context.Context, store *controllermeta.Store) (*HashSlotTable, error) {
+	if store == nil {
+		return nil, ErrNotStarted
+	}
+	table, err := store.LoadHashSlotTable(ctx)
+	if err == nil {
+		return table, nil
+	}
+	if !errors.Is(err, controllermeta.ErrNotFound) {
+		return nil, err
+	}
+	table = c.defaultHashSlotTable()
+	if table == nil {
+		return nil, ErrNotStarted
+	}
+	if err := store.SaveHashSlotTable(ctx, table); err != nil {
+		return nil, err
+	}
+	return table, nil
+}
+
+func (c *Cluster) syncRouterHashSlotTableFromStore(ctx context.Context) error {
+	if c == nil || c.controllerMeta == nil {
+		return nil
+	}
+	table, err := c.controllerMeta.LoadHashSlotTable(ctx)
+	if errors.Is(err, controllermeta.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	c.updateRuntimeHashSlotTable(table)
+	return nil
+}
+
+func (c *Cluster) updateRuntimeHashSlotTable(table *HashSlotTable) {
+	if c == nil {
+		return
+	}
+	if c.router != nil {
+		c.router.UpdateHashSlotTable(table)
+	}
+
+	c.runtimeStateMachinesMu.RLock()
+	registrations := make(map[multiraft.SlotID]hashSlotOwnershipUpdater, len(c.runtimeStateMachines))
+	for slotID, updater := range c.runtimeStateMachines {
+		registrations[slotID] = updater
+	}
+	c.runtimeStateMachinesMu.RUnlock()
+
+	for slotID, updater := range registrations {
+		if updater == nil {
+			continue
+		}
+		var hashSlots []uint16
+		var outgoingDeltaTargets map[uint16]multiraft.SlotID
+		var incomingDeltaHashSlots []uint16
+		if table != nil {
+			hashSlots = table.HashSlotsOf(slotID)
+			outgoingDeltaTargets, incomingDeltaHashSlots = deltaMigrationRuntimeForSlot(table, slotID)
+		}
+		updater.UpdateOwnedHashSlots(hashSlots)
+		if migrationUpdater, ok := updater.(hashSlotMigrationRuntimeUpdater); ok {
+			migrationUpdater.UpdateOutgoingDeltaTargets(outgoingDeltaTargets)
+			migrationUpdater.UpdateIncomingDeltaHashSlots(incomingDeltaHashSlots)
+		}
+	}
+}
+
+func (c *Cluster) registerRuntimeStateMachine(slotID multiraft.SlotID, sm multiraft.StateMachine) {
+	if c == nil || sm == nil {
+		return
+	}
+	if installer, ok := sm.(hashSlotDeltaForwarderInstaller); ok {
+		installer.SetDeltaForwarder(c.makeHashSlotDeltaForwarder())
+	}
+	updater, ok := sm.(hashSlotOwnershipUpdater)
+	if !ok {
+		return
+	}
+	c.runtimeStateMachinesMu.Lock()
+	if c.runtimeStateMachines == nil {
+		c.runtimeStateMachines = make(map[multiraft.SlotID]hashSlotOwnershipUpdater)
+	}
+	c.runtimeStateMachines[slotID] = updater
+	c.runtimeStateMachinesMu.Unlock()
+}
+
+func (c *Cluster) unregisterRuntimeStateMachine(slotID multiraft.SlotID) {
+	if c == nil {
+		return
+	}
+	c.runtimeStateMachinesMu.Lock()
+	delete(c.runtimeStateMachines, slotID)
+	c.runtimeStateMachinesMu.Unlock()
+}
+
+func (c *Cluster) runtimeStateMachine(slotID multiraft.SlotID) (hashSlotOwnershipUpdater, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.runtimeStateMachinesMu.RLock()
+	defer c.runtimeStateMachinesMu.RUnlock()
+	sm, ok := c.runtimeStateMachines[slotID]
+	return sm, ok
 }
 
 // LeaderOf returns the current leader of the specified slot.
@@ -568,11 +777,35 @@ func (c *Cluster) RPCService(ctx context.Context, nodeID multiraft.NodeID, slotI
 
 // SlotIDs returns the configured control-plane slot ids.
 func (c *Cluster) SlotIDs() []multiraft.SlotID {
-	slotIDs := make([]multiraft.SlotID, 0, c.cfg.SlotCount)
-	for slotID := uint32(1); slotID <= c.cfg.SlotCount; slotID++ {
+	initialSlotCount := c.cfg.effectiveInitialSlotCount()
+	slotIDs := make([]multiraft.SlotID, 0, initialSlotCount)
+	for slotID := uint32(1); slotID <= initialSlotCount; slotID++ {
 		slotIDs = append(slotIDs, multiraft.SlotID(slotID))
 	}
 	return slotIDs
+}
+
+func (c *Cluster) newStateMachine(slotID multiraft.SlotID) (multiraft.StateMachine, error) {
+	if c.cfg.NewStateMachineWithHashSlots != nil {
+		hashSlots := []uint16{uint16(slotID)}
+		if c.router != nil {
+			if assigned := c.router.HashSlotsOf(slotID); len(assigned) > 0 {
+				hashSlots = assigned
+			}
+		}
+		sm, err := c.cfg.NewStateMachineWithHashSlots(slotID, hashSlots)
+		if err != nil {
+			return nil, err
+		}
+		c.registerRuntimeStateMachine(slotID, sm)
+		return sm, nil
+	}
+	sm, err := c.cfg.NewStateMachine(slotID)
+	if err != nil {
+		return nil, err
+	}
+	c.registerRuntimeStateMachine(slotID, sm)
+	return sm, nil
 }
 
 func (c *Cluster) WaitForManagedSlotsReady(ctx context.Context) error {
@@ -653,7 +886,14 @@ func (c *Cluster) ListSlotAssignments(ctx context.Context) ([]controllermeta.Slo
 		}
 	}
 	if c.controllerMeta != nil {
-		return c.controllerMeta.ListAssignments(ctx)
+		assignments, err := c.controllerMeta.ListAssignments(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.syncRouterHashSlotTableFromStore(ctx); err != nil {
+			return nil, err
+		}
+		return assignments, nil
 	}
 	return c.ListCachedAssignments(), nil
 }
@@ -780,9 +1020,11 @@ func (c *Cluster) deleteRuntimePeers(slotID multiraft.SlotID) {
 		return
 	}
 	if c.runState == nil {
+		c.unregisterRuntimeStateMachine(slotID)
 		return
 	}
 	c.runState.Delete(slotID)
+	c.unregisterRuntimeStateMachine(slotID)
 }
 
 func nodeIDsFromUint64s(ids []uint64) []multiraft.NodeID {

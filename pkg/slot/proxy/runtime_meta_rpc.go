@@ -42,9 +42,9 @@ func (r runtimeMetaRPCResponse) rpcLeaderID() uint64 {
 	return r.LeaderID
 }
 
-func (s *Store) getChannelRuntimeMetaAuthoritative(ctx context.Context, slotID multiraft.SlotID, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error) {
+func (s *Store) getChannelRuntimeMetaAuthoritative(ctx context.Context, slotID multiraft.SlotID, hashSlot uint16, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error) {
 	if s.shouldServeSlotLocally(slotID) {
-		return s.db.ForSlot(uint64(slotID)).GetChannelRuntimeMeta(ctx, channelID, channelType)
+		return s.db.ForHashSlot(hashSlot).GetChannelRuntimeMeta(ctx, channelID, channelType)
 	}
 
 	resp, err := s.callRuntimeMetaRPC(ctx, slotID, runtimeMetaRPCRequest{
@@ -140,7 +140,8 @@ func (s *Store) handleRuntimeMetaRPC(ctx context.Context, body []byte) ([]byte, 
 
 	switch req.Op {
 	case runtimeMetaRPCGet:
-		meta, err := s.db.ForSlot(uint64(slotID)).GetChannelRuntimeMeta(ctx, req.ChannelID, req.ChannelType)
+		hashSlot := hashSlotForKey(s.cluster, req.ChannelID)
+		meta, err := s.db.ForHashSlot(hashSlot).GetChannelRuntimeMeta(ctx, req.ChannelID, req.ChannelType)
 		if errors.Is(err, metadb.ErrNotFound) {
 			return encodeRuntimeMetaRPCResponse(runtimeMetaRPCResponse{Status: rpcStatusNotFound})
 		}
@@ -154,7 +155,8 @@ func (s *Store) handleRuntimeMetaRPC(ctx context.Context, body []byte) ([]byte, 
 	case runtimeMetaRPCBatchGet:
 		out := make([]metadb.ChannelRuntimeMeta, 0, len(req.Keys))
 		for _, key := range req.Keys {
-			meta, err := s.db.ForSlot(uint64(slotID)).GetChannelRuntimeMeta(ctx, key.ChannelID, key.ChannelType)
+			hashSlot := hashSlotForKey(s.cluster, key.ChannelID)
+			meta, err := s.db.ForHashSlot(hashSlot).GetChannelRuntimeMeta(ctx, key.ChannelID, key.ChannelType)
 			if errors.Is(err, metadb.ErrNotFound) {
 				continue
 			}
@@ -185,7 +187,8 @@ func (s *Store) batchGetChannelRuntimeMetaAuthoritative(ctx context.Context, slo
 	if s.shouldServeSlotLocally(slotID) {
 		out := make(map[metadb.ConversationKey]metadb.ChannelRuntimeMeta, len(keys))
 		for _, key := range keys {
-			meta, err := s.db.ForSlot(uint64(slotID)).GetChannelRuntimeMeta(ctx, key.ChannelID, key.ChannelType)
+			hashSlot := hashSlotForKey(s.cluster, key.ChannelID)
+			meta, err := s.db.ForHashSlot(hashSlot).GetChannelRuntimeMeta(ctx, key.ChannelID, key.ChannelType)
 			if errors.Is(err, metadb.ErrNotFound) {
 				continue
 			}

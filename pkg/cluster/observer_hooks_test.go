@@ -565,6 +565,10 @@ func newObserverTestCluster(t *testing.T, hooks ObserverHooks) *Cluster {
 	})
 
 	cluster.runtime = rt
-	cluster.router = NewRouter(cluster.cfg.SlotCount, cluster.cfg.NodeID, rt)
+	cluster.router = NewRouter(
+		NewHashSlotTable(cluster.cfg.effectiveHashSlotCount(), int(cluster.cfg.effectiveInitialSlotCount())),
+		cluster.cfg.NodeID,
+		rt,
+	)
 	return cluster
 }

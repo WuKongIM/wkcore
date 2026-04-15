@@ -17,7 +17,7 @@ func TestThreeNodeClusterElectsLeaderAndReplicatesOverAsyncNetwork(t *testing.T)
 	cluster.waitForBootstrapApplied(t, slotID, 3)
 
 	leaderID := cluster.waitForLeader(t, slotID)
-	fut, err := cluster.runtime(leaderID).Propose(context.Background(), slotID, []byte("set e2e=1"))
+	fut, err := cluster.runtime(leaderID).Propose(context.Background(), slotID, proposalString("set e2e=1"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}

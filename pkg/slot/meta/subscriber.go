@@ -181,16 +181,16 @@ func (s *ShardStore) ListSubscribersSnapshot(ctx context.Context, channelID stri
 	return uids, nil
 }
 
-func encodeSubscriberChannelPrefix(slot uint64, channelID string, channelType int64) []byte {
+func encodeSubscriberChannelPrefix(hashSlot uint16, channelID string, channelType int64) []byte {
 	key := make([]byte, 0, 56)
-	key = encodeStatePrefix(slot, SubscriberTable.ID)
+	key = encodeStatePrefix(hashSlot, SubscriberTable.ID)
 	key = appendKeyString(key, channelID)
 	key = appendKeyInt64Ordered(key, channelType)
 	return key
 }
 
-func encodeSubscriberPrimaryKey(slot uint64, channelID string, channelType int64, uid string, familyID uint16) []byte {
-	key := encodeSubscriberChannelPrefix(slot, channelID, channelType)
+func encodeSubscriberPrimaryKey(hashSlot uint16, channelID string, channelType int64, uid string, familyID uint16) []byte {
+	key := encodeSubscriberChannelPrefix(hashSlot, channelID, channelType)
 	key = appendKeyString(key, uid)
 	key = binary.AppendUvarint(key, uint64(familyID))
 	return key

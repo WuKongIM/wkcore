@@ -36,6 +36,24 @@ func decodeRaftBody(body []byte) (slotID uint64, data []byte, err error) {
 	return slotID, data, nil
 }
 
+// encodeProposalPayload encodes [hashSlot:2][cmd:N] for raft proposals.
+func encodeProposalPayload(hashSlot uint16, cmd []byte) []byte {
+	buf := make([]byte, 2+len(cmd))
+	binary.BigEndian.PutUint16(buf[0:2], hashSlot)
+	copy(buf[2:], cmd)
+	return buf
+}
+
+// decodeProposalPayload decodes [hashSlot:2][cmd:N] from raft proposals.
+func decodeProposalPayload(payload []byte) (hashSlot uint16, cmd []byte, err error) {
+	if len(payload) < 2 {
+		return 0, nil, fmt.Errorf("proposal payload too short: %d", len(payload))
+	}
+	hashSlot = binary.BigEndian.Uint16(payload[0:2])
+	cmd = payload[2:]
+	return hashSlot, cmd, nil
+}
+
 // encodeForwardPayload encodes [slotID:8][cmd:N] for RPC payload.
 func encodeForwardPayload(slotID uint64, cmd []byte) []byte {
 	buf := make([]byte, 8+len(cmd))

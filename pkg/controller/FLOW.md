@@ -36,7 +36,7 @@ StateMachine.Apply(ctx, Command) error
 | `SlotAssignment` | meta/types.go | Slot分配：SlotID, DesiredPeers, ConfigEpoch, BalanceVersion |
 | `SlotRuntimeView` | meta/types.go | Slot运行时：CurrentPeers, LeaderID, HasQuorum, ObservedConfigEpoch |
 | `ReconcileTask` | meta/types.go | 调和任务：Kind(Bootstrap/Repair/Rebalance), Step, SourceNode, TargetNode, Attempt, Status |
-| `Command` | plane/commands.go | 命令信封：Kind + Report/Op/Advance/Assignment/Task |
+| `Command` | plane/commands.go | 命令信封：Kind + Report/Op/Advance/Assignment/Task/Migration/AddSlot/RemoveSlot |
 
 **节点状态转移:**
 ```
@@ -61,7 +61,7 @@ Unknown → Alive ←→ Suspect(心跳>3s) → Dead(心跳>10s)
   ⑦ 通知提案者 (resp channel)
 ```
 
-### 5.2 StateMachine 五种命令
+### 5.2 StateMachine 命令
 
 入口: `plane/statemachine.go:47 Apply`
 
@@ -82,6 +82,19 @@ TaskResult (statemachine.go:168):
 
 AssignmentTaskUpdate (statemachine.go:200):
   Repair任务先检查SourceNode是否恢复(已Alive→过时跳过) → 原子持久化Assignment+Task
+
+StartMigration / AdvanceMigration / AbortMigration:
+  读取 HashSlotTable → 更新迁移状态 → 保存回 controllermeta
+
+FinalizeMigration:
+  读取 HashSlotTable → 将 hash slot 最终切换到 Target → 若 Source 已无 hash slot 且无剩余迁移，则原子删除对应 SlotAssignment/Task → 保存回 controllermeta
+
+AddSlot:
+  创建新 SlotAssignment → 调用 hash-slot 再平衡算法 → 为迁入新 Slot 的 hash slot 建立 Snapshot 阶段迁移记录
+
+RemoveSlot:
+  调用 hash-slot 再平衡算法 → 为被移除 Slot 上的 hash slot 建立 Snapshot 阶段迁移记录
+  SlotAssignment 先保留，待最后一个 hash slot FinalizeMigration 后自动删除
 ```
 
 ### 5.3 Planner 调度决策
@@ -104,7 +117,8 @@ AssignmentTaskUpdate (statemachine.go:200):
   ② loadExtremes 找 min/max 节点 (planner.go:247)
   ③ maxLoad - minLoad < 阈值(默认2) → 无需均衡
   ④ 找候选: 在maxNode上且不在minNode上, 有仲裁, 无失败任务
-  ⑤ 按 BalanceVersion 排序(最久未动优先) → 生成 Rebalance 任务
+  ⑤ 迁移中的物理 Slot(source/target 任一侧)跳过 Repair/Rebalance，避免副本迁移和 hash-slot 数据迁移叠加
+  ⑥ 按 BalanceVersion 排序(最久未动优先) → 生成 Rebalance 任务
 ```
 
 ### 5.4 Controller.Tick 编排

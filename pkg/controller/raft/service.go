@@ -78,6 +78,9 @@ type commandEnvelope struct {
 	Advance    *taskAdvanceEnvelope                 `json:"advance,omitempty"`
 	Assignment *slotcontrollerAssignmentEnvelope    `json:"assignment,omitempty"`
 	Task       *slotcontrollerReconcileTaskEnvelope `json:"task,omitempty"`
+	Migration  *slotcontroller.MigrationRequest     `json:"migration,omitempty"`
+	AddSlot    *slotcontroller.AddSlotRequest       `json:"add_slot,omitempty"`
+	RemoveSlot *slotcontroller.RemoveSlotRequest    `json:"remove_slot,omitempty"`
 }
 
 type taskAdvanceEnvelope struct {
@@ -598,6 +601,25 @@ func encodeCommand(cmd slotcontroller.Command) ([]byte, error) {
 			LastError:  cmd.Task.LastError,
 		}
 	}
+	if cmd.Migration != nil {
+		envelope.Migration = &slotcontroller.MigrationRequest{
+			HashSlot: cmd.Migration.HashSlot,
+			Source:   cmd.Migration.Source,
+			Target:   cmd.Migration.Target,
+			Phase:    cmd.Migration.Phase,
+		}
+	}
+	if cmd.AddSlot != nil {
+		envelope.AddSlot = &slotcontroller.AddSlotRequest{
+			NewSlotID: cmd.AddSlot.NewSlotID,
+			Peers:     append([]uint64(nil), cmd.AddSlot.Peers...),
+		}
+	}
+	if cmd.RemoveSlot != nil {
+		envelope.RemoveSlot = &slotcontroller.RemoveSlotRequest{
+			SlotID: cmd.RemoveSlot.SlotID,
+		}
+	}
 	return json.Marshal(envelope)
 }
 
@@ -641,6 +663,25 @@ func decodeCommand(data []byte) (slotcontroller.Command, error) {
 			NextRunAt:  envelope.Task.NextRunAt,
 			Status:     controllermeta.TaskStatus(envelope.Task.Status),
 			LastError:  envelope.Task.LastError,
+		}
+	}
+	if envelope.Migration != nil {
+		cmd.Migration = &slotcontroller.MigrationRequest{
+			HashSlot: envelope.Migration.HashSlot,
+			Source:   envelope.Migration.Source,
+			Target:   envelope.Migration.Target,
+			Phase:    envelope.Migration.Phase,
+		}
+	}
+	if envelope.AddSlot != nil {
+		cmd.AddSlot = &slotcontroller.AddSlotRequest{
+			NewSlotID: envelope.AddSlot.NewSlotID,
+			Peers:     append([]uint64(nil), envelope.AddSlot.Peers...),
+		}
+	}
+	if envelope.RemoveSlot != nil {
+		cmd.RemoveSlot = &slotcontroller.RemoveSlotRequest{
+			SlotID: envelope.RemoveSlot.SlotID,
 		}
 	}
 	return cmd, nil

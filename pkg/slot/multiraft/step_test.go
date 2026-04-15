@@ -2,6 +2,7 @@ package multiraft
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"sync"
 	"testing"
@@ -61,7 +62,7 @@ func TestStatusIsRaceFree(t *testing.T) {
 	}()
 
 	for i := 0; i < 5; i++ {
-		fut, err := rt.Propose(context.Background(), slotID, []byte("status"))
+		fut, err := rt.Propose(context.Background(), slotID, proposalString("status"))
 		if err != nil {
 			t.Fatalf("Propose() error = %v", err)
 		}
@@ -96,7 +97,7 @@ func TestCloseSlotStopsFurtherProcessing(t *testing.T) {
 		return err == nil && st.Role == RoleLeader
 	})
 
-	fut, err := rt.Propose(context.Background(), slotID, []byte("slow"))
+	fut, err := rt.Propose(context.Background(), slotID, proposalString("slow"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -182,7 +183,7 @@ func TestRuntimeTickLoopDoesNotHoldLockAcrossEnqueue(t *testing.T) {
 		return err == nil && st.Role == RoleLeader
 	})
 
-	fut, err := rt.Propose(context.Background(), blockedSlotID, []byte("slow"))
+	fut, err := rt.Propose(context.Background(), blockedSlotID, proposalString("slow"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -248,7 +249,7 @@ func TestSchedulerBackpressureDoesNotBlockRuntime(t *testing.T) {
 		return err == nil && st.Role == RoleLeader
 	})
 
-	fut, err := rt.Propose(context.Background(), blockedSlotID, []byte("slow"))
+	fut, err := rt.Propose(context.Background(), blockedSlotID, proposalString("slow"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -459,6 +460,17 @@ func newLeaderTestSlotForDrain() *slot {
 	return g
 }
 
+func proposalPayload(hashSlot uint16, data []byte) []byte {
+	payload := make([]byte, 2+len(data))
+	binary.BigEndian.PutUint16(payload[:2], hashSlot)
+	copy(payload[2:], data)
+	return payload
+}
+
+func proposalString(data string) []byte {
+	return proposalPayload(0, []byte(data))
+}
+
 func waitForCondition(t *testing.T, fn func() bool) {
 	t.Helper()
 
@@ -647,6 +659,7 @@ func (f *internalFakeStorage) MarkApplied(ctx context.Context, index uint64) err
 type internalFakeStateMachine struct {
 	mu           sync.Mutex
 	applied      [][]byte
+	commands     []Command
 	applyErr     error
 	restoreCount int
 	lastSnapshot Snapshot
@@ -658,6 +671,13 @@ func (f *internalFakeStateMachine) Apply(ctx context.Context, cmd Command) ([]by
 	defer f.mu.Unlock()
 
 	f.applied = append(f.applied, append([]byte(nil), cmd.Data...))
+	f.commands = append(f.commands, Command{
+		SlotID:   cmd.SlotID,
+		HashSlot: cmd.HashSlot,
+		Index:    cmd.Index,
+		Term:     cmd.Term,
+		Data:     append([]byte(nil), cmd.Data...),
+	})
 	if f.applyErr != nil {
 		return nil, f.applyErr
 	}

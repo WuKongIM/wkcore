@@ -20,72 +20,72 @@ const (
 	keyspaceRaft  byte = 0x20
 )
 
-func encodeStatePrefix(slot uint64, tableID uint32) []byte {
-	key := make([]byte, 0, 1+8+4)
+func encodeStatePrefix(hashSlot uint16, tableID uint32) []byte {
+	key := make([]byte, 0, 1+2+4)
 	key = append(key, keyspaceState)
-	key = binary.BigEndian.AppendUint64(key, slot)
+	key = binary.BigEndian.AppendUint16(key, hashSlot)
 	key = binary.BigEndian.AppendUint32(key, tableID)
 	return key
 }
 
-func encodeIndexPrefix(slot uint64, tableID uint32, indexID uint16) []byte {
-	key := make([]byte, 0, 1+8+4+2)
+func encodeIndexPrefix(hashSlot uint16, tableID uint32, indexID uint16) []byte {
+	key := make([]byte, 0, 1+2+4+2)
 	key = append(key, keyspaceIndex)
-	key = binary.BigEndian.AppendUint64(key, slot)
+	key = binary.BigEndian.AppendUint16(key, hashSlot)
 	key = binary.BigEndian.AppendUint32(key, tableID)
 	key = binary.BigEndian.AppendUint16(key, indexID)
 	return key
 }
 
-func encodeMetaPrefix(slot uint64) []byte {
-	key := make([]byte, 0, 1+8)
+func encodeMetaPrefix(hashSlot uint16) []byte {
+	key := make([]byte, 0, 1+2)
 	key = append(key, keyspaceMeta)
-	key = binary.BigEndian.AppendUint64(key, slot)
+	key = binary.BigEndian.AppendUint16(key, hashSlot)
 	return key
 }
 
-func encodeUserPrimaryKey(slot uint64, uid string, familyID uint16) []byte {
+func encodeUserPrimaryKey(hashSlot uint16, uid string, familyID uint16) []byte {
 	key := make([]byte, 0, 32)
-	key = encodeStatePrefix(slot, UserTable.ID)
+	key = encodeStatePrefix(hashSlot, UserTable.ID)
 	key = appendKeyString(key, uid)
 	key = binary.AppendUvarint(key, uint64(familyID))
 	return key
 }
 
-func encodeChannelPrimaryKey(slot uint64, channelID string, channelType int64, familyID uint16) []byte {
+func encodeChannelPrimaryKey(hashSlot uint16, channelID string, channelType int64, familyID uint16) []byte {
 	key := make([]byte, 0, 48)
-	key = encodeStatePrefix(slot, ChannelTable.ID)
+	key = encodeStatePrefix(hashSlot, ChannelTable.ID)
 	key = appendKeyString(key, channelID)
 	key = appendKeyInt64Ordered(key, channelType)
 	key = binary.AppendUvarint(key, uint64(familyID))
 	return key
 }
 
-func encodeChannelIDIndexKey(slot uint64, channelID string, channelType int64) []byte {
-	key := encodeChannelIDIndexPrefix(slot, channelID)
+func encodeChannelIDIndexKey(hashSlot uint16, channelID string, channelType int64) []byte {
+	key := encodeChannelIDIndexPrefix(hashSlot, channelID)
 	key = appendKeyInt64Ordered(key, channelType)
 	return key
 }
 
-func encodeChannelIDIndexPrefix(slot uint64, channelID string) []byte {
+func encodeChannelIDIndexPrefix(hashSlot uint16, channelID string) []byte {
 	key := make([]byte, 0, 40)
-	key = encodeIndexPrefix(slot, ChannelTable.ID, channelIndexIDChannelID)
+	key = encodeIndexPrefix(hashSlot, ChannelTable.ID, channelIndexIDChannelID)
 	key = appendKeyString(key, channelID)
 	return key
 }
 
-func encodeChannelRuntimeMetaPrimaryKey(slot uint64, channelID string, channelType int64, familyID uint16) []byte {
+func encodeChannelRuntimeMetaPrimaryKey(hashSlot uint16, channelID string, channelType int64, familyID uint16) []byte {
 	key := make([]byte, 0, 64)
-	key = encodeStatePrefix(slot, ChannelRuntimeMetaTable.ID)
+	key = encodeStatePrefix(hashSlot, ChannelRuntimeMetaTable.ID)
 	key = appendKeyString(key, channelID)
 	key = appendKeyInt64Ordered(key, channelType)
 	key = binary.AppendUvarint(key, uint64(familyID))
 	return key
 }
 
-func encodeDevicePrimaryKey(slot uint64, uid string, deviceFlag int64, familyID uint16) []byte {
+func encodeDevicePrimaryKey(hashSlot uint16, uid string, deviceFlag int64, familyID uint16) []byte {
 	key := make([]byte, 0, 48)
-	key = encodeStatePrefix(slot, DeviceTable.ID)
+	key = encodeStatePrefix(hashSlot, DeviceTable.ID)
 	key = appendKeyString(key, uid)
 	key = appendKeyInt64Ordered(key, deviceFlag)
 	key = binary.AppendUvarint(key, uint64(familyID))

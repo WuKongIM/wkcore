@@ -29,11 +29,12 @@ type PlannerConfig struct {
 }
 
 type PlannerState struct {
-	Now         time.Time
-	Nodes       map[uint64]controllermeta.ClusterNode
-	Assignments map[uint32]controllermeta.SlotAssignment
-	Runtime     map[uint32]controllermeta.SlotRuntimeView
-	Tasks       map[uint32]controllermeta.ReconcileTask
+	Now            time.Time
+	Nodes          map[uint64]controllermeta.ClusterNode
+	Assignments    map[uint32]controllermeta.SlotAssignment
+	Runtime        map[uint32]controllermeta.SlotRuntimeView
+	Tasks          map[uint32]controllermeta.ReconcileTask
+	MigratingSlots map[uint32]struct{}
 }
 
 type Decision struct {

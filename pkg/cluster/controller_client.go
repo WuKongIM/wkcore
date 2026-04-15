@@ -20,6 +20,12 @@ type controllerAPI interface {
 	GetTask(ctx context.Context, slotID uint32) (controllermeta.ReconcileTask, error)
 	ForceReconcile(ctx context.Context, slotID uint32) error
 	ReportTaskResult(ctx context.Context, task controllermeta.ReconcileTask, taskErr error) error
+	StartMigration(ctx context.Context, req slotcontroller.MigrationRequest) error
+	AdvanceMigration(ctx context.Context, req slotcontroller.MigrationRequest) error
+	FinalizeMigration(ctx context.Context, req slotcontroller.MigrationRequest) error
+	AbortMigration(ctx context.Context, req slotcontroller.MigrationRequest) error
+	AddSlot(ctx context.Context, req slotcontroller.AddSlotRequest) error
+	RemoveSlot(ctx context.Context, req slotcontroller.RemoveSlotRequest) error
 }
 
 type controllerClient struct {
@@ -43,11 +49,14 @@ func newControllerClient(cluster *Cluster, peers []NodeConfig, cache *assignment
 }
 
 func (c *controllerClient) Report(ctx context.Context, report slotcontroller.AgentReport) error {
-	_, err := c.call(ctx, controllerRPCRequest{
+	resp, err := c.call(ctx, controllerRPCRequest{
 		Kind:   controllerRPCHeartbeat,
 		Report: &report,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	return c.cluster.applyHashSlotTablePayload(resp.HashSlotTable)
 }
 
 func (c *controllerClient) ListNodes(ctx context.Context) ([]controllermeta.ClusterNode, error) {
@@ -61,6 +70,9 @@ func (c *controllerClient) ListNodes(ctx context.Context) ([]controllermeta.Clus
 func (c *controllerClient) RefreshAssignments(ctx context.Context) ([]controllermeta.SlotAssignment, error) {
 	resp, err := c.call(ctx, controllerRPCRequest{Kind: controllerRPCListAssignments})
 	if err != nil {
+		return nil, err
+	}
+	if err := c.cluster.applyHashSlotTablePayload(resp.HashSlotTable); err != nil {
 		return nil, err
 	}
 	if c.cache != nil {
@@ -120,6 +132,54 @@ func (c *controllerClient) ReportTaskResult(ctx context.Context, task controller
 		Kind:    controllerRPCTaskResult,
 		SlotID:  task.SlotID,
 		Advance: advance,
+	})
+	return err
+}
+
+func (c *controllerClient) StartMigration(ctx context.Context, req slotcontroller.MigrationRequest) error {
+	_, err := c.call(ctx, controllerRPCRequest{
+		Kind:      controllerRPCStartMigration,
+		Migration: &req,
+	})
+	return err
+}
+
+func (c *controllerClient) AdvanceMigration(ctx context.Context, req slotcontroller.MigrationRequest) error {
+	_, err := c.call(ctx, controllerRPCRequest{
+		Kind:      controllerRPCAdvanceMigration,
+		Migration: &req,
+	})
+	return err
+}
+
+func (c *controllerClient) FinalizeMigration(ctx context.Context, req slotcontroller.MigrationRequest) error {
+	_, err := c.call(ctx, controllerRPCRequest{
+		Kind:      controllerRPCFinalizeMigration,
+		Migration: &req,
+	})
+	return err
+}
+
+func (c *controllerClient) AbortMigration(ctx context.Context, req slotcontroller.MigrationRequest) error {
+	_, err := c.call(ctx, controllerRPCRequest{
+		Kind:      controllerRPCAbortMigration,
+		Migration: &req,
+	})
+	return err
+}
+
+func (c *controllerClient) AddSlot(ctx context.Context, req slotcontroller.AddSlotRequest) error {
+	_, err := c.call(ctx, controllerRPCRequest{
+		Kind:    controllerRPCAddSlot,
+		AddSlot: &req,
+	})
+	return err
+}
+
+func (c *controllerClient) RemoveSlot(ctx context.Context, req slotcontroller.RemoveSlotRequest) error {
+	_, err := c.call(ctx, controllerRPCRequest{
+		Kind:       controllerRPCRemoveSlot,
+		RemoveSlot: &req,
 	})
 	return err
 }

@@ -49,7 +49,17 @@ func (h *controllerHandler) Handle(ctx context.Context, body []byte) ([]byte, er
 			}
 			return nil, err
 		}
-		return encodeControllerResponse(req.Kind, controllerRPCResponse{})
+		table, err := c.ensureControllerHashSlotTable(ctx, c.controllerMeta)
+		if err != nil {
+			return nil, err
+		}
+		resp := controllerRPCResponse{
+			HashSlotTableVersion: table.Version(),
+		}
+		if req.Report.HashSlotTableVersion != table.Version() {
+			resp.HashSlotTable = table.Encode()
+		}
+		return encodeControllerResponse(req.Kind, resp)
 	case controllerRPCTaskResult:
 		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
 			return marshalRedirect()
@@ -85,7 +95,15 @@ func (h *controllerHandler) Handle(ctx context.Context, body []byte) ([]byte, er
 		if err != nil {
 			return nil, err
 		}
-		return encodeControllerResponse(req.Kind, controllerRPCResponse{Assignments: assignments})
+		table, err := c.ensureControllerHashSlotTable(ctx, c.controllerMeta)
+		if err != nil {
+			return nil, err
+		}
+		return encodeControllerResponse(req.Kind, controllerRPCResponse{
+			Assignments:          assignments,
+			HashSlotTableVersion: table.Version(),
+			HashSlotTable:        table.Encode(),
+		})
 	case controllerRPCListNodes:
 		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
 			return marshalRedirect()
@@ -141,6 +159,59 @@ func (h *controllerHandler) Handle(ctx context.Context, body []byte) ([]byte, er
 		}
 		if err := c.forceReconcileOnLeader(ctx, req.SlotID); err != nil {
 			if errors.Is(err, ErrNotLeader) {
+				return marshalRedirect()
+			}
+			return nil, err
+		}
+		return encodeControllerResponse(req.Kind, controllerRPCResponse{})
+	case controllerRPCStartMigration, controllerRPCAdvanceMigration, controllerRPCFinalizeMigration, controllerRPCAbortMigration,
+		controllerRPCAddSlot, controllerRPCRemoveSlot:
+		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
+			return marshalRedirect()
+		}
+		command := slotcontroller.Command{}
+		switch req.Kind {
+		case controllerRPCStartMigration:
+			if req.Migration == nil {
+				return nil, ErrInvalidConfig
+			}
+			command.Kind = slotcontroller.CommandKindStartMigration
+			command.Migration = req.Migration
+		case controllerRPCAdvanceMigration:
+			if req.Migration == nil {
+				return nil, ErrInvalidConfig
+			}
+			command.Kind = slotcontroller.CommandKindAdvanceMigration
+			command.Migration = req.Migration
+		case controllerRPCFinalizeMigration:
+			if req.Migration == nil {
+				return nil, ErrInvalidConfig
+			}
+			command.Kind = slotcontroller.CommandKindFinalizeMigration
+			command.Migration = req.Migration
+		case controllerRPCAbortMigration:
+			if req.Migration == nil {
+				return nil, ErrInvalidConfig
+			}
+			command.Kind = slotcontroller.CommandKindAbortMigration
+			command.Migration = req.Migration
+		case controllerRPCAddSlot:
+			if req.AddSlot == nil {
+				return nil, ErrInvalidConfig
+			}
+			command.Kind = slotcontroller.CommandKindAddSlot
+			command.AddSlot = req.AddSlot
+		case controllerRPCRemoveSlot:
+			if req.RemoveSlot == nil {
+				return nil, ErrInvalidConfig
+			}
+			command.Kind = slotcontroller.CommandKindRemoveSlot
+			command.RemoveSlot = req.RemoveSlot
+		}
+		proposeCtx, cancel := c.withControllerTimeout(ctx)
+		defer cancel()
+		if err := c.controller.Propose(proposeCtx, command); err != nil {
+			if errors.Is(err, controllerraft.ErrNotLeader) {
 				return marshalRedirect()
 			}
 			return nil, err

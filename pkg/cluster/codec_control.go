@@ -10,16 +10,22 @@ import (
 )
 
 const (
-	rpcServiceController          uint8            = 14
-	controllerRPCShardKey         multiraft.SlotID = multiraft.SlotID(^uint32(0))
-	controllerRPCHeartbeat        string           = "heartbeat"
-	controllerRPCListAssignments  string           = "list_assignments"
-	controllerRPCListNodes        string           = "list_nodes"
-	controllerRPCListRuntimeViews string           = "list_runtime_views"
-	controllerRPCOperator         string           = "operator"
-	controllerRPCGetTask          string           = "get_task"
-	controllerRPCForceReconcile   string           = "force_reconcile"
-	controllerRPCTaskResult       string           = "task_result"
+	rpcServiceController           uint8            = 14
+	controllerRPCShardKey          multiraft.SlotID = multiraft.SlotID(^uint32(0))
+	controllerRPCHeartbeat         string           = "heartbeat"
+	controllerRPCListAssignments   string           = "list_assignments"
+	controllerRPCListNodes         string           = "list_nodes"
+	controllerRPCListRuntimeViews  string           = "list_runtime_views"
+	controllerRPCOperator          string           = "operator"
+	controllerRPCGetTask           string           = "get_task"
+	controllerRPCForceReconcile    string           = "force_reconcile"
+	controllerRPCTaskResult        string           = "task_result"
+	controllerRPCStartMigration    string           = "start_migration"
+	controllerRPCAdvanceMigration  string           = "advance_migration"
+	controllerRPCFinalizeMigration string           = "finalize_migration"
+	controllerRPCAbortMigration    string           = "abort_migration"
+	controllerRPCAddSlot           string           = "add_slot"
+	controllerRPCRemoveSlot        string           = "remove_slot"
 )
 
 const (
@@ -39,14 +45,23 @@ const (
 	controllerKindGetTask
 	controllerKindForceReconcile
 	controllerKindTaskResult
+	controllerKindStartMigration
+	controllerKindAdvanceMigration
+	controllerKindFinalizeMigration
+	controllerKindAbortMigration
+	controllerKindAddSlot
+	controllerKindRemoveSlot
 )
 
 type controllerRPCRequest struct {
-	Kind    string
-	SlotID  uint32
-	Report  *slotcontroller.AgentReport
-	Op      *slotcontroller.OperatorRequest
-	Advance *controllerTaskAdvance
+	Kind       string
+	SlotID     uint32
+	Report     *slotcontroller.AgentReport
+	Op         *slotcontroller.OperatorRequest
+	Advance    *controllerTaskAdvance
+	Migration  *slotcontroller.MigrationRequest
+	AddSlot    *slotcontroller.AddSlotRequest
+	RemoveSlot *slotcontroller.RemoveSlotRequest
 }
 
 type controllerTaskAdvance struct {
@@ -57,13 +72,15 @@ type controllerTaskAdvance struct {
 }
 
 type controllerRPCResponse struct {
-	NotLeader    bool
-	NotFound     bool
-	LeaderID     uint64
-	Nodes        []controllermeta.ClusterNode
-	Assignments  []controllermeta.SlotAssignment
-	RuntimeViews []controllermeta.SlotRuntimeView
-	Task         *controllermeta.ReconcileTask
+	NotLeader            bool
+	NotFound             bool
+	LeaderID             uint64
+	Nodes                []controllermeta.ClusterNode
+	Assignments          []controllermeta.SlotAssignment
+	RuntimeViews         []controllermeta.SlotRuntimeView
+	Task                 *controllermeta.ReconcileTask
+	HashSlotTableVersion uint64
+	HashSlotTable        []byte
 }
 
 func encodeControllerRequest(req controllerRPCRequest) ([]byte, error) {
@@ -181,6 +198,21 @@ func encodeControllerRequestPayload(req controllerRPCRequest) ([]byte, error) {
 			return nil, ErrInvalidConfig
 		}
 		return encodeTaskAdvance(*req.Advance), nil
+	case controllerRPCStartMigration, controllerRPCAdvanceMigration, controllerRPCFinalizeMigration, controllerRPCAbortMigration:
+		if req.Migration == nil {
+			return nil, ErrInvalidConfig
+		}
+		return encodeMigrationRequest(*req.Migration), nil
+	case controllerRPCAddSlot:
+		if req.AddSlot == nil {
+			return nil, ErrInvalidConfig
+		}
+		return encodeAddSlotRequest(*req.AddSlot), nil
+	case controllerRPCRemoveSlot:
+		if req.RemoveSlot == nil {
+			return nil, ErrInvalidConfig
+		}
+		return encodeRemoveSlotRequest(*req.RemoveSlot), nil
 	case controllerRPCListAssignments, controllerRPCListNodes, controllerRPCListRuntimeViews, controllerRPCGetTask, controllerRPCForceReconcile:
 		return nil, nil
 	default:
@@ -211,6 +243,27 @@ func decodeControllerRequestPayload(req *controllerRPCRequest, payload []byte) e
 		}
 		req.Advance = &advance
 		return nil
+	case controllerRPCStartMigration, controllerRPCAdvanceMigration, controllerRPCFinalizeMigration, controllerRPCAbortMigration:
+		migration, err := decodeMigrationRequest(payload)
+		if err != nil {
+			return err
+		}
+		req.Migration = &migration
+		return nil
+	case controllerRPCAddSlot:
+		addSlot, err := decodeAddSlotRequest(payload)
+		if err != nil {
+			return err
+		}
+		req.AddSlot = &addSlot
+		return nil
+	case controllerRPCRemoveSlot:
+		removeSlot, err := decodeRemoveSlotRequest(payload)
+		if err != nil {
+			return err
+		}
+		req.RemoveSlot = &removeSlot
+		return nil
 	case controllerRPCListAssignments, controllerRPCListNodes, controllerRPCListRuntimeViews, controllerRPCGetTask, controllerRPCForceReconcile:
 		if len(payload) != 0 {
 			return ErrInvalidConfig
@@ -223,10 +276,14 @@ func decodeControllerRequestPayload(req *controllerRPCRequest, payload []byte) e
 
 func encodeControllerResponsePayload(kind string, resp controllerRPCResponse) ([]byte, error) {
 	switch kind {
-	case controllerRPCHeartbeat, controllerRPCOperator, controllerRPCForceReconcile, controllerRPCTaskResult:
+	case controllerRPCHeartbeat:
+		return encodeHashSlotTableSync(resp.HashSlotTableVersion, resp.HashSlotTable), nil
+	case controllerRPCOperator, controllerRPCForceReconcile, controllerRPCTaskResult,
+		controllerRPCStartMigration, controllerRPCAdvanceMigration, controllerRPCFinalizeMigration,
+		controllerRPCAbortMigration, controllerRPCAddSlot, controllerRPCRemoveSlot:
 		return nil, nil
 	case controllerRPCListAssignments:
-		return encodeAssignments(resp.Assignments), nil
+		return encodeAssignmentsWithHashSlotTable(resp.Assignments, resp.HashSlotTableVersion, resp.HashSlotTable), nil
 	case controllerRPCListNodes:
 		return encodeClusterNodes(resp.Nodes), nil
 	case controllerRPCListRuntimeViews:
@@ -243,17 +300,29 @@ func encodeControllerResponsePayload(kind string, resp controllerRPCResponse) ([
 
 func decodeControllerResponsePayload(kind string, resp *controllerRPCResponse, payload []byte) error {
 	switch kind {
-	case controllerRPCHeartbeat, controllerRPCOperator, controllerRPCForceReconcile, controllerRPCTaskResult:
+	case controllerRPCHeartbeat:
+		version, table, err := decodeHashSlotTableSync(payload)
+		if err != nil {
+			return err
+		}
+		resp.HashSlotTableVersion = version
+		resp.HashSlotTable = table
+		return nil
+	case controllerRPCOperator, controllerRPCForceReconcile, controllerRPCTaskResult,
+		controllerRPCStartMigration, controllerRPCAdvanceMigration, controllerRPCFinalizeMigration,
+		controllerRPCAbortMigration, controllerRPCAddSlot, controllerRPCRemoveSlot:
 		if len(payload) != 0 {
 			return ErrInvalidConfig
 		}
 		return nil
 	case controllerRPCListAssignments:
-		assignments, err := decodeAssignments(payload)
+		assignments, version, table, err := decodeAssignmentsWithHashSlotTable(payload)
 		if err != nil {
 			return err
 		}
 		resp.Assignments = assignments
+		resp.HashSlotTableVersion = version
+		resp.HashSlotTable = table
 		return nil
 	case controllerRPCListNodes:
 		nodes, err := decodeClusterNodes(payload)
@@ -302,6 +371,18 @@ func controllerKindCode(kind string) (byte, error) {
 		return controllerKindForceReconcile, nil
 	case controllerRPCTaskResult:
 		return controllerKindTaskResult, nil
+	case controllerRPCStartMigration:
+		return controllerKindStartMigration, nil
+	case controllerRPCAdvanceMigration:
+		return controllerKindAdvanceMigration, nil
+	case controllerRPCFinalizeMigration:
+		return controllerKindFinalizeMigration, nil
+	case controllerRPCAbortMigration:
+		return controllerKindAbortMigration, nil
+	case controllerRPCAddSlot:
+		return controllerKindAddSlot, nil
+	case controllerRPCRemoveSlot:
+		return controllerKindRemoveSlot, nil
 	default:
 		return controllerKindUnknown, ErrInvalidConfig
 	}
@@ -325,6 +406,18 @@ func controllerKindName(kind byte) (string, error) {
 		return controllerRPCForceReconcile, nil
 	case controllerKindTaskResult:
 		return controllerRPCTaskResult, nil
+	case controllerKindStartMigration:
+		return controllerRPCStartMigration, nil
+	case controllerKindAdvanceMigration:
+		return controllerRPCAdvanceMigration, nil
+	case controllerKindFinalizeMigration:
+		return controllerRPCFinalizeMigration, nil
+	case controllerKindAbortMigration:
+		return controllerRPCAbortMigration, nil
+	case controllerKindAddSlot:
+		return controllerRPCAddSlot, nil
+	case controllerKindRemoveSlot:
+		return controllerRPCRemoveSlot, nil
 	default:
 		return "", ErrInvalidConfig
 	}
@@ -348,6 +441,7 @@ func encodeAgentReport(report slotcontroller.AgentReport) []byte {
 	body = appendString(body, report.Addr)
 	body = appendInt64(body, report.ObservedAt.UnixNano())
 	body = appendInt64(body, int64(report.CapacityWeight))
+	body = binary.BigEndian.AppendUint64(body, report.HashSlotTableVersion)
 	if report.Runtime != nil {
 		body = append(body, 1)
 		body = appendRuntimeView(body, *report.Runtime)
@@ -373,15 +467,20 @@ func decodeAgentReport(body []byte) (slotcontroller.AgentReport, error) {
 	if err != nil {
 		return slotcontroller.AgentReport{}, err
 	}
+	hashSlotTableVersion, rest, err := readUint64(rest)
+	if err != nil {
+		return slotcontroller.AgentReport{}, err
+	}
 	if len(rest) < 1 {
 		return slotcontroller.AgentReport{}, ErrInvalidConfig
 	}
 
 	report := slotcontroller.AgentReport{
-		NodeID:         nodeID,
-		Addr:           addr,
-		ObservedAt:     time.Unix(0, observedAtUnix),
-		CapacityWeight: int(capacityWeight),
+		NodeID:               nodeID,
+		Addr:                 addr,
+		ObservedAt:           time.Unix(0, observedAtUnix),
+		CapacityWeight:       int(capacityWeight),
+		HashSlotTableVersion: hashSlotTableVersion,
 	}
 	if rest[0] == 0 {
 		if len(rest) != 1 {
@@ -440,6 +539,104 @@ func decodeTaskAdvance(slotID uint32, body []byte) (controllerTaskAdvance, error
 		Now:     time.Unix(0, nowUnix),
 		Err:     taskErr,
 	}, nil
+}
+
+func encodeMigrationRequest(req slotcontroller.MigrationRequest) []byte {
+	body := make([]byte, 0, 2+8+8+1)
+	body = binary.BigEndian.AppendUint16(body, req.HashSlot)
+	body = binary.BigEndian.AppendUint64(body, req.Source)
+	body = binary.BigEndian.AppendUint64(body, req.Target)
+	return append(body, req.Phase)
+}
+
+func decodeMigrationRequest(body []byte) (slotcontroller.MigrationRequest, error) {
+	if len(body) != 19 {
+		return slotcontroller.MigrationRequest{}, ErrInvalidConfig
+	}
+	return slotcontroller.MigrationRequest{
+		HashSlot: binary.BigEndian.Uint16(body[0:2]),
+		Source:   binary.BigEndian.Uint64(body[2:10]),
+		Target:   binary.BigEndian.Uint64(body[10:18]),
+		Phase:    body[18],
+	}, nil
+}
+
+func encodeAddSlotRequest(req slotcontroller.AddSlotRequest) []byte {
+	body := make([]byte, 0, 8+len(req.Peers)*8)
+	body = binary.BigEndian.AppendUint64(body, req.NewSlotID)
+	return appendUint64Slice(body, req.Peers)
+}
+
+func decodeAddSlotRequest(body []byte) (slotcontroller.AddSlotRequest, error) {
+	newSlotID, rest, err := readUint64(body)
+	if err != nil {
+		return slotcontroller.AddSlotRequest{}, err
+	}
+	peers, rest, err := readUint64Slice(rest)
+	if err != nil || len(rest) != 0 {
+		return slotcontroller.AddSlotRequest{}, ErrInvalidConfig
+	}
+	return slotcontroller.AddSlotRequest{NewSlotID: newSlotID, Peers: peers}, nil
+}
+
+func encodeRemoveSlotRequest(req slotcontroller.RemoveSlotRequest) []byte {
+	return binary.BigEndian.AppendUint64(nil, req.SlotID)
+}
+
+func decodeRemoveSlotRequest(body []byte) (slotcontroller.RemoveSlotRequest, error) {
+	if len(body) != 8 {
+		return slotcontroller.RemoveSlotRequest{}, ErrInvalidConfig
+	}
+	return slotcontroller.RemoveSlotRequest{SlotID: binary.BigEndian.Uint64(body)}, nil
+}
+
+func encodeHashSlotTableSync(version uint64, table []byte) []byte {
+	body := make([]byte, 0, 8+binary.MaxVarintLen64+len(table))
+	body = binary.BigEndian.AppendUint64(body, version)
+	return appendBytes(body, table)
+}
+
+func decodeHashSlotTableSync(body []byte) (uint64, []byte, error) {
+	version, rest, err := readUint64(body)
+	if err != nil {
+		return 0, nil, err
+	}
+	table, rest, err := readBytes(rest)
+	if err != nil || len(rest) != 0 {
+		return 0, nil, ErrInvalidConfig
+	}
+	return version, table, nil
+}
+
+func encodeAssignmentsWithHashSlotTable(assignments []controllermeta.SlotAssignment, version uint64, table []byte) []byte {
+	body := encodeAssignments(assignments)
+	body = binary.BigEndian.AppendUint64(body, version)
+	return appendBytes(body, table)
+}
+
+func decodeAssignmentsWithHashSlotTable(body []byte) ([]controllermeta.SlotAssignment, uint64, []byte, error) {
+	count, rest, err := readUvarint(body)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	assignments := make([]controllermeta.SlotAssignment, 0, count)
+	for i := uint64(0); i < count; i++ {
+		assignment, next, err := consumeAssignment(rest)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		assignments = append(assignments, assignment)
+		rest = next
+	}
+	version, rest, err := readUint64(rest)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	table, rest, err := readBytes(rest)
+	if err != nil || len(rest) != 0 {
+		return nil, 0, nil, ErrInvalidConfig
+	}
+	return assignments, version, table, nil
 }
 
 func encodeClusterNodes(nodes []controllermeta.ClusterNode) []byte {
@@ -714,6 +911,11 @@ func appendString(dst []byte, value string) []byte {
 	return append(dst, value...)
 }
 
+func appendBytes(dst []byte, value []byte) []byte {
+	dst = binary.AppendUvarint(dst, uint64(len(value)))
+	return append(dst, value...)
+}
+
 func readString(src []byte) (string, []byte, error) {
 	length, rest, err := readUvarint(src)
 	if err != nil {
@@ -723,6 +925,17 @@ func readString(src []byte) (string, []byte, error) {
 		return "", nil, ErrInvalidConfig
 	}
 	return string(rest[:length]), rest[length:], nil
+}
+
+func readBytes(src []byte) ([]byte, []byte, error) {
+	length, rest, err := readUvarint(src)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(rest) < int(length) {
+		return nil, nil, ErrInvalidConfig
+	}
+	return append([]byte(nil), rest[:length]...), rest[length:], nil
 }
 
 func appendUint64Slice(dst []byte, values []uint64) []byte {

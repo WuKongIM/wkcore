@@ -56,6 +56,21 @@ func TestPlannerDoesNotMigrateOnSuspectNode(t *testing.T) {
 	require.False(t, decision.Degraded)
 }
 
+func TestPlannerSkipsRepairForMigratingSlot(t *testing.T) {
+	planner := NewPlanner(PlannerConfig{SlotCount: 1, ReplicaN: 3})
+	state := testState(
+		aliveNode(1), aliveNode(2), deadNode(3), aliveNode(4),
+		withAssignment(1, 1, 2, 3),
+		withRuntimeView(1, []uint64{1, 2, 3}, true),
+		withMigratingSlot(1),
+	)
+
+	decision, err := planner.ReconcileSlot(context.Background(), state, 1)
+	require.NoError(t, err)
+	require.Equal(t, uint32(1), decision.SlotID)
+	require.Nil(t, decision.Task)
+}
+
 func TestPlannerRebalancesOnlyWhenSkewExceedsThreshold(t *testing.T) {
 	planner := NewPlanner(PlannerConfig{SlotCount: 4, ReplicaN: 3, RebalanceSkewThreshold: 2})
 	state := testState(
@@ -75,6 +90,24 @@ func TestPlannerRebalancesOnlyWhenSkewExceedsThreshold(t *testing.T) {
 	require.NotNil(t, decision.Task)
 	require.Equal(t, controllermeta.TaskKindRebalance, decision.Task.Kind)
 	require.Equal(t, uint64(4), decision.Task.TargetNode)
+}
+
+func TestPlannerSkipsMigratingSlotDuringRebalanceSelection(t *testing.T) {
+	planner := NewPlanner(PlannerConfig{SlotCount: 2, ReplicaN: 3, RebalanceSkewThreshold: 2})
+	state := testState(
+		aliveNode(1), aliveNode(2), aliveNode(3), aliveNode(4),
+		withAssignment(1, 1, 2, 3),
+		withAssignment(2, 1, 2, 3),
+		withRuntimeView(1, []uint64{1, 2, 3}, true),
+		withRuntimeView(2, []uint64{1, 2, 3}, true),
+		withMigratingSlot(1),
+	)
+
+	decision, err := planner.NextDecision(context.Background(), state)
+	require.NoError(t, err)
+	require.Equal(t, uint32(2), decision.SlotID)
+	require.NotNil(t, decision.Task)
+	require.Equal(t, controllermeta.TaskKindRebalance, decision.Task.Kind)
 }
 
 func TestPlannerRebalancesWhenSkewMatchesThreshold(t *testing.T) {
@@ -680,6 +713,15 @@ func withRuntimeView(slotID uint32, peers []uint64, hasQuorum bool) stateOption 
 func withTask(task controllermeta.ReconcileTask) stateOption {
 	return func(state *PlannerState) {
 		state.Tasks[task.SlotID] = task
+	}
+}
+
+func withMigratingSlot(slotID uint32) stateOption {
+	return func(state *PlannerState) {
+		if state.MigratingSlots == nil {
+			state.MigratingSlots = make(map[uint32]struct{})
+		}
+		state.MigratingSlots[slotID] = struct{}{}
 	}
 }
 

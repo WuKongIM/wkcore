@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/hashslot"
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -64,12 +65,15 @@ func TestStoreSnapshotRoundTrip(t *testing.T) {
 		ObservedConfigEpoch: 1,
 		LastReportAt:        time.Unix(12, 0),
 	}))
+	table := hashslot.NewHashSlotTable(8, 2)
+	table.StartMigration(3, 1, 2)
+	require.NoError(t, store.SaveHashSlotTable(ctx, table))
 
 	snap, err := store.ExportSnapshot(ctx)
 	require.NoError(t, err)
 	entries, err := decodeSnapshot(snap)
 	require.NoError(t, err)
-	require.Len(t, entries, 4)
+	require.Len(t, entries, 5)
 
 	restored := openTestStore(t)
 	require.NoError(t, restored.ImportSnapshot(ctx, snap))
@@ -91,6 +95,33 @@ func TestStoreSnapshotRoundTrip(t *testing.T) {
 	require.Equal(t, uint64(2), view.LeaderID)
 	require.Equal(t, uint64(1), view.ObservedConfigEpoch)
 	require.Equal(t, time.Unix(12, 0), view.LastReportAt)
+
+	restoredTable, err := restored.LoadHashSlotTable(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, restoredTable.GetMigration(3))
+}
+
+func TestStoreHashSlotTableRoundTrip(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	table := hashslot.NewHashSlotTable(8, 2)
+	table.StartMigration(3, 1, 2)
+	table.AdvanceMigration(3, hashslot.PhaseDelta)
+
+	require.NoError(t, store.SaveHashSlotTable(ctx, table))
+
+	loaded, err := store.LoadHashSlotTable(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+	require.Equal(t, table.Version(), loaded.Version())
+	require.Equal(t, table.Lookup(3), loaded.Lookup(3))
+
+	migration := loaded.GetMigration(3)
+	require.NotNil(t, migration)
+	require.Equal(t, hashslot.PhaseDelta, migration.Phase)
+	require.Equal(t, uint64(1), uint64(migration.Source))
+	require.Equal(t, uint64(2), uint64(migration.Target))
 }
 
 func TestStoreListsControllerStateForPlannerQueries(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
 
@@ -43,6 +44,19 @@ func (h *slotHandler) Handle(ctx context.Context, body []byte) ([]byte, error) {
 		return marshalManagedSlotError(err)
 	case managedSlotRPCTransferLeader:
 		err := h.cluster.managedSlots().transferLeaderLocal(ctx, multiraft.SlotID(req.SlotID), multiraft.NodeID(req.TargetNode))
+		return marshalManagedSlotError(err)
+	case managedSlotRPCImportSnapshot:
+		leaderID, err := h.cluster.managedSlots().currentLeader(multiraft.SlotID(req.SlotID))
+		if err != nil {
+			return marshalManagedSlotError(err)
+		}
+		if !h.cluster.IsLocal(leaderID) {
+			return marshalManagedSlotError(ErrNotLeader)
+		}
+		err = h.cluster.importHashSlotSnapshotLocal(ctx, multiraft.SlotID(req.SlotID), metadb.SlotSnapshot{
+			HashSlots: []uint16{req.HashSlot},
+			Data:      append([]byte(nil), req.Snapshot...),
+		})
 		return marshalManagedSlotError(err)
 	default:
 		return nil, ErrInvalidConfig

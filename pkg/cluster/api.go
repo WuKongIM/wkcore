@@ -16,6 +16,8 @@ type API interface {
 	IsLocal(nodeID multiraft.NodeID) bool
 
 	SlotForKey(key string) multiraft.SlotID
+	HashSlotForKey(key string) uint16
+	HashSlotTableVersion() uint64
 	LeaderOf(slotID multiraft.SlotID) (multiraft.NodeID, error)
 	Propose(ctx context.Context, slotID multiraft.SlotID, cmd []byte) error
 

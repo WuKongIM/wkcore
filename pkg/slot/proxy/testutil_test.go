@@ -192,9 +192,10 @@ func startTwoNodeShardedStores(t testing.TB) []*testStoreNode {
 			NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
 				return raftDB.ForSlot(uint64(slotID)), nil
 			},
-			NewStateMachine: metafsm.NewStateMachineFactory(db),
-			Nodes:           nodes,
-			Slots:           slots,
+			NewStateMachine:              metafsm.NewStateMachineFactory(db),
+			NewStateMachineWithHashSlots: metafsm.NewHashSlotStateMachineFactory(db),
+			Nodes:                        nodes,
+			Slots:                        slots,
 		})
 		if err != nil {
 			t.Fatalf("NewCluster(node=%d) error = %v", i+1, err)
@@ -212,14 +213,97 @@ func startTwoNodeShardedStores(t testing.TB) []*testStoreNode {
 	}
 
 	for slotID := uint64(1); slotID <= 2; slotID++ {
-		leaderNode := out[slotID-1]
-		waitForCondition(t, func() bool {
-			leaderID, err := leaderNode.cluster.LeaderOf(multiraft.SlotID(slotID))
-			return err == nil && leaderID == multiraft.NodeID(slotID)
-		}, fmt.Sprintf("slot %d leader elected on expected node", slotID))
+		waitForExpectedSlotLeader(t, out, multiraft.SlotID(slotID), multiraft.NodeID(slotID))
 	}
 
 	return out
+}
+
+func startTwoNodeHashSlotStores(t testing.TB, hashSlotCount uint16) []*testStoreNode {
+	t.Helper()
+
+	listeners := make([]net.Listener, 2)
+	for i := range 2 {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen %d: %v", i+1, err)
+		}
+		listeners[i] = ln
+	}
+
+	nodes := make([]raftcluster.NodeConfig, 2)
+	for i := range 2 {
+		nodes[i] = raftcluster.NodeConfig{
+			NodeID: multiraft.NodeID(i + 1),
+			Addr:   listeners[i].Addr().String(),
+		}
+		_ = listeners[i].Close()
+	}
+
+	slots := []raftcluster.SlotConfig{
+		{SlotID: 1, Peers: []multiraft.NodeID{1}},
+		{SlotID: 2, Peers: []multiraft.NodeID{2}},
+	}
+
+	out := make([]*testStoreNode, 2)
+	for i := range 2 {
+		dir := filepath.Join(t.TempDir(), fmt.Sprintf("hs-n%d", i+1))
+		db := openTestDBAt(t, filepath.Join(dir, "biz"))
+		raftDB := openTestRaftDBAt(t, filepath.Join(dir, "raft"))
+
+		cluster, err := raftcluster.NewCluster(raftcluster.Config{
+			NodeID:             multiraft.NodeID(i + 1),
+			ListenAddr:         nodes[i].Addr,
+			SlotCount:          2,
+			HashSlotCount:      hashSlotCount,
+			InitialSlotCount:   2,
+			ControllerReplicaN: len(nodes),
+			SlotReplicaN:       len(nodes),
+			NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
+				return raftDB.ForSlot(uint64(slotID)), nil
+			},
+			NewStateMachine:              metafsm.NewStateMachineFactory(db),
+			NewStateMachineWithHashSlots: metafsm.NewHashSlotStateMachineFactory(db),
+			Nodes:                        nodes,
+			Slots:                        slots,
+		})
+		if err != nil {
+			t.Fatalf("NewCluster(node=%d) error = %v", i+1, err)
+		}
+		require.NoError(t, cluster.Start())
+		t.Cleanup(cluster.Stop)
+
+		out[i] = &testStoreNode{
+			cluster: cluster,
+			store:   New(cluster, db),
+			db:      db,
+			raftDB:  raftDB,
+			nodeID:  multiraft.NodeID(i + 1),
+		}
+	}
+
+	for slotID := uint64(1); slotID <= 2; slotID++ {
+		waitForExpectedSlotLeader(t, out, multiraft.SlotID(slotID), multiraft.NodeID(slotID))
+	}
+
+	return out
+}
+
+func waitForExpectedSlotLeader(t testing.TB, nodes []*testStoreNode, slotID multiraft.SlotID, want multiraft.NodeID) {
+	t.Helper()
+
+	waitForCondition(t, func() bool {
+		for _, node := range nodes {
+			if node == nil || node.cluster == nil {
+				continue
+			}
+			leaderID, err := node.cluster.LeaderOf(slotID)
+			if err == nil && leaderID == want {
+				return true
+			}
+		}
+		return false
+	}, fmt.Sprintf("slot %d leader elected on expected node", slotID))
 }
 
 func findChannelIDForSlot(t testing.TB, cluster *raftcluster.Cluster, slot uint64, prefix string) string {
@@ -235,6 +319,23 @@ func findChannelIDForSlot(t testing.TB, cluster *raftcluster.Cluster, slot uint6
 	return ""
 }
 
+func findChannelIDForSlotWithDifferentHashSlot(t testing.TB, cluster *raftcluster.Cluster, slot uint64, hashSlot uint16, prefix string) string {
+	t.Helper()
+
+	for i := 0; i < 10_000; i++ {
+		channelID := fmt.Sprintf("%s-%d", prefix, i)
+		if uint64(cluster.SlotForKey(channelID)) != slot {
+			continue
+		}
+		if cluster.HashSlotForKey(channelID) == hashSlot {
+			continue
+		}
+		return channelID
+	}
+	t.Fatalf("no channel id found for physical slot %d with hash slot != %d", slot, hashSlot)
+	return ""
+}
+
 func findUIDForSlot(t testing.TB, cluster *raftcluster.Cluster, slot uint64, prefix string) string {
 	t.Helper()
 
@@ -246,4 +347,26 @@ func findUIDForSlot(t testing.TB, cluster *raftcluster.Cluster, slot uint64, pre
 	}
 	t.Fatalf("no uid found for slot %d", slot)
 	return ""
+}
+
+func findUIDForSlotWithDifferentHashSlot(t testing.TB, cluster *raftcluster.Cluster, slot uint64, hashSlot uint16, prefix string) string {
+	t.Helper()
+
+	for i := 0; i < 10_000; i++ {
+		uid := fmt.Sprintf("%s-%d", prefix, i)
+		if uint64(cluster.SlotForKey(uid)) != slot {
+			continue
+		}
+		if cluster.HashSlotForKey(uid) == hashSlot {
+			continue
+		}
+		return uid
+	}
+	t.Fatalf("no uid found for physical slot %d with hash slot != %d", slot, hashSlot)
+	return ""
+}
+
+func mustHashSlotForKey(t testing.TB, cluster *raftcluster.Cluster, key string) uint16 {
+	t.Helper()
+	return hashSlotForKey(cluster, key)
 }

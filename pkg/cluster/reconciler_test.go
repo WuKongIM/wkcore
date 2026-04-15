@@ -204,7 +204,11 @@ func TestReconcilerTickLoadsTasksWithBoundedConcurrency(t *testing.T) {
 		_ = rt.Close()
 	})
 	cluster.runtime = rt
-	cluster.router = NewRouter(cluster.cfg.SlotCount, cluster.cfg.NodeID, rt)
+	cluster.router = NewRouter(
+		NewHashSlotTable(cluster.cfg.effectiveHashSlotCount(), int(cluster.cfg.effectiveInitialSlotCount())),
+		cluster.cfg.NodeID,
+		rt,
+	)
 
 	assignments := []controllermeta.SlotAssignment{
 		{SlotID: 1, DesiredPeers: []uint64{1}, ConfigEpoch: 1},

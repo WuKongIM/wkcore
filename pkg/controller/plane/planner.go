@@ -24,6 +24,7 @@ func (p *Planner) ReconcileSlot(_ context.Context, state PlannerState, slotID ui
 
 	assignment, hasAssignment := state.Assignments[slotID]
 	view, hasView := state.Runtime[slotID]
+	migrating := state.slotMigrating(slotID)
 	if hasView && !view.HasQuorum {
 		decision.Degraded = true
 		decision.Assignment = assignment
@@ -31,6 +32,9 @@ func (p *Planner) ReconcileSlot(_ context.Context, state PlannerState, slotID ui
 	}
 	if task, ok := state.Tasks[slotID]; ok {
 		decision.Assignment = assignment
+		if migrating && task.Kind != controllermeta.TaskKindBootstrap {
+			return decision, nil
+		}
 		if task.Status == controllermeta.TaskStatusFailed {
 			return decision, nil
 		}
@@ -58,6 +62,10 @@ func (p *Planner) ReconcileSlot(_ context.Context, state PlannerState, slotID ui
 		return decision, nil
 	}
 	if !hasAssignment {
+		return decision, nil
+	}
+	if migrating {
+		decision.Assignment = assignment
 		return decision, nil
 	}
 
@@ -113,6 +121,9 @@ func (p *Planner) nextRebalanceDecision(state PlannerState) Decision {
 
 	candidates := make([]controllermeta.SlotAssignment, 0, len(state.Assignments))
 	for _, assignment := range state.Assignments {
+		if state.slotMigrating(assignment.SlotID) {
+			continue
+		}
 		if containsPeer(assignment.DesiredPeers, maxNode) && !containsPeer(assignment.DesiredPeers, minNode) {
 			if _, ok := state.Runtime[assignment.SlotID]; !ok {
 				continue
@@ -163,6 +174,14 @@ func (p *Planner) nextRebalanceDecision(state PlannerState) Decision {
 		return decision
 	}
 	return Decision{}
+}
+
+func (s PlannerState) slotMigrating(slotID uint32) bool {
+	if len(s.MigratingSlots) == 0 {
+		return false
+	}
+	_, ok := s.MigratingSlots[slotID]
+	return ok
 }
 
 func (p *Planner) selectBootstrapPeers(state PlannerState) []uint64 {

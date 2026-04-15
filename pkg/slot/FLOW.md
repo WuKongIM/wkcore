@@ -37,7 +37,7 @@ Runtime.ChangeConfig / TransferLeadership / Status
 | 类型 | 文件 | 说明 |
 |------|------|------|
 | `SlotID` / `NodeID` | multiraft/types.go | Slot / 节点标识 |
-| `Command` | multiraft/types.go | 状态机命令：SlotID, Index, Term, Data(TLV编码) |
+| `Command` | multiraft/types.go | 状态机命令：SlotID(物理 Raft 组), HashSlot(逻辑哈希分片), Index, Term, Data(TLV编码) |
 | `Future` / `Result` | multiraft/types.go | 异步提案结果，Wait(ctx) 阻塞到提交 |
 | `ConfigChange` | multiraft/types.go | 成员变更：AddVoter / RemoveVoter / AddLearner / PromoteLearner |
 | `Storage` interface | multiraft/types.go | Raft 日志存储抽象：InitialState / Entries / Save / MarkApplied |
@@ -51,18 +51,20 @@ Runtime.ChangeConfig / TransferLeadership / Status
 入口: `proxy/store.go:44 CreateChannel`
 
 ```
-  ① slotID := cluster.SlotForKey(channelID)             // 按 key 哈希定位 Slot
-  ② cmd := fsm.EncodeUpsertChannelCommand(channel)      // TLV 编码
-  ③ cluster.Propose(ctx, slotID, cmd)                    // 提交到 Raft
+  ① hashSlot := cluster.HashSlotForKey(channelID)       // CRC32(key) % HashSlotCount
+  ② slotID := cluster.SlotForKey(channelID)             // hashSlot 查表定位物理 Slot
+  ③ cmd := fsm.EncodeUpsertChannelCommand(channel)      // TLV 编码
+  ④ cluster.ProposeWithHashSlot(ctx, slotID, hashSlot, cmd) // 提交带 hashSlot 信封的提案
      ↓
 multiraft/slot.go:
-  ④ enqueueControl(controlPropose, data, future) → scheduler.enqueue(slotID)
-  ⑤ Worker 拾取 → processControls → rawNode.Propose(data)
-  ⑥ processReady → persistReady → transport.Send → 多数确认
+  ⑤ enqueueControl(controlPropose, data, future) → scheduler.enqueue(slotID)
+  ⑥ Worker 拾取 → processControls → rawNode.Propose(data)
+  ⑦ applyCommittedEntries 先从 entry.Data 头部解出 HashSlot，再把 TLV Data 传给状态机
+  ⑧ processReady → persistReady → transport.Send → 多数确认
      ↓
 fsm/statemachine.go:43 ApplyBatch:
-  ⑦ 创建 WriteBatch → 遍历 cmds → decodeCommand → cmd.apply(wb)
-  ⑧ wb.Commit() — 单次 fsync 原子提交
+  ⑨ 创建 WriteBatch → 遍历 cmds → 校验物理 Slot + HashSlot 归属 → decodeCommand → cmd.apply(wb, hashSlot)
+  ⑩ wb.Commit() — 单次 fsync 原子提交
      ↓
 Pebble:
   写入 State 键(0x10)主记录 + Index 键(0x11)二级索引
@@ -76,8 +78,8 @@ Pebble:
 读取路径分两种:
 
 本地读取（proxy/store.go:69 GetChannel）:
-  slotID = SlotForKey(channelID)
-  → db.ForSlot(slotID).GetChannel(ctx, ...)  // 直接读本地 Pebble
+  hashSlot = HashSlotForKey(channelID)
+  → db.ForHashSlot(hashSlot).GetChannel(ctx, ...)  // 直接读本地 Pebble
 
 权威读取（proxy/store.go:138 GetUser，需线性一致性）:
   slotID = SlotForKey(uid)
@@ -148,9 +150,9 @@ Worker 循环:
 
 **3 个键空间:**
 ```
-State (0x10): [0x10][slotID:8][tableID:4][主键列...]   主记录，值带 CRC32 校验
-Index (0x11): [0x11][slotID:8][tableID:4][indexID:2][索引列...]   二级索引
-Meta  (0x12): [0x12][slotID:8][...]                    元信息
+State (0x10): [0x10][hashSlot:2][tableID:4][主键列...]            主记录，值带 CRC32 校验
+Index (0x11): [0x11][hashSlot:2][tableID:4][indexID:2][索引列...]  二级索引
+Meta  (0x12): [0x12][hashSlot:2][...]                             元信息
 ```
 
 **7 张业务表** (见 `meta/catalog.go`):
@@ -194,12 +196,14 @@ TLV 格式: `[Version:1][CmdType:1][Tag:1 + Length:4 + Value:N]...`
 
 ## 9. 避坑清单
 
-- **SlotID 校验**: `fsm/statemachine.go:ApplyBatch` 必须校验 `cmd.SlotID == m.slot`，否则返回 `ErrInvalidArgument`。防止跨 Slot 污染。
+- **归属校验**: `fsm/statemachine.go:ApplyBatch` 必须同时校验 `cmd.SlotID == m.slot` 和 `cmd.HashSlot` 属于当前状态机拥有的 hash slot 集合；兼容旧路径时会退化为“单物理 slot 仅拥有同编号 hash slot”的默认行为。
+- **归属集合会热更新**: 节点收到新的 `HashSlotTable` 后，`cluster` 会把最新的 hash slot 集合推送给已打开的 `fsm.stateMachine`；迁移完成后的新路由能立即生效，Snapshot/Restore 也会按最新集合导出/导入。
+- **迁移期 Delta 是受限例外**: Controller 把迁移推进到 `PhaseDelta` 后，源 Slot 的 `fsm.stateMachine` 会由 `cluster` 注入 delta forwarder，把 live write 包装成 `apply_delta` 转发到目标 Slot；目标 Slot 只对这类 `apply_delta` 放开迁移中的 hash slot，普通命令仍按最终归属校验拒绝。
 - **CreateUser 幂等**: `Store.CreateUser` 先权威 RPC 查询避免重复，但 Raft Apply 层的 `CreateUser` 仍需是幂等的（并发场景下已存在时跳过，不能 fail Slot）。见 `meta/batch.go:CreateUser`。
 - **ListChannelRuntimeMeta 扇出**: `store.go:102` 遍历所有 SlotID 发 RPC，N 个 Slot 就是 N 次 RPC，慎用。
 - **ApplyBatch 原子性**: 一个 ApplyBatch 内所有命令要么全部成功，要么全部失败（WriteBatch 未 Commit 就丢弃）。任何一条失败会导致整个 Raft Slot fail。
 - **Leader 变更自动失败 pending**: `slot.go:refreshStatus` 检测到从 Leader 降级时，立即 fail 所有 submitted/pending 的 proposal/config Future 返回 ErrNotLeader。
 - **Batch Apply 与 ConfChange 穿插**: `slot.go:applyCommittedEntries` 遇到 ConfChange 必须先 flush 累积的 Normal Entry 批次。不能把 ConfChange 塞进批次里。
 - **RPC Handler 注册**: `proxy.New` 在构造时调用 `cluster.RPCMux().Handle(...)` 注册 5 个 handler，漏任一个该类远端查询会全部失败。
-- **写入 Key 路由**: `SlotForKey(key)` 按哈希决定 Slot，**同一实体必须使用同一 Key**（User 用 uid，Channel 用 channelID，Device 用 uid 而非 deviceFlag）。用错 Key 会写到不同 Slot，读不到。
+- **写入 Key 路由**: `HashSlotForKey(key)` 先算逻辑 hash slot，再通过 `SlotForKey(key)` 查表定位物理 Slot；**同一实体必须使用同一 Key**（User 用 uid，Channel 用 channelID，Device 用 uid 而非 deviceFlag）。用错 Key 会写到不同 hash slot / Slot，读不到。
 - **值 CRC 校验失败**: Pebble 存储值带 CRC32，校验失败返回 `ErrCorruptValue`。表明磁盘损坏或编解码器版本不兼容。

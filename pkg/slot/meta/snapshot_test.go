@@ -4,15 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"testing"
 )
 
-func TestDeleteSlotDataRemovesOnlyTargetSlot(t *testing.T) {
+func TestDeleteHashSlotDataRemovesOnlyTargetHashSlot(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
-	left := db.ForSlot(1)
-	right := db.ForSlot(2)
+	left := db.ForHashSlot(1)
+	right := db.ForHashSlot(2)
 
 	if err := left.CreateUser(ctx, User{UID: "u1", Token: "left"}); err != nil {
 		t.Fatalf("left create user: %v", err)
@@ -27,8 +28,8 @@ func TestDeleteSlotDataRemovesOnlyTargetSlot(t *testing.T) {
 		t.Fatalf("right create channel: %v", err)
 	}
 
-	if err := db.DeleteSlotData(ctx, 1); err != nil {
-		t.Fatalf("DeleteSlotData(1): %v", err)
+	if err := db.DeleteHashSlotData(ctx, 1); err != nil {
+		t.Fatalf("DeleteHashSlotData(1): %v", err)
 	}
 
 	if _, err := left.GetUser(ctx, "u1"); !errors.Is(err, ErrNotFound) {
@@ -55,10 +56,10 @@ func TestDeleteSlotDataRemovesOnlyTargetSlot(t *testing.T) {
 	}
 }
 
-func TestSlotSnapshotRoundTrip(t *testing.T) {
+func TestHashSlotSnapshotRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
-	shard := db.ForSlot(9)
+	shard := db.ForHashSlot(9)
 
 	originalUser := User{UID: "u1", Token: "t1", DeviceFlag: 1, DeviceLevel: 2}
 	originalChannel := Channel{ChannelID: "c1", ChannelType: 1, Ban: 1}
@@ -69,23 +70,23 @@ func TestSlotSnapshotRoundTrip(t *testing.T) {
 		t.Fatalf("CreateChannel(): %v", err)
 	}
 
-	snap, err := db.ExportSlotSnapshot(ctx, 9)
+	snap, err := db.ExportHashSlotSnapshot(ctx, []uint16{9})
 	if err != nil {
-		t.Fatalf("ExportSlotSnapshot(): %v", err)
+		t.Fatalf("ExportHashSlotSnapshot(): %v", err)
 	}
-	if snap.SlotID != 9 || len(snap.Data) == 0 {
+	if len(snap.HashSlots) != 1 || snap.HashSlots[0] != 9 || len(snap.Data) == 0 {
 		t.Fatalf("snapshot = %#v", snap)
 	}
 
-	if err := db.DeleteSlotData(ctx, 9); err != nil {
-		t.Fatalf("DeleteSlotData(): %v", err)
+	if err := db.DeleteHashSlotData(ctx, 9); err != nil {
+		t.Fatalf("DeleteHashSlotData(): %v", err)
 	}
 	if _, err := shard.GetUser(ctx, "u1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetUser() after delete err = %v, want ErrNotFound", err)
 	}
 
-	if err := db.ImportSlotSnapshot(ctx, snap); err != nil {
-		t.Fatalf("ImportSlotSnapshot(): %v", err)
+	if err := db.ImportHashSlotSnapshot(ctx, snap); err != nil {
+		t.Fatalf("ImportHashSlotSnapshot(): %v", err)
 	}
 
 	gotUser, err := shard.GetUser(ctx, "u1")
@@ -105,62 +106,142 @@ func TestSlotSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
-func TestImportSlotSnapshotRejectsWrongSlot(t *testing.T) {
+func TestHashSlotSnapshotRoundTripAcrossMultipleHashSlots(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	left := db.ForHashSlot(3)
+	right := db.ForHashSlot(11)
+
+	if err := left.CreateUser(ctx, User{UID: "u-left", Token: "left"}); err != nil {
+		t.Fatalf("left CreateUser(): %v", err)
+	}
+	if err := right.CreateUser(ctx, User{UID: "u-right", Token: "right"}); err != nil {
+		t.Fatalf("right CreateUser(): %v", err)
+	}
+
+	snap, err := db.ExportHashSlotSnapshot(ctx, []uint16{3, 11})
+	if err != nil {
+		t.Fatalf("ExportHashSlotSnapshot(): %v", err)
+	}
+	if !reflect.DeepEqual(snap.HashSlots, []uint16{3, 11}) {
+		t.Fatalf("snapshot HashSlots = %#v, want %#v", snap.HashSlots, []uint16{3, 11})
+	}
+
+	if err := db.DeleteHashSlotData(ctx, 3); err != nil {
+		t.Fatalf("DeleteHashSlotData(3): %v", err)
+	}
+	if err := db.DeleteHashSlotData(ctx, 11); err != nil {
+		t.Fatalf("DeleteHashSlotData(11): %v", err)
+	}
+
+	if err := db.ImportHashSlotSnapshot(ctx, snap); err != nil {
+		t.Fatalf("ImportHashSlotSnapshot(): %v", err)
+	}
+
+	gotLeft, err := left.GetUser(ctx, "u-left")
+	if err != nil {
+		t.Fatalf("left GetUser(): %v", err)
+	}
+	if gotLeft.Token != "left" {
+		t.Fatalf("left restored user = %#v", gotLeft)
+	}
+
+	gotRight, err := right.GetUser(ctx, "u-right")
+	if err != nil {
+		t.Fatalf("right GetUser(): %v", err)
+	}
+	if gotRight.Token != "right" {
+		t.Fatalf("right restored user = %#v", gotRight)
+	}
+}
+
+func TestImportHashSlotSnapshotRejectsWrongHashSlots(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 
-	if err := db.ForSlot(9).CreateUser(ctx, User{UID: "u1", Token: "t1"}); err != nil {
+	if err := db.ForHashSlot(9).CreateUser(ctx, User{UID: "u1", Token: "t1"}); err != nil {
 		t.Fatalf("CreateUser(): %v", err)
 	}
 
-	snap, err := db.ExportSlotSnapshot(ctx, 9)
+	snap, err := db.ExportHashSlotSnapshot(ctx, []uint16{9})
 	if err != nil {
-		t.Fatalf("ExportSlotSnapshot(): %v", err)
+		t.Fatalf("ExportHashSlotSnapshot(): %v", err)
 	}
-	snap.SlotID = 10
+	snap.HashSlots = []uint16{10}
 
-	if err := db.ImportSlotSnapshot(ctx, snap); !errors.Is(err, ErrInvalidArgument) {
+	if err := db.ImportHashSlotSnapshot(ctx, snap); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("ImportHashSlotSnapshot() err = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestImportHashSlotSnapshotRejectsChecksumMismatch(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	if err := db.ForHashSlot(9).CreateUser(ctx, User{UID: "u1", Token: "t1"}); err != nil {
+		t.Fatalf("CreateUser(): %v", err)
+	}
+
+	snap, err := db.ExportHashSlotSnapshot(ctx, []uint16{9})
+	if err != nil {
+		t.Fatalf("ExportHashSlotSnapshot(): %v", err)
+	}
+	snap.Data[len(snap.Data)-1] ^= 0xff
+
+	if err := db.ImportHashSlotSnapshot(ctx, snap); !errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("ImportHashSlotSnapshot() err = %v, want ErrChecksumMismatch", err)
+	}
+}
+
+func TestDeleteSlotDataRejectsOutOfRangeLegacySlotID(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	if err := db.DeleteSlotData(ctx, uint64(math.MaxUint16)+1); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("DeleteSlotData() err = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestExportSlotSnapshotRejectsOutOfRangeLegacySlotID(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	if _, err := db.ExportSlotSnapshot(ctx, uint64(math.MaxUint16)+1); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("ExportSlotSnapshot() err = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestImportSlotSnapshotRejectsOutOfRangeLegacySlotID(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	err := db.ImportSlotSnapshot(ctx, SlotSnapshot{
+		SlotID: uint64(math.MaxUint16) + 1,
+		Data:   []byte("ignored"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("ImportSlotSnapshot() err = %v, want ErrInvalidArgument", err)
 	}
 }
 
-func TestImportSlotSnapshotRejectsChecksumMismatch(t *testing.T) {
+func TestImportHashSlotSnapshotCanBeRetried(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
-
-	if err := db.ForSlot(9).CreateUser(ctx, User{UID: "u1", Token: "t1"}); err != nil {
-		t.Fatalf("CreateUser(): %v", err)
-	}
-
-	snap, err := db.ExportSlotSnapshot(ctx, 9)
-	if err != nil {
-		t.Fatalf("ExportSlotSnapshot(): %v", err)
-	}
-	snap.Data[len(snap.Data)-1] ^= 0xff
-
-	if err := db.ImportSlotSnapshot(ctx, snap); !errors.Is(err, ErrChecksumMismatch) {
-		t.Fatalf("ImportSlotSnapshot() err = %v, want ErrChecksumMismatch", err)
-	}
-}
-
-func TestImportSlotSnapshotCanBeRetried(t *testing.T) {
-	ctx := context.Background()
-	db := openTestDB(t)
-	shard := db.ForSlot(9)
+	shard := db.ForHashSlot(9)
 
 	if err := shard.CreateUser(ctx, User{UID: "u1", Token: "old"}); err != nil {
 		t.Fatalf("CreateUser(old): %v", err)
 	}
 
 	restoreDB := openTestDB(t)
-	restoreShard := restoreDB.ForSlot(9)
+	restoreShard := restoreDB.ForHashSlot(9)
 	if err := restoreShard.CreateUser(ctx, User{UID: "u1", Token: "stale"}); err != nil {
 		t.Fatalf("CreateUser(stale): %v", err)
 	}
 
-	snap, err := db.ExportSlotSnapshot(ctx, 9)
+	snap, err := db.ExportHashSlotSnapshot(ctx, []uint16{9})
 	if err != nil {
-		t.Fatalf("ExportSlotSnapshot(): %v", err)
+		t.Fatalf("ExportHashSlotSnapshot(): %v", err)
 	}
 
 	injectedErr := errors.New("injected import failure")
@@ -169,15 +250,15 @@ func TestImportSlotSnapshotCanBeRetried(t *testing.T) {
 		return injectedErr
 	}
 
-	if err := restoreDB.ImportSlotSnapshot(ctx, snap); !errors.Is(err, injectedErr) {
-		t.Fatalf("first ImportSlotSnapshot() err = %v, want %v", err, injectedErr)
+	if err := restoreDB.ImportHashSlotSnapshot(ctx, snap); !errors.Is(err, injectedErr) {
+		t.Fatalf("first ImportHashSlotSnapshot() err = %v, want %v", err, injectedErr)
 	}
 	if _, err := restoreShard.GetUser(ctx, "u1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetUser() after failed import err = %v, want ErrNotFound", err)
 	}
 
-	if err := restoreDB.ImportSlotSnapshot(ctx, snap); err != nil {
-		t.Fatalf("second ImportSlotSnapshot(): %v", err)
+	if err := restoreDB.ImportHashSlotSnapshot(ctx, snap); err != nil {
+		t.Fatalf("second ImportHashSlotSnapshot(): %v", err)
 	}
 
 	gotUser, err := restoreShard.GetUser(ctx, "u1")
@@ -194,7 +275,7 @@ func TestVisitSlotSnapshotPayloadMatchesDecodedEntries(t *testing.T) {
 		{Key: []byte("k1"), Value: []byte("v1")},
 		{Key: []byte("k2"), Value: []byte("value-2")},
 	}
-	data, wantStats := encodeSlotSnapshotPayload(7, entries)
+	data, wantStats := encodeSlotSnapshotPayload([]uint16{7}, entries)
 
 	var got []snapshotEntry
 	meta, err := visitSlotSnapshotPayload(data, func(key, value []byte) error {
@@ -208,8 +289,8 @@ func TestVisitSlotSnapshotPayloadMatchesDecodedEntries(t *testing.T) {
 		t.Fatalf("visitSlotSnapshotPayload(): %v", err)
 	}
 
-	if meta.SlotID != 7 {
-		t.Fatalf("meta.SlotID = %d, want 7", meta.SlotID)
+	if !reflect.DeepEqual(meta.HashSlots, []uint16{7}) {
+		t.Fatalf("meta.HashSlots = %#v, want %#v", meta.HashSlots, []uint16{7})
 	}
 	if meta.Stats != wantStats {
 		t.Fatalf("meta.Stats = %#v, want %#v", meta.Stats, wantStats)
@@ -220,7 +301,7 @@ func TestVisitSlotSnapshotPayloadMatchesDecodedEntries(t *testing.T) {
 }
 
 func TestVisitSlotSnapshotPayloadReturnsCallbackError(t *testing.T) {
-	data, _ := encodeSlotSnapshotPayload(7, []snapshotEntry{
+	data, _ := encodeSlotSnapshotPayload([]uint16{7}, []snapshotEntry{
 		{Key: []byte("k1"), Value: []byte("v1")},
 	})
 
@@ -233,10 +314,10 @@ func TestVisitSlotSnapshotPayloadReturnsCallbackError(t *testing.T) {
 	}
 }
 
-func TestSlotAllDataSpansAreOrderedAndDisjoint(t *testing.T) {
-	spans := slotAllDataSpans(7)
+func TestHashSlotAllDataSpansAreOrderedAndDisjoint(t *testing.T) {
+	spans := hashSlotAllDataSpans(7)
 	if len(spans) != 3 {
-		t.Fatalf("slotAllDataSpans(7) len = %d", len(spans))
+		t.Fatalf("hashSlotAllDataSpans(7) len = %d", len(spans))
 	}
 
 	for i, span := range spans {

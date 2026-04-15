@@ -1,31 +1,56 @@
 package cluster
 
 import (
-	"hash/crc32"
+	"sync/atomic"
 
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
 
 type Router struct {
-	slotCount uint32
-	runtime   *multiraft.Runtime
-	localNode multiraft.NodeID
+	hashSlotTable atomic.Pointer[HashSlotTable]
+	runtime       *multiraft.Runtime
+	localNode     multiraft.NodeID
 }
 
-func NewRouter(slotCount uint32, localNode multiraft.NodeID, runtime *multiraft.Runtime) *Router {
-	return &Router{
-		slotCount: slotCount,
+func NewRouter(table *HashSlotTable, localNode multiraft.NodeID, runtime *multiraft.Runtime) *Router {
+	r := &Router{
 		runtime:   runtime,
 		localNode: localNode,
 	}
+	r.UpdateHashSlotTable(table)
+	return r
 }
 
-// SlotForKey maps a key to a raft slot via CRC32 hashing.
-// NOTE: The mapping is deterministic for a given slotCount but will change
-// if slotCount changes (no consistent hashing). All nodes must use the same
-// slotCount for correct routing.
 func (r *Router) SlotForKey(key string) multiraft.SlotID {
-	return multiraft.SlotID(crc32.ChecksumIEEE([]byte(key))%r.slotCount + 1)
+	table := r.hashSlotTable.Load()
+	if table == nil {
+		return 0
+	}
+	return table.Lookup(r.HashSlotForKey(key))
+}
+
+func (r *Router) HashSlotForKey(key string) uint16 {
+	table := r.hashSlotTable.Load()
+	if table == nil {
+		return 0
+	}
+	return HashSlotForKey(key, table.HashSlotCount())
+}
+
+func (r *Router) UpdateHashSlotTable(table *HashSlotTable) {
+	if table == nil {
+		r.hashSlotTable.Store(nil)
+		return
+	}
+	r.hashSlotTable.Store(table.Clone())
+}
+
+func (r *Router) HashSlotsOf(slotID multiraft.SlotID) []uint16 {
+	table := r.hashSlotTable.Load()
+	if table == nil {
+		return nil
+	}
+	return table.HashSlotsOf(slotID)
 }
 
 func (r *Router) LeaderOf(slotID multiraft.SlotID) (multiraft.NodeID, error) {

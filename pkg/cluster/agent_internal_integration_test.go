@@ -471,7 +471,11 @@ func TestGroupAgentDoesNotReopenSourceGroupWhenPersistedVotersDropLocalNode(t *t
 		t.Fatalf("multiraft.New() error = %v", err)
 	}
 	cluster.runtime = rt
-	cluster.router = NewRouter(cluster.cfg.SlotCount, cluster.cfg.NodeID, rt)
+	cluster.router = NewRouter(
+		NewHashSlotTable(cluster.cfg.effectiveHashSlotCount(), int(cluster.cfg.effectiveInitialSlotCount())),
+		cluster.cfg.NodeID,
+		rt,
+	)
 	t.Cleanup(func() {
 		cluster.Stop()
 	})
@@ -555,7 +559,11 @@ func TestGroupAgentReopensSourceGroupUsingLiveCurrentPeersWhenPersistedVotersAre
 		t.Fatalf("multiraft.New() error = %v", err)
 	}
 	cluster.runtime = rt
-	cluster.router = NewRouter(cluster.cfg.SlotCount, cluster.cfg.NodeID, rt)
+	cluster.router = NewRouter(
+		NewHashSlotTable(cluster.cfg.effectiveHashSlotCount(), int(cluster.cfg.effectiveInitialSlotCount())),
+		cluster.cfg.NodeID,
+		rt,
+	)
 	t.Cleanup(func() {
 		cluster.Stop()
 	})
@@ -637,7 +645,11 @@ func TestGroupAgentReopensSourceGroupUsingLiveCurrentPeersWhenStorageIsEmpty(t *
 		t.Fatalf("multiraft.New() error = %v", err)
 	}
 	cluster.runtime = rt
-	cluster.router = NewRouter(cluster.cfg.SlotCount, cluster.cfg.NodeID, rt)
+	cluster.router = NewRouter(
+		NewHashSlotTable(cluster.cfg.effectiveHashSlotCount(), int(cluster.cfg.effectiveInitialSlotCount())),
+		cluster.cfg.NodeID,
+		rt,
+	)
 	t.Cleanup(func() {
 		cluster.Stop()
 	})

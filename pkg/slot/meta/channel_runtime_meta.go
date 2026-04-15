@@ -193,6 +193,8 @@ func containsUint64(values []uint64, target uint64) bool {
 }
 
 func (db *DB) ListChannelRuntimeMeta(ctx context.Context) ([]ChannelRuntimeMeta, error) {
+	const statePrefixLen = 1 + 2 + 4
+
 	if err := db.checkContext(ctx); err != nil {
 		return nil, err
 	}
@@ -216,10 +218,10 @@ func (db *DB) ListChannelRuntimeMeta(ctx context.Context) ([]ChannelRuntimeMeta,
 		}
 
 		key := iter.Key()
-		if len(key) < 1+8+4 || key[0] != keyspaceState {
+		if len(key) < statePrefixLen || key[0] != keyspaceState {
 			continue
 		}
-		if binary.BigEndian.Uint32(key[1+8:1+8+4]) != TableIDChannelRuntimeMeta {
+		if binary.BigEndian.Uint32(key[1+2:statePrefixLen]) != TableIDChannelRuntimeMeta {
 			continue
 		}
 
@@ -244,7 +246,7 @@ func (db *DB) ListChannelRuntimeMeta(ctx context.Context) ([]ChannelRuntimeMeta,
 }
 
 func decodeChannelRuntimeMetaRecord(key, value []byte) (ChannelRuntimeMeta, uint16, error) {
-	rest := key[1+8+4:]
+	rest := key[1+2+4:]
 	channelID, rest, err := decodeKeyString(rest)
 	if err != nil {
 		return ChannelRuntimeMeta{}, 0, err

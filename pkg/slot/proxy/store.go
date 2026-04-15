@@ -41,46 +41,58 @@ func (s *Store) RegisterChannelUpdateOverlay(overlay ChannelUpdateOverlay) {
 	s.channelUpdateOverlay = overlay
 }
 
+func (s *Store) HashSlotTableVersion() uint64 {
+	if s == nil || s.cluster == nil {
+		return 0
+	}
+	return s.cluster.HashSlotTableVersion()
+}
+
 func (s *Store) CreateChannel(ctx context.Context, channelID string, channelType int64) error {
 	slotID := s.cluster.SlotForKey(channelID)
+	hashSlot := hashSlotForKey(s.cluster, channelID)
 	cmd := metafsm.EncodeUpsertChannelCommand(metadb.Channel{
 		ChannelID:   channelID,
 		ChannelType: channelType,
 	})
-	return s.cluster.Propose(ctx, slotID, cmd)
+	return proposeWithHashSlot(ctx, s.cluster, slotID, hashSlot, cmd)
 }
 
 func (s *Store) UpdateChannel(ctx context.Context, channelID string, channelType int64, ban int64) error {
 	slotID := s.cluster.SlotForKey(channelID)
+	hashSlot := hashSlotForKey(s.cluster, channelID)
 	cmd := metafsm.EncodeUpsertChannelCommand(metadb.Channel{
 		ChannelID:   channelID,
 		ChannelType: channelType,
 		Ban:         ban,
 	})
-	return s.cluster.Propose(ctx, slotID, cmd)
+	return proposeWithHashSlot(ctx, s.cluster, slotID, hashSlot, cmd)
 }
 
 func (s *Store) DeleteChannel(ctx context.Context, channelID string, channelType int64) error {
 	slotID := s.cluster.SlotForKey(channelID)
+	hashSlot := hashSlotForKey(s.cluster, channelID)
 	cmd := metafsm.EncodeDeleteChannelCommand(channelID, channelType)
-	return s.cluster.Propose(ctx, slotID, cmd)
+	return proposeWithHashSlot(ctx, s.cluster, slotID, hashSlot, cmd)
 }
 
 func (s *Store) GetChannel(ctx context.Context, channelID string, channelType int64) (metadb.Channel, error) {
-	slotID := s.cluster.SlotForKey(channelID)
-	return s.db.ForSlot(uint64(slotID)).GetChannel(ctx, channelID, channelType)
+	hashSlot := hashSlotForKey(s.cluster, channelID)
+	return s.db.ForHashSlot(hashSlot).GetChannel(ctx, channelID, channelType)
 }
 
 func (s *Store) AddChannelSubscribers(ctx context.Context, channelID string, channelType int64, uids []string) error {
 	slotID := s.cluster.SlotForKey(channelID)
+	hashSlot := hashSlotForKey(s.cluster, channelID)
 	cmd := metafsm.EncodeAddSubscribersCommand(channelID, channelType, uids)
-	return s.cluster.Propose(ctx, slotID, cmd)
+	return proposeWithHashSlot(ctx, s.cluster, slotID, hashSlot, cmd)
 }
 
 func (s *Store) RemoveChannelSubscribers(ctx context.Context, channelID string, channelType int64, uids []string) error {
 	slotID := s.cluster.SlotForKey(channelID)
+	hashSlot := hashSlotForKey(s.cluster, channelID)
 	cmd := metafsm.EncodeRemoveSubscribersCommand(channelID, channelType, uids)
-	return s.cluster.Propose(ctx, slotID, cmd)
+	return proposeWithHashSlot(ctx, s.cluster, slotID, hashSlot, cmd)
 }
 
 func (s *Store) ListChannelSubscribers(ctx context.Context, channelID string, channelType int64, afterUID string, limit int) ([]string, string, bool, error) {
@@ -90,13 +102,15 @@ func (s *Store) ListChannelSubscribers(ctx context.Context, channelID string, ch
 
 func (s *Store) UpsertChannelRuntimeMeta(ctx context.Context, meta metadb.ChannelRuntimeMeta) error {
 	slotID := s.cluster.SlotForKey(meta.ChannelID)
+	hashSlot := hashSlotForKey(s.cluster, meta.ChannelID)
 	cmd := metafsm.EncodeUpsertChannelRuntimeMetaCommand(meta)
-	return s.cluster.Propose(ctx, slotID, cmd)
+	return proposeWithHashSlot(ctx, s.cluster, slotID, hashSlot, cmd)
 }
 
 func (s *Store) GetChannelRuntimeMeta(ctx context.Context, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error) {
 	slotID := s.cluster.SlotForKey(channelID)
-	return s.getChannelRuntimeMetaAuthoritative(ctx, slotID, channelID, channelType)
+	hashSlot := hashSlotForKey(s.cluster, channelID)
+	return s.getChannelRuntimeMetaAuthoritative(ctx, slotID, hashSlot, channelID, channelType)
 }
 
 func (s *Store) ListChannelRuntimeMeta(ctx context.Context) ([]metadb.ChannelRuntimeMeta, error) {
@@ -117,8 +131,9 @@ func (s *Store) ListChannelRuntimeMeta(ctx context.Context) ([]metadb.ChannelRun
 
 func (s *Store) UpsertUser(ctx context.Context, u metadb.User) error {
 	slotID := s.cluster.SlotForKey(u.UID)
+	hashSlot := hashSlotForKey(s.cluster, u.UID)
 	cmd := metafsm.EncodeUpsertUserCommand(u)
-	return s.cluster.Propose(ctx, slotID, cmd)
+	return proposeWithHashSlot(ctx, s.cluster, slotID, hashSlot, cmd)
 }
 
 // CreateUser returns ErrAlreadyExists when the authoritative slot already has
@@ -126,27 +141,31 @@ func (s *Store) UpsertUser(ctx context.Context, u metadb.User) error {
 // treats the later create as a benign no-op to avoid failing the raft slot.
 func (s *Store) CreateUser(ctx context.Context, u metadb.User) error {
 	slotID := s.cluster.SlotForKey(u.UID)
-	if _, err := s.getUserAuthoritative(ctx, slotID, u.UID); err == nil {
+	hashSlot := hashSlotForKey(s.cluster, u.UID)
+	if _, err := s.getUserAuthoritative(ctx, slotID, hashSlot, u.UID); err == nil {
 		return metadb.ErrAlreadyExists
 	} else if err != nil && !errors.Is(err, metadb.ErrNotFound) {
 		return err
 	}
 	cmd := metafsm.EncodeCreateUserCommand(u)
-	return s.cluster.Propose(ctx, slotID, cmd)
+	return proposeWithHashSlot(ctx, s.cluster, slotID, hashSlot, cmd)
 }
 
 func (s *Store) GetUser(ctx context.Context, uid string) (metadb.User, error) {
 	slotID := s.cluster.SlotForKey(uid)
-	return s.getUserAuthoritative(ctx, slotID, uid)
+	hashSlot := hashSlotForKey(s.cluster, uid)
+	return s.getUserAuthoritative(ctx, slotID, hashSlot, uid)
 }
 
 func (s *Store) UpsertDevice(ctx context.Context, d metadb.Device) error {
 	slotID := s.cluster.SlotForKey(d.UID)
+	hashSlot := hashSlotForKey(s.cluster, d.UID)
 	cmd := metafsm.EncodeUpsertDeviceCommand(d)
-	return s.cluster.Propose(ctx, slotID, cmd)
+	return proposeWithHashSlot(ctx, s.cluster, slotID, hashSlot, cmd)
 }
 
 func (s *Store) GetDevice(ctx context.Context, uid string, deviceFlag int64) (metadb.Device, error) {
 	slotID := s.cluster.SlotForKey(uid)
-	return s.getDeviceAuthoritative(ctx, slotID, uid, deviceFlag)
+	hashSlot := hashSlotForKey(s.cluster, uid)
+	return s.getDeviceAuthoritative(ctx, slotID, hashSlot, uid, deviceFlag)
 }

@@ -15,6 +15,7 @@ const (
 	recordPrefixAssignment  byte = 'a'
 	recordPrefixRuntimeView byte = 'v'
 	recordPrefixTask        byte = 't'
+	recordPrefixHashSlot    byte = 'h'
 )
 
 func encodeNodeKey(nodeID uint64) []byte {
@@ -55,6 +56,10 @@ func membershipKey() []byte {
 	return []byte{recordPrefixMembership}
 }
 
+func hashSlotTableKey() []byte {
+	return []byte{recordPrefixHashSlot}
+}
+
 func prefixBounds(prefix byte) ([]byte, []byte) {
 	return []byte{prefix}, []byte{prefix + 1}
 }
@@ -68,6 +73,11 @@ func validateSnapshotKey(key []byte) error {
 		_, err := decodeNodeKey(key)
 		return err
 	case recordPrefixMembership:
+		if len(key) != 1 {
+			return ErrCorruptValue
+		}
+		return nil
+	case recordPrefixHashSlot:
 		if len(key) != 1 {
 			return ErrCorruptValue
 		}

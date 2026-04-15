@@ -102,6 +102,32 @@ func TestStateMachineEncodeUpsertCommands(t *testing.T) {
 	if dc.device.UID != "u-device" || dc.device.DeviceFlag != 6 || dc.device.Token != "device-token" || dc.device.DeviceLevel != 9 {
 		t.Fatalf("decoded device = %+v", dc.device)
 	}
+
+	applyDeltaData := EncodeApplyDeltaCommand(11, 7, 5, EncodeUpsertUserCommand(metadb.User{UID: "u-delta", Token: "delta"}))
+	decoded, err = decodeCommand(applyDeltaData)
+	if err != nil {
+		t.Fatalf("decodeCommand(apply_delta) error = %v", err)
+	}
+	applyDelta, ok := decoded.(*applyDeltaCmd)
+	if !ok {
+		t.Fatalf("decodeCommand(apply_delta) type = %T, want *applyDeltaCmd", decoded)
+	}
+	if applyDelta.SourceSlotID != 11 || applyDelta.SourceIndex != 7 || applyDelta.HashSlot != 5 {
+		t.Fatalf("decoded apply delta = %#v", applyDelta)
+	}
+
+	enterFenceData := EncodeEnterFenceCommand(5)
+	decoded, err = decodeCommand(enterFenceData)
+	if err != nil {
+		t.Fatalf("decodeCommand(enter_fence) error = %v", err)
+	}
+	enterFence, ok := decoded.(*enterFenceCmd)
+	if !ok {
+		t.Fatalf("decodeCommand(enter_fence) type = %T, want *enterFenceCmd", decoded)
+	}
+	if enterFence.HashSlot != 5 {
+		t.Fatalf("decoded enter fence = %#v", enterFence)
+	}
 }
 
 func TestStateMachineApplyUpsertsUserAndChannel(t *testing.T) {
@@ -478,6 +504,168 @@ func TestStateMachineSnapshotRestoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStateMachineSnapshotRestoreRoundTripAcrossOwnedHashSlots(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	sm, err := NewStateMachineWithHashSlots(db, 11, []uint16{5, 7})
+	if err != nil {
+		t.Fatalf("NewStateMachineWithHashSlots() error = %v", err)
+	}
+
+	if _, err := sm.Apply(ctx, multiraft.Command{
+		SlotID:   11,
+		HashSlot: 5,
+		Index:    1,
+		Term:     1,
+		Data:     EncodeUpsertUserCommand(metadb.User{UID: "u5", Token: "t5"}),
+	}); err != nil {
+		t.Fatalf("Apply(hashSlot=5) error = %v", err)
+	}
+	if _, err := sm.Apply(ctx, multiraft.Command{
+		SlotID:   11,
+		HashSlot: 7,
+		Index:    2,
+		Term:     1,
+		Data:     EncodeUpsertUserCommand(metadb.User{UID: "u7", Token: "t7"}),
+	}); err != nil {
+		t.Fatalf("Apply(hashSlot=7) error = %v", err)
+	}
+
+	snap, err := sm.Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if len(snap.Data) == 0 {
+		t.Fatal("Snapshot().Data is empty")
+	}
+
+	restoreDB := openTestDB(t)
+	restoreSM, err := NewStateMachineWithHashSlots(restoreDB, 11, []uint16{5, 7})
+	if err != nil {
+		t.Fatalf("NewStateMachineWithHashSlots(restore) error = %v", err)
+	}
+	if err := restoreSM.Restore(ctx, snap); err != nil {
+		t.Fatalf("Restore() error = %v", err)
+	}
+
+	got5, err := restoreDB.ForHashSlot(5).GetUser(ctx, "u5")
+	if err != nil {
+		t.Fatalf("ForHashSlot(5).GetUser() error = %v", err)
+	}
+	if got5.Token != "t5" {
+		t.Fatalf("restored hashSlot 5 user = %#v", got5)
+	}
+
+	got7, err := restoreDB.ForHashSlot(7).GetUser(ctx, "u7")
+	if err != nil {
+		t.Fatalf("ForHashSlot(7).GetUser() error = %v", err)
+	}
+	if got7.Token != "t7" {
+		t.Fatalf("restored hashSlot 7 user = %#v", got7)
+	}
+}
+
+func TestStateMachineSnapshotRestoreIncludesIncomingDeltaHashSlots(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	sm, err := NewStateMachineWithHashSlots(db, 11, []uint16{2})
+	if err != nil {
+		t.Fatalf("NewStateMachineWithHashSlots() error = %v", err)
+	}
+	raw, ok := sm.(*stateMachine)
+	if !ok {
+		t.Fatalf("state machine type = %T, want *stateMachine", sm)
+	}
+	raw.UpdateIncomingDeltaHashSlots([]uint16{5})
+
+	if _, err := sm.Apply(ctx, multiraft.Command{
+		SlotID:   11,
+		HashSlot: 5,
+		Index:    1,
+		Term:     1,
+		Data: EncodeApplyDeltaCommand(
+			21,
+			9,
+			5,
+			EncodeUpsertUserCommand(metadb.User{UID: "u5", Token: "incoming"}),
+		),
+	}); err != nil {
+		t.Fatalf("Apply(apply_delta hashSlot=5) error = %v", err)
+	}
+
+	snap, err := sm.Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if len(snap.Data) == 0 {
+		t.Fatal("Snapshot().Data is empty")
+	}
+
+	restoreDB := openTestDB(t)
+	restoreSM, err := NewStateMachineWithHashSlots(restoreDB, 11, []uint16{2})
+	if err != nil {
+		t.Fatalf("NewStateMachineWithHashSlots(restore) error = %v", err)
+	}
+	restoreRaw, ok := restoreSM.(*stateMachine)
+	if !ok {
+		t.Fatalf("restore state machine type = %T, want *stateMachine", restoreSM)
+	}
+	restoreRaw.UpdateIncomingDeltaHashSlots([]uint16{5})
+
+	if err := restoreSM.Restore(ctx, snap); err != nil {
+		t.Fatalf("Restore() error = %v", err)
+	}
+
+	got, err := restoreDB.ForHashSlot(5).GetUser(ctx, "u5")
+	if err != nil {
+		t.Fatalf("ForHashSlot(5).GetUser() error = %v", err)
+	}
+	if got.Token != "incoming" {
+		t.Fatalf("restored incoming delta user = %#v", got)
+	}
+}
+
+func TestStateMachineUpdateOwnedHashSlotsAllowsReroutedWrites(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	sm, err := NewStateMachineWithHashSlots(db, 11, []uint16{5})
+	if err != nil {
+		t.Fatalf("NewStateMachineWithHashSlots() error = %v", err)
+	}
+
+	raw := sm.(*stateMachine)
+	raw.UpdateOwnedHashSlots([]uint16{7})
+
+	if _, err := sm.Apply(ctx, multiraft.Command{
+		SlotID:   11,
+		HashSlot: 7,
+		Index:    1,
+		Term:     1,
+		Data:     EncodeUpsertUserCommand(metadb.User{UID: "u7", Token: "rerouted"}),
+	}); err != nil {
+		t.Fatalf("Apply(hashSlot=7) error = %v", err)
+	}
+
+	got, err := db.ForHashSlot(7).GetUser(ctx, "u7")
+	if err != nil {
+		t.Fatalf("ForHashSlot(7).GetUser() error = %v", err)
+	}
+	if got.Token != "rerouted" {
+		t.Fatalf("hashSlot 7 user = %#v", got)
+	}
+
+	_, err = sm.Apply(ctx, multiraft.Command{
+		SlotID:   11,
+		HashSlot: 5,
+		Index:    2,
+		Term:     1,
+		Data:     EncodeUpsertUserCommand(metadb.User{UID: "u5", Token: "stale"}),
+	})
+	if !errors.Is(err, metadb.ErrInvalidArgument) {
+		t.Fatalf("Apply(hashSlot=5) err = %v, want ErrInvalidArgument", err)
+	}
+}
+
 func TestStateMachineSnapshotIsSlotScoped(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
@@ -705,6 +893,305 @@ func TestApplyBatchRejectsOnMismatchedSlotID(t *testing.T) {
 	_, err := bsm.ApplyBatch(ctx, cmds)
 	if !errors.Is(err, metadb.ErrInvalidArgument) {
 		t.Fatalf("ApplyBatch() err = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestApplyBatchUsesCommandHashSlot(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	sm, err := NewStateMachineWithHashSlots(db, 11, []uint16{5})
+	if err != nil {
+		t.Fatalf("NewStateMachineWithHashSlots() error = %v", err)
+	}
+	bsm, ok := sm.(multiraft.BatchStateMachine)
+	if !ok {
+		t.Fatalf("state machine does not implement BatchStateMachine: %T", sm)
+	}
+
+	cmds := []multiraft.Command{
+		{
+			SlotID:   11,
+			HashSlot: 5,
+			Index:    1,
+			Term:     1,
+			Data:     EncodeUpsertUserCommand(metadb.User{UID: "u-hs", Token: "token-hs"}),
+		},
+	}
+
+	if _, err := bsm.ApplyBatch(ctx, cmds); err != nil {
+		t.Fatalf("ApplyBatch() error = %v", err)
+	}
+
+	got, err := db.ForHashSlot(5).GetUser(ctx, "u-hs")
+	if err != nil {
+		t.Fatalf("ForHashSlot(5).GetUser() error = %v", err)
+	}
+	if got.Token != "token-hs" {
+		t.Fatalf("stored user = %#v", got)
+	}
+}
+
+func TestApplyBatchRejectsHashSlotNotOwned(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	sm, err := NewStateMachineWithHashSlots(db, 11, []uint16{1, 2, 3})
+	if err != nil {
+		t.Fatalf("NewStateMachineWithHashSlots() error = %v", err)
+	}
+	bsm, ok := sm.(multiraft.BatchStateMachine)
+	if !ok {
+		t.Fatalf("state machine does not implement BatchStateMachine: %T", sm)
+	}
+
+	_, err = bsm.ApplyBatch(ctx, []multiraft.Command{
+		{
+			SlotID:   11,
+			HashSlot: 5,
+			Index:    1,
+			Term:     1,
+			Data:     EncodeUpsertUserCommand(metadb.User{UID: "u-hs", Token: "token-hs"}),
+		},
+	})
+	if !errors.Is(err, metadb.ErrInvalidArgument) {
+		t.Fatalf("ApplyBatch() err = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestApplyBatchApplyDeltaCommandAcceptedForMigratingHashSlotBeforeFinalize(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	sm, err := NewStateMachineWithHashSlots(db, 11, []uint16{4})
+	if err != nil {
+		t.Fatalf("NewStateMachineWithHashSlots() error = %v", err)
+	}
+	raw, ok := sm.(*stateMachine)
+	if !ok {
+		t.Fatalf("state machine type = %T, want *stateMachine", sm)
+	}
+	raw.migrations[5] = migrationRuntimeState{phase: migrationPhaseDelta}
+
+	bsm, ok := sm.(multiraft.BatchStateMachine)
+	if !ok {
+		t.Fatalf("state machine does not implement BatchStateMachine: %T", sm)
+	}
+
+	_, err = bsm.ApplyBatch(ctx, []multiraft.Command{
+		{
+			SlotID:   11,
+			HashSlot: 5,
+			Index:    1,
+			Term:     1,
+			Data: EncodeApplyDeltaCommand(
+				21,
+				9,
+				5,
+				EncodeUpsertUserCommand(metadb.User{UID: "u-delta-target", Token: "delta-target"}),
+			),
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyBatch() error = %v", err)
+	}
+
+	got, err := db.ForHashSlot(5).GetUser(ctx, "u-delta-target")
+	if err != nil {
+		t.Fatalf("ForHashSlot(5).GetUser() error = %v", err)
+	}
+	if got.Token != "delta-target" {
+		t.Fatalf("stored user = %#v", got)
+	}
+}
+
+func TestApplyBatchApplyDeltaCommandUsesEmbeddedOriginalCommand(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	sm, err := NewStateMachineWithHashSlots(db, 11, []uint16{5})
+	if err != nil {
+		t.Fatalf("NewStateMachineWithHashSlots() error = %v", err)
+	}
+	bsm, ok := sm.(multiraft.BatchStateMachine)
+	if !ok {
+		t.Fatalf("state machine does not implement BatchStateMachine: %T", sm)
+	}
+
+	_, err = bsm.ApplyBatch(ctx, []multiraft.Command{
+		{
+			SlotID:   11,
+			HashSlot: 5,
+			Index:    1,
+			Term:     1,
+			Data: EncodeApplyDeltaCommand(
+				21,
+				9,
+				5,
+				EncodeUpsertUserCommand(metadb.User{UID: "u-delta", Token: "delta-token"}),
+			),
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyBatch() error = %v", err)
+	}
+
+	got, err := db.ForHashSlot(5).GetUser(ctx, "u-delta")
+	if err != nil {
+		t.Fatalf("ForHashSlot(5).GetUser() error = %v", err)
+	}
+	if got.Token != "delta-token" {
+		t.Fatalf("stored user = %#v", got)
+	}
+}
+
+func TestStateMachineAcceptsApplyDeltaForMigratingHashSlotBeforeFinalize(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	sm, err := NewStateMachineWithHashSlots(db, 11, []uint16{2})
+	if err != nil {
+		t.Fatalf("NewStateMachineWithHashSlots() error = %v", err)
+	}
+	raw, ok := sm.(*stateMachine)
+	if !ok {
+		t.Fatalf("state machine type = %T, want *stateMachine", sm)
+	}
+	raw.migrations[5] = migrationRuntimeState{
+		phase: migrationPhaseDelta,
+	}
+
+	bsm, ok := sm.(multiraft.BatchStateMachine)
+	if !ok {
+		t.Fatalf("state machine does not implement BatchStateMachine: %T", sm)
+	}
+
+	_, err = bsm.ApplyBatch(ctx, []multiraft.Command{
+		{
+			SlotID:   11,
+			HashSlot: 5,
+			Index:    1,
+			Term:     1,
+			Data: EncodeApplyDeltaCommand(
+				21,
+				9,
+				5,
+				EncodeUpsertUserCommand(metadb.User{UID: "u-migrating", Token: "delta-token"}),
+			),
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyBatch() error = %v", err)
+	}
+
+	got, err := db.ForHashSlot(5).GetUser(ctx, "u-migrating")
+	if err != nil {
+		t.Fatalf("ForHashSlot(5).GetUser() error = %v", err)
+	}
+	if got.Token != "delta-token" {
+		t.Fatalf("stored user = %#v", got)
+	}
+}
+
+func TestStateMachineDeduplicatesRepeatedApplyDelta(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	sm, err := NewStateMachineWithHashSlots(db, 11, []uint16{2})
+	if err != nil {
+		t.Fatalf("NewStateMachineWithHashSlots() error = %v", err)
+	}
+	raw, ok := sm.(*stateMachine)
+	if !ok {
+		t.Fatalf("state machine type = %T, want *stateMachine", sm)
+	}
+	raw.UpdateIncomingDeltaHashSlots([]uint16{5})
+
+	cmd := multiraft.Command{
+		SlotID:   11,
+		HashSlot: 5,
+		Index:    1,
+		Term:     1,
+		Data: EncodeApplyDeltaCommand(
+			21,
+			9,
+			5,
+			EncodeUpsertUserCommand(metadb.User{UID: "u-dedup", Token: "delta-token"}),
+		),
+	}
+
+	if _, err := sm.Apply(ctx, cmd); err != nil {
+		t.Fatalf("first Apply() error = %v", err)
+	}
+	if _, err := sm.Apply(ctx, cmd); err != nil {
+		t.Fatalf("second Apply() error = %v", err)
+	}
+
+	got, err := db.ForHashSlot(5).GetUser(ctx, "u-dedup")
+	if err != nil {
+		t.Fatalf("ForHashSlot(5).GetUser() error = %v", err)
+	}
+	if got.Token != "delta-token" {
+		t.Fatalf("stored user = %#v", got)
+	}
+	if len(raw.appliedDelta) != 1 {
+		t.Fatalf("len(appliedDelta) = %d, want 1", len(raw.appliedDelta))
+	}
+}
+
+func TestStateMachineForwardsDeltaDuringMigration(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+
+	sm, err := NewStateMachineWithHashSlots(db, 11, []uint16{5})
+	if err != nil {
+		t.Fatalf("NewStateMachineWithHashSlots() error = %v", err)
+	}
+	raw, ok := sm.(*stateMachine)
+	if !ok {
+		t.Fatalf("state machine type = %T, want *stateMachine", sm)
+	}
+
+	var (
+		gotTarget multiraft.SlotID
+		gotCmd    multiraft.Command
+		calls     int
+	)
+	raw.migrations[5] = migrationRuntimeState{
+		target: 22,
+		phase:  migrationPhaseDelta,
+	}
+	raw.forwardDelta = func(_ context.Context, target multiraft.SlotID, cmd multiraft.Command) error {
+		gotTarget = target
+		gotCmd = cmd
+		calls++
+		return nil
+	}
+
+	bsm, ok := sm.(multiraft.BatchStateMachine)
+	if !ok {
+		t.Fatalf("state machine does not implement BatchStateMachine: %T", sm)
+	}
+
+	cmd := multiraft.Command{
+		SlotID:   11,
+		HashSlot: 5,
+		Index:    3,
+		Term:     1,
+		Data:     EncodeUpsertUserCommand(metadb.User{UID: "u-forward", Token: "forward-token"}),
+	}
+	if _, err := bsm.ApplyBatch(ctx, []multiraft.Command{cmd}); err != nil {
+		t.Fatalf("ApplyBatch() error = %v", err)
+	}
+
+	if calls != 1 {
+		t.Fatalf("forwardDelta calls = %d, want 1", calls)
+	}
+	if gotTarget != 22 {
+		t.Fatalf("forwardDelta target = %d, want 22", gotTarget)
+	}
+	if gotCmd.HashSlot != 5 || gotCmd.Index != 3 || gotCmd.Term != 1 || !reflect.DeepEqual(gotCmd.Data, cmd.Data) {
+		t.Fatalf("forwardDelta cmd = %#v, want %#v", gotCmd, cmd)
 	}
 }
 

@@ -21,7 +21,7 @@ func TestThreeNodeClusterReplicatesProposalEndToEnd(t *testing.T) {
 	cluster.waitForBootstrapApplied(t, slotID, 3)
 
 	leaderID := cluster.waitForLeader(t, slotID)
-	fut, err := cluster.runtime(leaderID).Propose(context.Background(), slotID, []byte("set a=1"))
+	fut, err := cluster.runtime(leaderID).Propose(context.Background(), slotID, proposalString("set a=1"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -52,7 +52,7 @@ func TestThreeNodeClusterReplicatesMultipleProposalsInOrder(t *testing.T) {
 	}
 
 	for _, command := range commands {
-		fut, err := cluster.runtime(leaderID).Propose(context.Background(), slotID, command)
+		fut, err := cluster.runtime(leaderID).Propose(context.Background(), slotID, proposalPayload(0, command))
 		if err != nil {
 			t.Fatalf("Propose(%q) error = %v", command, err)
 		}
@@ -77,7 +77,7 @@ func TestThreeNodeClusterTransfersLeadershipAndReplicatesAgain(t *testing.T) {
 	cluster.waitForBootstrapApplied(t, slotID, 3)
 
 	leaderID := cluster.waitForLeader(t, slotID)
-	warmup, err := cluster.runtime(leaderID).Propose(context.Background(), slotID, []byte("warmup"))
+	warmup, err := cluster.runtime(leaderID).Propose(context.Background(), slotID, proposalString("warmup"))
 	if err != nil {
 		t.Fatalf("Propose(warmup) error = %v", err)
 	}
@@ -92,7 +92,7 @@ func TestThreeNodeClusterTransfersLeadershipAndReplicatesAgain(t *testing.T) {
 
 	cluster.waitForSpecificLeader(t, slotID, targetLeader)
 
-	fut, err := cluster.runtime(targetLeader).Propose(context.Background(), slotID, []byte("set c=3"))
+	fut, err := cluster.runtime(targetLeader).Propose(context.Background(), slotID, proposalString("set c=3"))
 	if err != nil {
 		t.Fatalf("Propose(newLeader=%d) error = %v", targetLeader, err)
 	}

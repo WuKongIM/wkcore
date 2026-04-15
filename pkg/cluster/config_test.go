@@ -23,6 +23,54 @@ func TestConfigValidate_SlotCountZero(t *testing.T) {
 	}
 }
 
+func TestConfigValidate_RejectsHashSlotCountBelowInitialSlotCount(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.SlotCount = 0
+	cfg.InitialSlotCount = 4
+	cfg.HashSlotCount = 3
+	cfg.Slots = nil
+	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
+}
+
+func TestConfigValidate_RejectsMismatchedLegacyAndInitialSlotCount(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.SlotCount = 2
+	cfg.InitialSlotCount = 3
+	cfg.HashSlotCount = 3
+	cfg.Slots = nil
+	cfg.NewStateMachineWithHashSlots = func(slotID multiraft.SlotID, hashSlots []uint16) (multiraft.StateMachine, error) {
+		return nil, nil
+	}
+	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
+}
+
+func TestConfigValidate_RejectsMissingHashSlotAwareStateMachineFactory(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.SlotCount = 0
+	cfg.InitialSlotCount = 2
+	cfg.HashSlotCount = 2
+	cfg.Slots = nil
+	cfg.NewStateMachineWithHashSlots = nil
+	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
+	}
+}
+
+func TestConfigValidate_AllowsExplicitHashAndInitialSlotCounts(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.SlotCount = 0
+	cfg.InitialSlotCount = 2
+	cfg.HashSlotCount = 8
+	cfg.Slots = nil
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestConfigValidate_AllowsLegacySlotsBelowSlotCount(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.SlotCount = 5
@@ -158,6 +206,7 @@ func TestConfigValidate_NewStorageNil(t *testing.T) {
 func TestConfigValidate_NewStateMachineNil(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.NewStateMachine = nil
+	cfg.NewStateMachineWithHashSlots = nil
 	if err := cfg.validate(); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("expected ErrInvalidConfig, got: %v", err)
 	}
@@ -252,6 +301,9 @@ func validTestConfig() Config {
 			return nil, nil
 		},
 		NewStateMachine: func(slotID multiraft.SlotID) (multiraft.StateMachine, error) {
+			return nil, nil
+		},
+		NewStateMachineWithHashSlots: func(slotID multiraft.SlotID, hashSlots []uint16) (multiraft.StateMachine, error) {
 			return nil, nil
 		},
 		Nodes: []NodeConfig{

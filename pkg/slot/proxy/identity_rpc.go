@@ -39,9 +39,9 @@ func (r identityRPCResponse) rpcLeaderID() uint64 {
 	return r.LeaderID
 }
 
-func (s *Store) getUserAuthoritative(ctx context.Context, slotID multiraft.SlotID, uid string) (metadb.User, error) {
+func (s *Store) getUserAuthoritative(ctx context.Context, slotID multiraft.SlotID, hashSlot uint16, uid string) (metadb.User, error) {
 	if s.shouldServeSlotLocally(slotID) {
-		return s.db.ForSlot(uint64(slotID)).GetUser(ctx, uid)
+		return s.db.ForHashSlot(hashSlot).GetUser(ctx, uid)
 	}
 
 	resp, err := s.callIdentityRPC(ctx, slotID, identityRPCRequest{
@@ -58,9 +58,9 @@ func (s *Store) getUserAuthoritative(ctx context.Context, slotID multiraft.SlotI
 	return *resp.User, nil
 }
 
-func (s *Store) getDeviceAuthoritative(ctx context.Context, slotID multiraft.SlotID, uid string, deviceFlag int64) (metadb.Device, error) {
+func (s *Store) getDeviceAuthoritative(ctx context.Context, slotID multiraft.SlotID, hashSlot uint16, uid string, deviceFlag int64) (metadb.Device, error) {
 	if s.shouldServeSlotLocally(slotID) {
-		return s.db.ForSlot(uint64(slotID)).GetDevice(ctx, uid, deviceFlag)
+		return s.db.ForHashSlot(hashSlot).GetDevice(ctx, uid, deviceFlag)
 	}
 
 	resp, err := s.callIdentityRPC(ctx, slotID, identityRPCRequest{
@@ -102,9 +102,10 @@ func (s *Store) handleIdentityRPC(ctx context.Context, body []byte) ([]byte, err
 		return statusBody, err
 	}
 
+	hashSlot := hashSlotForKey(s.cluster, req.UID)
 	switch req.Op {
 	case identityRPCGetUser:
-		user, err := s.db.ForSlot(uint64(slotID)).GetUser(ctx, req.UID)
+		user, err := s.db.ForHashSlot(hashSlot).GetUser(ctx, req.UID)
 		if errors.Is(err, metadb.ErrNotFound) {
 			return encodeIdentityRPCResponse(identityRPCResponse{Status: rpcStatusNotFound})
 		}
@@ -116,7 +117,7 @@ func (s *Store) handleIdentityRPC(ctx context.Context, body []byte) ([]byte, err
 			User:   &user,
 		})
 	case identityRPCGetDevice:
-		device, err := s.db.ForSlot(uint64(slotID)).GetDevice(ctx, req.UID, req.DeviceFlag)
+		device, err := s.db.ForHashSlot(hashSlot).GetDevice(ctx, req.UID, req.DeviceFlag)
 		if errors.Is(err, metadb.ErrNotFound) {
 			return encodeIdentityRPCResponse(identityRPCResponse{Status: rpcStatusNotFound})
 		}
