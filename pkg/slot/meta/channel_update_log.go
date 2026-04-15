@@ -127,9 +127,9 @@ func validateChannelUpdateLog(entry ChannelUpdateLog) error {
 	return nil
 }
 
-func encodeChannelUpdateLogPrimaryKey(slot uint64, channelID string, channelType int64, familyID uint16) []byte {
+func encodeChannelUpdateLogPrimaryKey(hashSlot uint16, channelID string, channelType int64, familyID uint16) []byte {
 	key := make([]byte, 0, 48)
-	key = encodeStatePrefix(slot, ChannelUpdateLogTable.ID)
+	key = encodeStatePrefix(hashSlot, ChannelUpdateLogTable.ID)
 	key = appendKeyInt64Ordered(key, channelType)
 	key = appendKeyString(key, channelID)
 	key = binary.AppendUvarint(key, uint64(familyID))

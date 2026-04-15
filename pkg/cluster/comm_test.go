@@ -33,6 +33,7 @@ type testNode struct {
 	nodes              []raftcluster.NodeConfig
 	slots              []raftcluster.SlotConfig
 	slotCount          int
+	hashSlotCount      uint16
 	slotReplicaN       int
 	controllerReplicaN int
 	withController     bool
@@ -92,6 +93,22 @@ func newStartedTestNode(
 	controllerReplicaN int,
 	withController bool,
 ) *testNode {
+	return newStartedTestNodeWithHashSlots(t, dir, nodeID, listenAddr, nodes, slots, slotCount, 0, slotReplicaN, controllerReplicaN, withController)
+}
+
+func newStartedTestNodeWithHashSlots(
+	t testing.TB,
+	dir string,
+	nodeID multiraft.NodeID,
+	listenAddr string,
+	nodes []raftcluster.NodeConfig,
+	slots []raftcluster.SlotConfig,
+	slotCount int,
+	hashSlotCount uint16,
+	slotReplicaN int,
+	controllerReplicaN int,
+	withController bool,
+) *testNode {
 	t.Helper()
 
 	db, err := metadb.Open(filepath.Join(dir, "data"))
@@ -115,22 +132,24 @@ func newStartedTestNode(
 		NodeID:             nodeID,
 		ListenAddr:         listenAddr,
 		SlotCount:          uint32(slotCount),
+		HashSlotCount:      hashSlotCount,
 		SlotReplicaN:       slotReplicaN,
 		ControllerReplicaN: controllerReplicaN,
 		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
 			return raftDB.ForSlot(uint64(slotID)), nil
 		},
-		NewStateMachine:    metafsm.NewStateMachineFactory(db),
-		Nodes:              append([]raftcluster.NodeConfig(nil), nodes...),
-		Slots:              append([]raftcluster.SlotConfig(nil), slots...),
-		ControllerMetaPath: controllerMetaPath,
-		ControllerRaftPath: controllerRaftPath,
-		TickInterval:       testClusterTickInterval,
-		ElectionTick:       testClusterElectionTick,
-		HeartbeatTick:      testClusterHeartbeatTick,
-		DialTimeout:        testClusterDialTimeout,
-		ForwardTimeout:     testClusterForwardTimeout,
-		PoolSize:           testClusterPoolSize,
+		NewStateMachine:              metafsm.NewStateMachineFactory(db),
+		NewStateMachineWithHashSlots: metafsm.NewHashSlotStateMachineFactory(db),
+		Nodes:                        append([]raftcluster.NodeConfig(nil), nodes...),
+		Slots:                        append([]raftcluster.SlotConfig(nil), slots...),
+		ControllerMetaPath:           controllerMetaPath,
+		ControllerRaftPath:           controllerRaftPath,
+		TickInterval:                 testClusterTickInterval,
+		ElectionTick:                 testClusterElectionTick,
+		HeartbeatTick:                testClusterHeartbeatTick,
+		DialTimeout:                  testClusterDialTimeout,
+		ForwardTimeout:               testClusterForwardTimeout,
+		PoolSize:                     testClusterPoolSize,
 	}
 
 	c, err := raftcluster.NewCluster(cfg)
@@ -156,6 +175,7 @@ func newStartedTestNode(
 		nodes:              append([]raftcluster.NodeConfig(nil), nodes...),
 		slots:              append([]raftcluster.SlotConfig(nil), slots...),
 		slotCount:          slotCount,
+		hashSlotCount:      hashSlotCount,
 		slotReplicaN:       slotReplicaN,
 		controllerReplicaN: controllerReplicaN,
 		withController:     withController,
@@ -253,6 +273,50 @@ func startThreeNodesWithController(t testing.TB, slotCount int, legacyReplicaN i
 	return startThreeNodesWithControllerWithSettle(t, slotCount, legacyReplicaN, true)
 }
 
+func startThreeNodesWithControllerAndHashSlots(t testing.TB, slotCount int, hashSlotCount uint16, replicaN int) []*testNode {
+	t.Helper()
+
+	listeners := make([]net.Listener, 3)
+	for i := range 3 {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen %d: %v", i, err)
+		}
+		listeners[i] = ln
+	}
+
+	nodes := make([]raftcluster.NodeConfig, 3)
+	for i := range 3 {
+		nodes[i] = raftcluster.NodeConfig{
+			NodeID: multiraft.NodeID(i + 1),
+			Addr:   listeners[i].Addr().String(),
+		}
+		listeners[i].Close()
+	}
+
+	testNodes := make([]*testNode, 3)
+	root := t.TempDir()
+	for i := range 3 {
+		dir := filepath.Join(root, fmt.Sprintf("n%d", i+1))
+		testNodes[i] = newStartedTestNodeWithHashSlots(
+			t,
+			dir,
+			multiraft.NodeID(i+1),
+			nodes[i].Addr,
+			nodes,
+			nil,
+			slotCount,
+			hashSlotCount,
+			replicaN,
+			3,
+			true,
+		)
+	}
+	t.Cleanup(func() { stopNodes(testNodes) })
+	waitForManagedSlotsSettled(t, testNodes, slotCount)
+	return testNodes
+}
+
 func startThreeNodesWithControllerWithSettle(t testing.TB, slotCount int, legacyReplicaN int, settle bool) []*testNode {
 	t.Helper()
 
@@ -339,6 +403,23 @@ func startFourNodesWithController(t testing.TB, slotCount int, replicaN int) []*
 	t.Cleanup(func() { stopNodes(testNodes) })
 	waitForManagedSlotsSettled(t, testNodes, slotCount)
 	return testNodes
+}
+
+func findUIDForSlotWithDifferentHashSlot(t testing.TB, cluster *raftcluster.Cluster, slot uint64, hashSlot uint16, prefix string) string {
+	t.Helper()
+
+	for i := 0; i < 10_000; i++ {
+		uid := fmt.Sprintf("%s-%d", prefix, i)
+		if uint64(cluster.SlotForKey(uid)) != slot {
+			continue
+		}
+		if cluster.HashSlotForKey(uid) == hashSlot {
+			continue
+		}
+		return uid
+	}
+	t.Fatalf("no uid found for physical slot %d with hash slot != %d", slot, hashSlot)
+	return ""
 }
 
 func startThreeOfFourNodesWithController(t testing.TB, slotCount int, replicaN int) []*testNode {
@@ -548,7 +629,7 @@ func restartNode(t testing.TB, nodes []*testNode, idx int) *testNode {
 
 	old.stop()
 
-	restarted := newStartedTestNode(
+	restarted := newStartedTestNodeWithHashSlots(
 		t,
 		dir,
 		nodeID,
@@ -556,6 +637,7 @@ func restartNode(t testing.TB, nodes []*testNode, idx int) *testNode {
 		clusterNodes,
 		slots,
 		slotCount,
+		old.hashSlotCount,
 		old.slotReplicaN,
 		old.controllerReplicaN,
 		old.withController,

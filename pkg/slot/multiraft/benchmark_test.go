@@ -160,7 +160,7 @@ func BenchmarkThreeNodeMultiSlotProposalRoundTrip(b *testing.B) {
 				slotID := slotIDs[slotIndex]
 				leaderID := leaders[slotID]
 
-				fut, err := cluster.runtime(leaderID).Propose(context.Background(), slotID, payloads[slotIndex])
+				fut, err := cluster.runtime(leaderID).Propose(context.Background(), slotID, proposalPayload(0, payloads[slotIndex]))
 				if err != nil {
 					b.Fatalf("Propose(slot=%d leader=%d) error = %v", slotID, leaderID, err)
 				}
@@ -311,7 +311,7 @@ func benchmarkProposeRoundTripNotified(harness *benchmarkClusterHarness, slotInd
 	slotID := harness.slotIDs[slotIndex]
 	leaderID := harness.leaders[slotIndex]
 
-	fut, err := harness.cluster.runtime(leaderID).Propose(context.Background(), slotID, harness.payloads[slotIndex])
+	fut, err := harness.cluster.runtime(leaderID).Propose(context.Background(), slotID, proposalPayload(0, harness.payloads[slotIndex]))
 	if err != nil {
 		return fmt.Errorf("Propose(slot=%d leader=%d): %w", slotID, leaderID, err)
 	}

@@ -117,7 +117,7 @@ const (
 // Each command type implements this interface, carrying its own typed
 // payload and knowing how to apply itself to a WriteBatch.
 type command interface {
-	apply(wb *metadb.WriteBatch, slot uint64) error
+	apply(wb *metadb.WriteBatch, hashSlot uint16) error
 }
 
 // commandDecoder parses TLV fields after the header into a typed command.
@@ -141,6 +141,8 @@ var commandDecoders = map[uint8]commandDecoder{
 	cmdTypeClearUserConversationActiveAt: decodeClearUserConversationActiveAt,
 	cmdTypeUpsertChannelUpdateLogs:       decodeUpsertChannelUpdateLogs,
 	cmdTypeDeleteChannelUpdateLogs:       decodeDeleteChannelUpdateLogs,
+	cmdTypeApplyDelta:                    decodeApplyDelta,
+	cmdTypeEnterFence:                    decodeEnterFence,
 }
 
 // --- UpsertUser ---
@@ -149,8 +151,8 @@ type upsertUserCmd struct {
 	user metadb.User
 }
 
-func (c *upsertUserCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
-	return wb.UpsertUser(slot, c.user)
+func (c *upsertUserCmd) apply(wb *metadb.WriteBatch, hashSlot uint16) error {
+	return wb.UpsertUser(hashSlot, c.user)
 }
 
 // --- CreateUser ---
@@ -159,8 +161,8 @@ type createUserCmd struct {
 	user metadb.User
 }
 
-func (c *createUserCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
-	return wb.CreateUser(slot, c.user)
+func (c *createUserCmd) apply(wb *metadb.WriteBatch, hashSlot uint16) error {
+	return wb.CreateUser(hashSlot, c.user)
 }
 
 // --- UpsertDevice ---
@@ -169,8 +171,8 @@ type upsertDeviceCmd struct {
 	device metadb.Device
 }
 
-func (c *upsertDeviceCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
-	return wb.UpsertDevice(slot, c.device)
+func (c *upsertDeviceCmd) apply(wb *metadb.WriteBatch, hashSlot uint16) error {
+	return wb.UpsertDevice(hashSlot, c.device)
 }
 
 // --- UpsertChannel ---
@@ -179,8 +181,8 @@ type upsertChannelCmd struct {
 	channel metadb.Channel
 }
 
-func (c *upsertChannelCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
-	return wb.UpsertChannel(slot, c.channel)
+func (c *upsertChannelCmd) apply(wb *metadb.WriteBatch, hashSlot uint16) error {
+	return wb.UpsertChannel(hashSlot, c.channel)
 }
 
 // --- DeleteChannel ---
@@ -190,8 +192,8 @@ type deleteChannelCmd struct {
 	channelType int64
 }
 
-func (c *deleteChannelCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
-	return wb.DeleteChannel(slot, c.channelID, c.channelType)
+func (c *deleteChannelCmd) apply(wb *metadb.WriteBatch, hashSlot uint16) error {
+	return wb.DeleteChannel(hashSlot, c.channelID, c.channelType)
 }
 
 // --- UpsertChannelRuntimeMeta ---
@@ -200,8 +202,8 @@ type upsertChannelRuntimeMetaCmd struct {
 	meta metadb.ChannelRuntimeMeta
 }
 
-func (c *upsertChannelRuntimeMetaCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
-	return wb.UpsertChannelRuntimeMeta(slot, c.meta)
+func (c *upsertChannelRuntimeMetaCmd) apply(wb *metadb.WriteBatch, hashSlot uint16) error {
+	return wb.UpsertChannelRuntimeMeta(hashSlot, c.meta)
 }
 
 // --- DeleteChannelRuntimeMeta ---
@@ -211,8 +213,8 @@ type deleteChannelRuntimeMetaCmd struct {
 	channelType int64
 }
 
-func (c *deleteChannelRuntimeMetaCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
-	return wb.DeleteChannelRuntimeMeta(slot, c.channelID, c.channelType)
+func (c *deleteChannelRuntimeMetaCmd) apply(wb *metadb.WriteBatch, hashSlot uint16) error {
+	return wb.DeleteChannelRuntimeMeta(hashSlot, c.channelID, c.channelType)
 }
 
 // --- AddSubscribers ---
@@ -223,8 +225,8 @@ type addSubscribersCmd struct {
 	uids        []string
 }
 
-func (c *addSubscribersCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
-	return wb.AddSubscribers(slot, c.channelID, c.channelType, c.uids)
+func (c *addSubscribersCmd) apply(wb *metadb.WriteBatch, hashSlot uint16) error {
+	return wb.AddSubscribers(hashSlot, c.channelID, c.channelType, c.uids)
 }
 
 // --- RemoveSubscribers ---
@@ -235,8 +237,8 @@ type removeSubscribersCmd struct {
 	uids        []string
 }
 
-func (c *removeSubscribersCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
-	return wb.RemoveSubscribers(slot, c.channelID, c.channelType, c.uids)
+func (c *removeSubscribersCmd) apply(wb *metadb.WriteBatch, hashSlot uint16) error {
+	return wb.RemoveSubscribers(hashSlot, c.channelID, c.channelType, c.uids)
 }
 
 // --- UpsertUserConversationStates ---
@@ -245,9 +247,9 @@ type upsertUserConversationStatesCmd struct {
 	states []metadb.UserConversationState
 }
 
-func (c *upsertUserConversationStatesCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
+func (c *upsertUserConversationStatesCmd) apply(wb *metadb.WriteBatch, hashSlot uint16) error {
 	for _, state := range c.states {
-		if err := wb.UpsertUserConversationState(slot, state); err != nil {
+		if err := wb.UpsertUserConversationState(hashSlot, state); err != nil {
 			return err
 		}
 	}
@@ -260,8 +262,8 @@ type touchUserConversationActiveAtCmd struct {
 	patches []metadb.UserConversationActivePatch
 }
 
-func (c *touchUserConversationActiveAtCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
-	return wb.TouchUserConversationActiveAt(slot, c.patches)
+func (c *touchUserConversationActiveAtCmd) apply(wb *metadb.WriteBatch, hashSlot uint16) error {
+	return wb.TouchUserConversationActiveAt(hashSlot, c.patches)
 }
 
 // --- ClearUserConversationActiveAt ---
@@ -271,8 +273,8 @@ type clearUserConversationActiveAtCmd struct {
 	keys []metadb.ConversationKey
 }
 
-func (c *clearUserConversationActiveAtCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
-	return wb.ClearUserConversationActiveAt(slot, c.uid, c.keys)
+func (c *clearUserConversationActiveAtCmd) apply(wb *metadb.WriteBatch, hashSlot uint16) error {
+	return wb.ClearUserConversationActiveAt(hashSlot, c.uid, c.keys)
 }
 
 // --- UpsertChannelUpdateLogs ---
@@ -281,9 +283,9 @@ type upsertChannelUpdateLogsCmd struct {
 	entries []metadb.ChannelUpdateLog
 }
 
-func (c *upsertChannelUpdateLogsCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
+func (c *upsertChannelUpdateLogsCmd) apply(wb *metadb.WriteBatch, hashSlot uint16) error {
 	for _, entry := range c.entries {
-		if err := wb.UpsertChannelUpdateLog(slot, entry); err != nil {
+		if err := wb.UpsertChannelUpdateLog(hashSlot, entry); err != nil {
 			return err
 		}
 	}
@@ -296,8 +298,8 @@ type deleteChannelUpdateLogsCmd struct {
 	keys []metadb.ConversationKey
 }
 
-func (c *deleteChannelUpdateLogsCmd) apply(wb *metadb.WriteBatch, slot uint64) error {
-	return wb.DeleteChannelUpdateLogs(slot, c.keys)
+func (c *deleteChannelUpdateLogsCmd) apply(wb *metadb.WriteBatch, hashSlot uint16) error {
+	return wb.DeleteChannelUpdateLogs(hashSlot, c.keys)
 }
 
 // EncodeUpsertUserCommand encodes a User into a binary command.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/crc32"
 
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/hashslot"
 	"github.com/cockroachdb/pebble/v2"
 )
 
@@ -75,6 +76,7 @@ func (s *Store) ImportSnapshot(ctx context.Context, data []byte) error {
 	for _, prefix := range []byte{
 		recordPrefixNode,
 		recordPrefixMembership,
+		recordPrefixHashSlot,
 		recordPrefixAssignment,
 		recordPrefixRuntimeView,
 		recordPrefixTask,
@@ -106,6 +108,7 @@ func (s *Store) collectSnapshotEntriesLocked(ctx context.Context) ([]snapshotEnt
 
 	for _, prefix := range []byte{
 		recordPrefixMembership,
+		recordPrefixHashSlot,
 		recordPrefixNode,
 		recordPrefixAssignment,
 		recordPrefixRuntimeView,
@@ -263,6 +266,9 @@ func validateSnapshotValue(key, value []byte) error {
 		return err
 	case recordPrefixAssignment:
 		_, err := decodeGroupAssignment(key, value)
+		return err
+	case recordPrefixHashSlot:
+		_, err := hashslot.DecodeHashSlotTable(value)
 		return err
 	case recordPrefixRuntimeView:
 		_, err := decodeGroupRuntimeView(key, value)

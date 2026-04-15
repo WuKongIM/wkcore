@@ -1092,7 +1092,8 @@ func newStandaloneAgentTestCluster(t *testing.T) *standaloneAgentTestCluster {
 		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
 			return raftDB.ForSlot(uint64(slotID)), nil
 		},
-		NewStateMachine: metafsm.NewStateMachineFactory(metaDB),
+		NewStateMachine:              metafsm.NewStateMachineFactory(metaDB),
+		NewStateMachineWithHashSlots: metafsm.NewHashSlotStateMachineFactory(metaDB),
 	})
 	if err != nil {
 		_ = raftDB.Close()

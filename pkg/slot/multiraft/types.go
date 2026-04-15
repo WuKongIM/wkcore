@@ -106,10 +106,11 @@ type BatchStateMachine interface {
 }
 
 type Command struct {
-	SlotID SlotID
-	Index  uint64
-	Term   uint64
-	Data   []byte
+	SlotID   SlotID
+	HashSlot uint16
+	Index    uint64
+	Term     uint64
+	Data     []byte
 }
 
 type Snapshot struct {

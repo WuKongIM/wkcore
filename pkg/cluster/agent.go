@@ -80,6 +80,9 @@ func (a *slotAgent) SyncAssignments(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := a.cluster.syncRouterHashSlotTableFromStore(ctx); err != nil {
+		return err
+	}
 	if a.cache != nil {
 		a.cache.SetAssignments(assignments)
 	}

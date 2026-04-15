@@ -2,6 +2,7 @@ package fsm
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"math/rand"
 	"os"
@@ -41,6 +42,13 @@ type fsmStressStats struct {
 	Snapshots      uint64
 	Restores       uint64
 	Errors         uint64
+}
+
+func envelopeProposal(data []byte) []byte {
+	payload := make([]byte, 2+len(data))
+	binary.BigEndian.PutUint16(payload[:2], 0)
+	copy(payload[2:], data)
+	return payload
 }
 
 func (s *fsmStressStats) totalOps() uint64 {
@@ -608,7 +616,7 @@ func TestFSMStressRaftIntegrationApply(t *testing.T) {
 					})
 				}
 
-				fut, err := rt.Propose(ctx, slotID, data)
+				fut, err := rt.Propose(ctx, slotID, envelopeProposal(data))
 				if err != nil {
 					if ctx.Err() != nil {
 						return
@@ -715,7 +723,7 @@ func TestFSMStressPebbleBackedRaftIntegration(t *testing.T) {
 					DeviceLevel: int64(rng.Intn(16)),
 				}
 
-				fut, err := rt.Propose(ctx, slotID, EncodeUpsertUserCommand(user))
+				fut, err := rt.Propose(ctx, slotID, envelopeProposal(EncodeUpsertUserCommand(user)))
 				if err != nil {
 					if ctx.Err() != nil {
 						return

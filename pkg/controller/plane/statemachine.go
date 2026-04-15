@@ -7,7 +7,9 @@ import (
 	"math"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/hashslot"
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
 
 type StateMachineConfig struct {
@@ -71,6 +73,36 @@ func (sm *StateMachine) Apply(ctx context.Context, cmd Command) error {
 		return sm.applyTaskResult(ctx, *cmd.Advance)
 	case CommandKindAssignmentTaskUpdate:
 		return sm.applyAssignmentTaskUpdate(ctx, cmd.Assignment, cmd.Task)
+	case CommandKindStartMigration:
+		if cmd.Migration == nil {
+			return controllermeta.ErrInvalidArgument
+		}
+		return sm.applyStartMigration(ctx, *cmd.Migration)
+	case CommandKindAdvanceMigration:
+		if cmd.Migration == nil {
+			return controllermeta.ErrInvalidArgument
+		}
+		return sm.applyAdvanceMigration(ctx, *cmd.Migration)
+	case CommandKindFinalizeMigration:
+		if cmd.Migration == nil {
+			return controllermeta.ErrInvalidArgument
+		}
+		return sm.applyFinalizeMigration(ctx, *cmd.Migration)
+	case CommandKindAbortMigration:
+		if cmd.Migration == nil {
+			return controllermeta.ErrInvalidArgument
+		}
+		return sm.applyAbortMigration(ctx, *cmd.Migration)
+	case CommandKindAddSlot:
+		if cmd.AddSlot == nil {
+			return controllermeta.ErrInvalidArgument
+		}
+		return sm.applyAddSlot(ctx, *cmd.AddSlot)
+	case CommandKindRemoveSlot:
+		if cmd.RemoveSlot == nil {
+			return controllermeta.ErrInvalidArgument
+		}
+		return sm.applyRemoveSlot(ctx, *cmd.RemoveSlot)
 	default:
 		return controllermeta.ErrInvalidArgument
 	}
@@ -257,4 +289,120 @@ func (sm *StateMachine) retryDelay(attempt uint32) time.Duration {
 
 func placeholderNodeAddr(nodeID uint64) string {
 	return fmt.Sprintf("operator://node-%d", nodeID)
+}
+
+func (sm *StateMachine) applyStartMigration(ctx context.Context, req MigrationRequest) error {
+	table, err := sm.store.LoadHashSlotTable(ctx)
+	if err != nil {
+		return err
+	}
+	table.StartMigration(req.HashSlot, multiraft.SlotID(req.Source), multiraft.SlotID(req.Target))
+	return sm.store.SaveHashSlotTable(ctx, table)
+}
+
+func (sm *StateMachine) applyAdvanceMigration(ctx context.Context, req MigrationRequest) error {
+	table, err := sm.store.LoadHashSlotTable(ctx)
+	if err != nil {
+		return err
+	}
+	table.AdvanceMigration(req.HashSlot, hashslot.MigrationPhase(req.Phase))
+	return sm.store.SaveHashSlotTable(ctx, table)
+}
+
+func (sm *StateMachine) applyFinalizeMigration(ctx context.Context, req MigrationRequest) error {
+	table, err := sm.store.LoadHashSlotTable(ctx)
+	if err != nil {
+		return err
+	}
+	table.FinalizeMigration(req.HashSlot)
+	sourceSlot := multiraft.SlotID(req.Source)
+	if drainedSlotAssignmentRemovable(table, sourceSlot) {
+		return sm.store.DeleteAssignmentTaskAndSaveHashSlotTable(ctx, uint32(sourceSlot), table)
+	}
+	return sm.store.SaveHashSlotTable(ctx, table)
+}
+
+func (sm *StateMachine) applyAbortMigration(ctx context.Context, req MigrationRequest) error {
+	table, err := sm.store.LoadHashSlotTable(ctx)
+	if err != nil {
+		return err
+	}
+	table.AbortMigration(req.HashSlot)
+	return sm.store.SaveHashSlotTable(ctx, table)
+}
+
+func (sm *StateMachine) applyAddSlot(ctx context.Context, req AddSlotRequest) error {
+	if req.NewSlotID == 0 {
+		return controllermeta.ErrInvalidArgument
+	}
+
+	table, err := sm.store.LoadHashSlotTable(ctx)
+	if err != nil {
+		return err
+	}
+
+	plan := hashslot.ComputeAddSlotPlan(table, multiraft.SlotID(req.NewSlotID))
+	for _, migration := range plan {
+		table.StartMigration(migration.HashSlot, migration.From, migration.To)
+	}
+
+	assignment := controllermeta.SlotAssignment{
+		SlotID:       uint32(req.NewSlotID),
+		DesiredPeers: append([]uint64(nil), req.Peers...),
+		ConfigEpoch:  1,
+	}
+	task := controllermeta.ReconcileTask{
+		SlotID:     uint32(req.NewSlotID),
+		Kind:       controllermeta.TaskKindBootstrap,
+		Step:       controllermeta.TaskStepAddLearner,
+		TargetNode: firstBootstrapTarget(req.Peers),
+		Status:     controllermeta.TaskStatusPending,
+	}
+	return sm.store.UpsertAssignmentTaskAndSaveHashSlotTable(ctx, assignment, task, table)
+}
+
+func (sm *StateMachine) applyRemoveSlot(ctx context.Context, req RemoveSlotRequest) error {
+	if req.SlotID == 0 {
+		return controllermeta.ErrInvalidArgument
+	}
+
+	table, err := sm.store.LoadHashSlotTable(ctx)
+	if err != nil {
+		return err
+	}
+
+	plan := hashslot.ComputeRemoveSlotPlan(table, multiraft.SlotID(req.SlotID))
+	for _, migration := range plan {
+		table.StartMigration(migration.HashSlot, migration.From, migration.To)
+	}
+
+	return sm.store.SaveHashSlotTable(ctx, table)
+}
+
+func firstBootstrapTarget(peers []uint64) uint64 {
+	var target uint64
+	for _, peer := range peers {
+		if peer == 0 {
+			continue
+		}
+		if target == 0 || peer < target {
+			target = peer
+		}
+	}
+	return target
+}
+
+func drainedSlotAssignmentRemovable(table *hashslot.HashSlotTable, slotID multiraft.SlotID) bool {
+	if table == nil || slotID == 0 {
+		return false
+	}
+	if len(table.HashSlotsOf(slotID)) != 0 {
+		return false
+	}
+	for _, migration := range table.ActiveMigrations() {
+		if migration.Source == slotID || migration.Target == slotID {
+			return false
+		}
+	}
+	return true
 }

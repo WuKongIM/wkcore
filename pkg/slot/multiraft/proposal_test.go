@@ -42,7 +42,7 @@ func TestProposeWaitReturnsAfterLocalApply(t *testing.T) {
 	rt := newStartedRuntime(t)
 	slotID := openSingleNodeLeader(t, rt, 10)
 
-	fut, err := rt.Propose(context.Background(), slotID, []byte("set a=1"))
+	fut, err := rt.Propose(context.Background(), slotID, proposalString("set a=1"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -60,7 +60,7 @@ func TestReadyPipelinePersistsBeforeApply(t *testing.T) {
 	rt := newStartedRuntime(t)
 	slotID := openSingleNodeLeader(t, rt, 11)
 
-	_, err := rt.Propose(context.Background(), slotID, []byte("cmd"))
+	_, err := rt.Propose(context.Background(), slotID, proposalString("cmd"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -71,6 +71,39 @@ func TestReadyPipelinePersistsBeforeApply(t *testing.T) {
 		defer store.mu.Unlock()
 		return store.saveCount > 0 && store.lastApplied >= store.lastSavedIndex
 	})
+}
+
+func TestProposeDeliversHashSlotEnvelopeToStateMachine(t *testing.T) {
+	rt := newStartedRuntime(t)
+	slotID := openSingleNodeLeader(t, rt, 111)
+
+	data := []byte("set hash-slot")
+	payload := proposalPayload(23, data)
+
+	fut, err := rt.Propose(context.Background(), slotID, payload)
+	if err != nil {
+		t.Fatalf("Propose() error = %v", err)
+	}
+	if _, err := fut.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+
+	fsm := fakeStateMachineFor(rt, slotID)
+	if fsm == nil {
+		t.Fatal("fakeStateMachineFor() = nil")
+	}
+
+	fsm.mu.Lock()
+	defer fsm.mu.Unlock()
+	if len(fsm.commands) != 1 {
+		t.Fatalf("len(commands) = %d, want 1", len(fsm.commands))
+	}
+	if got := fsm.commands[0].HashSlot; got != 23 {
+		t.Fatalf("Command.HashSlot = %d, want 23", got)
+	}
+	if got := string(fsm.commands[0].Data); got != string(data) {
+		t.Fatalf("Command.Data = %q, want %q", got, data)
+	}
 }
 
 func TestProposeRejectsFollower(t *testing.T) {
@@ -86,7 +119,7 @@ func TestProposeRejectsFollower(t *testing.T) {
 	leaderID := cluster.waitForLeader(t, slotID)
 	followerID := cluster.pickFollower(leaderID)
 
-	fut, err := cluster.runtime(followerID).Propose(context.Background(), slotID, []byte("set follower=1"))
+	fut, err := cluster.runtime(followerID).Propose(context.Background(), slotID, proposalString("set follower=1"))
 	if !errors.Is(err, ErrNotLeader) {
 		t.Fatalf("expected ErrNotLeader, got future=%v err=%v", fut, err)
 	}
@@ -136,7 +169,7 @@ func TestProposeRejectsStaleLeaderAfterHigherTermMessageQueued(t *testing.T) {
 		t.Fatalf("enqueueRequest() error = %v", err)
 	}
 
-	fut, err := rt.Propose(context.Background(), slotID, []byte("stale"))
+	fut, err := rt.Propose(context.Background(), slotID, proposalString("stale"))
 	if !errors.Is(err, ErrNotLeader) {
 		t.Fatalf("expected ErrNotLeader, got future=%v err=%v", fut, err)
 	}
@@ -196,7 +229,7 @@ func TestFatalSlotRejectsFutureOperations(t *testing.T) {
 		return err == nil && st.Role == RoleLeader
 	})
 
-	fut, err := rt.Propose(context.Background(), slotID, []byte("boom"))
+	fut, err := rt.Propose(context.Background(), slotID, proposalString("boom"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -214,7 +247,7 @@ func TestFatalSlotRejectsFutureOperations(t *testing.T) {
 		t.Fatalf("Step() error = %v, want %v", err, fatalErr)
 	}
 
-	if fut, err := rt.Propose(context.Background(), slotID, []byte("again")); !errors.Is(err, fatalErr) {
+	if fut, err := rt.Propose(context.Background(), slotID, proposalString("again")); !errors.Is(err, fatalErr) {
 		t.Fatalf("Propose() after fatal = future=%v err=%v, want %v", fut, err, fatalErr)
 	}
 
@@ -238,7 +271,7 @@ func TestProposeCorrelatesFutureByCommittedIndex(t *testing.T) {
 	rt := newStartedRuntime(t)
 	slotID := openSingleNodeLeader(t, rt, 15)
 
-	fut, err := rt.Propose(context.Background(), slotID, []byte("set idx=1"))
+	fut, err := rt.Propose(context.Background(), slotID, proposalString("set idx=1"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -291,13 +324,13 @@ func TestRemoteCommitDoesNotResolveLocalFuture(t *testing.T) {
 	oldLeader := cluster.waitForLeader(t, slotID)
 	cluster.partitionNode(oldLeader)
 
-	stale, err := cluster.runtime(oldLeader).Propose(context.Background(), slotID, []byte("stale"))
+	stale, err := cluster.runtime(oldLeader).Propose(context.Background(), slotID, proposalString("stale"))
 	if err != nil {
 		t.Fatalf("Propose(stale) error = %v", err)
 	}
 
 	newLeader := cluster.waitForLeaderAmong(t, slotID, cluster.otherNodes(oldLeader))
-	fresh, err := cluster.runtime(newLeader).Propose(context.Background(), slotID, []byte("fresh"))
+	fresh, err := cluster.runtime(newLeader).Propose(context.Background(), slotID, proposalString("fresh"))
 	if err != nil {
 		t.Fatalf("Propose(fresh) error = %v", err)
 	}
@@ -334,13 +367,13 @@ func TestRemoteCommitDoesNotApplyStaleCommandAfterHeal(t *testing.T) {
 	oldLeader := cluster.waitForLeader(t, slotID)
 	cluster.partitionNode(oldLeader)
 
-	stale, err := cluster.runtime(oldLeader).Propose(context.Background(), slotID, []byte("stale"))
+	stale, err := cluster.runtime(oldLeader).Propose(context.Background(), slotID, proposalString("stale"))
 	if err != nil {
 		t.Fatalf("Propose(stale) error = %v", err)
 	}
 
 	newLeader := cluster.waitForLeaderAmong(t, slotID, cluster.otherNodes(oldLeader))
-	fresh, err := cluster.runtime(newLeader).Propose(context.Background(), slotID, []byte("fresh"))
+	fresh, err := cluster.runtime(newLeader).Propose(context.Background(), slotID, proposalString("fresh"))
 	if err != nil {
 		t.Fatalf("Propose(fresh) error = %v", err)
 	}
@@ -388,7 +421,7 @@ func TestReadyPersistenceFailureDoesNotAdvance(t *testing.T) {
 	store.saveErr = saveErr
 	store.mu.Unlock()
 
-	fut, err := rt.Propose(context.Background(), slotID, []byte("persist-fail"))
+	fut, err := rt.Propose(context.Background(), slotID, proposalString("persist-fail"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -443,7 +476,7 @@ func TestProposeWaitBlocksUntilReadyBatchFullyCompletes(t *testing.T) {
 	store.internalFakeStorage.mu.Unlock()
 	store.armAfter(baselineApplied + 1)
 
-	fut, err := rt.Propose(context.Background(), slotID, []byte("slow-mark-applied"))
+	fut, err := rt.Propose(context.Background(), slotID, proposalString("slow-mark-applied"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -481,7 +514,7 @@ func TestMarkAppliedFailureFailsFutureAndStopsAdvance(t *testing.T) {
 	store.markAppliedErr = markAppliedErr
 	store.mu.Unlock()
 
-	fut, err := rt.Propose(context.Background(), slotID, []byte("mark-applied-fail"))
+	fut, err := rt.Propose(context.Background(), slotID, proposalString("mark-applied-fail"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -527,7 +560,7 @@ func TestApplyFatalStopsSlot(t *testing.T) {
 	baselineApplied := store.lastApplied
 	store.mu.Unlock()
 
-	fut, err := rt.Propose(context.Background(), slotID, []byte("boom"))
+	fut, err := rt.Propose(context.Background(), slotID, proposalString("boom"))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -650,7 +683,7 @@ func (f *blockingMarkAppliedStorage) unblock() {
 func mustPropose(t *testing.T, rt *Runtime, slotID SlotID, data string) Future {
 	t.Helper()
 
-	fut, err := rt.Propose(context.Background(), slotID, []byte(data))
+	fut, err := rt.Propose(context.Background(), slotID, proposalString(data))
 	if err != nil {
 		t.Fatalf("Propose(%q) error = %v", data, err)
 	}

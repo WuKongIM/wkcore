@@ -3,6 +3,7 @@ package meta
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -36,7 +37,22 @@ func (db *DB) Close() error {
 }
 
 func (db *DB) ForSlot(slot uint64) *ShardStore {
-	return &ShardStore{db: db, slot: slot}
+	return &ShardStore{db: db, slot: uint16(slot), rawSlot: slot}
+}
+
+func (db *DB) ForHashSlot(hashSlot uint16) *ShardStore {
+	return &ShardStore{db: db, slot: hashSlot, rawSlot: uint64(hashSlot)}
+}
+
+func (db *DB) ForHashSlots(hashSlots []uint16) []*ShardStore {
+	if len(hashSlots) == 0 {
+		return nil
+	}
+	shards := make([]*ShardStore, 0, len(hashSlots))
+	for _, hashSlot := range hashSlots {
+		shards = append(shards, db.ForHashSlot(hashSlot))
+	}
+	return shards
 }
 
 func (db *DB) getValue(key []byte) ([]byte, error) {
@@ -78,7 +94,15 @@ func (db *DB) runAfterExistenceCheckHook() {
 }
 
 func (db *DB) DeleteSlotData(ctx context.Context, slotID uint64) error {
-	if err := validateSlot(slotID); err != nil {
+	hashSlot, err := legacySlotIDToHashSlot(slotID)
+	if err != nil {
+		return err
+	}
+	return db.DeleteHashSlotData(ctx, hashSlot)
+}
+
+func (db *DB) DeleteHashSlotData(ctx context.Context, hashSlot uint16) error {
+	if err := validateHashSlot(hashSlot); err != nil {
 		return err
 	}
 	if err := db.checkContext(ctx); err != nil {
@@ -91,11 +115,18 @@ func (db *DB) DeleteSlotData(ctx context.Context, slotID uint64) error {
 	batch := db.db.NewBatch()
 	defer batch.Close()
 
-	for _, span := range slotAllDataSpans(slotID) {
+	for _, span := range hashSlotAllDataSpans(hashSlot) {
 		if err := batch.DeleteRange(span.Start, span.End, nil); err != nil {
 			return err
 		}
 	}
 
 	return batch.Commit(pebble.Sync)
+}
+
+func legacySlotIDToHashSlot(slotID uint64) (uint16, error) {
+	if slotID == 0 || slotID > math.MaxUint16 {
+		return 0, ErrInvalidArgument
+	}
+	return uint16(slotID), nil
 }

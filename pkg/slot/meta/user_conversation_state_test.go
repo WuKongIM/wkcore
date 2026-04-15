@@ -77,6 +77,27 @@ func TestShardTouchUserConversationActiveAtPreservesUpdatedAt(t *testing.T) {
 	require.Equal(t, uint64(3), got.DeletedToSeq)
 }
 
+func TestShardTouchUserConversationActiveAtAllowsHashSlotZero(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	shard, ok := any(db.ForHashSlot(0)).(userConversationShardStore)
+	require.True(t, ok, "user conversation shard store methods missing")
+
+	require.NoError(t, shard.UpsertUserConversationState(ctx, UserConversationState{
+		UID:         "u0",
+		ChannelID:   "g0",
+		ChannelType: 2,
+		ActiveAt:    100,
+		UpdatedAt:   10,
+	}))
+	require.NoError(t, shard.TouchUserConversationActiveAt(ctx, "u0", "g0", 2, 300))
+
+	got, err := shard.GetUserConversationState(ctx, "u0", "g0", 2)
+	require.NoError(t, err)
+	require.Equal(t, int64(300), got.ActiveAt)
+	require.Equal(t, int64(10), got.UpdatedAt)
+}
+
 func TestShardListUserConversationStatePageReturnsStableCursor(t *testing.T) {
 	ctx := context.Background()
 	shard := openConversationTestShard(t)

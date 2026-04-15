@@ -28,15 +28,15 @@ func (db *DB) NewWriteBatch() *WriteBatch {
 // CreateUser encodes and stages a create-only user write into the batch.
 // If the user already exists in the database or earlier in the same indexed
 // batch, the existing record is preserved and the operation becomes a no-op.
-func (b *WriteBatch) CreateUser(slot uint64, u User) error {
-	if err := validateSlot(slot); err != nil {
+func (b *WriteBatch) CreateUser(hashSlot uint16, u User) error {
+	if err := validateHashSlot(hashSlot); err != nil {
 		return err
 	}
 	if err := validateUser(u); err != nil {
 		return err
 	}
 
-	key := encodeUserPrimaryKey(slot, u.UID, userPrimaryFamilyID)
+	key := encodeUserPrimaryKey(hashSlot, u.UID, userPrimaryFamilyID)
 	if b.userKeyWritten(key) {
 		return nil
 	}
@@ -58,15 +58,15 @@ func (b *WriteBatch) CreateUser(slot uint64, u User) error {
 
 // UpsertUser encodes and stages a user write into the batch.
 // No lock is held; the batch is assumed single-threaded.
-func (b *WriteBatch) UpsertUser(slot uint64, u User) error {
-	if err := validateSlot(slot); err != nil {
+func (b *WriteBatch) UpsertUser(hashSlot uint16, u User) error {
+	if err := validateHashSlot(hashSlot); err != nil {
 		return err
 	}
 	if err := validateUser(u); err != nil {
 		return err
 	}
 
-	key := encodeUserPrimaryKey(slot, u.UID, userPrimaryFamilyID)
+	key := encodeUserPrimaryKey(hashSlot, u.UID, userPrimaryFamilyID)
 	value := encodeUserFamilyValue(u.Token, u.DeviceFlag, u.DeviceLevel, key)
 	if err := b.batch.Set(key, value, nil); err != nil {
 		return err
@@ -77,32 +77,32 @@ func (b *WriteBatch) UpsertUser(slot uint64, u User) error {
 
 // UpsertDevice encodes and stages a device write into the batch.
 // No lock is held; the batch is assumed single-threaded.
-func (b *WriteBatch) UpsertDevice(slot uint64, d Device) error {
-	if err := validateSlot(slot); err != nil {
+func (b *WriteBatch) UpsertDevice(hashSlot uint16, d Device) error {
+	if err := validateHashSlot(hashSlot); err != nil {
 		return err
 	}
 	if err := validateDevice(d); err != nil {
 		return err
 	}
 
-	key := encodeDevicePrimaryKey(slot, d.UID, d.DeviceFlag, devicePrimaryFamilyID)
+	key := encodeDevicePrimaryKey(hashSlot, d.UID, d.DeviceFlag, devicePrimaryFamilyID)
 	value := encodeDeviceFamilyValue(d.Token, d.DeviceLevel, key)
 	return b.batch.Set(key, value, nil)
 }
 
 // UpsertChannel encodes and stages a channel write (primary + index)
 // into the batch. No lock is held.
-func (b *WriteBatch) UpsertChannel(slot uint64, ch Channel) error {
-	if err := validateSlot(slot); err != nil {
+func (b *WriteBatch) UpsertChannel(hashSlot uint16, ch Channel) error {
+	if err := validateHashSlot(hashSlot); err != nil {
 		return err
 	}
 	if err := validateChannel(ch); err != nil {
 		return err
 	}
 
-	primaryKey := encodeChannelPrimaryKey(slot, ch.ChannelID, ch.ChannelType, channelPrimaryFamilyID)
+	primaryKey := encodeChannelPrimaryKey(hashSlot, ch.ChannelID, ch.ChannelType, channelPrimaryFamilyID)
 	value := encodeChannelFamilyValue(ch.Ban, primaryKey)
-	indexKey := encodeChannelIDIndexKey(slot, ch.ChannelID, ch.ChannelType)
+	indexKey := encodeChannelIDIndexKey(hashSlot, ch.ChannelID, ch.ChannelType)
 	indexValue := encodeChannelIndexValue(ch.Ban)
 
 	if err := b.batch.Set(primaryKey, value, nil); err != nil {
@@ -112,22 +112,22 @@ func (b *WriteBatch) UpsertChannel(slot uint64, ch Channel) error {
 }
 
 // DeleteChannel removes the primary record and ID index for a channel.
-func (b *WriteBatch) DeleteChannel(slot uint64, channelID string, channelType int64) error {
-	primaryKey := encodeChannelPrimaryKey(slot, channelID, channelType, channelPrimaryFamilyID)
+func (b *WriteBatch) DeleteChannel(hashSlot uint16, channelID string, channelType int64) error {
+	primaryKey := encodeChannelPrimaryKey(hashSlot, channelID, channelType, channelPrimaryFamilyID)
 	if err := b.batch.Delete(primaryKey, nil); err != nil {
 		return err
 	}
-	indexKey := encodeChannelIDIndexKey(slot, channelID, channelType)
+	indexKey := encodeChannelIDIndexKey(hashSlot, channelID, channelType)
 	if err := b.batch.Delete(indexKey, nil); err != nil {
 		return err
 	}
-	subscriberPrefix := encodeSubscriberChannelPrefix(slot, channelID, channelType)
+	subscriberPrefix := encodeSubscriberChannelPrefix(hashSlot, channelID, channelType)
 	return b.batch.DeleteRange(subscriberPrefix, nextPrefix(subscriberPrefix), nil)
 }
 
 // UpsertChannelRuntimeMeta encodes and stages a runtime metadata write into the batch.
-func (b *WriteBatch) UpsertChannelRuntimeMeta(slot uint64, meta ChannelRuntimeMeta) error {
-	if err := validateSlot(slot); err != nil {
+func (b *WriteBatch) UpsertChannelRuntimeMeta(hashSlot uint16, meta ChannelRuntimeMeta) error {
+	if err := validateHashSlot(hashSlot); err != nil {
 		return err
 	}
 	if err := validateChannelRuntimeMeta(meta); err != nil {
@@ -136,22 +136,22 @@ func (b *WriteBatch) UpsertChannelRuntimeMeta(slot uint64, meta ChannelRuntimeMe
 
 	meta = normalizeChannelRuntimeMeta(meta)
 
-	key := encodeChannelRuntimeMetaPrimaryKey(slot, meta.ChannelID, meta.ChannelType, channelRuntimeMetaPrimaryFamilyID)
+	key := encodeChannelRuntimeMetaPrimaryKey(hashSlot, meta.ChannelID, meta.ChannelType, channelRuntimeMetaPrimaryFamilyID)
 	value := encodeChannelRuntimeMetaFamilyValue(meta, key)
 	return b.batch.Set(key, value, nil)
 }
 
 // UpsertUserConversationState encodes and stages a user conversation state write.
-func (b *WriteBatch) UpsertUserConversationState(slot uint64, state UserConversationState) error {
-	if err := validateSlot(slot); err != nil {
+func (b *WriteBatch) UpsertUserConversationState(hashSlot uint16, state UserConversationState) error {
+	if err := validateHashSlot(hashSlot); err != nil {
 		return err
 	}
 	if err := validateUserConversationState(state); err != nil {
 		return err
 	}
 
-	primaryKey := encodeUserConversationStatePrimaryKey(slot, state.UID, state.ChannelType, state.ChannelID, userConversationStatePrimaryFamilyID)
-	existing, exists, err := b.loadUserConversationState(slot, primaryKey, state.UID, state.ChannelID, state.ChannelType)
+	primaryKey := encodeUserConversationStatePrimaryKey(hashSlot, state.UID, state.ChannelType, state.ChannelID, userConversationStatePrimaryFamilyID)
+	existing, exists, err := b.loadUserConversationState(hashSlot, primaryKey, state.UID, state.ChannelID, state.ChannelType)
 	if err != nil {
 		return err
 	}
@@ -160,7 +160,7 @@ func (b *WriteBatch) UpsertUserConversationState(slot uint64, state UserConversa
 	}
 	value := encodeUserConversationStateFamilyValue(state, primaryKey)
 	if exists && existing.ActiveAt > 0 && existing.ActiveAt != state.ActiveAt {
-		oldIndexKey := encodeUserConversationActiveIndexKey(slot, state.UID, existing.ActiveAt, state.ChannelType, state.ChannelID)
+		oldIndexKey := encodeUserConversationActiveIndexKey(hashSlot, state.UID, existing.ActiveAt, state.ChannelType, state.ChannelID)
 		if err := b.batch.Delete(oldIndexKey, nil); err != nil {
 			return err
 		}
@@ -169,7 +169,7 @@ func (b *WriteBatch) UpsertUserConversationState(slot uint64, state UserConversa
 		return err
 	}
 	if state.ActiveAt > 0 {
-		indexKey := encodeUserConversationActiveIndexKey(slot, state.UID, state.ActiveAt, state.ChannelType, state.ChannelID)
+		indexKey := encodeUserConversationActiveIndexKey(hashSlot, state.UID, state.ActiveAt, state.ChannelType, state.ChannelID)
 		if err := b.batch.Set(indexKey, []byte{}, nil); err != nil {
 			return err
 		}
@@ -180,8 +180,8 @@ func (b *WriteBatch) UpsertUserConversationState(slot uint64, state UserConversa
 
 // TouchUserConversationActiveAt advances active_at for each patch without
 // mutating updated_at or other persisted conversation fields.
-func (b *WriteBatch) TouchUserConversationActiveAt(slot uint64, patches []UserConversationActivePatch) error {
-	if err := validateSlot(slot); err != nil {
+func (b *WriteBatch) TouchUserConversationActiveAt(hashSlot uint16, patches []UserConversationActivePatch) error {
+	if err := validateHashSlot(hashSlot); err != nil {
 		return err
 	}
 
@@ -193,8 +193,8 @@ func (b *WriteBatch) TouchUserConversationActiveAt(slot uint64, patches []UserCo
 			return err
 		}
 
-		primaryKey := encodeUserConversationStatePrimaryKey(slot, patch.UID, patch.ChannelType, patch.ChannelID, userConversationStatePrimaryFamilyID)
-		current, exists, err := b.loadUserConversationState(slot, primaryKey, patch.UID, patch.ChannelID, patch.ChannelType)
+		primaryKey := encodeUserConversationStatePrimaryKey(hashSlot, patch.UID, patch.ChannelType, patch.ChannelID, userConversationStatePrimaryFamilyID)
+		current, exists, err := b.loadUserConversationState(hashSlot, primaryKey, patch.UID, patch.ChannelID, patch.ChannelType)
 		if err != nil {
 			return err
 		}
@@ -213,7 +213,7 @@ func (b *WriteBatch) TouchUserConversationActiveAt(slot uint64, patches []UserCo
 		next.ActiveAt = patch.ActiveAt
 
 		if exists && current.ActiveAt > 0 {
-			oldIndexKey := encodeUserConversationActiveIndexKey(slot, patch.UID, current.ActiveAt, patch.ChannelType, patch.ChannelID)
+			oldIndexKey := encodeUserConversationActiveIndexKey(hashSlot, patch.UID, current.ActiveAt, patch.ChannelType, patch.ChannelID)
 			if err := b.batch.Delete(oldIndexKey, nil); err != nil {
 				return err
 			}
@@ -222,7 +222,7 @@ func (b *WriteBatch) TouchUserConversationActiveAt(slot uint64, patches []UserCo
 			return err
 		}
 		if next.ActiveAt > 0 {
-			indexKey := encodeUserConversationActiveIndexKey(slot, patch.UID, next.ActiveAt, patch.ChannelType, patch.ChannelID)
+			indexKey := encodeUserConversationActiveIndexKey(hashSlot, patch.UID, next.ActiveAt, patch.ChannelType, patch.ChannelID)
 			if err := b.batch.Set(indexKey, []byte{}, nil); err != nil {
 				return err
 			}
@@ -234,8 +234,8 @@ func (b *WriteBatch) TouchUserConversationActiveAt(slot uint64, patches []UserCo
 
 // ClearUserConversationActiveAt zeros active_at for the provided uid-scoped keys
 // while preserving updated_at and other conversation fields.
-func (b *WriteBatch) ClearUserConversationActiveAt(slot uint64, uid string, keys []ConversationKey) error {
-	if err := validateSlot(slot); err != nil {
+func (b *WriteBatch) ClearUserConversationActiveAt(hashSlot uint16, uid string, keys []ConversationKey) error {
+	if err := validateHashSlot(hashSlot); err != nil {
 		return err
 	}
 	if err := validateConversationUID(uid); err != nil {
@@ -247,8 +247,8 @@ func (b *WriteBatch) ClearUserConversationActiveAt(slot uint64, uid string, keys
 		return err
 	}
 	for _, key := range normalized {
-		primaryKey := encodeUserConversationStatePrimaryKey(slot, uid, key.ChannelType, key.ChannelID, userConversationStatePrimaryFamilyID)
-		current, exists, err := b.loadUserConversationState(slot, primaryKey, uid, key.ChannelID, key.ChannelType)
+		primaryKey := encodeUserConversationStatePrimaryKey(hashSlot, uid, key.ChannelType, key.ChannelID, userConversationStatePrimaryFamilyID)
+		current, exists, err := b.loadUserConversationState(hashSlot, primaryKey, uid, key.ChannelID, key.ChannelType)
 		if err != nil {
 			return err
 		}
@@ -256,7 +256,7 @@ func (b *WriteBatch) ClearUserConversationActiveAt(slot uint64, uid string, keys
 			continue
 		}
 
-		oldIndexKey := encodeUserConversationActiveIndexKey(slot, uid, current.ActiveAt, key.ChannelType, key.ChannelID)
+		oldIndexKey := encodeUserConversationActiveIndexKey(hashSlot, uid, current.ActiveAt, key.ChannelType, key.ChannelID)
 		if err := b.batch.Delete(oldIndexKey, nil); err != nil {
 			return err
 		}
@@ -271,22 +271,22 @@ func (b *WriteBatch) ClearUserConversationActiveAt(slot uint64, uid string, keys
 }
 
 // UpsertChannelUpdateLog encodes and stages a channel update log write.
-func (b *WriteBatch) UpsertChannelUpdateLog(slot uint64, entry ChannelUpdateLog) error {
-	if err := validateSlot(slot); err != nil {
+func (b *WriteBatch) UpsertChannelUpdateLog(hashSlot uint16, entry ChannelUpdateLog) error {
+	if err := validateHashSlot(hashSlot); err != nil {
 		return err
 	}
 	if err := validateChannelUpdateLog(entry); err != nil {
 		return err
 	}
 
-	key := encodeChannelUpdateLogPrimaryKey(slot, entry.ChannelID, entry.ChannelType, channelUpdateLogPrimaryFamilyID)
+	key := encodeChannelUpdateLogPrimaryKey(hashSlot, entry.ChannelID, entry.ChannelType, channelUpdateLogPrimaryFamilyID)
 	value := encodeChannelUpdateLogFamilyValue(entry, key)
 	return b.batch.Set(key, value, nil)
 }
 
 // DeleteChannelUpdateLogs removes channel update log rows for the provided keys.
-func (b *WriteBatch) DeleteChannelUpdateLogs(slot uint64, keys []ConversationKey) error {
-	if err := validateSlot(slot); err != nil {
+func (b *WriteBatch) DeleteChannelUpdateLogs(hashSlot uint16, keys []ConversationKey) error {
+	if err := validateHashSlot(hashSlot); err != nil {
 		return err
 	}
 
@@ -295,7 +295,7 @@ func (b *WriteBatch) DeleteChannelUpdateLogs(slot uint64, keys []ConversationKey
 		return err
 	}
 	for _, key := range normalized {
-		primaryKey := encodeChannelUpdateLogPrimaryKey(slot, key.ChannelID, key.ChannelType, channelUpdateLogPrimaryFamilyID)
+		primaryKey := encodeChannelUpdateLogPrimaryKey(hashSlot, key.ChannelID, key.ChannelType, channelUpdateLogPrimaryFamilyID)
 		if err := b.batch.Delete(primaryKey, nil); err != nil {
 			return err
 		}
@@ -304,20 +304,20 @@ func (b *WriteBatch) DeleteChannelUpdateLogs(slot uint64, keys []ConversationKey
 }
 
 // DeleteChannelRuntimeMeta removes the runtime metadata record for a channel.
-func (b *WriteBatch) DeleteChannelRuntimeMeta(slot uint64, channelID string, channelType int64) error {
-	if err := validateSlot(slot); err != nil {
+func (b *WriteBatch) DeleteChannelRuntimeMeta(hashSlot uint16, channelID string, channelType int64) error {
+	if err := validateHashSlot(hashSlot); err != nil {
 		return err
 	}
 	if err := validateChannelRuntimeMetaChannelID(channelID); err != nil {
 		return err
 	}
-	key := encodeChannelRuntimeMetaPrimaryKey(slot, channelID, channelType, channelRuntimeMetaPrimaryFamilyID)
+	key := encodeChannelRuntimeMetaPrimaryKey(hashSlot, channelID, channelType, channelRuntimeMetaPrimaryFamilyID)
 	return b.batch.Delete(key, nil)
 }
 
 // AddSubscribers stages subscriber snapshot rows into the batch.
-func (b *WriteBatch) AddSubscribers(slot uint64, channelID string, channelType int64, uids []string) error {
-	if err := validateSlot(slot); err != nil {
+func (b *WriteBatch) AddSubscribers(hashSlot uint16, channelID string, channelType int64, uids []string) error {
+	if err := validateHashSlot(hashSlot); err != nil {
 		return err
 	}
 	if err := validateSubscriberChannel(channelID); err != nil {
@@ -329,7 +329,7 @@ func (b *WriteBatch) AddSubscribers(slot uint64, channelID string, channelType i
 		return err
 	}
 	for _, uid := range normalized {
-		key := encodeSubscriberPrimaryKey(slot, channelID, channelType, uid, subscriberPrimaryFamilyID)
+		key := encodeSubscriberPrimaryKey(hashSlot, channelID, channelType, uid, subscriberPrimaryFamilyID)
 		if err := b.batch.Set(key, wrapFamilyValue(key, nil), nil); err != nil {
 			return err
 		}
@@ -338,8 +338,8 @@ func (b *WriteBatch) AddSubscribers(slot uint64, channelID string, channelType i
 }
 
 // RemoveSubscribers stages subscriber snapshot row deletions into the batch.
-func (b *WriteBatch) RemoveSubscribers(slot uint64, channelID string, channelType int64, uids []string) error {
-	if err := validateSlot(slot); err != nil {
+func (b *WriteBatch) RemoveSubscribers(hashSlot uint16, channelID string, channelType int64, uids []string) error {
+	if err := validateHashSlot(hashSlot); err != nil {
 		return err
 	}
 	if err := validateSubscriberChannel(channelID); err != nil {
@@ -351,7 +351,7 @@ func (b *WriteBatch) RemoveSubscribers(slot uint64, channelID string, channelTyp
 		return err
 	}
 	for _, uid := range normalized {
-		key := encodeSubscriberPrimaryKey(slot, channelID, channelType, uid, subscriberPrimaryFamilyID)
+		key := encodeSubscriberPrimaryKey(hashSlot, channelID, channelType, uid, subscriberPrimaryFamilyID)
 		if err := b.batch.Delete(key, nil); err != nil {
 			return err
 		}
@@ -389,14 +389,14 @@ func (b *WriteBatch) userKeyWritten(key []byte) bool {
 	return ok
 }
 
-func (b *WriteBatch) loadUserConversationState(slot uint64, primaryKey []byte, uid, channelID string, channelType int64) (UserConversationState, bool, error) {
+func (b *WriteBatch) loadUserConversationState(hashSlot uint16, primaryKey []byte, uid, channelID string, channelType int64) (UserConversationState, bool, error) {
 	if b.userConversationStates != nil {
 		if entry, ok := b.userConversationStates[string(primaryKey)]; ok {
 			return entry.state, entry.exists, nil
 		}
 	}
 
-	shard := b.db.ForSlot(slot)
+	shard := b.db.ForHashSlot(hashSlot)
 	state, err := shard.getUserConversationStateLocked(uid, channelID, channelType)
 	switch err {
 	case nil:

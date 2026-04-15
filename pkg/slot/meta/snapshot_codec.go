@@ -8,12 +8,15 @@ import (
 
 var slotSnapshotMagic = [4]byte{'W', 'K', 'S', 'P'}
 
-const slotSnapshotVersion uint16 = 1
+const slotSnapshotVersion uint16 = 2
 
 type SlotSnapshot struct {
+	// Deprecated: legacy single-slot compatibility during the transition.
 	SlotID uint64
-	Data   []byte
-	Stats  SnapshotStats
+
+	HashSlots []uint16
+	Data      []byte
+	Stats     SnapshotStats
 }
 
 type SnapshotStats struct {
@@ -27,21 +30,31 @@ type snapshotEntry struct {
 }
 
 type decodedSlotSnapshot struct {
-	SlotID  uint64
-	Entries []snapshotEntry
-	Stats   SnapshotStats
+	SlotID    uint64
+	HashSlots []uint16
+	Entries   []snapshotEntry
+	Stats     SnapshotStats
 }
 
 type slotSnapshotMeta struct {
-	SlotID uint64
-	Stats  SnapshotStats
+	SlotID    uint64
+	HashSlots []uint16
+	Stats     SnapshotStats
 }
 
-func encodeSlotSnapshotPayload(slotID uint64, entries []snapshotEntry) ([]byte, SnapshotStats) {
+func encodeSlotSnapshotPayload(hashSlotsOrSlotID any, entries []snapshotEntry) ([]byte, SnapshotStats) {
+	hashSlots, err := normalizeSnapshotHashSlots(hashSlotsOrSlotID)
+	if err != nil {
+		return nil, SnapshotStats{}
+	}
+
 	data := make([]byte, 0, 32)
 	data = append(data, slotSnapshotMagic[:]...)
 	data = binary.BigEndian.AppendUint16(data, slotSnapshotVersion)
-	data = binary.BigEndian.AppendUint64(data, slotID)
+	data = binary.BigEndian.AppendUint16(data, uint16(len(hashSlots)))
+	for _, hashSlot := range hashSlots {
+		data = binary.BigEndian.AppendUint16(data, hashSlot)
+	}
 	data = binary.BigEndian.AppendUint64(data, uint64(len(entries)))
 
 	for _, entry := range entries {
@@ -59,11 +72,14 @@ func encodeSlotSnapshotPayload(slotID uint64, entries []snapshotEntry) ([]byte, 
 	}
 }
 
-func beginSlotSnapshotPayload(slotID uint64) ([]byte, int) {
+func beginSlotSnapshotPayload(hashSlots []uint16) ([]byte, int) {
 	data := make([]byte, 0, 32)
 	data = append(data, slotSnapshotMagic[:]...)
 	data = binary.BigEndian.AppendUint16(data, slotSnapshotVersion)
-	data = binary.BigEndian.AppendUint64(data, slotID)
+	data = binary.BigEndian.AppendUint16(data, uint16(len(hashSlots)))
+	for _, hashSlot := range hashSlots {
+		data = binary.BigEndian.AppendUint16(data, hashSlot)
+	}
 	countPos := len(data)
 	data = binary.BigEndian.AppendUint64(data, 0)
 	return data, countPos
@@ -88,71 +104,27 @@ func finishSlotSnapshotPayload(data []byte, countPos int, entryCount int) ([]byt
 }
 
 func decodeSlotSnapshotPayload(data []byte) (decodedSlotSnapshot, error) {
-	if len(data) < len(slotSnapshotMagic)+2+8+8+4 {
-		return decodedSlotSnapshot{}, ErrCorruptValue
+	meta, body, err := parseSlotSnapshotPayload(data)
+	if err != nil {
+		return decodedSlotSnapshot{}, err
 	}
 
-	body := data[:len(data)-4]
-	want := binary.BigEndian.Uint32(data[len(data)-4:])
-	if got := crc32.ChecksumIEEE(body); got != want {
-		return decodedSlotSnapshot{}, ErrChecksumMismatch
-	}
-
-	if string(body[:len(slotSnapshotMagic)]) != string(slotSnapshotMagic[:]) {
-		return decodedSlotSnapshot{}, ErrCorruptValue
-	}
-	body = body[len(slotSnapshotMagic):]
-
-	version := binary.BigEndian.Uint16(body[:2])
-	if version != slotSnapshotVersion {
-		return decodedSlotSnapshot{}, fmt.Errorf("%w: unknown snapshot version %d", ErrCorruptValue, version)
-	}
-	body = body[2:]
-
-	slotID := binary.BigEndian.Uint64(body[:8])
-	body = body[8:]
-
-	entryCount := binary.BigEndian.Uint64(body[:8])
-	body = body[8:]
-
-	entries := make([]snapshotEntry, 0, int(entryCount))
-	for i := uint64(0); i < entryCount; i++ {
-		keyLen, n := binary.Uvarint(body)
-		if n <= 0 {
-			return decodedSlotSnapshot{}, ErrCorruptValue
-		}
-		body = body[n:]
-
-		valueLen, n := binary.Uvarint(body)
-		if n <= 0 {
-			return decodedSlotSnapshot{}, ErrCorruptValue
-		}
-		body = body[n:]
-
-		if uint64(len(body)) < keyLen+valueLen {
-			return decodedSlotSnapshot{}, ErrCorruptValue
-		}
-
-		keyEnd := int(keyLen)
-		valueEnd := int(valueLen)
-		key := append([]byte(nil), body[:keyEnd]...)
-		body = body[keyEnd:]
-		value := append([]byte(nil), body[:valueEnd]...)
-		body = body[valueEnd:]
-		entries = append(entries, snapshotEntry{Key: key, Value: value})
-	}
-
-	if len(body) != 0 {
-		return decodedSlotSnapshot{}, ErrCorruptValue
+	entries := make([]snapshotEntry, 0, meta.Stats.EntryCount)
+	if err := visitParsedSlotSnapshotPayload(meta, body, func(key, value []byte) error {
+		entries = append(entries, snapshotEntry{
+			Key:   append([]byte(nil), key...),
+			Value: append([]byte(nil), value...),
+		})
+		return nil
+	}); err != nil {
+		return decodedSlotSnapshot{}, err
 	}
 
 	return decodedSlotSnapshot{
-		SlotID:  slotID,
-		Entries: entries,
-		Stats: SnapshotStats{
-			EntryCount: len(entries),
-			Bytes:      len(data),
-		},
+		SlotID:    meta.SlotID,
+		HashSlots: append([]uint16(nil), meta.HashSlots...),
+		Entries:   entries,
+		Stats:     meta.Stats,
 	}, nil
 }
 
@@ -165,7 +137,8 @@ func readSlotSnapshotMeta(data []byte) (slotSnapshotMeta, error) {
 }
 
 func parseSlotSnapshotPayload(data []byte) (slotSnapshotMeta, []byte, error) {
-	if len(data) < len(slotSnapshotMagic)+2+8+8+4 {
+	const minHeaderSize = 4 + 2 + 2 + 8 + 4
+	if len(data) < minHeaderSize {
 		return slotSnapshotMeta{}, nil, ErrCorruptValue
 	}
 
@@ -186,19 +159,32 @@ func parseSlotSnapshotPayload(data []byte) (slotSnapshotMeta, []byte, error) {
 	}
 	body = body[2:]
 
-	slotID := binary.BigEndian.Uint64(body[:8])
-	body = body[8:]
+	hashSlotCount := int(binary.BigEndian.Uint16(body[:2]))
+	body = body[2:]
+	if len(body) < hashSlotCount*2+8 {
+		return slotSnapshotMeta{}, nil, ErrCorruptValue
+	}
+
+	hashSlots := make([]uint16, hashSlotCount)
+	for i := 0; i < hashSlotCount; i++ {
+		hashSlots[i] = binary.BigEndian.Uint16(body[:2])
+		body = body[2:]
+	}
 
 	entryCount := binary.BigEndian.Uint64(body[:8])
 	body = body[8:]
 
-	return slotSnapshotMeta{
-		SlotID: slotID,
+	meta := slotSnapshotMeta{
+		HashSlots: hashSlots,
 		Stats: SnapshotStats{
 			EntryCount: int(entryCount),
 			Bytes:      len(data),
 		},
-	}, body, nil
+	}
+	if len(hashSlots) == 1 {
+		meta.SlotID = uint64(hashSlots[0])
+	}
+	return meta, body, nil
 }
 
 func visitSlotSnapshotPayload(data []byte, fn func(key, value []byte) error) (slotSnapshotMeta, error) {
@@ -242,4 +228,30 @@ func visitParsedSlotSnapshotPayload(meta slotSnapshotMeta, body []byte, fn func(
 		return ErrCorruptValue
 	}
 	return nil
+}
+
+func normalizeSnapshotHashSlots(v any) ([]uint16, error) {
+	switch value := v.(type) {
+	case []uint16:
+		if len(value) == 0 {
+			return nil, ErrInvalidArgument
+		}
+		out := make([]uint16, len(value))
+		copy(out, value)
+		return out, nil
+	case uint16:
+		return []uint16{value}, nil
+	case uint64:
+		if err := validateSlot(value); err != nil {
+			return nil, err
+		}
+		return []uint16{uint16(value)}, nil
+	case int:
+		if value <= 0 || value > 1<<16-1 {
+			return nil, ErrInvalidArgument
+		}
+		return []uint16{uint16(value)}, nil
+	default:
+		return nil, ErrInvalidArgument
+	}
 }

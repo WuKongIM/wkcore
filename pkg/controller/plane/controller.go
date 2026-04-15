@@ -2,6 +2,7 @@ package plane
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
@@ -90,13 +91,18 @@ func (c *Controller) snapshot(ctx context.Context) (PlannerState, error) {
 	if err != nil {
 		return PlannerState{}, err
 	}
+	table, err := c.store.LoadHashSlotTable(ctx)
+	if err != nil && !errors.Is(err, controllermeta.ErrNotFound) {
+		return PlannerState{}, err
+	}
 
 	state := PlannerState{
-		Now:         c.now(),
-		Nodes:       make(map[uint64]controllermeta.ClusterNode, len(nodes)),
-		Assignments: make(map[uint32]controllermeta.SlotAssignment, len(assignments)),
-		Runtime:     make(map[uint32]controllermeta.SlotRuntimeView, len(views)),
-		Tasks:       make(map[uint32]controllermeta.ReconcileTask, len(tasks)),
+		Now:            c.now(),
+		Nodes:          make(map[uint64]controllermeta.ClusterNode, len(nodes)),
+		Assignments:    make(map[uint32]controllermeta.SlotAssignment, len(assignments)),
+		Runtime:        make(map[uint32]controllermeta.SlotRuntimeView, len(views)),
+		Tasks:          make(map[uint32]controllermeta.ReconcileTask, len(tasks)),
+		MigratingSlots: make(map[uint32]struct{}),
 	}
 	for _, node := range nodes {
 		state.Nodes[node.NodeID] = node
@@ -109,6 +115,12 @@ func (c *Controller) snapshot(ctx context.Context) (PlannerState, error) {
 	}
 	for _, task := range tasks {
 		state.Tasks[task.SlotID] = task
+	}
+	if table != nil {
+		for _, migration := range table.ActiveMigrations() {
+			state.MigratingSlots[uint32(migration.Source)] = struct{}{}
+			state.MigratingSlots[uint32(migration.Target)] = struct{}{}
+		}
 	}
 	return state, nil
 }

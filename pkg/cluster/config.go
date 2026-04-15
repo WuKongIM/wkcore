@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -20,25 +21,28 @@ const (
 )
 
 type Config struct {
-	NodeID             multiraft.NodeID
-	ListenAddr         string
-	SlotCount          uint32
-	ControllerMetaPath string
-	ControllerRaftPath string
-	ControllerReplicaN int
-	SlotReplicaN       int
-	NewStorage         func(slotID multiraft.SlotID) (multiraft.Storage, error)
-	NewStateMachine    func(slotID multiraft.SlotID) (multiraft.StateMachine, error)
-	Nodes              []NodeConfig
-	Slots              []SlotConfig
-	ForwardTimeout     time.Duration
-	PoolSize           int
-	TickInterval       time.Duration
-	RaftWorkers        int
-	ElectionTick       int
-	HeartbeatTick      int
-	DialTimeout        time.Duration
-	Logger             wklog.Logger
+	NodeID                       multiraft.NodeID
+	ListenAddr                   string
+	SlotCount                    uint32
+	HashSlotCount                uint16
+	InitialSlotCount             uint32
+	ControllerMetaPath           string
+	ControllerRaftPath           string
+	ControllerReplicaN           int
+	SlotReplicaN                 int
+	NewStorage                   func(slotID multiraft.SlotID) (multiraft.Storage, error)
+	NewStateMachine              func(slotID multiraft.SlotID) (multiraft.StateMachine, error)
+	NewStateMachineWithHashSlots func(slotID multiraft.SlotID, hashSlots []uint16) (multiraft.StateMachine, error)
+	Nodes                        []NodeConfig
+	Slots                        []SlotConfig
+	ForwardTimeout               time.Duration
+	PoolSize                     int
+	TickInterval                 time.Duration
+	RaftWorkers                  int
+	ElectionTick                 int
+	HeartbeatTick                int
+	DialTimeout                  time.Duration
+	Logger                       wklog.Logger
 }
 
 type NodeConfig struct {
@@ -61,11 +65,29 @@ func (c *Config) validate() error {
 	if c.NewStorage == nil {
 		return fmt.Errorf("%w: NewStorage must be set", ErrInvalidConfig)
 	}
-	if c.NewStateMachine == nil {
+	if c.NewStateMachine == nil && c.NewStateMachineWithHashSlots == nil {
 		return fmt.Errorf("%w: NewStateMachine must be set", ErrInvalidConfig)
 	}
-	if c.SlotCount == 0 {
-		return fmt.Errorf("%w: SlotCount must be > 0", ErrInvalidConfig)
+	if c.SlotCount > 0 && c.InitialSlotCount > 0 && c.SlotCount != c.InitialSlotCount {
+		return fmt.Errorf("%w: SlotCount=%d must match InitialSlotCount=%d when both are set", ErrInvalidConfig, c.SlotCount, c.InitialSlotCount)
+	}
+
+	initialSlotCount := c.effectiveInitialSlotCount()
+	if initialSlotCount == 0 {
+		return fmt.Errorf("%w: InitialSlotCount must be > 0", ErrInvalidConfig)
+	}
+	hashSlotCount := c.effectiveHashSlotCount()
+	if hashSlotCount == 0 {
+		return fmt.Errorf("%w: HashSlotCount must be > 0", ErrInvalidConfig)
+	}
+	if initialSlotCount > math.MaxUint16 {
+		return fmt.Errorf("%w: InitialSlotCount=%d exceeds max supported hash slot count", ErrInvalidConfig, initialSlotCount)
+	}
+	if uint32(hashSlotCount) < initialSlotCount {
+		return fmt.Errorf("%w: HashSlotCount=%d must be >= InitialSlotCount=%d", ErrInvalidConfig, hashSlotCount, initialSlotCount)
+	}
+	if hashSlotCount > 1 && c.NewStateMachineWithHashSlots == nil {
+		return fmt.Errorf("%w: NewStateMachineWithHashSlots must be set when HashSlotCount=%d", ErrInvalidConfig, hashSlotCount)
 	}
 	if c.ControllerReplicaN <= 0 {
 		return fmt.Errorf("%w: ControllerReplicaN must be > 0", ErrInvalidConfig)
@@ -104,8 +126,8 @@ func (c *Config) validate() error {
 		if slotSet[g.SlotID] {
 			return fmt.Errorf("%w: duplicate SlotID %d", ErrInvalidConfig, g.SlotID)
 		}
-		if g.SlotID == 0 || uint32(g.SlotID) > c.SlotCount {
-			return fmt.Errorf("%w: SlotID %d exceeds SlotCount=%d", ErrInvalidConfig, g.SlotID, c.SlotCount)
+		if g.SlotID == 0 || uint32(g.SlotID) > initialSlotCount {
+			return fmt.Errorf("%w: SlotID %d exceeds InitialSlotCount=%d", ErrInvalidConfig, g.SlotID, initialSlotCount)
 		}
 		slotSet[g.SlotID] = true
 		for _, peer := range g.Peers {
@@ -124,8 +146,19 @@ func (c *Config) validate() error {
 }
 
 func (c *Config) applyDefaults() {
-	if c.SlotCount == 0 && len(c.Slots) > 0 {
-		c.SlotCount = uint32(len(c.Slots))
+	if c.InitialSlotCount == 0 {
+		switch {
+		case c.SlotCount > 0:
+			c.InitialSlotCount = c.SlotCount
+		case len(c.Slots) > 0:
+			c.InitialSlotCount = uint32(len(c.Slots))
+		}
+	}
+	if c.SlotCount == 0 && c.InitialSlotCount > 0 {
+		c.SlotCount = c.InitialSlotCount
+	}
+	if c.HashSlotCount == 0 && c.InitialSlotCount > 0 && c.InitialSlotCount <= math.MaxUint16 {
+		c.HashSlotCount = uint16(c.InitialSlotCount)
 	}
 	if c.ControllerReplicaN == 0 {
 		c.ControllerReplicaN = len(c.Nodes)
@@ -178,4 +211,22 @@ func (c Config) HasLocalControllerPeer() bool {
 
 func (c Config) ControllerEnabled() bool {
 	return c.ControllerMetaPath != "" && c.ControllerRaftPath != ""
+}
+
+func (c Config) effectiveInitialSlotCount() uint32 {
+	if c.InitialSlotCount > 0 {
+		return c.InitialSlotCount
+	}
+	return c.SlotCount
+}
+
+func (c Config) effectiveHashSlotCount() uint16 {
+	if c.HashSlotCount > 0 {
+		return c.HashSlotCount
+	}
+	initialSlotCount := c.effectiveInitialSlotCount()
+	if initialSlotCount > math.MaxUint16 {
+		return 0
+	}
+	return uint16(initialSlotCount)
 }

@@ -2,6 +2,8 @@ package multiraft
 
 import (
 	"context"
+	"encoding/binary"
+	"fmt"
 	"math"
 	"sync"
 
@@ -346,11 +348,21 @@ func (g *slot) applyCommittedEntries(
 		if !canBatch || len(batchEntries) == 1 {
 			// Fall back to one-by-one Apply.
 			for _, entry := range batchEntries {
+				hashSlot, data, err := decodeProposalPayload(entry.Data)
+				if err != nil {
+					g.resolveProposal(entry.Index, entry.Term, Result{
+						Index: entry.Index,
+						Term:  entry.Term,
+					}, err)
+					g.fail(err)
+					return false
+				}
 				result, err := g.stateMachine.Apply(ctx, Command{
-					SlotID: g.id,
-					Index:  entry.Index,
-					Term:   entry.Term,
-					Data:   append([]byte(nil), entry.Data...),
+					SlotID:   g.id,
+					HashSlot: hashSlot,
+					Index:    entry.Index,
+					Term:     entry.Term,
+					Data:     append([]byte(nil), data...),
 				})
 				if err != nil {
 					g.resolveProposal(entry.Index, entry.Term, Result{
@@ -378,11 +390,21 @@ func (g *slot) applyCommittedEntries(
 		// Batched apply.
 		cmds := make([]Command, len(batchEntries))
 		for i, entry := range batchEntries {
+			hashSlot, data, err := decodeProposalPayload(entry.Data)
+			if err != nil {
+				g.resolveProposal(entry.Index, entry.Term, Result{
+					Index: entry.Index,
+					Term:  entry.Term,
+				}, err)
+				g.fail(err)
+				return false
+			}
 			cmds[i] = Command{
-				SlotID: g.id,
-				Index:  entry.Index,
-				Term:   entry.Term,
-				Data:   append([]byte(nil), entry.Data...),
+				SlotID:   g.id,
+				HashSlot: hashSlot,
+				Index:    entry.Index,
+				Term:     entry.Term,
+				Data:     append([]byte(nil), data...),
 			}
 		}
 		results, err := batchSM.ApplyBatch(ctx, cmds)
@@ -454,6 +476,13 @@ func (g *slot) applyCommittedEntries(
 	// Flush any remaining normal entries.
 	flushBatch()
 	return resolutions
+}
+
+func decodeProposalPayload(data []byte) (uint16, []byte, error) {
+	if len(data) < 2 {
+		return 0, nil, fmt.Errorf("proposal payload too short: %d", len(data))
+	}
+	return binary.BigEndian.Uint16(data[:2]), data[2:], nil
 }
 
 func (g *slot) completeResolutions(resolutions []futureResolution) {

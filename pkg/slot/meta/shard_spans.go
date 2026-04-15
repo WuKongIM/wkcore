@@ -8,29 +8,49 @@ type Span struct {
 }
 
 func slotStateSpan(slot uint64) Span {
-	return newPrefixSpan(encodeSlotKeyspacePrefix(keyspaceState, slot))
+	return hashSlotStateSpan(uint16(slot))
 }
 
 func slotIndexSpan(slot uint64) Span {
-	return newPrefixSpan(encodeSlotKeyspacePrefix(keyspaceIndex, slot))
+	return hashSlotIndexSpan(uint16(slot))
 }
 
 func slotMetaSpan(slot uint64) Span {
-	return newPrefixSpan(encodeSlotKeyspacePrefix(keyspaceMeta, slot))
+	return hashSlotMetaSpan(uint16(slot))
 }
 
 func slotAllDataSpans(slot uint64) []Span {
+	return hashSlotAllDataSpans(uint16(slot))
+}
+
+func hashSlotStateSpan(hashSlot uint16) Span {
+	return newPrefixSpan(encodeHashSlotKeyspacePrefix(keyspaceState, hashSlot))
+}
+
+func hashSlotIndexSpan(hashSlot uint16) Span {
+	return newPrefixSpan(encodeHashSlotKeyspacePrefix(keyspaceIndex, hashSlot))
+}
+
+func hashSlotMetaSpan(hashSlot uint16) Span {
+	return newPrefixSpan(encodeHashSlotKeyspacePrefix(keyspaceMeta, hashSlot))
+}
+
+func hashSlotAllDataSpans(hashSlot uint16) []Span {
 	return []Span{
-		slotStateSpan(slot),
-		slotIndexSpan(slot),
-		slotMetaSpan(slot),
+		hashSlotStateSpan(hashSlot),
+		hashSlotIndexSpan(hashSlot),
+		hashSlotMetaSpan(hashSlot),
 	}
 }
 
 func encodeSlotKeyspacePrefix(kind byte, slot uint64) []byte {
-	prefix := make([]byte, 0, 1+8)
+	return encodeHashSlotKeyspacePrefix(kind, uint16(slot))
+}
+
+func encodeHashSlotKeyspacePrefix(kind byte, hashSlot uint16) []byte {
+	prefix := make([]byte, 0, 1+2)
 	prefix = append(prefix, kind)
-	prefix = binary.BigEndian.AppendUint64(prefix, slot)
+	prefix = binary.BigEndian.AppendUint16(prefix, hashSlot)
 	return prefix
 }
 

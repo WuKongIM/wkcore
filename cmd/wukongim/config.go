@@ -76,7 +76,7 @@ func readConfig(path string) (*viper.Viper, bool, []string, error) {
 
 func buildAppConfig(v *viper.Viper) (app.Config, error) {
 	if raw := strings.TrimSpace(stringValue(v, "WK_CLUSTER_GROUP_COUNT")); raw != "" {
-		return app.Config{}, fmt.Errorf("%w: WK_CLUSTER_GROUP_COUNT is no longer supported; use WK_CLUSTER_SLOT_COUNT", app.ErrInvalidConfig)
+		return app.Config{}, fmt.Errorf("%w: WK_CLUSTER_GROUP_COUNT is no longer supported; use WK_CLUSTER_INITIAL_SLOT_COUNT", app.ErrInvalidConfig)
 	}
 	if raw := strings.TrimSpace(stringValue(v, "WK_CLUSTER_GROUP_REPLICA_N")); raw != "" {
 		return app.Config{}, fmt.Errorf("%w: WK_CLUSTER_GROUP_REPLICA_N is no longer supported; use WK_CLUSTER_SLOT_REPLICA_N", app.ErrInvalidConfig)
@@ -88,6 +88,17 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 	slotCount, err := parseUint32(v, "WK_CLUSTER_SLOT_COUNT")
 	if err != nil {
 		return app.Config{}, err
+	}
+	initialSlotCount, err := parseUint32(v, "WK_CLUSTER_INITIAL_SLOT_COUNT")
+	if err != nil {
+		return app.Config{}, err
+	}
+	hashSlotCount, err := parseUint16(v, "WK_CLUSTER_HASH_SLOT_COUNT")
+	if err != nil {
+		return app.Config{}, err
+	}
+	if initialSlotCount == 0 {
+		initialSlotCount = slotCount
 	}
 	forwardTimeout, err := parseDuration(v, "WK_CLUSTER_FORWARD_TIMEOUT")
 	if err != nil {
@@ -139,7 +150,7 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 		return app.Config{}, err
 	}
 	if raw := strings.TrimSpace(stringValue(v, "WK_CLUSTER_GROUPS")); raw != "" {
-		return app.Config{}, fmt.Errorf("%w: WK_CLUSTER_GROUPS is no longer supported; remove static slot peers and keep WK_CLUSTER_SLOT_COUNT only", app.ErrInvalidConfig)
+		return app.Config{}, fmt.Errorf("%w: WK_CLUSTER_GROUPS is no longer supported; remove static slot peers and keep WK_CLUSTER_INITIAL_SLOT_COUNT only", app.ErrInvalidConfig)
 	}
 	listeners, err := parseListeners(v)
 	if err != nil {
@@ -214,6 +225,8 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 		Cluster: app.ClusterConfig{
 			ListenAddr:          stringValue(v, "WK_CLUSTER_LISTEN_ADDR"),
 			SlotCount:           slotCount,
+			HashSlotCount:       hashSlotCount,
+			InitialSlotCount:    initialSlotCount,
 			Nodes:               nodes,
 			ControllerReplicaN:  controllerReplicaN,
 			SlotReplicaN:        slotReplicaN,
@@ -336,6 +349,19 @@ func parseUint32(v *viper.Viper, key string) (uint32, error) {
 		return 0, fmt.Errorf("parse %s: %w", key, err)
 	}
 	return uint32(value), nil
+}
+
+func parseUint16(v *viper.Viper, key string) (uint16, error) {
+	raw := stringValue(v, key)
+	if raw == "" {
+		return 0, nil
+	}
+
+	value, err := strconv.ParseUint(raw, 10, 16)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", key, err)
+	}
+	return uint16(value), nil
 }
 
 func parseInt(v *viper.Viper, key string) (int, error) {

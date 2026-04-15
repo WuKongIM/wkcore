@@ -147,6 +147,214 @@ func (c *Cluster) RecoverSlot(ctx context.Context, slotID uint32, strategy Recov
 	return nil
 }
 
+func (c *Cluster) AddSlot(ctx context.Context) (multiraft.SlotID, error) {
+	assignments, err := c.listSlotAssignmentsForOperator(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	newSlotID, peers, err := nextSlotDefinition(c, assignments)
+	if err != nil {
+		return 0, err
+	}
+
+	req := slotcontroller.AddSlotRequest{
+		NewSlotID: uint64(newSlotID),
+		Peers:     peers,
+	}
+	if err := c.submitAddSlot(ctx, req); err != nil {
+		return 0, err
+	}
+	return newSlotID, nil
+}
+
+func (c *Cluster) RemoveSlot(ctx context.Context, slotID multiraft.SlotID) error {
+	if slotID == 0 {
+		return ErrInvalidConfig
+	}
+	table := c.GetHashSlotTable()
+	if table == nil {
+		return ErrNotStarted
+	}
+	if len(table.HashSlotsOf(slotID)) == 0 {
+		return ErrSlotNotFound
+	}
+	for _, migration := range table.ActiveMigrations() {
+		if migration.Source == slotID || migration.Target == slotID {
+			return ErrInvalidConfig
+		}
+	}
+
+	return c.submitRemoveSlot(ctx, slotcontroller.RemoveSlotRequest{
+		SlotID: uint64(slotID),
+	})
+}
+
+func (c *Cluster) Rebalance(ctx context.Context) ([]MigrationPlan, error) {
+	table := c.GetHashSlotTable()
+	if table == nil {
+		return nil, ErrNotStarted
+	}
+	plan := ComputeRebalancePlan(table)
+	for _, migration := range plan {
+		if err := c.StartHashSlotMigration(ctx, migration.HashSlot, migration.To); err != nil {
+			return nil, err
+		}
+	}
+	return plan, nil
+}
+
+func (c *Cluster) GetHashSlotTable() *HashSlotTable {
+	if c == nil || c.router == nil {
+		return nil
+	}
+	table := c.router.hashSlotTable.Load()
+	if table == nil {
+		return nil
+	}
+	return table.Clone()
+}
+
+func (c *Cluster) GetMigrationStatus() []HashSlotMigration {
+	table := c.GetHashSlotTable()
+	if table == nil {
+		return nil
+	}
+	return table.ActiveMigrations()
+}
+
+func nextSlotDefinition(c *Cluster, assignments []controllermeta.SlotAssignment) (multiraft.SlotID, []uint64, error) {
+	var maxSlotID uint32
+	var minSlotID uint32
+	var peers []uint64
+	for _, assignment := range assignments {
+		if assignment.SlotID > maxSlotID {
+			maxSlotID = assignment.SlotID
+		}
+		if len(peers) == 0 || assignment.SlotID < minSlotID {
+			minSlotID = assignment.SlotID
+			peers = append([]uint64(nil), assignment.DesiredPeers...)
+		}
+	}
+	if len(peers) == 0 && c != nil {
+		if len(c.cfg.Slots) > 0 {
+			for _, peer := range c.cfg.Slots[0].Peers {
+				peers = append(peers, uint64(peer))
+			}
+		}
+		if maxSlotID == 0 {
+			for _, slotID := range c.SlotIDs() {
+				if uint32(slotID) > maxSlotID {
+					maxSlotID = uint32(slotID)
+				}
+			}
+		}
+	}
+	if len(peers) == 0 || maxSlotID == 0 {
+		return 0, nil, ErrSlotNotFound
+	}
+	return multiraft.SlotID(maxSlotID + 1), peers, nil
+}
+
+func (c *Cluster) listSlotAssignmentsForOperator(ctx context.Context) ([]controllermeta.SlotAssignment, error) {
+	if c != nil && c.controllerMeta != nil && c.localControllerLeaderActive() {
+		return c.controllerMeta.ListAssignments(ctx)
+	}
+	return c.ListSlotAssignments(ctx)
+}
+
+func (c *Cluster) localControllerLeaderActive() bool {
+	return c != nil &&
+		c.controller != nil &&
+		c.controller.LeaderID() == uint64(c.cfg.NodeID)
+}
+
+func (c *Cluster) submitAddSlot(ctx context.Context, req slotcontroller.AddSlotRequest) error {
+	if c == nil {
+		return ErrNotStarted
+	}
+	if c.localControllerLeaderActive() {
+		proposeCtx, cancel := withControllerTimeout(ctx)
+		defer cancel()
+		if err := c.controller.Propose(proposeCtx, slotcontroller.Command{
+			Kind:    slotcontroller.CommandKindAddSlot,
+			AddSlot: &req,
+		}); err != nil {
+			if errors.Is(err, controllerraft.ErrNotLeader) {
+				return ErrNotLeader
+			}
+			return err
+		}
+		return nil
+	}
+	if c.controllerClient != nil {
+		return c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
+			return c.controllerClient.AddSlot(attemptCtx, req)
+		})
+	}
+	if c.controller == nil {
+		return ErrNotStarted
+	}
+	if !c.localControllerLeaderActive() {
+		return ErrNotLeader
+	}
+	proposeCtx, cancel := withControllerTimeout(ctx)
+	defer cancel()
+	if err := c.controller.Propose(proposeCtx, slotcontroller.Command{
+		Kind:    slotcontroller.CommandKindAddSlot,
+		AddSlot: &req,
+	}); err != nil {
+		if errors.Is(err, controllerraft.ErrNotLeader) {
+			return ErrNotLeader
+		}
+		return err
+	}
+	return nil
+}
+
+func (c *Cluster) submitRemoveSlot(ctx context.Context, req slotcontroller.RemoveSlotRequest) error {
+	if c == nil {
+		return ErrNotStarted
+	}
+	if c.localControllerLeaderActive() {
+		proposeCtx, cancel := withControllerTimeout(ctx)
+		defer cancel()
+		if err := c.controller.Propose(proposeCtx, slotcontroller.Command{
+			Kind:       slotcontroller.CommandKindRemoveSlot,
+			RemoveSlot: &req,
+		}); err != nil {
+			if errors.Is(err, controllerraft.ErrNotLeader) {
+				return ErrNotLeader
+			}
+			return err
+		}
+		return nil
+	}
+	if c.controllerClient != nil {
+		return c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
+			return c.controllerClient.RemoveSlot(attemptCtx, req)
+		})
+	}
+	if c.controller == nil {
+		return ErrNotStarted
+	}
+	if !c.localControllerLeaderActive() {
+		return ErrNotLeader
+	}
+	proposeCtx, cancel := withControllerTimeout(ctx)
+	defer cancel()
+	if err := c.controller.Propose(proposeCtx, slotcontroller.Command{
+		Kind:       slotcontroller.CommandKindRemoveSlot,
+		RemoveSlot: &req,
+	}); err != nil {
+		if errors.Is(err, controllerraft.ErrNotLeader) {
+			return ErrNotLeader
+		}
+		return err
+	}
+	return nil
+}
+
 func (c *Cluster) forceReconcileOnLeader(ctx context.Context, slotID uint32) error {
 	if c.controller == nil || c.controllerMeta == nil {
 		return ErrNotStarted
@@ -182,7 +390,7 @@ func (c *Cluster) forceReconcileOnLeader(ctx context.Context, slotID uint32) err
 		return err
 	}
 	planner := slotcontroller.NewPlanner(slotcontroller.PlannerConfig{
-		SlotCount: c.cfg.SlotCount,
+		SlotCount: c.cfg.effectiveInitialSlotCount(),
 		ReplicaN:  c.cfg.SlotReplicaN,
 	})
 	decision, err := planner.ReconcileSlot(ctx, state, slotID)

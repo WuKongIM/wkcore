@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"sort"
 	"time"
@@ -59,6 +60,8 @@ type StorageConfig struct {
 type ClusterConfig struct {
 	ListenAddr                string
 	SlotCount                 uint32
+	HashSlotCount             uint16
+	InitialSlotCount          uint32
 	Nodes                     []NodeConfigRef
 	Slots                     []SlotConfig
 	ControllerReplicaN        int
@@ -146,11 +149,30 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 		return fmt.Errorf("%w: gateway token auth requires verifier hooks", ErrInvalidConfig)
 	}
 	if len(c.Cluster.Slots) > 0 {
-		return fmt.Errorf("%w: Cluster.Slots is no longer supported; remove static slot peers and keep Cluster.SlotCount only", ErrInvalidConfig)
+		return fmt.Errorf("%w: Cluster.Slots is no longer supported; remove static slot peers and use Cluster.InitialSlotCount for managed slots", ErrInvalidConfig)
+	}
+	if c.Cluster.SlotCount > 0 && c.Cluster.InitialSlotCount > 0 && c.Cluster.SlotCount != c.Cluster.InitialSlotCount {
+		return fmt.Errorf("%w: cluster SlotCount=%d must match InitialSlotCount=%d when both are set", ErrInvalidConfig, c.Cluster.SlotCount, c.Cluster.InitialSlotCount)
 	}
 
-	if c.Cluster.SlotCount == 0 {
-		return fmt.Errorf("%w: cluster slot count must be set", ErrInvalidConfig)
+	if c.Cluster.InitialSlotCount == 0 && c.Cluster.SlotCount > 0 {
+		c.Cluster.InitialSlotCount = c.Cluster.SlotCount
+	}
+	if c.Cluster.SlotCount == 0 && c.Cluster.InitialSlotCount > 0 {
+		c.Cluster.SlotCount = c.Cluster.InitialSlotCount
+	}
+	initialSlotCount := c.Cluster.effectiveInitialSlotCount()
+	if initialSlotCount == 0 {
+		return fmt.Errorf("%w: cluster initial slot count must be set", ErrInvalidConfig)
+	}
+	if c.Cluster.HashSlotCount == 0 {
+		if initialSlotCount > math.MaxUint16 {
+			return fmt.Errorf("%w: cluster initial slot count %d exceeds max hash slot count", ErrInvalidConfig, initialSlotCount)
+		}
+		c.Cluster.HashSlotCount = uint16(initialSlotCount)
+	}
+	if uint32(c.Cluster.HashSlotCount) < initialSlotCount {
+		return fmt.Errorf("%w: cluster hash slot count %d must be >= initial slot count %d", ErrInvalidConfig, c.Cluster.HashSlotCount, initialSlotCount)
 	}
 	if c.Cluster.ControllerReplicaN == 0 {
 		c.Cluster.ControllerReplicaN = len(c.Cluster.Nodes)
@@ -306,4 +328,11 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 
 func normalizeStoragePath(path string) (string, error) {
 	return filepath.Abs(filepath.Clean(path))
+}
+
+func (c ClusterConfig) effectiveInitialSlotCount() uint32 {
+	if c.InitialSlotCount > 0 {
+		return c.InitialSlotCount
+	}
+	return c.SlotCount
 }

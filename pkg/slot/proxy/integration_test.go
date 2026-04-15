@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -17,6 +18,13 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/stretchr/testify/require"
 )
+
+func proposalPayload(data []byte) []byte {
+	payload := make([]byte, 2+len(data))
+	binary.BigEndian.PutUint16(payload[:2], 0)
+	copy(payload[2:], data)
+	return payload
+}
 
 func TestMemoryBackedGroupAppliesProposalToWKDB(t *testing.T) {
 	ctx := context.Background()
@@ -40,12 +48,12 @@ func TestMemoryBackedGroupAppliesProposalToWKDB(t *testing.T) {
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "slot become leader")
 
-	fut, err := rt.Propose(ctx, slotID, metafsm.EncodeUpsertUserCommand(metadb.User{
+	fut, err := rt.Propose(ctx, slotID, proposalPayload(metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:         "u1",
 		Token:       "t1",
 		DeviceFlag:  1,
 		DeviceLevel: 2,
-	}))
+	})))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -85,10 +93,10 @@ func TestMemoryBackedGroupDoesNotRecoverDeletedSlotDataAfterOpenGroup(t *testing
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "slot become leader")
 
-	fut, err := rt.Propose(ctx, slotID, metafsm.EncodeUpsertUserCommand(metadb.User{
+	fut, err := rt.Propose(ctx, slotID, proposalPayload(metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "t1",
-	}))
+	})))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}
@@ -145,10 +153,10 @@ func TestMemoryBackedGroupReopensWithRecoveredMembership(t *testing.T) {
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "slot become leader")
 
-	fut, err := rt.Propose(ctx, slotID, metafsm.EncodeUpsertUserCommand(metadb.User{
+	fut, err := rt.Propose(ctx, slotID, proposalPayload(metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "before-reopen",
-	}))
+	})))
 	if err != nil {
 		t.Fatalf("Propose(before reopen) error = %v", err)
 	}
@@ -174,10 +182,10 @@ func TestMemoryBackedGroupReopensWithRecoveredMembership(t *testing.T) {
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "reopened slot become leader")
 
-	fut, err = reopenRT.Propose(ctx, slotID, metafsm.EncodeUpsertUserCommand(metadb.User{
+	fut, err = reopenRT.Propose(ctx, slotID, proposalPayload(metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "after-reopen",
-	}))
+	})))
 	if err != nil {
 		t.Fatalf("Propose(after reopen) error = %v", err)
 	}
@@ -221,10 +229,10 @@ func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "slot become leader")
 
-	fut, err := rt.Propose(ctx, slotID, metafsm.EncodeUpsertUserCommand(metadb.User{
+	fut, err := rt.Propose(ctx, slotID, proposalPayload(metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "before-reopen",
-	}))
+	})))
 	if err != nil {
 		t.Fatalf("Propose(before reopen) error = %v", err)
 	}
@@ -258,10 +266,10 @@ func TestPebbleBackedGroupReopensAndAcceptsNewProposal(t *testing.T) {
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "reopened slot become leader")
 
-	fut, err = reopenRT.Propose(ctx, slotID, metafsm.EncodeUpsertUserCommand(metadb.User{
+	fut, err = reopenRT.Propose(ctx, slotID, proposalPayload(metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "after-reopen",
-	}))
+	})))
 	if err != nil {
 		t.Fatalf("Propose(after reopen) error = %v", err)
 	}
@@ -293,8 +301,9 @@ func TestStoreUpsertAndGetChannelRuntimeMeta(t *testing.T) {
 		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
 			return raftDB.ForSlot(uint64(slotID)), nil
 		},
-		NewStateMachine: metafsm.NewStateMachineFactory(bizDB),
-		Nodes:           []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
+		NewStateMachine:              metafsm.NewStateMachineFactory(bizDB),
+		NewStateMachineWithHashSlots: metafsm.NewHashSlotStateMachineFactory(bizDB),
+		Nodes:                        []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
 		Slots: []raftcluster.SlotConfig{{
 			SlotID: 1,
 			Peers:  []multiraft.NodeID{1},
@@ -360,8 +369,9 @@ func TestStoreCreateUserAndUpsertDevice(t *testing.T) {
 		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
 			return raftDB.ForSlot(uint64(slotID)), nil
 		},
-		NewStateMachine: metafsm.NewStateMachineFactory(bizDB),
-		Nodes:           []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
+		NewStateMachine:              metafsm.NewStateMachineFactory(bizDB),
+		NewStateMachineWithHashSlots: metafsm.NewHashSlotStateMachineFactory(bizDB),
+		Nodes:                        []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
 		Slots: []raftcluster.SlotConfig{{
 			SlotID: 1,
 			Peers:  []multiraft.NodeID{1},
@@ -403,6 +413,30 @@ func TestStoreCreateUserAndUpsertDevice(t *testing.T) {
 	}, gotDevice)
 }
 
+func TestStoreUpsertUserRoutesByHashSlotOnShardedCluster(t *testing.T) {
+	ctx := context.Background()
+	nodes := startTwoNodeHashSlotStores(t, 8)
+
+	uid := findUIDForSlotWithDifferentHashSlot(t, nodes[0].cluster, 2, 2, "hashslot-user")
+	hashSlot := nodes[0].cluster.HashSlotForKey(uid)
+	require.NotEqual(t, uint16(2), hashSlot)
+	require.Equal(t, multiraft.SlotID(2), nodes[0].cluster.SlotForKey(uid))
+
+	user := metadb.User{
+		UID:   uid,
+		Token: "hash-slot-token",
+	}
+	require.NoError(t, nodes[1].store.UpsertUser(ctx, user))
+
+	got, err := nodes[1].db.ForHashSlot(hashSlot).GetUser(ctx, uid)
+	require.NoError(t, err)
+	require.Equal(t, user, got)
+
+	routed, err := nodes[0].store.GetUser(ctx, uid)
+	require.NoError(t, err)
+	require.Equal(t, user, routed)
+}
+
 func TestStoreListChannelRuntimeMeta(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -418,8 +452,9 @@ func TestStoreListChannelRuntimeMeta(t *testing.T) {
 		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
 			return raftDB.ForSlot(uint64(slotID)), nil
 		},
-		NewStateMachine: metafsm.NewStateMachineFactory(bizDB),
-		Nodes:           []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
+		NewStateMachine:              metafsm.NewStateMachineFactory(bizDB),
+		NewStateMachineWithHashSlots: metafsm.NewHashSlotStateMachineFactory(bizDB),
+		Nodes:                        []raftcluster.NodeConfig{{NodeID: 1, Addr: "127.0.0.1:0"}},
 		Slots: []raftcluster.SlotConfig{
 			{SlotID: 1, Peers: []multiraft.NodeID{1}},
 			{SlotID: 2, Peers: []multiraft.NodeID{1}},
@@ -489,7 +524,7 @@ func TestStoreGetChannelRuntimeMetaReadsAuthoritativeRemoteSlot(t *testing.T) {
 		Features:     7,
 		LeaseUntilMS: 1700000000999,
 	}
-	require.NoError(t, nodes[1].db.ForSlot(2).UpsertChannelRuntimeMeta(ctx, meta))
+	require.NoError(t, nodes[1].db.ForHashSlot(mustHashSlotForKey(t, nodes[1].cluster, channelID)).UpsertChannelRuntimeMeta(ctx, meta))
 
 	got, err := nodes[0].store.GetChannelRuntimeMeta(ctx, meta.ChannelID, meta.ChannelType)
 	require.NoError(t, err)
@@ -502,7 +537,7 @@ func TestStoreListChannelSubscribersReadsAuthoritativeSlot(t *testing.T) {
 
 	channelID := findChannelIDForSlot(t, nodes[0].cluster, 2, "remote-subscribers")
 
-	remoteShard, ok := any(nodes[1].db.ForSlot(2)).(interface {
+	remoteShard, ok := any(nodes[1].db.ForHashSlot(mustHashSlotForKey(t, nodes[1].cluster, channelID))).(interface {
 		AddSubscribers(ctx context.Context, channelID string, channelType int64, uids []string) error
 	})
 	require.True(t, ok, "subscriber shard store methods missing")
@@ -532,7 +567,7 @@ func TestStoreSnapshotChannelSubscribersReadsAuthoritativeSlot(t *testing.T) {
 
 	channelID := findChannelIDForSlot(t, nodes[0].cluster, 2, "remote-subscriber-snapshot")
 
-	remoteShard, ok := any(nodes[1].db.ForSlot(2)).(interface {
+	remoteShard, ok := any(nodes[1].db.ForHashSlot(mustHashSlotForKey(t, nodes[1].cluster, channelID))).(interface {
 		AddSubscribers(ctx context.Context, channelID string, channelType int64, uids []string) error
 	})
 	require.True(t, ok, "subscriber shard store methods missing")
@@ -553,7 +588,7 @@ func TestStoreGetUserReadsAuthoritativeRemoteSlot(t *testing.T) {
 	nodes := startTwoNodeShardedStores(t)
 
 	uid := findUIDForSlot(t, nodes[0].cluster, 2, "remote-user")
-	require.NoError(t, nodes[1].db.ForSlot(2).CreateUser(ctx, metadb.User{
+	require.NoError(t, nodes[1].db.ForHashSlot(mustHashSlotForKey(t, nodes[1].cluster, uid)).CreateUser(ctx, metadb.User{
 		UID:         uid,
 		Token:       "remote-token",
 		DeviceFlag:  3,
@@ -575,7 +610,7 @@ func TestStoreGetDeviceReadsAuthoritativeRemoteSlot(t *testing.T) {
 	nodes := startTwoNodeShardedStores(t)
 
 	uid := findUIDForSlot(t, nodes[0].cluster, 2, "remote-device")
-	require.NoError(t, nodes[1].db.ForSlot(2).UpsertDevice(ctx, metadb.Device{
+	require.NoError(t, nodes[1].db.ForHashSlot(mustHashSlotForKey(t, nodes[1].cluster, uid)).UpsertDevice(ctx, metadb.Device{
 		UID:         uid,
 		DeviceFlag:  5,
 		Token:       "device-token",
@@ -597,7 +632,7 @@ func TestStoreCreateUserReturnsAlreadyExistsForAuthoritativeRemoteSlot(t *testin
 	nodes := startTwoNodeShardedStores(t)
 
 	uid := findUIDForSlot(t, nodes[0].cluster, 2, "remote-create")
-	require.NoError(t, nodes[1].db.ForSlot(2).CreateUser(ctx, metadb.User{UID: uid}))
+	require.NoError(t, nodes[1].db.ForHashSlot(mustHashSlotForKey(t, nodes[1].cluster, uid)).CreateUser(ctx, metadb.User{UID: uid}))
 
 	err := nodes[0].store.CreateUser(ctx, metadb.User{UID: uid})
 	require.ErrorIs(t, err, metadb.ErrAlreadyExists)
@@ -633,8 +668,8 @@ func TestStoreListChannelRuntimeMetaReadsAuthoritativeAllSlots(t *testing.T) {
 		Features:     2,
 		LeaseUntilMS: 1700000002222,
 	}
-	require.NoError(t, nodes[0].db.ForSlot(1).UpsertChannelRuntimeMeta(ctx, first))
-	require.NoError(t, nodes[1].db.ForSlot(2).UpsertChannelRuntimeMeta(ctx, second))
+	require.NoError(t, nodes[0].db.ForHashSlot(mustHashSlotForKey(t, nodes[0].cluster, first.ChannelID)).UpsertChannelRuntimeMeta(ctx, first))
+	require.NoError(t, nodes[1].db.ForHashSlot(mustHashSlotForKey(t, nodes[1].cluster, second.ChannelID)).UpsertChannelRuntimeMeta(ctx, second))
 
 	got, err := nodes[0].store.ListChannelRuntimeMeta(ctx)
 	require.NoError(t, err)
@@ -646,21 +681,21 @@ func TestStoreListUserConversationActiveReadsAuthoritativeSlot(t *testing.T) {
 	nodes := startTwoNodeShardedStores(t)
 
 	uid := findUIDForSlot(t, nodes[0].cluster, 2, "remote-active")
-	require.NoError(t, nodes[1].db.ForSlot(2).UpsertUserConversationState(ctx, metadb.UserConversationState{
+	require.NoError(t, nodes[1].db.ForHashSlot(mustHashSlotForKey(t, nodes[1].cluster, uid)).UpsertUserConversationState(ctx, metadb.UserConversationState{
 		UID:         uid,
 		ChannelID:   "g1",
 		ChannelType: 2,
 		ActiveAt:    100,
 		UpdatedAt:   10,
 	}))
-	require.NoError(t, nodes[1].db.ForSlot(2).UpsertUserConversationState(ctx, metadb.UserConversationState{
+	require.NoError(t, nodes[1].db.ForHashSlot(mustHashSlotForKey(t, nodes[1].cluster, uid)).UpsertUserConversationState(ctx, metadb.UserConversationState{
 		UID:         uid,
 		ChannelID:   "g2",
 		ChannelType: 2,
 		ActiveAt:    300,
 		UpdatedAt:   30,
 	}))
-	require.NoError(t, nodes[1].db.ForSlot(2).UpsertUserConversationState(ctx, metadb.UserConversationState{
+	require.NoError(t, nodes[1].db.ForHashSlot(mustHashSlotForKey(t, nodes[1].cluster, uid)).UpsertUserConversationState(ctx, metadb.UserConversationState{
 		UID:         uid,
 		ChannelID:   "g3",
 		ChannelType: 2,
@@ -687,19 +722,19 @@ func TestStoreScanUserConversationStatePageReadsAuthoritativeSlot(t *testing.T) 
 	nodes := startTwoNodeShardedStores(t)
 
 	uid := findUIDForSlot(t, nodes[0].cluster, 2, "remote-scan")
-	require.NoError(t, nodes[1].db.ForSlot(2).UpsertUserConversationState(ctx, metadb.UserConversationState{
+	require.NoError(t, nodes[1].db.ForHashSlot(mustHashSlotForKey(t, nodes[1].cluster, uid)).UpsertUserConversationState(ctx, metadb.UserConversationState{
 		UID:         uid,
 		ChannelID:   "g1",
 		ChannelType: 2,
 		UpdatedAt:   10,
 	}))
-	require.NoError(t, nodes[1].db.ForSlot(2).UpsertUserConversationState(ctx, metadb.UserConversationState{
+	require.NoError(t, nodes[1].db.ForHashSlot(mustHashSlotForKey(t, nodes[1].cluster, uid)).UpsertUserConversationState(ctx, metadb.UserConversationState{
 		UID:         uid,
 		ChannelID:   "g2",
 		ChannelType: 2,
 		UpdatedAt:   20,
 	}))
-	require.NoError(t, nodes[1].db.ForSlot(2).UpsertUserConversationState(ctx, metadb.UserConversationState{
+	require.NoError(t, nodes[1].db.ForHashSlot(mustHashSlotForKey(t, nodes[1].cluster, uid)).UpsertUserConversationState(ctx, metadb.UserConversationState{
 		UID:         uid,
 		ChannelID:   "g3",
 		ChannelType: 2,
@@ -736,7 +771,7 @@ func TestStoreBatchGetChannelUpdateLogsGroupsByChannelSlot(t *testing.T) {
 	slot1ChannelID := findChannelIDForSlot(t, nodes[0].cluster, 1, "slot1-update")
 	slot2ChannelID := findChannelIDForSlot(t, nodes[0].cluster, 2, "slot2-update")
 
-	require.NoError(t, nodes[0].db.ForSlot(1).UpsertChannelUpdateLog(ctx, metadb.ChannelUpdateLog{
+	require.NoError(t, nodes[0].db.ForHashSlot(mustHashSlotForKey(t, nodes[0].cluster, slot1ChannelID)).UpsertChannelUpdateLog(ctx, metadb.ChannelUpdateLog{
 		ChannelID:       slot1ChannelID,
 		ChannelType:     1,
 		UpdatedAt:       101,
@@ -744,7 +779,7 @@ func TestStoreBatchGetChannelUpdateLogsGroupsByChannelSlot(t *testing.T) {
 		LastClientMsgNo: "c1",
 		LastMsgAt:       201,
 	}))
-	require.NoError(t, nodes[1].db.ForSlot(2).UpsertChannelUpdateLog(ctx, metadb.ChannelUpdateLog{
+	require.NoError(t, nodes[1].db.ForHashSlot(mustHashSlotForKey(t, nodes[1].cluster, slot2ChannelID)).UpsertChannelUpdateLog(ctx, metadb.ChannelUpdateLog{
 		ChannelID:       slot2ChannelID,
 		ChannelType:     1,
 		UpdatedAt:       102,
@@ -789,14 +824,16 @@ func TestStoreTouchUserConversationActiveAtGroupsByUIDSlot(t *testing.T) {
 
 	localUID := findUIDForSlot(t, nodes[0].cluster, 1, "local-touch")
 	remoteUID := findUIDForSlot(t, nodes[0].cluster, 2, "remote-touch")
-	require.NoError(t, nodes[0].db.ForSlot(1).UpsertUserConversationState(ctx, metadb.UserConversationState{
+	localHashSlot := nodes[0].cluster.HashSlotForKey(localUID)
+	remoteHashSlot := nodes[0].cluster.HashSlotForKey(remoteUID)
+	require.NoError(t, nodes[0].db.ForHashSlot(localHashSlot).UpsertUserConversationState(ctx, metadb.UserConversationState{
 		UID:         localUID,
 		ChannelID:   "g1",
 		ChannelType: 2,
 		ActiveAt:    100,
 		UpdatedAt:   10,
 	}))
-	require.NoError(t, nodes[1].db.ForSlot(2).UpsertUserConversationState(ctx, metadb.UserConversationState{
+	require.NoError(t, nodes[1].db.ForHashSlot(remoteHashSlot).UpsertUserConversationState(ctx, metadb.UserConversationState{
 		UID:         remoteUID,
 		ChannelID:   "g2",
 		ChannelType: 2,
@@ -814,12 +851,12 @@ func TestStoreTouchUserConversationActiveAtGroupsByUIDSlot(t *testing.T) {
 		{UID: remoteUID, ChannelID: "g2", ChannelType: 2, ActiveAt: 250},
 	}))
 
-	got, err := nodes[0].db.ForSlot(1).GetUserConversationState(ctx, localUID, "g1", 2)
+	got, err := nodes[0].db.ForHashSlot(localHashSlot).GetUserConversationState(ctx, localUID, "g1", 2)
 	require.NoError(t, err)
 	require.Equal(t, int64(300), got.ActiveAt)
 	require.Equal(t, int64(10), got.UpdatedAt)
 
-	got, err = nodes[1].db.ForSlot(2).GetUserConversationState(ctx, remoteUID, "g2", 2)
+	got, err = nodes[1].db.ForHashSlot(remoteHashSlot).GetUserConversationState(ctx, remoteUID, "g2", 2)
 	require.NoError(t, err)
 	require.Equal(t, int64(250), got.ActiveAt)
 	require.Equal(t, int64(20), got.UpdatedAt)
@@ -852,10 +889,10 @@ func TestPebbleBackedGroupDoesNotRecoverDeletedBusinessStateWithoutSnapshot(t *t
 		return err == nil && st.Role == multiraft.RoleLeader
 	}, "slot become leader")
 
-	fut, err := rt.Propose(ctx, slotID, metafsm.EncodeUpsertUserCommand(metadb.User{
+	fut, err := rt.Propose(ctx, slotID, proposalPayload(metafsm.EncodeUpsertUserCommand(metadb.User{
 		UID:   "u1",
 		Token: "t1",
-	}))
+	})))
 	if err != nil {
 		t.Fatalf("Propose() error = %v", err)
 	}

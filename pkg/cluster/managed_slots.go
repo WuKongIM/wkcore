@@ -8,6 +8,7 @@ import (
 	"time"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	raft "go.etcd.io/raft/v3"
 )
@@ -16,6 +17,7 @@ const (
 	rpcServiceManagedSlot        uint8  = 20
 	managedSlotRPCStatus         string = "status"
 	managedSlotRPCChangeConfig   string = "change_config"
+	managedSlotRPCImportSnapshot string = "import_snapshot"
 	managedSlotRPCTransferLeader string = "transfer_leader"
 	managedSlotLeaderWaitTimeout        = 5 * time.Second
 	managedSlotCatchUpTimeout           = 5 * time.Second
@@ -28,6 +30,8 @@ type managedSlotRPCRequest struct {
 	TargetNode uint64               `json:"target_node,omitempty"`
 	ChangeType multiraft.ChangeType `json:"change_type,omitempty"`
 	NodeID     uint64               `json:"node_id,omitempty"`
+	HashSlot   uint16               `json:"hash_slot,omitempty"`
+	Snapshot   []byte               `json:"snapshot,omitempty"`
 }
 
 type managedSlotRPCResponse struct {
@@ -132,6 +136,19 @@ func (c *Cluster) handleManagedSlotRPC(ctx context.Context, body []byte) ([]byte
 	case managedSlotRPCTransferLeader:
 		err := c.transferSlotLeaderLocal(ctx, multiraft.SlotID(req.SlotID), multiraft.NodeID(req.TargetNode))
 		return marshalManagedSlotError(err)
+	case managedSlotRPCImportSnapshot:
+		leaderID, leaderErr := c.currentManagedSlotLeader(multiraft.SlotID(req.SlotID))
+		if leaderErr != nil {
+			return marshalManagedSlotError(leaderErr)
+		}
+		if !c.IsLocal(leaderID) {
+			return marshalManagedSlotError(ErrNotLeader)
+		}
+		err := c.importHashSlotSnapshotLocal(ctx, multiraft.SlotID(req.SlotID), metadb.SlotSnapshot{
+			HashSlots: []uint16{req.HashSlot},
+			Data:      append([]byte(nil), req.Snapshot...),
+		})
+		return marshalManagedSlotError(err)
 	default:
 		return nil, ErrInvalidConfig
 	}
@@ -167,7 +184,7 @@ func (c *Cluster) ensureManagedSlotLocal(ctx context.Context, slotID multiraft.S
 	if err != nil {
 		return err
 	}
-	sm, err := c.cfg.NewStateMachine(slotID)
+	sm, err := c.newStateMachine(slotID)
 	if err != nil {
 		return err
 	}
@@ -532,6 +549,79 @@ func decodeManagedSlotResponse(body []byte) error {
 	default:
 		return nil
 	}
+}
+
+func cloneSlotSnapshot(snap metadb.SlotSnapshot) metadb.SlotSnapshot {
+	return metadb.SlotSnapshot{
+		HashSlots: append([]uint16(nil), snap.HashSlots...),
+		Data:      append([]byte(nil), snap.Data...),
+		Stats:     snap.Stats,
+	}
+}
+
+func (c *Cluster) exportHashSlotSnapshot(ctx context.Context, slotID multiraft.SlotID, hashSlot uint16) (metadb.SlotSnapshot, uint64, error) {
+	sm, ok := c.runtimeStateMachine(slotID)
+	if !ok {
+		return metadb.SlotSnapshot{}, 0, ErrSlotNotFound
+	}
+	exporter, ok := sm.(hashSlotSnapshotExporter)
+	if !ok {
+		return metadb.SlotSnapshot{}, 0, ErrInvalidConfig
+	}
+
+	status, err := c.managedSlotStatusOnNode(ctx, c.cfg.NodeID, slotID)
+	if err != nil {
+		return metadb.SlotSnapshot{}, 0, err
+	}
+
+	snap, err := exporter.ExportHashSlotSnapshot(ctx, hashSlot)
+	if err != nil {
+		return metadb.SlotSnapshot{}, 0, err
+	}
+	return cloneSlotSnapshot(snap), status.AppliedIndex, nil
+}
+
+func (c *Cluster) importHashSlotSnapshot(ctx context.Context, slotID multiraft.SlotID, snap metadb.SlotSnapshot) error {
+	leaderID, err := c.currentManagedSlotLeader(slotID)
+	if err != nil {
+		return err
+	}
+	if c.IsLocal(leaderID) {
+		return c.importHashSlotSnapshotLocal(ctx, slotID, snap)
+	}
+	return c.importHashSlotSnapshotRemote(ctx, leaderID, slotID, snap)
+}
+
+func (c *Cluster) importHashSlotSnapshotLocal(ctx context.Context, slotID multiraft.SlotID, snap metadb.SlotSnapshot) error {
+	sm, ok := c.runtimeStateMachine(slotID)
+	if !ok {
+		return ErrSlotNotFound
+	}
+	importer, ok := sm.(hashSlotSnapshotImporter)
+	if !ok {
+		return ErrInvalidConfig
+	}
+	return importer.ImportHashSlotSnapshot(ctx, cloneSlotSnapshot(snap))
+}
+
+func (c *Cluster) importHashSlotSnapshotRemote(ctx context.Context, leaderID multiraft.NodeID, slotID multiraft.SlotID, snap metadb.SlotSnapshot) error {
+	if len(snap.HashSlots) != 1 {
+		return ErrInvalidConfig
+	}
+	body, err := json.Marshal(managedSlotRPCRequest{
+		Kind:     managedSlotRPCImportSnapshot,
+		SlotID:   uint32(slotID),
+		HashSlot: snap.HashSlots[0],
+		Snapshot: append([]byte(nil), snap.Data...),
+	})
+	if err != nil {
+		return err
+	}
+	respBody, err := c.RPCService(ctx, leaderID, slotID, rpcServiceManagedSlot, body)
+	if err != nil {
+		return err
+	}
+	return decodeManagedSlotResponse(respBody)
 }
 
 func assignmentContainsPeer(peers []uint64, nodeID uint64) bool {

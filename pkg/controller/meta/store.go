@@ -6,6 +6,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/hashslot"
 	"github.com/cockroachdb/pebble/v2"
 )
 
@@ -36,6 +37,149 @@ func (s *Store) Close() error {
 	s.mu.Unlock()
 
 	return db.Close()
+}
+
+func (s *Store) SaveHashSlotTable(ctx context.Context, table *hashslot.HashSlotTable) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
+	if table == nil {
+		return ErrInvalidArgument
+	}
+	if err := s.checkContext(ctx); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.writeValueLocked(hashSlotTableKey(), table.Encode())
+}
+
+func (s *Store) UpsertAssignmentsAndSaveHashSlotTable(ctx context.Context, assignments []SlotAssignment, table *hashslot.HashSlotTable) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
+	if table == nil {
+		return ErrInvalidArgument
+	}
+	if err := s.checkContext(ctx); err != nil {
+		return err
+	}
+
+	writes := make([]batchWrite, 0, len(assignments)+1)
+	for _, assignment := range assignments {
+		if assignment.SlotID == 0 {
+			return ErrInvalidArgument
+		}
+		assignment = normalizeGroupAssignment(assignment)
+		if err := validateRequiredPeerSet(assignment.DesiredPeers, ErrInvalidArgument); err != nil {
+			return err
+		}
+		writes = append(writes, batchWrite{
+			key:   encodeGroupKey(recordPrefixAssignment, assignment.SlotID),
+			value: encodeGroupAssignment(assignment),
+		})
+	}
+	writes = append(writes, batchWrite{
+		key:   hashSlotTableKey(),
+		value: table.Encode(),
+	})
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeBatchLocked(writes)
+}
+
+func (s *Store) UpsertAssignmentTaskAndSaveHashSlotTable(ctx context.Context, assignment SlotAssignment, task ReconcileTask, table *hashslot.HashSlotTable) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
+	if table == nil {
+		return ErrInvalidArgument
+	}
+	if err := s.checkContext(ctx); err != nil {
+		return err
+	}
+	if assignment.SlotID == 0 || task.SlotID == 0 || assignment.SlotID != task.SlotID {
+		return ErrInvalidArgument
+	}
+
+	assignment = normalizeGroupAssignment(assignment)
+	if err := validateRequiredPeerSet(assignment.DesiredPeers, ErrInvalidArgument); err != nil {
+		return err
+	}
+	task = normalizeReconcileTask(task)
+	if !validTaskKind(task.Kind) || !validTaskStep(task.Step) || !validTaskStatus(task.Status) {
+		return ErrInvalidArgument
+	}
+	if err := validateReconcileTaskState(task, ErrInvalidArgument); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeBatchLocked([]batchWrite{
+		{
+			key:   encodeGroupKey(recordPrefixAssignment, assignment.SlotID),
+			value: encodeGroupAssignment(assignment),
+		},
+		{
+			key:   encodeGroupKey(recordPrefixTask, task.SlotID),
+			value: encodeReconcileTask(task),
+		},
+		{
+			key:   hashSlotTableKey(),
+			value: table.Encode(),
+		},
+	})
+}
+
+func (s *Store) DeleteAssignmentTaskAndSaveHashSlotTable(ctx context.Context, slotID uint32, table *hashslot.HashSlotTable) error {
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
+	if table == nil || slotID == 0 {
+		return ErrInvalidArgument
+	}
+	if err := s.checkContext(ctx); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeBatchLocked([]batchWrite{
+		{
+			key:    encodeGroupKey(recordPrefixAssignment, slotID),
+			delete: true,
+		},
+		{
+			key:    encodeGroupKey(recordPrefixTask, slotID),
+			delete: true,
+		},
+		{
+			key:   hashSlotTableKey(),
+			value: table.Encode(),
+		},
+	})
+}
+
+func (s *Store) LoadHashSlotTable(ctx context.Context) (*hashslot.HashSlotTable, error) {
+	if err := s.ensureOpen(); err != nil {
+		return nil, err
+	}
+	if err := s.checkContext(ctx); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	value, err := s.getValueLocked(hashSlotTableKey())
+	if err != nil {
+		return nil, err
+	}
+	return hashslot.DecodeHashSlotTable(value)
 }
 
 func (s *Store) GetNode(ctx context.Context, nodeID uint64) (ClusterNode, error) {

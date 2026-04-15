@@ -11,6 +11,7 @@ const subscriberRPCServiceID uint8 = 10
 
 type subscriberRPCRequest struct {
 	SlotID      uint64 `json:"slot_id"`
+	HashSlot    uint16 `json:"hash_slot,omitempty"`
 	ChannelID   string `json:"channel_id"`
 	ChannelType int64  `json:"channel_type"`
 	Snapshot    bool   `json:"snapshot,omitempty"`
@@ -35,12 +36,14 @@ func (r subscriberRPCResponse) rpcLeaderID() uint64 {
 }
 
 func (s *Store) listChannelSubscribersAuthoritative(ctx context.Context, slotID multiraft.SlotID, channelID string, channelType int64, afterUID string, limit int) ([]string, string, bool, error) {
+	hashSlot := hashSlotForKey(s.cluster, channelID)
 	if s.shouldServeSlotLocally(slotID) {
-		return s.db.ForSlot(uint64(slotID)).ListSubscribersPage(ctx, channelID, channelType, afterUID, limit)
+		return s.db.ForHashSlot(hashSlot).ListSubscribersPage(ctx, channelID, channelType, afterUID, limit)
 	}
 
 	resp, err := s.callSubscriberRPC(ctx, slotID, subscriberRPCRequest{
 		SlotID:      uint64(slotID),
+		HashSlot:    hashSlot,
 		ChannelID:   channelID,
 		ChannelType: channelType,
 		AfterUID:    afterUID,
@@ -54,12 +57,14 @@ func (s *Store) listChannelSubscribersAuthoritative(ctx context.Context, slotID 
 
 func (s *Store) SnapshotChannelSubscribers(ctx context.Context, channelID string, channelType int64) ([]string, error) {
 	slotID := s.cluster.SlotForKey(channelID)
+	hashSlot := hashSlotForKey(s.cluster, channelID)
 	if s.shouldServeSlotLocally(slotID) {
-		return s.db.ForSlot(uint64(slotID)).ListSubscribersSnapshot(ctx, channelID, channelType)
+		return s.db.ForHashSlot(hashSlot).ListSubscribersSnapshot(ctx, channelID, channelType)
 	}
 
 	resp, err := s.callSubscriberRPC(ctx, slotID, subscriberRPCRequest{
 		SlotID:      uint64(slotID),
+		HashSlot:    hashSlot,
 		ChannelID:   channelID,
 		ChannelType: channelType,
 		Snapshot:    true,
@@ -94,8 +99,12 @@ func (s *Store) handleSubscriberRPC(ctx context.Context, body []byte) ([]byte, e
 		return statusBody, err
 	}
 
+	hashSlot := req.HashSlot
+	if hashSlot == 0 {
+		hashSlot = hashSlotForKey(s.cluster, req.ChannelID)
+	}
 	if req.Snapshot {
-		uids, err := s.db.ForSlot(uint64(slotID)).ListSubscribersSnapshot(ctx, req.ChannelID, req.ChannelType)
+		uids, err := s.db.ForHashSlot(hashSlot).ListSubscribersSnapshot(ctx, req.ChannelID, req.ChannelType)
 		if err != nil {
 			return nil, err
 		}
@@ -106,7 +115,7 @@ func (s *Store) handleSubscriberRPC(ctx context.Context, body []byte) ([]byte, e
 		})
 	}
 
-	uids, nextCursor, done, err := s.db.ForSlot(uint64(slotID)).ListSubscribersPage(ctx, req.ChannelID, req.ChannelType, req.AfterUID, req.Limit)
+	uids, nextCursor, done, err := s.db.ForHashSlot(hashSlot).ListSubscribersPage(ctx, req.ChannelID, req.ChannelType, req.AfterUID, req.Limit)
 	if err != nil {
 		return nil, err
 	}

@@ -59,6 +59,24 @@ func TestConfigValidateRejectsZeroSlotCount(t *testing.T) {
 	require.Error(t, cfg.ApplyDefaultsAndValidate())
 }
 
+func TestConfigValidateRejectsHashSlotCountBelowInitialSlotCount(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cluster.SlotCount = 0
+	cfg.Cluster.InitialSlotCount = 4
+	cfg.Cluster.HashSlotCount = 3
+
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
+}
+
+func TestConfigValidateRejectsMismatchedLegacyAndInitialSlotCount(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cluster.SlotCount = 2
+	cfg.Cluster.InitialSlotCount = 3
+	cfg.Cluster.HashSlotCount = 3
+
+	require.Error(t, cfg.ApplyDefaultsAndValidate())
+}
+
 func TestConfigValidateRejectsStaticClusterSlots(t *testing.T) {
 	cfg := validConfig()
 	cfg.Cluster.Slots = []SlotConfig{{ID: 1, Peers: []uint64{1}}}

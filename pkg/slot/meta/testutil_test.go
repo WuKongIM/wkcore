@@ -260,15 +260,16 @@ func assertSlotMatchesModel(t *testing.T, db *DB, slot uint64, model *stressMode
 	}
 
 	expected := make(map[string][]byte, len(users)+2*len(channels))
+	hashSlot := uint16(slot)
 	for uid, user := range users {
-		key := encodeUserPrimaryKey(slot, uid, userPrimaryFamilyID)
+		key := encodeUserPrimaryKey(hashSlot, uid, userPrimaryFamilyID)
 		expected[string(key)] = encodeUserFamilyValue(user.Token, user.DeviceFlag, user.DeviceLevel, key)
 	}
 	for _, ch := range channels {
-		primaryKey := encodeChannelPrimaryKey(slot, ch.ChannelID, ch.ChannelType, channelPrimaryFamilyID)
+		primaryKey := encodeChannelPrimaryKey(hashSlot, ch.ChannelID, ch.ChannelType, channelPrimaryFamilyID)
 		expected[string(primaryKey)] = encodeChannelFamilyValue(ch.Ban, primaryKey)
 
-		indexKey := encodeChannelIDIndexKey(slot, ch.ChannelID, ch.ChannelType)
+		indexKey := encodeChannelIDIndexKey(hashSlot, ch.ChannelID, ch.ChannelType)
 		expected[string(indexKey)] = encodeChannelIndexValue(ch.Ban)
 	}
 

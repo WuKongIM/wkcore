@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/hashslot"
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
@@ -128,6 +129,110 @@ func TestServiceProposeReturnsRunLoopErrorAfterExit(t *testing.T) {
 
 	err := service.Propose(context.Background(), slotcontroller.Command{})
 	require.ErrorIs(t, err, sentinel)
+}
+
+func TestServiceProposeAppliesMigrationCommand(t *testing.T) {
+	env := newTestEnv(t, []uint64{1})
+	defer env.stopAll()
+
+	env.startNode(t, 1, nil)
+	env.waitForLeader(t, []uint64{1})
+
+	node := env.nodes[1]
+	ctx := context.Background()
+
+	require.NoError(t, node.meta.SaveHashSlotTable(ctx, hashslot.NewHashSlotTable(8, 2)))
+	require.NoError(t, node.service.Propose(ctx, slotcontroller.Command{
+		Kind: slotcontroller.CommandKindStartMigration,
+		Migration: &slotcontroller.MigrationRequest{
+			HashSlot: 3,
+			Source:   1,
+			Target:   2,
+		},
+	}))
+	require.NoError(t, node.service.Propose(ctx, slotcontroller.Command{
+		Kind: slotcontroller.CommandKindAdvanceMigration,
+		Migration: &slotcontroller.MigrationRequest{
+			HashSlot: 3,
+			Source:   1,
+			Target:   2,
+			Phase:    uint8(hashslot.PhaseDelta),
+		},
+	}))
+
+	table, err := node.meta.LoadHashSlotTable(ctx)
+	require.NoError(t, err)
+
+	migration := table.GetMigration(3)
+	require.NotNil(t, migration)
+	require.Equal(t, uint16(3), migration.HashSlot)
+	require.Equal(t, multiraft.SlotID(1), migration.Source)
+	require.Equal(t, multiraft.SlotID(2), migration.Target)
+	require.Equal(t, hashslot.PhaseDelta, migration.Phase)
+}
+
+func TestServiceProposeAppliesAddSlotCommand(t *testing.T) {
+	env := newTestEnv(t, []uint64{1})
+	defer env.stopAll()
+
+	env.startNode(t, 1, nil)
+	env.waitForLeader(t, []uint64{1})
+
+	node := env.nodes[1]
+	ctx := context.Background()
+
+	require.NoError(t, node.meta.SaveHashSlotTable(ctx, hashslot.NewHashSlotTable(8, 2)))
+	require.NoError(t, node.service.Propose(ctx, slotcontroller.Command{
+		Kind: slotcontroller.CommandKindAddSlot,
+		AddSlot: &slotcontroller.AddSlotRequest{
+			NewSlotID: 3,
+			Peers:     []uint64{1},
+		},
+	}))
+
+	assignment, err := node.meta.GetAssignment(ctx, 3)
+	require.NoError(t, err)
+	require.Equal(t, uint32(3), assignment.SlotID)
+	require.Equal(t, []uint64{1}, assignment.DesiredPeers)
+
+	task, err := node.meta.GetTask(ctx, 3)
+	require.NoError(t, err)
+	require.Equal(t, controllermeta.TaskKindBootstrap, task.Kind)
+	require.Equal(t, controllermeta.TaskStepAddLearner, task.Step)
+	require.Equal(t, uint64(1), task.TargetNode)
+
+	table, err := node.meta.LoadHashSlotTable(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, table.ActiveMigrations())
+}
+
+func TestServiceProposeAppliesRemoveSlotCommand(t *testing.T) {
+	env := newTestEnv(t, []uint64{1})
+	defer env.stopAll()
+
+	env.startNode(t, 1, nil)
+	env.waitForLeader(t, []uint64{1})
+
+	node := env.nodes[1]
+	ctx := context.Background()
+
+	require.NoError(t, node.meta.SaveHashSlotTable(ctx, hashslot.NewHashSlotTable(8, 3)))
+	require.NoError(t, node.service.Propose(ctx, slotcontroller.Command{
+		Kind: slotcontroller.CommandKindRemoveSlot,
+		RemoveSlot: &slotcontroller.RemoveSlotRequest{
+			SlotID: 3,
+		},
+	}))
+
+	table, err := node.meta.LoadHashSlotTable(ctx)
+	require.NoError(t, err)
+
+	active := table.ActiveMigrations()
+	require.NotEmpty(t, active)
+	for _, migration := range active {
+		require.Equal(t, multiraft.SlotID(3), migration.Source)
+		require.NotEqual(t, multiraft.SlotID(3), migration.Target)
+	}
 }
 
 func TestFailInflightProposalsOnLeaderLossFailsQueuedAndIndexed(t *testing.T) {

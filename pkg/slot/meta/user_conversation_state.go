@@ -450,15 +450,15 @@ func stateToCursor(state UserConversationState) ConversationCursor {
 	}
 }
 
-func encodeUserConversationStatePrimaryPrefix(slot uint64, uid string) []byte {
+func encodeUserConversationStatePrimaryPrefix(hashSlot uint16, uid string) []byte {
 	key := make([]byte, 0, 48)
-	key = encodeStatePrefix(slot, UserConversationStateTable.ID)
+	key = encodeStatePrefix(hashSlot, UserConversationStateTable.ID)
 	key = appendKeyString(key, uid)
 	return key
 }
 
-func encodeUserConversationStatePrimaryKey(slot uint64, uid string, channelType int64, channelID string, familyID uint16) []byte {
-	key := encodeUserConversationStatePrimaryPrefix(slot, uid)
+func encodeUserConversationStatePrimaryKey(hashSlot uint16, uid string, channelType int64, channelID string, familyID uint16) []byte {
+	key := encodeUserConversationStatePrimaryPrefix(hashSlot, uid)
 	key = appendKeyInt64Ordered(key, channelType)
 	key = appendKeyString(key, channelID)
 	key = binary.AppendUvarint(key, uint64(familyID))
@@ -495,15 +495,15 @@ func decodeUserConversationStateRecord(key, value, prefix []byte) (UserConversat
 	return state, nil
 }
 
-func encodeUserConversationActiveIndexPrefix(slot uint64, uid string) []byte {
+func encodeUserConversationActiveIndexPrefix(hashSlot uint16, uid string) []byte {
 	key := make([]byte, 0, 48)
-	key = encodeIndexPrefix(slot, UserConversationStateTable.ID, userConversationStateActiveIndexID)
+	key = encodeIndexPrefix(hashSlot, UserConversationStateTable.ID, userConversationStateActiveIndexID)
 	key = appendKeyString(key, uid)
 	return key
 }
 
-func encodeUserConversationActiveIndexKey(slot uint64, uid string, activeAt int64, channelType int64, channelID string) []byte {
-	key := encodeUserConversationActiveIndexPrefix(slot, uid)
+func encodeUserConversationActiveIndexKey(hashSlot uint16, uid string, activeAt int64, channelType int64, channelID string) []byte {
+	key := encodeUserConversationActiveIndexPrefix(hashSlot, uid)
 	key = appendKeyInt64OrderedDesc(key, activeAt)
 	key = appendKeyInt64Ordered(key, channelType)
 	key = appendKeyString(key, channelID)

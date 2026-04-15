@@ -13,24 +13,33 @@ import (
 )
 
 const (
-	rpcServiceController          uint8            = 14
-	controllerRPCShardKey         multiraft.SlotID = multiraft.SlotID(^uint32(0))
-	controllerRPCHeartbeat        string           = "heartbeat"
-	controllerRPCListAssignments  string           = "list_assignments"
-	controllerRPCListNodes        string           = "list_nodes"
-	controllerRPCListRuntimeViews string           = "list_runtime_views"
-	controllerRPCOperator         string           = "operator"
-	controllerRPCGetTask          string           = "get_task"
-	controllerRPCForceReconcile   string           = "force_reconcile"
-	controllerRPCTaskResult       string           = "task_result"
+	rpcServiceController           uint8            = 14
+	controllerRPCShardKey          multiraft.SlotID = multiraft.SlotID(^uint32(0))
+	controllerRPCHeartbeat         string           = "heartbeat"
+	controllerRPCListAssignments   string           = "list_assignments"
+	controllerRPCListNodes         string           = "list_nodes"
+	controllerRPCListRuntimeViews  string           = "list_runtime_views"
+	controllerRPCOperator          string           = "operator"
+	controllerRPCGetTask           string           = "get_task"
+	controllerRPCForceReconcile    string           = "force_reconcile"
+	controllerRPCTaskResult        string           = "task_result"
+	controllerRPCStartMigration    string           = "start_migration"
+	controllerRPCAdvanceMigration  string           = "advance_migration"
+	controllerRPCFinalizeMigration string           = "finalize_migration"
+	controllerRPCAbortMigration    string           = "abort_migration"
+	controllerRPCAddSlot           string           = "add_slot"
+	controllerRPCRemoveSlot        string           = "remove_slot"
 )
 
 type controllerRPCRequest struct {
-	Kind    string                          `json:"kind"`
-	SlotID  uint32                          `json:"slot_id,omitempty"`
-	Report  *slotcontroller.AgentReport     `json:"report,omitempty"`
-	Op      *slotcontroller.OperatorRequest `json:"op,omitempty"`
-	Advance *controllerTaskAdvance          `json:"advance,omitempty"`
+	Kind       string                            `json:"kind"`
+	SlotID     uint32                            `json:"slot_id,omitempty"`
+	Report     *slotcontroller.AgentReport       `json:"report,omitempty"`
+	Op         *slotcontroller.OperatorRequest   `json:"op,omitempty"`
+	Advance    *controllerTaskAdvance            `json:"advance,omitempty"`
+	Migration  *slotcontroller.MigrationRequest  `json:"migration,omitempty"`
+	AddSlot    *slotcontroller.AddSlotRequest    `json:"add_slot,omitempty"`
+	RemoveSlot *slotcontroller.RemoveSlotRequest `json:"remove_slot,omitempty"`
 }
 
 type controllerTaskAdvance struct {
@@ -41,13 +50,15 @@ type controllerTaskAdvance struct {
 }
 
 type controllerRPCResponse struct {
-	NotLeader    bool                             `json:"not_leader,omitempty"`
-	NotFound     bool                             `json:"not_found,omitempty"`
-	LeaderID     uint64                           `json:"leader_id,omitempty"`
-	Nodes        []controllermeta.ClusterNode     `json:"nodes,omitempty"`
-	Assignments  []controllermeta.SlotAssignment  `json:"assignments,omitempty"`
-	RuntimeViews []controllermeta.SlotRuntimeView `json:"runtime_views,omitempty"`
-	Task         *controllermeta.ReconcileTask    `json:"task,omitempty"`
+	NotLeader            bool                             `json:"not_leader,omitempty"`
+	NotFound             bool                             `json:"not_found,omitempty"`
+	LeaderID             uint64                           `json:"leader_id,omitempty"`
+	Nodes                []controllermeta.ClusterNode     `json:"nodes,omitempty"`
+	Assignments          []controllermeta.SlotAssignment  `json:"assignments,omitempty"`
+	RuntimeViews         []controllermeta.SlotRuntimeView `json:"runtime_views,omitempty"`
+	Task                 *controllermeta.ReconcileTask    `json:"task,omitempty"`
+	HashSlotTableVersion uint64                           `json:"hash_slot_table_version,omitempty"`
+	HashSlotTable        []byte                           `json:"hash_slot_table,omitempty"`
 }
 
 type controllerAPI interface {
@@ -59,6 +70,12 @@ type controllerAPI interface {
 	GetTask(ctx context.Context, slotID uint32) (controllermeta.ReconcileTask, error)
 	ForceReconcile(ctx context.Context, slotID uint32) error
 	ReportTaskResult(ctx context.Context, task controllermeta.ReconcileTask, taskErr error) error
+	StartMigration(ctx context.Context, req slotcontroller.MigrationRequest) error
+	AdvanceMigration(ctx context.Context, req slotcontroller.MigrationRequest) error
+	FinalizeMigration(ctx context.Context, req slotcontroller.MigrationRequest) error
+	AbortMigration(ctx context.Context, req slotcontroller.MigrationRequest) error
+	AddSlot(ctx context.Context, req slotcontroller.AddSlotRequest) error
+	RemoveSlot(ctx context.Context, req slotcontroller.RemoveSlotRequest) error
 }
 
 type controllerClient struct {
@@ -101,6 +118,9 @@ func (c *controllerClient) ListNodes(ctx context.Context) ([]controllermeta.Clus
 func (c *controllerClient) RefreshAssignments(ctx context.Context) ([]controllermeta.SlotAssignment, error) {
 	resp, err := c.call(ctx, controllerRPCRequest{Kind: controllerRPCListAssignments})
 	if err != nil {
+		return nil, err
+	}
+	if err := c.cluster.applyHashSlotTablePayload(resp.HashSlotTable); err != nil {
 		return nil, err
 	}
 	if c.cache != nil {
@@ -159,6 +179,54 @@ func (c *controllerClient) ReportTaskResult(ctx context.Context, task controller
 	_, err := c.call(ctx, controllerRPCRequest{
 		Kind:    controllerRPCTaskResult,
 		Advance: advance,
+	})
+	return err
+}
+
+func (c *controllerClient) StartMigration(ctx context.Context, req slotcontroller.MigrationRequest) error {
+	_, err := c.call(ctx, controllerRPCRequest{
+		Kind:      controllerRPCStartMigration,
+		Migration: &req,
+	})
+	return err
+}
+
+func (c *controllerClient) AdvanceMigration(ctx context.Context, req slotcontroller.MigrationRequest) error {
+	_, err := c.call(ctx, controllerRPCRequest{
+		Kind:      controllerRPCAdvanceMigration,
+		Migration: &req,
+	})
+	return err
+}
+
+func (c *controllerClient) FinalizeMigration(ctx context.Context, req slotcontroller.MigrationRequest) error {
+	_, err := c.call(ctx, controllerRPCRequest{
+		Kind:      controllerRPCFinalizeMigration,
+		Migration: &req,
+	})
+	return err
+}
+
+func (c *controllerClient) AbortMigration(ctx context.Context, req slotcontroller.MigrationRequest) error {
+	_, err := c.call(ctx, controllerRPCRequest{
+		Kind:      controllerRPCAbortMigration,
+		Migration: &req,
+	})
+	return err
+}
+
+func (c *controllerClient) AddSlot(ctx context.Context, req slotcontroller.AddSlotRequest) error {
+	_, err := c.call(ctx, controllerRPCRequest{
+		Kind:    controllerRPCAddSlot,
+		AddSlot: &req,
+	})
+	return err
+}
+
+func (c *controllerClient) RemoveSlot(ctx context.Context, req slotcontroller.RemoveSlotRequest) error {
+	_, err := c.call(ctx, controllerRPCRequest{
+		Kind:       controllerRPCRemoveSlot,
+		RemoveSlot: &req,
 	})
 	return err
 }
