@@ -358,6 +358,7 @@ func (c ClusterConfig) runtimeConfig(storage StorageConfig, db *metadb.DB, raftD
 		ElectionTick:       c.ElectionTick,
 		HeartbeatTick:      c.HeartbeatTick,
 		DialTimeout:        c.DialTimeout,
+		Timeouts:           c.Timeouts,
 		Logger:             logger,
 	}
 }

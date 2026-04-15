@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	"github.com/stretchr/testify/require"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
@@ -177,6 +178,25 @@ func TestConfigPreservesExplicitDataPlaneRPCTimeout(t *testing.T) {
 
 	require.NoError(t, cfg.ApplyDefaultsAndValidate())
 	require.Equal(t, 250*time.Millisecond, cfg.Cluster.DataPlaneRPCTimeout)
+}
+
+func TestClusterRuntimeConfigIncludesTimeoutOverrides(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cluster.Timeouts = raftcluster.Timeouts{
+		ControllerObservation:     350 * time.Millisecond,
+		ControllerRequest:         3 * time.Second,
+		ControllerLeaderWait:      9 * time.Second,
+		ForwardRetryBudget:        600 * time.Millisecond,
+		ManagedSlotLeaderWait:     6 * time.Second,
+		ManagedSlotCatchUp:        7 * time.Second,
+		ManagedSlotLeaderMove:     8 * time.Second,
+		ConfigChangeRetryBudget:   700 * time.Millisecond,
+		LeaderTransferRetryBudget: 800 * time.Millisecond,
+	}
+
+	runtimeCfg := cfg.Cluster.runtimeConfig(cfg.Storage, nil, nil, cfg.Node.ID, nil)
+
+	require.Equal(t, cfg.Cluster.Timeouts, runtimeCfg.Timeouts)
 }
 
 func validConfig() Config {

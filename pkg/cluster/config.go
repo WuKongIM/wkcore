@@ -10,13 +10,22 @@ import (
 )
 
 const (
-	defaultForwardTimeout = 5 * time.Second
-	defaultPoolSize       = 4
-	defaultTickInterval   = 100 * time.Millisecond
-	defaultRaftWorkers    = 2
-	defaultElectionTick   = 10
-	defaultHeartbeatTick  = 1
-	defaultDialTimeout    = 5 * time.Second
+	defaultForwardTimeout               = 5 * time.Second
+	defaultPoolSize                     = 4
+	defaultTickInterval                 = 100 * time.Millisecond
+	defaultRaftWorkers                  = 2
+	defaultElectionTick                 = 10
+	defaultHeartbeatTick                = 1
+	defaultDialTimeout                  = 5 * time.Second
+	defaultControllerObservationTimeout = 200 * time.Millisecond
+	defaultControllerRequestTimeout     = 2 * time.Second
+	defaultControllerLeaderWaitTimeout  = 10 * time.Second
+	defaultForwardRetryBudget           = 300 * time.Millisecond
+	defaultManagedSlotLeaderWaitTimeout = 5 * time.Second
+	defaultManagedSlotCatchUpTimeout    = 5 * time.Second
+	defaultManagedSlotLeaderMoveTimeout = 5 * time.Second
+	defaultConfigChangeRetryBudget      = 300 * time.Millisecond
+	defaultLeaderTransferRetryBudget    = 300 * time.Millisecond
 )
 
 type Config struct {
@@ -38,7 +47,29 @@ type Config struct {
 	ElectionTick       int
 	HeartbeatTick      int
 	DialTimeout        time.Duration
+	Timeouts           Timeouts
+	Observer           ObserverHooks
 	Logger             wklog.Logger
+}
+
+type Timeouts struct {
+	ControllerObservation     time.Duration
+	ControllerRequest         time.Duration
+	ControllerLeaderWait      time.Duration
+	ForwardRetryBudget        time.Duration
+	ManagedSlotLeaderWait     time.Duration
+	ManagedSlotCatchUp        time.Duration
+	ManagedSlotLeaderMove     time.Duration
+	ConfigChangeRetryBudget   time.Duration
+	LeaderTransferRetryBudget time.Duration
+}
+
+type ObserverHooks struct {
+	OnControllerCall func(kind string, dur time.Duration, err error)
+	OnReconcileStep  func(slotID uint32, step string, dur time.Duration, err error)
+	OnForwardPropose func(slotID uint32, attempts int, dur time.Duration, err error)
+	OnSlotEnsure     func(slotID uint32, action string, err error)
+	OnLeaderChange   func(slotID uint32, from, to multiraft.NodeID)
 }
 
 type NodeConfig struct {
@@ -153,6 +184,40 @@ func (c *Config) applyDefaults() {
 	}
 	if c.DialTimeout == 0 {
 		c.DialTimeout = defaultDialTimeout
+	}
+	c.Timeouts.applyDefaults()
+}
+
+func (t *Timeouts) applyDefaults() {
+	if t == nil {
+		return
+	}
+	if t.ControllerObservation == 0 {
+		t.ControllerObservation = defaultControllerObservationTimeout
+	}
+	if t.ControllerRequest == 0 {
+		t.ControllerRequest = defaultControllerRequestTimeout
+	}
+	if t.ControllerLeaderWait == 0 {
+		t.ControllerLeaderWait = defaultControllerLeaderWaitTimeout
+	}
+	if t.ForwardRetryBudget == 0 {
+		t.ForwardRetryBudget = defaultForwardRetryBudget
+	}
+	if t.ManagedSlotLeaderWait == 0 {
+		t.ManagedSlotLeaderWait = defaultManagedSlotLeaderWaitTimeout
+	}
+	if t.ManagedSlotCatchUp == 0 {
+		t.ManagedSlotCatchUp = defaultManagedSlotCatchUpTimeout
+	}
+	if t.ManagedSlotLeaderMove == 0 {
+		t.ManagedSlotLeaderMove = defaultManagedSlotLeaderMoveTimeout
+	}
+	if t.ConfigChangeRetryBudget == 0 {
+		t.ConfigChangeRetryBudget = defaultConfigChangeRetryBudget
+	}
+	if t.LeaderTransferRetryBudget == 0 {
+		t.LeaderTransferRetryBudget = defaultLeaderTransferRetryBudget
 	}
 }
 

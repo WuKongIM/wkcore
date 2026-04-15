@@ -8,6 +8,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/messageid"
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 )
 
 type Config struct {
@@ -71,6 +72,7 @@ type ClusterConfig struct {
 	ElectionTick              int
 	HeartbeatTick             int
 	DialTimeout               time.Duration
+	Timeouts                  raftcluster.Timeouts
 	DataPlaneRPCTimeout       time.Duration
 	DataPlaneMaxFetchInflight int
 	DataPlaneMaxPendingFetch  int

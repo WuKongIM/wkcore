@@ -192,6 +192,38 @@ func TestLoadConfigParsesDataPlaneRPCTimeoutFromConf(t *testing.T) {
 	require.Equal(t, 250*time.Millisecond, cfg.Cluster.DataPlaneRPCTimeout)
 }
 
+func TestLoadConfigParsesClusterTimeoutOverridesFromConf(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_CLUSTER_SLOT_COUNT=1",
+		"WK_CLUSTER_CONTROLLER_OBSERVATION_INTERVAL=350ms",
+		"WK_CLUSTER_CONTROLLER_REQUEST_TIMEOUT=3s",
+		"WK_CLUSTER_CONTROLLER_LEADER_WAIT_TIMEOUT=9s",
+		"WK_CLUSTER_FORWARD_RETRY_BUDGET=600ms",
+		"WK_CLUSTER_MANAGED_SLOT_LEADER_WAIT_TIMEOUT=6s",
+		"WK_CLUSTER_MANAGED_SLOT_CATCH_UP_TIMEOUT=7s",
+		"WK_CLUSTER_MANAGED_SLOT_LEADER_MOVE_TIMEOUT=8s",
+		"WK_CLUSTER_CONFIG_CHANGE_RETRY_BUDGET=700ms",
+		"WK_CLUSTER_LEADER_TRANSFER_RETRY_BUDGET=800ms",
+		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
+	)
+
+	cfg, err := loadConfig(configPath)
+	require.NoError(t, err)
+	require.Equal(t, 350*time.Millisecond, cfg.Cluster.Timeouts.ControllerObservation)
+	require.Equal(t, 3*time.Second, cfg.Cluster.Timeouts.ControllerRequest)
+	require.Equal(t, 9*time.Second, cfg.Cluster.Timeouts.ControllerLeaderWait)
+	require.Equal(t, 600*time.Millisecond, cfg.Cluster.Timeouts.ForwardRetryBudget)
+	require.Equal(t, 6*time.Second, cfg.Cluster.Timeouts.ManagedSlotLeaderWait)
+	require.Equal(t, 7*time.Second, cfg.Cluster.Timeouts.ManagedSlotCatchUp)
+	require.Equal(t, 8*time.Second, cfg.Cluster.Timeouts.ManagedSlotLeaderMove)
+	require.Equal(t, 700*time.Millisecond, cfg.Cluster.Timeouts.ConfigChangeRetryBudget)
+	require.Equal(t, 800*time.Millisecond, cfg.Cluster.Timeouts.LeaderTransferRetryBudget)
+}
+
 func TestBuildAppConfigParsesAutomaticSlotManagementKeys(t *testing.T) {
 	dir := t.TempDir()
 	configPath := writeConf(t, dir, "wukongim.conf",

@@ -3,6 +3,7 @@ package cluster
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
@@ -70,6 +71,63 @@ func TestConfigApplyDefaults(t *testing.T) {
 	}
 	if cfg.DialTimeout != defaultDialTimeout {
 		t.Fatalf("expected default DialTimeout")
+	}
+	if cfg.Timeouts.ControllerObservation != defaultControllerObservationTimeout {
+		t.Fatalf("expected default ControllerObservation timeout")
+	}
+	if cfg.Timeouts.ControllerRequest != defaultControllerRequestTimeout {
+		t.Fatalf("expected default ControllerRequest timeout")
+	}
+	if cfg.Timeouts.ControllerLeaderWait != defaultControllerLeaderWaitTimeout {
+		t.Fatalf("expected default ControllerLeaderWait timeout")
+	}
+	if cfg.Timeouts.ManagedSlotLeaderWait != defaultManagedSlotLeaderWaitTimeout {
+		t.Fatalf("expected default ManagedSlotLeaderWait timeout")
+	}
+	if cfg.Timeouts.ManagedSlotCatchUp != defaultManagedSlotCatchUpTimeout {
+		t.Fatalf("expected default ManagedSlotCatchUp timeout")
+	}
+	if cfg.Timeouts.ManagedSlotLeaderMove != defaultManagedSlotLeaderMoveTimeout {
+		t.Fatalf("expected default ManagedSlotLeaderMove timeout")
+	}
+	if cfg.Timeouts.ForwardRetryBudget != defaultForwardRetryBudget {
+		t.Fatalf("expected default ForwardRetryBudget")
+	}
+	if cfg.Timeouts.ConfigChangeRetryBudget != defaultConfigChangeRetryBudget {
+		t.Fatalf("expected default ConfigChangeRetryBudget")
+	}
+	if cfg.Timeouts.LeaderTransferRetryBudget != defaultLeaderTransferRetryBudget {
+		t.Fatalf("expected default LeaderTransferRetryBudget")
+	}
+}
+
+func TestConfigApplyDefaultsPreservesExplicitTimeouts(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.Timeouts = Timeouts{
+		ControllerObservation:     350 * time.Millisecond,
+		ControllerRequest:         3 * time.Second,
+		ControllerLeaderWait:      9 * time.Second,
+		ForwardRetryBudget:        600 * time.Millisecond,
+		ManagedSlotLeaderWait:     6 * time.Second,
+		ManagedSlotCatchUp:        7 * time.Second,
+		ManagedSlotLeaderMove:     8 * time.Second,
+		ConfigChangeRetryBudget:   700 * time.Millisecond,
+		LeaderTransferRetryBudget: 800 * time.Millisecond,
+	}
+
+	cfg.applyDefaults()
+
+	if cfg.Timeouts.ControllerObservation != 350*time.Millisecond {
+		t.Fatalf("expected explicit ControllerObservation timeout")
+	}
+	if cfg.Timeouts.ControllerRequest != 3*time.Second {
+		t.Fatalf("expected explicit ControllerRequest timeout")
+	}
+	if cfg.Timeouts.ControllerLeaderWait != 9*time.Second {
+		t.Fatalf("expected explicit ControllerLeaderWait timeout")
+	}
+	if cfg.Timeouts.ForwardRetryBudget != 600*time.Millisecond {
+		t.Fatalf("expected explicit ForwardRetryBudget")
 	}
 }
 

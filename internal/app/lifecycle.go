@@ -9,7 +9,7 @@ import (
 const (
 	apiStopTimeout              = 5 * time.Second
 	defaultDataPlaneDialTimeout = 5 * time.Second
-	presenceLeaderReadyTimeout  = 10 * time.Second
+	managedSlotsReadyTimeout    = 10 * time.Second
 )
 
 func (a *App) Start() error {
@@ -273,7 +273,7 @@ func (a *App) waitForManagedSlotsReady() error {
 	if a == nil || a.cluster == nil {
 		return nil
 	}
-	readyCtx, cancel := context.WithTimeout(context.Background(), presenceLeaderReadyTimeout)
+	readyCtx, cancel := context.WithTimeout(context.Background(), managedSlotsReadyTimeout)
 	defer cancel()
 	return a.cluster.WaitForManagedSlotsReady(readyCtx)
 }

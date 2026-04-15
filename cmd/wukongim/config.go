@@ -11,6 +11,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/app"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	"github.com/spf13/viper"
 )
 
@@ -121,6 +122,42 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 	if err != nil {
 		return app.Config{}, err
 	}
+	controllerObservationInterval, err := parseDuration(v, "WK_CLUSTER_CONTROLLER_OBSERVATION_INTERVAL")
+	if err != nil {
+		return app.Config{}, err
+	}
+	controllerRequestTimeout, err := parseDuration(v, "WK_CLUSTER_CONTROLLER_REQUEST_TIMEOUT")
+	if err != nil {
+		return app.Config{}, err
+	}
+	controllerLeaderWaitTimeout, err := parseDuration(v, "WK_CLUSTER_CONTROLLER_LEADER_WAIT_TIMEOUT")
+	if err != nil {
+		return app.Config{}, err
+	}
+	forwardRetryBudget, err := parseDuration(v, "WK_CLUSTER_FORWARD_RETRY_BUDGET")
+	if err != nil {
+		return app.Config{}, err
+	}
+	managedSlotLeaderWaitTimeout, err := parseDuration(v, "WK_CLUSTER_MANAGED_SLOT_LEADER_WAIT_TIMEOUT")
+	if err != nil {
+		return app.Config{}, err
+	}
+	managedSlotCatchUpTimeout, err := parseDuration(v, "WK_CLUSTER_MANAGED_SLOT_CATCH_UP_TIMEOUT")
+	if err != nil {
+		return app.Config{}, err
+	}
+	managedSlotLeaderMoveTimeout, err := parseDuration(v, "WK_CLUSTER_MANAGED_SLOT_LEADER_MOVE_TIMEOUT")
+	if err != nil {
+		return app.Config{}, err
+	}
+	configChangeRetryBudget, err := parseDuration(v, "WK_CLUSTER_CONFIG_CHANGE_RETRY_BUDGET")
+	if err != nil {
+		return app.Config{}, err
+	}
+	leaderTransferRetryBudget, err := parseDuration(v, "WK_CLUSTER_LEADER_TRANSFER_RETRY_BUDGET")
+	if err != nil {
+		return app.Config{}, err
+	}
 	controllerReplicaN, err := parseInt(v, "WK_CLUSTER_CONTROLLER_REPLICA_N")
 	if err != nil {
 		return app.Config{}, err
@@ -212,18 +249,29 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 			ControllerRaftPath: stringValue(v, "WK_STORAGE_CONTROLLER_RAFT_PATH"),
 		},
 		Cluster: app.ClusterConfig{
-			ListenAddr:          stringValue(v, "WK_CLUSTER_LISTEN_ADDR"),
-			SlotCount:           slotCount,
-			Nodes:               nodes,
-			ControllerReplicaN:  controllerReplicaN,
-			SlotReplicaN:        slotReplicaN,
-			ForwardTimeout:      forwardTimeout,
-			PoolSize:            poolSize,
-			TickInterval:        tickInterval,
-			RaftWorkers:         raftWorkers,
-			ElectionTick:        electionTick,
-			HeartbeatTick:       heartbeatTick,
-			DialTimeout:         dialTimeout,
+			ListenAddr:         stringValue(v, "WK_CLUSTER_LISTEN_ADDR"),
+			SlotCount:          slotCount,
+			Nodes:              nodes,
+			ControllerReplicaN: controllerReplicaN,
+			SlotReplicaN:       slotReplicaN,
+			ForwardTimeout:     forwardTimeout,
+			PoolSize:           poolSize,
+			TickInterval:       tickInterval,
+			RaftWorkers:        raftWorkers,
+			ElectionTick:       electionTick,
+			HeartbeatTick:      heartbeatTick,
+			DialTimeout:        dialTimeout,
+			Timeouts: raftcluster.Timeouts{
+				ControllerObservation:     controllerObservationInterval,
+				ControllerRequest:         controllerRequestTimeout,
+				ControllerLeaderWait:      controllerLeaderWaitTimeout,
+				ForwardRetryBudget:        forwardRetryBudget,
+				ManagedSlotLeaderWait:     managedSlotLeaderWaitTimeout,
+				ManagedSlotCatchUp:        managedSlotCatchUpTimeout,
+				ManagedSlotLeaderMove:     managedSlotLeaderMoveTimeout,
+				ConfigChangeRetryBudget:   configChangeRetryBudget,
+				LeaderTransferRetryBudget: leaderTransferRetryBudget,
+			},
 			DataPlaneRPCTimeout: dataPlaneRPCTimeout,
 		},
 		API: app.APIConfig{
