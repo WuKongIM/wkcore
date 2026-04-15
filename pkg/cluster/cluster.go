@@ -125,6 +125,20 @@ func defaultLogger(logger wklog.Logger) wklog.Logger {
 	return logger
 }
 
+func (c *Cluster) transportLogger() wklog.Logger {
+	if c == nil || c.logger == nil {
+		return wklog.NewNop()
+	}
+	return c.logger.Named("transport")
+}
+
+func (c *Cluster) controllerLogger() wklog.Logger {
+	if c == nil || c.logger == nil {
+		return wklog.NewNop()
+	}
+	return c.logger.Named("controller")
+}
+
 func (c *Cluster) Start() error {
 	if err := c.startTransportLayer(); err != nil {
 		return err
@@ -234,7 +248,7 @@ func (c *Cluster) startMultiraftRuntime() error {
 		NodeID:       c.cfg.NodeID,
 		TickInterval: c.cfg.TickInterval,
 		Workers:      c.cfg.RaftWorkers,
-		Transport:    &raftTransport{client: c.raftClient},
+		Transport:    &raftTransport{client: c.raftClient, logger: c.transportLogger()},
 		Raft: multiraft.RaftOptions{
 			ElectionTick:  c.cfg.ElectionTick,
 			HeartbeatTick: c.cfg.HeartbeatTick,

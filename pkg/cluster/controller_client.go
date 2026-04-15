@@ -9,6 +9,7 @@ import (
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type controllerAPI interface {
@@ -215,6 +216,7 @@ func (c *controllerClient) call(ctx context.Context, req controllerRPCRequest) (
 
 	tried := make(map[multiraft.NodeID]struct{}, len(targets))
 	var lastErr error
+	var lastTarget multiraft.NodeID
 	for len(targets) > 0 {
 		target := targets[0]
 		targets = targets[1:]
@@ -222,6 +224,7 @@ func (c *controllerClient) call(ctx context.Context, req controllerRPCRequest) (
 			continue
 		}
 		tried[target] = struct{}{}
+		lastTarget = target
 
 		// Give each peer probe its own budget so a slow stale leader does not
 		// consume the entire controller retry window before we reach the current
@@ -233,6 +236,7 @@ func (c *controllerClient) call(ctx context.Context, req controllerRPCRequest) (
 			if c.cachedLeader() == target {
 				c.clearLeader()
 			}
+			c.logRetry(req, target, err, "controller rpc attempt failed, retrying")
 			lastErr = err
 			continue
 		}
@@ -251,6 +255,7 @@ func (c *controllerClient) call(ctx context.Context, req controllerRPCRequest) (
 			} else {
 				c.clearLeader()
 			}
+			c.logRetry(req, target, ErrNotLeader, "controller rpc attempt failed, retrying")
 			lastErr = ErrNotLeader
 			continue
 		}
@@ -263,6 +268,7 @@ func (c *controllerClient) call(ctx context.Context, req controllerRPCRequest) (
 		lastErr = ErrNoLeader
 	}
 	err = lastErr
+	c.logFailure(req, lastTarget, err)
 	return controllerRPCResponse{}, err
 }
 
@@ -328,4 +334,46 @@ func (c *controllerClient) clearLeader() {
 
 func isControllerRedirect(err error) bool {
 	return errors.Is(err, ErrNotLeader)
+}
+
+func (c *controllerClient) logRetry(req controllerRPCRequest, target multiraft.NodeID, err error, msg string) {
+	logger := c.controllerLogger()
+	if logger == nil {
+		return
+	}
+	fields := c.controllerLogFields(req, target)
+	fields = append(fields, wklog.Event("cluster.controller.rpc.retrying"), wklog.Error(err))
+	logger.Warn(msg, fields...)
+}
+
+func (c *controllerClient) logFailure(req controllerRPCRequest, target multiraft.NodeID, err error) {
+	logger := c.controllerLogger()
+	if logger == nil {
+		return
+	}
+	fields := c.controllerLogFields(req, target)
+	fields = append(fields, wklog.Event("cluster.controller.rpc.failed"), wklog.Error(err))
+	logger.Error("controller rpc failed", fields...)
+}
+
+func (c *controllerClient) controllerLogFields(req controllerRPCRequest, target multiraft.NodeID) []wklog.Field {
+	fields := []wklog.Field{wklog.String("rpc", req.Kind)}
+	if target != 0 {
+		fields = append(fields, wklog.TargetNodeID(uint64(target)))
+	}
+	slotID := req.SlotID
+	if slotID == 0 && req.Advance != nil {
+		slotID = req.Advance.SlotID
+	}
+	if slotID != 0 {
+		fields = append(fields, wklog.SlotID(uint64(slotID)))
+	}
+	return fields
+}
+
+func (c *controllerClient) controllerLogger() wklog.Logger {
+	if c == nil || c.cluster == nil {
+		return wklog.NewNop()
+	}
+	return c.cluster.controllerLogger()
 }

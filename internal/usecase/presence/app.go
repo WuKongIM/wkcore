@@ -87,3 +87,17 @@ func New(opts Options) *App {
 	}
 	return app
 }
+
+func (a *App) activateLogger() wklog.Logger {
+	if a == nil || a.logger == nil {
+		return wklog.NewNop()
+	}
+	return a.logger.Named("activate")
+}
+
+func (a *App) authorityLogger() wklog.Logger {
+	if a == nil || a.logger == nil {
+		return wklog.NewNop()
+	}
+	return a.logger.Named("authority")
+}

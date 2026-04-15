@@ -7,10 +7,16 @@ import (
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 func (a *App) Send(ctx context.Context, cmd SendCommand) (SendResult, error) {
 	if cmd.FromUID == "" {
+		fields := append([]wklog.Field{
+			wklog.Event("message.send.unauthenticated.rejected"),
+		}, messageLogFields(channel.ChannelID{ID: cmd.ChannelID, Type: cmd.ChannelType}, cmd.FromUID)...)
+		fields = append(fields, wklog.Error(ErrUnauthenticatedSender))
+		a.sendLogger().Warn("reject unauthenticated sender", fields...)
 		return SendResult{}, ErrUnauthenticatedSender
 	}
 
@@ -26,6 +32,11 @@ func (a *App) Send(ctx context.Context, cmd SendCommand) (SendResult, error) {
 	}
 
 	if a.cluster == nil {
+		fields := append([]wklog.Field{
+			wklog.Event("message.send.cluster.required"),
+		}, messageLogFields(channel.ChannelID{ID: cmd.ChannelID, Type: cmd.ChannelType}, cmd.FromUID)...)
+		fields = append(fields, wklog.Error(ErrClusterRequired))
+		a.sendLogger().Error("message cluster is required", fields...)
 		return SendResult{}, ErrClusterRequired
 	}
 
@@ -34,11 +45,12 @@ func (a *App) Send(ctx context.Context, cmd SendCommand) (SendResult, error) {
 
 func (a *App) sendDurable(ctx context.Context, cmd SendCommand) (SendResult, error) {
 	draft := buildDurableMessage(cmd, a.now())
-	result, err := sendWithMetaRefreshRetry(ctx, a.cluster, a.refresher, channel.AppendRequest{
-		ChannelID: channel.ChannelID{
-			ID:   cmd.ChannelID,
-			Type: cmd.ChannelType,
-		},
+	channelID := channel.ChannelID{
+		ID:   cmd.ChannelID,
+		Type: cmd.ChannelType,
+	}
+	result, err := sendWithMetaRefreshRetry(ctx, a.sendLogger(), a.retryLogger(), a.cluster, a.refresher, channel.AppendRequest{
+		ChannelID:             channelID,
 		Message:               draft,
 		SupportsMessageSeqU64: supportsMessageSeqU64(cmd.ProtocolVersion),
 		ExpectedChannelEpoch:  cmd.ExpectedChannelEpoch,
@@ -55,7 +67,13 @@ func (a *App) sendDurable(ctx context.Context, cmd SendCommand) (SendResult, err
 	}
 
 	if a.dispatcher != nil {
-		_ = a.dispatcher.SubmitCommitted(ctx, result.Message)
+		if err := a.dispatcher.SubmitCommitted(ctx, result.Message); err != nil {
+			fields := append([]wklog.Field{
+				wklog.Event("message.send.dispatch_submit.failed"),
+			}, messageLogFields(channelID, cmd.FromUID)...)
+			fields = append(fields, wklog.Error(err))
+			a.sendLogger().Warn("submit committed message failed", fields...)
+		}
 	}
 	return sendResult, nil
 }
@@ -80,4 +98,12 @@ func buildDurableMessage(cmd SendCommand, now time.Time) channel.Message {
 
 func supportsMessageSeqU64(version uint8) bool {
 	return version == 0 || version > frame.LegacyMessageSeqVersion
+}
+
+func messageLogFields(channelID channel.ChannelID, uid string) []wklog.Field {
+	return []wklog.Field{
+		wklog.ChannelID(channelID.ID),
+		wklog.ChannelType(int64(channelID.Type)),
+		wklog.UID(uid),
+	}
 }

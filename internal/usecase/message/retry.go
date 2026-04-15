@@ -6,25 +6,59 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
-func sendWithMetaRefreshRetry(ctx context.Context, cluster ChannelCluster, refresher MetaRefresher, req channel.AppendRequest) (channel.AppendResult, error) {
+func sendWithMetaRefreshRetry(ctx context.Context, sendLogger, retryLogger wklog.Logger, cluster ChannelCluster, refresher MetaRefresher, req channel.AppendRequest) (channel.AppendResult, error) {
 	result, err := cluster.Append(ctx, req)
+	if err == nil {
+		return result, nil
+	}
+
 	if !shouldRefreshAndRetry(err) || refresher == nil {
+		fields := append([]wklog.Field{
+			wklog.Event("message.send.persist.failed"),
+		}, messageLogFields(req.ChannelID, req.Message.FromUID)...)
+		fields = append(fields, wklog.Error(err))
+		sendLogger.Error("persist committed message failed", fields...)
 		return result, err
 	}
 
+	fields := append([]wklog.Field{
+		wklog.Event("message.retry.refresh.triggered"),
+	}, messageLogFields(req.ChannelID, req.Message.FromUID)...)
+	fields = append(fields, wklog.Error(err))
+	retryLogger.Warn("channel metadata stale, refreshing and retrying", fields...)
+
 	meta, err := refresher.RefreshChannelMeta(ctx, req.ChannelID)
 	if err != nil {
+		fields := append([]wklog.Field{
+			wklog.Event("message.retry.refresh.failed"),
+		}, messageLogFields(req.ChannelID, req.Message.FromUID)...)
+		fields = append(fields, wklog.Error(err))
+		retryLogger.Error("refresh channel metadata failed", fields...)
 		return channel.AppendResult{}, err
 	}
 	if err := cluster.ApplyMeta(meta); err != nil {
+		fields := append([]wklog.Field{
+			wklog.Event("message.retry.apply_meta.failed"),
+		}, messageLogFields(req.ChannelID, req.Message.FromUID)...)
+		fields = append(fields, wklog.Error(err))
+		retryLogger.Error("apply refreshed channel metadata failed", fields...)
 		return channel.AppendResult{}, err
 	}
 
 	req.ExpectedChannelEpoch = meta.Epoch
 	req.ExpectedLeaderEpoch = meta.LeaderEpoch
-	return cluster.Append(ctx, req)
+	result, err = cluster.Append(ctx, req)
+	if err != nil {
+		fields := append([]wklog.Field{
+			wklog.Event("message.retry.persist.failed"),
+		}, messageLogFields(req.ChannelID, req.Message.FromUID)...)
+		fields = append(fields, wklog.Error(err))
+		retryLogger.Error("persist committed message failed after metadata refresh", fields...)
+	}
+	return result, err
 }
 
 func shouldRefreshAndRetry(err error) bool {

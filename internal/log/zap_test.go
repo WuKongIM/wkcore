@@ -41,6 +41,36 @@ func TestNewLoggerWritesNamedAndContextualFields(t *testing.T) {
 	require.Contains(t, entry["caller"], "zap_test.go")
 }
 
+func TestNewLoggerWritesNestedModuleAndSemanticFields(t *testing.T) {
+	dir := t.TempDir()
+
+	logger, err := NewLogger(Config{
+		Dir:     dir,
+		Level:   "debug",
+		Console: false,
+		Format:  "json",
+	})
+	require.NoError(t, err)
+
+	logger.Named("message").Named("send").Error(
+		"persist committed message failed",
+		wklog.Event("message.send.persist.failed"),
+		wklog.ChannelID("u1@u2"),
+		wklog.MessageID(88),
+		wklog.Error(errors.New("boom")),
+	)
+	require.NoError(t, logger.Sync())
+
+	entry := readSingleJSONLogEntry(t, filepath.Join(dir, "app.log"))
+	require.Equal(t, "ERROR", entry["level"])
+	require.Equal(t, "message.send", entry["module"])
+	require.Equal(t, "persist committed message failed", entry["msg"])
+	require.Equal(t, "message.send.persist.failed", entry["event"])
+	require.Equal(t, "u1@u2", entry["channelID"])
+	require.EqualValues(t, 88, entry["messageID"])
+	require.Equal(t, "boom", entry["error"])
+}
+
 func TestNewLoggerRoutesLevelsToSeparateFiles(t *testing.T) {
 	dir := t.TempDir()
 

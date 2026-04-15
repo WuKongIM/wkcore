@@ -57,3 +57,75 @@ func Duration(key string, val time.Duration) Field {
 func Any(key string, val any) Field {
 	return Field{Key: key, Type: AnyType, Value: val}
 }
+
+func Event(val string) Field {
+	return String("event", val)
+}
+
+func SourceModule(val string) Field {
+	return String("sourceModule", val)
+}
+
+func TraceID(val string) Field {
+	return String("traceID", val)
+}
+
+func RequestID(val string) Field {
+	return String("requestID", val)
+}
+
+func NodeID(val uint64) Field {
+	return Uint64("nodeID", val)
+}
+
+func TargetNodeID(val uint64) Field {
+	return Uint64("targetNodeID", val)
+}
+
+func LeaderNodeID(val uint64) Field {
+	return Uint64("leaderNodeID", val)
+}
+
+func PeerNodeID(val uint64) Field {
+	return Uint64("peerNodeID", val)
+}
+
+func SlotID(val uint64) Field {
+	return Uint64("slotID", val)
+}
+
+func ChannelID(val string) Field {
+	return String("channelID", val)
+}
+
+func ChannelType(val int64) Field {
+	return Int64("channelType", val)
+}
+
+func MessageID(val int64) Field {
+	return Int64("messageID", val)
+}
+
+func UID(val string) Field {
+	return String("uid", val)
+}
+
+func SessionID(val uint64) Field {
+	return Uint64("sessionID", val)
+}
+
+func ConnID(val uint64) Field {
+	return Uint64("connID", val)
+}
+
+func Attempt(val int) Field {
+	return Int("attempt", val)
+}
+
+func Timeout(val time.Duration) Field {
+	return Duration("timeout", val)
+}
+
+func Reason(val string) Field {
+	return String("reason", val)
+}

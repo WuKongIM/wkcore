@@ -82,3 +82,44 @@ func TestRaftTransport_CtxCancel(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
 }
+
+func TestRaftTransportLogsSkippedSendFailure(t *testing.T) {
+	d := NewStaticDiscovery([]NodeConfig{})
+	pool := transport.NewPool(d, 2, 5*time.Second)
+	defer pool.Close()
+	client := transport.NewClient(pool)
+	defer client.Stop()
+
+	logger := newRecordingLogger("cluster")
+	rt := &raftTransport{client: client, logger: logger.Named("transport")}
+
+	err := rt.Send(context.Background(), []multiraft.Envelope{
+		{SlotID: 1, Message: raftpb.Message{To: 9, From: 1}},
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	entry := requireRecordedLogEntry(t, logger, "WARN", "cluster.transport", "cluster.transport.raft_send.skipped")
+	if got := entry.msg; got != "skip raft transport send after client error" {
+		t.Fatalf("msg = %q", got)
+	}
+	if got := requireRecordedField[uint64](t, entry, "nodeID"); got != 1 {
+		t.Fatalf("nodeID = %d", got)
+	}
+	if got := requireRecordedField[uint64](t, entry, "targetNodeID"); got != 9 {
+		t.Fatalf("targetNodeID = %d", got)
+	}
+	if got := requireRecordedField[uint64](t, entry, "slotID"); got != 1 {
+		t.Fatalf("slotID = %d", got)
+	}
+	if got := requireRecordedField[error](t, entry, "error"); got != transport.ErrNodeNotFound {
+		t.Fatalf("error = %v", got)
+	}
+	if _, ok := entry.field("event"); !ok {
+		t.Fatal("event field missing")
+	}
+	if _, ok := entry.field("module"); ok {
+		t.Fatal("module should come from logger name, not field")
+	}
+}

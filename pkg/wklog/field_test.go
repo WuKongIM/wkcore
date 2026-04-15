@@ -38,3 +38,100 @@ func TestFieldConstructors(t *testing.T) {
 		})
 	}
 }
+
+func TestSemanticHelpersUseStableKeys(t *testing.T) {
+	duration := 2 * time.Second
+
+	tests := []struct {
+		name  string
+		field Field
+		want  Field
+	}{
+		{
+			name:  "event",
+			field: Event("message.send.persist.failed"),
+			want:  Field{Key: "event", Type: StringType, Value: "message.send.persist.failed"},
+		},
+		{
+			name:  "source module",
+			field: SourceModule("message.send"),
+			want:  Field{Key: "sourceModule", Type: StringType, Value: "message.send"},
+		},
+		{
+			name:  "trace id",
+			field: TraceID("gw-9f2c"),
+			want:  Field{Key: "traceID", Type: StringType, Value: "gw-9f2c"},
+		},
+		{
+			name:  "request id",
+			field: RequestID("req-123"),
+			want:  Field{Key: "requestID", Type: StringType, Value: "req-123"},
+		},
+		{
+			name:  "node id",
+			field: NodeID(3),
+			want:  Field{Key: "nodeID", Type: Uint64Type, Value: uint64(3)},
+		},
+		{
+			name:  "target node id",
+			field: TargetNodeID(9),
+			want:  Field{Key: "targetNodeID", Type: Uint64Type, Value: uint64(9)},
+		},
+		{
+			name:  "slot id",
+			field: SlotID(8),
+			want:  Field{Key: "slotID", Type: Uint64Type, Value: uint64(8)},
+		},
+		{
+			name:  "channel id",
+			field: ChannelID("u1@u2"),
+			want:  Field{Key: "channelID", Type: StringType, Value: "u1@u2"},
+		},
+		{
+			name:  "channel type",
+			field: ChannelType(1),
+			want:  Field{Key: "channelType", Type: Int64Type, Value: int64(1)},
+		},
+		{
+			name:  "message id",
+			field: MessageID(88),
+			want:  Field{Key: "messageID", Type: Int64Type, Value: int64(88)},
+		},
+		{
+			name:  "uid",
+			field: UID("u1"),
+			want:  Field{Key: "uid", Type: StringType, Value: "u1"},
+		},
+		{
+			name:  "session id",
+			field: SessionID(11),
+			want:  Field{Key: "sessionID", Type: Uint64Type, Value: uint64(11)},
+		},
+		{
+			name:  "conn id",
+			field: ConnID(21),
+			want:  Field{Key: "connID", Type: Uint64Type, Value: uint64(21)},
+		},
+		{
+			name:  "attempt",
+			field: Attempt(2),
+			want:  Field{Key: "attempt", Type: IntType, Value: 2},
+		},
+		{
+			name:  "reason",
+			field: Reason("metadata stale"),
+			want:  Field{Key: "reason", Type: StringType, Value: "metadata stale"},
+		},
+		{
+			name:  "timeout",
+			field: Timeout(duration),
+			want:  Field{Key: "timeout", Type: DurationType, Value: duration},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.field)
+		})
+	}
+}
