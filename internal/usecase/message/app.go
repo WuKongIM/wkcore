@@ -91,6 +91,20 @@ func (a *App) OnlineRegistry() online.Registry {
 	return a.online
 }
 
+func (a *App) sendLogger() wklog.Logger {
+	if a == nil || a.logger == nil {
+		return wklog.NewNop()
+	}
+	return a.logger.Named("send")
+}
+
+func (a *App) retryLogger() wklog.Logger {
+	if a == nil || a.logger == nil {
+		return wklog.NewNop()
+	}
+	return a.logger.Named("retry")
+}
+
 type IdentityStore interface {
 	GetUser(ctx context.Context, uid string) (metadb.User, error)
 }
