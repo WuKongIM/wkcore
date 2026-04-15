@@ -11,6 +11,7 @@ import (
 	channelreplica "github.com/WuKongIM/WuKongIM/pkg/channel/replica"
 	channelruntime "github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
 	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 )
 
@@ -129,7 +130,7 @@ func (s *channelMetaSync) Start() error {
 	s.done = done
 	s.mu.Unlock()
 
-	if err := s.syncOnce(ctx); err != nil {
+	if err := s.syncOnce(ctx); err != nil && !channelMetaSyncStartupRetryable(err) {
 		cancel()
 		s.mu.Lock()
 		if s.done == done {
@@ -154,6 +155,10 @@ func (s *channelMetaSync) Start() error {
 		}
 	}()
 	return nil
+}
+
+func channelMetaSyncStartupRetryable(err error) bool {
+	return errors.Is(err, raftcluster.ErrNoLeader) || errors.Is(err, raftcluster.ErrSlotNotFound)
 }
 
 func (s *channelMetaSync) Stop() error {

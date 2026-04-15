@@ -8,6 +8,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	channelhandler "github.com/WuKongIM/WuKongIM/pkg/channel/handler"
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/stretchr/testify/require"
 )
@@ -274,16 +275,40 @@ func TestChannelMetaSyncConcurrentRefreshAndStop(t *testing.T) {
 	wg.Wait()
 }
 
+func TestChannelMetaSyncStartAllowsTransientLeaderlessSource(t *testing.T) {
+	source := &fakeChannelMetaSource{listErr: raftcluster.ErrNoLeader}
+	cluster := &fakeChannelMetaCluster{}
+	syncer := &channelMetaSync{
+		source:          source,
+		cluster:         cluster,
+		localNode:       2,
+		refreshInterval: time.Hour,
+	}
+
+	require.NoError(t, syncer.Start())
+	require.NoError(t, syncer.Stop())
+	require.Empty(t, cluster.applied)
+	require.Empty(t, cluster.removed)
+}
+
 type fakeChannelMetaSource struct {
-	get  map[channel.ChannelID]metadb.ChannelRuntimeMeta
-	list []metadb.ChannelRuntimeMeta
+	get     map[channel.ChannelID]metadb.ChannelRuntimeMeta
+	list    []metadb.ChannelRuntimeMeta
+	getErr  error
+	listErr error
 }
 
 func (f *fakeChannelMetaSource) GetChannelRuntimeMeta(_ context.Context, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error) {
+	if f.getErr != nil {
+		return metadb.ChannelRuntimeMeta{}, f.getErr
+	}
 	return f.get[channel.ChannelID{ID: channelID, Type: uint8(channelType)}], nil
 }
 
 func (f *fakeChannelMetaSource) ListChannelRuntimeMeta(context.Context) ([]metadb.ChannelRuntimeMeta, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return append([]metadb.ChannelRuntimeMeta(nil), f.list...), nil
 }
 
