@@ -95,6 +95,11 @@ func (h *Handler) OnSessionActivate(ctx *coregateway.Context) (*frame.ConnackPac
 	}
 	cmd, err := activateCommandFromContext(ctx, h.now())
 	if err != nil {
+		fields := append([]wklog.Field{
+			wklog.Event("access.gateway.conn.auth_failed"),
+		}, gatewayContextFields(ctx)...)
+		fields = append(fields, wklog.Error(err))
+		h.connLogger().Warn("reject unauthenticated session", fields...)
 		return nil, err
 	}
 	return nil, h.presence.Activate(requestContextFromContext(ctx), cmd)
@@ -124,3 +129,37 @@ func (h *Handler) OnSessionClose(ctx *coregateway.Context) error {
 }
 
 func (h *Handler) OnSessionError(*coregateway.Context, error) {}
+
+func (h *Handler) connLogger() wklog.Logger {
+	if h == nil || h.logger == nil {
+		return wklog.NewNop()
+	}
+	return h.logger.Named("conn")
+}
+
+func (h *Handler) frameLogger() wklog.Logger {
+	if h == nil || h.logger == nil {
+		return wklog.NewNop()
+	}
+	return h.logger.Named("frame")
+}
+
+func gatewayContextFields(ctx *coregateway.Context) []wklog.Field {
+	if ctx == nil || ctx.Session == nil {
+		return nil
+	}
+	fields := []wklog.Field{wklog.SessionID(ctx.Session.ID())}
+	if uid, _ := ctx.Session.Value(coregateway.SessionValueUID).(string); uid != "" {
+		fields = append(fields, wklog.UID(uid))
+	}
+	return fields
+}
+
+func gatewaySendFields(ctx *coregateway.Context, channelID string, channelType uint8) []wklog.Field {
+	fields := gatewayContextFields(ctx)
+	if channelID != "" {
+		fields = append(fields, wklog.ChannelID(channelID))
+	}
+	fields = append(fields, wklog.ChannelType(int64(channelType)))
+	return fields
+}
