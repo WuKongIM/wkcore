@@ -1,0 +1,13 @@
+.git
+.worktrees
+.devdata
+.VSCodeCounter
+.superpowers
+.claude
+.DS_Store
+*.test
+learn_project
+docker/dev-cluster
+tmp
+docs
+wukongim.conf
