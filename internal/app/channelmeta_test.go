@@ -150,6 +150,79 @@ func TestChannelMetaSyncRefreshRejectsNonLocalReplicaMeta(t *testing.T) {
 	require.Nil(t, cloneAppliedLocalSet(syncer.appliedLocal))
 }
 
+func TestChannelMetaSyncRefreshClearsAppliedLocalOnHashSlotTableVersionChange(t *testing.T) {
+	staleKey := channelhandler.KeyFromChannelID(channel.ChannelID{ID: "stale", Type: 1})
+	freshID := channel.ChannelID{ID: "fresh", Type: 1}
+	source := &fakeChannelMetaSource{
+		version: 2,
+		get: map[channel.ChannelID]metadb.ChannelRuntimeMeta{
+			freshID: {
+				ChannelID:    freshID.ID,
+				ChannelType:  int64(freshID.Type),
+				ChannelEpoch: 3,
+				LeaderEpoch:  4,
+				Replicas:     []uint64{2},
+				ISR:          []uint64{2},
+				Leader:       2,
+				MinISR:       1,
+				Status:       uint8(channel.StatusActive),
+			},
+		},
+	}
+	cluster := &fakeChannelMetaCluster{}
+	syncer := &channelMetaSync{
+		source:                   source,
+		cluster:                  cluster,
+		localNode:                2,
+		lastHashSlotTableVersion: 1,
+		appliedLocal: map[channel.ChannelKey]struct{}{
+			staleKey: {},
+		},
+	}
+
+	got, err := syncer.RefreshChannelMeta(context.Background(), freshID)
+	require.NoError(t, err)
+	require.Equal(t, map[channel.ChannelKey]struct{}{got.Key: {}}, cloneAppliedLocalSet(syncer.appliedLocal))
+}
+
+func TestChannelMetaSyncSyncOnceClearsAppliedLocalOnHashSlotTableVersionChange(t *testing.T) {
+	staleKey := channelhandler.KeyFromChannelID(channel.ChannelID{ID: "stale", Type: 1})
+	freshID := channel.ChannelID{ID: "fresh", Type: 1}
+	source := &fakeChannelMetaSource{
+		version: 2,
+		list: []metadb.ChannelRuntimeMeta{
+			{
+				ChannelID:    freshID.ID,
+				ChannelType:  int64(freshID.Type),
+				ChannelEpoch: 3,
+				LeaderEpoch:  4,
+				Replicas:     []uint64{2},
+				ISR:          []uint64{2},
+				Leader:       2,
+				MinISR:       1,
+				Status:       uint8(channel.StatusActive),
+			},
+		},
+	}
+	cluster := &fakeChannelMetaCluster{}
+	syncer := &channelMetaSync{
+		source:                   source,
+		cluster:                  cluster,
+		localNode:                2,
+		lastHashSlotTableVersion: 1,
+		appliedLocal: map[channel.ChannelKey]struct{}{
+			staleKey: {},
+		},
+	}
+
+	require.NoError(t, syncer.syncOnce(context.Background()))
+	require.Equal(t, []channel.Meta{projectChannelMeta(source.list[0])}, cluster.applied)
+	require.Empty(t, cluster.removed)
+	require.Equal(t, map[channel.ChannelKey]struct{}{
+		channelhandler.KeyFromChannelID(freshID): {},
+	}, cloneAppliedLocalSet(syncer.appliedLocal))
+}
+
 func TestChannelMetaSyncSyncOnceRemovesChannelsNoLongerAssignedLocally(t *testing.T) {
 	key := channelhandler.KeyFromChannelID(channel.ChannelID{ID: "local", Type: 1})
 	source := &fakeChannelMetaSource{
@@ -275,8 +348,9 @@ func TestChannelMetaSyncConcurrentRefreshAndStop(t *testing.T) {
 }
 
 type fakeChannelMetaSource struct {
-	get  map[channel.ChannelID]metadb.ChannelRuntimeMeta
-	list []metadb.ChannelRuntimeMeta
+	get     map[channel.ChannelID]metadb.ChannelRuntimeMeta
+	list    []metadb.ChannelRuntimeMeta
+	version uint64
 }
 
 func (f *fakeChannelMetaSource) GetChannelRuntimeMeta(_ context.Context, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error) {
@@ -285,6 +359,10 @@ func (f *fakeChannelMetaSource) GetChannelRuntimeMeta(_ context.Context, channel
 
 func (f *fakeChannelMetaSource) ListChannelRuntimeMeta(context.Context) ([]metadb.ChannelRuntimeMeta, error) {
 	return append([]metadb.ChannelRuntimeMeta(nil), f.list...), nil
+}
+
+func (f *fakeChannelMetaSource) HashSlotTableVersion() uint64 {
+	return f.version
 }
 
 type fakeChannelMetaCluster struct {

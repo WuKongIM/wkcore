@@ -100,11 +100,14 @@ func newControllerClient(cluster *Cluster, peers []NodeConfig, cache *assignment
 }
 
 func (c *controllerClient) Report(ctx context.Context, report slotcontroller.AgentReport) error {
-	_, err := c.call(ctx, controllerRPCRequest{
+	resp, err := c.call(ctx, controllerRPCRequest{
 		Kind:   controllerRPCHeartbeat,
 		Report: &report,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	return c.cluster.applyHashSlotTablePayload(resp.HashSlotTable)
 }
 
 func (c *controllerClient) ListNodes(ctx context.Context) ([]controllermeta.ClusterNode, error) {

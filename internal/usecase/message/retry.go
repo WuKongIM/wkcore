@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 )
 
 func sendWithMetaRefreshRetry(ctx context.Context, cluster ChannelCluster, refresher MetaRefresher, req channel.AppendRequest) (channel.AppendResult, error) {
@@ -27,5 +28,5 @@ func sendWithMetaRefreshRetry(ctx context.Context, cluster ChannelCluster, refre
 }
 
 func shouldRefreshAndRetry(err error) bool {
-	return errors.Is(err, channel.ErrStaleMeta) || errors.Is(err, channel.ErrNotLeader)
+	return errors.Is(err, channel.ErrStaleMeta) || errors.Is(err, channel.ErrNotLeader) || errors.Is(err, raftcluster.ErrRerouted)
 }

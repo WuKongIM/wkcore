@@ -434,10 +434,11 @@ func sameReconcileTaskIdentity(left, right controllermeta.ReconcileTask) bool {
 
 func slotcontrollerReport(c *Cluster, now time.Time, view *controllermeta.SlotRuntimeView) slotcontroller.AgentReport {
 	return slotcontroller.AgentReport{
-		NodeID:         uint64(c.cfg.NodeID),
-		Addr:           c.controllerReportAddr(),
-		ObservedAt:     now,
-		CapacityWeight: 1,
-		Runtime:        view,
+		NodeID:               uint64(c.cfg.NodeID),
+		Addr:                 c.controllerReportAddr(),
+		ObservedAt:           now,
+		CapacityWeight:       1,
+		HashSlotTableVersion: c.HashSlotTableVersion(),
+		Runtime:              view,
 	}
 }

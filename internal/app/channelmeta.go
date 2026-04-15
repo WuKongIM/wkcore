@@ -19,6 +19,10 @@ type channelMetaSource interface {
 	ListChannelRuntimeMeta(ctx context.Context) ([]metadb.ChannelRuntimeMeta, error)
 }
 
+type hashSlotTableVersionSource interface {
+	HashSlotTableVersion() uint64
+}
+
 type memoryGenerationStore struct {
 	mu     sync.RWMutex
 	values map[channel.ChannelKey]uint64
@@ -45,6 +49,8 @@ type channelMetaSync struct {
 	cancel       context.CancelFunc
 	done         chan struct{}
 	appliedLocal map[channel.ChannelKey]struct{}
+
+	lastHashSlotTableVersion uint64
 }
 
 func newMemoryGenerationStore() *memoryGenerationStore {
@@ -103,6 +109,7 @@ func (s channelSnapshotApplier) InstallSnapshot(_ context.Context, snap channel.
 }
 
 func (s *channelMetaSync) RefreshChannelMeta(ctx context.Context, id channel.ChannelID) (channel.Meta, error) {
+	s.observeHashSlotTableVersion()
 	meta, err := s.source.GetChannelRuntimeMeta(ctx, id.ID, int64(id.Type))
 	if err != nil {
 		return channel.Meta{}, err
@@ -175,6 +182,7 @@ func (s *channelMetaSync) Stop() error {
 }
 
 func (s *channelMetaSync) syncOnce(ctx context.Context) error {
+	s.observeHashSlotTableVersion()
 	metas, err := s.source.ListChannelRuntimeMeta(ctx)
 	if err != nil {
 		return err
@@ -217,6 +225,23 @@ func (s *channelMetaSync) apply(meta metadb.ChannelRuntimeMeta) (channel.Meta, e
 	s.appliedLocal[rootMeta.Key] = struct{}{}
 	s.mu.Unlock()
 	return rootMeta, nil
+}
+
+func (s *channelMetaSync) observeHashSlotTableVersion() {
+	if s == nil || s.source == nil {
+		return
+	}
+	versionSource, ok := s.source.(hashSlotTableVersionSource)
+	if !ok {
+		return
+	}
+	version := versionSource.HashSlotTableVersion()
+	s.mu.Lock()
+	if s.lastHashSlotTableVersion != 0 && version != s.lastHashSlotTableVersion {
+		s.appliedLocal = nil
+	}
+	s.lastHashSlotTableVersion = version
+	s.mu.Unlock()
 }
 
 func projectChannelMeta(meta metadb.ChannelRuntimeMeta) channel.Meta {

@@ -32,11 +32,12 @@ const (
 )
 
 type AgentReport struct {
-	NodeID         uint64
-	Addr           string
-	ObservedAt     time.Time
-	CapacityWeight int
-	Runtime        *controllermeta.SlotRuntimeView
+	NodeID               uint64
+	Addr                 string
+	ObservedAt           time.Time
+	CapacityWeight       int
+	HashSlotTableVersion uint64
+	Runtime              *controllermeta.SlotRuntimeView
 }
 
 type OperatorRequest struct {

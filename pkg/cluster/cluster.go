@@ -1050,7 +1050,17 @@ func (c *Cluster) handleControllerRPC(ctx context.Context, body []byte) ([]byte,
 			}
 			return nil, err
 		}
-		return json.Marshal(controllerRPCResponse{})
+		table, err := c.ensureControllerHashSlotTable(ctx, c.controllerMeta)
+		if err != nil {
+			return nil, err
+		}
+		resp := controllerRPCResponse{
+			HashSlotTableVersion: table.Version(),
+		}
+		if req.Report.HashSlotTableVersion != table.Version() {
+			resp.HashSlotTable = table.Encode()
+		}
+		return json.Marshal(resp)
 	case controllerRPCTaskResult:
 		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
 			return marshalRedirect()
