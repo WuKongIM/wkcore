@@ -14,24 +14,34 @@ Slot 层是系统的"元数据中枢"。它将所有元数据分散到多个 Raf
 
 ## 2. 代码结构
 
-```
+```text
 pkg/
-├── replication/
-│   └── multiraft/              # MultiRaft 核心引擎
-│       ├── slot.go            # 单个 Raft Slot 实现（858 行）
-│       ├── runtime.go          # 多 Slot 调度器
-│       ├── api.go              # 对外 API（250 行）
-│       ├── types.go            # 类型定义（Interface / Option / Envelope）
-│       └── scheduler.go        # Worker 调度
+├── slot/
+│   └── multiraft/             # MultiRaft 核心引擎
+│       ├── slot.go            # 单个 Raft Slot 实现
+│       ├── runtime.go         # 多 Slot 调度器
+│       ├── api.go             # 对外 API
+│       ├── types.go           # 类型定义（Interface / Option / Envelope）
+│       └── scheduler.go       # Worker 调度
 │
 └── cluster/
-    └── raftcluster/            # 集群集成
-        ├── cluster.go          # 启动与 RPC 注册
-        ├── router.go           # Key → SlotID 路由
-        ├── managed_slots.go   # Controller 管理的 Slot 生命周期
-        ├── transport.go        # Raft Transport 适配
-        ├── forward.go          # 非 Leader 节点的请求转发
-        └── codec.go            # 消息编解码
+    ├── api.go                 # 对上层暴露的 cluster.API
+    ├── cluster.go             # 组合根与运行时生命周期
+    ├── router.go              # Key → SlotID / leader 路由
+    ├── transport_glue.go      # 共享 transport/server/pool 装配
+    ├── transport.go           # Raft transport 适配
+    ├── controller_host.go     # 本地 controller raft/meta 启动
+    ├── controller_client.go   # controller RPC 客户端
+    ├── controller_handler.go  # controller RPC 服务端
+    ├── managed_slots.go       # Controller 管理的 Slot 生命周期/迁移
+    ├── slot_handler.go        # managed-slot RPC 服务端
+    ├── forward.go             # 非 Leader 节点请求转发
+    ├── codec.go               # 通用消息编解码
+    ├── codec_control.go       # controller RPC 二进制编解码
+    ├── codec_managed.go       # managed-slot RPC 二进制编解码
+    ├── observer.go            # observation loop
+    ├── retry.go               # 统一重试策略
+    └── runtime_state.go       # 本地 slot 运行态快照
 ```
 
 ## 3. MultiRaft Runtime
@@ -255,17 +265,18 @@ ReportTaskResult(success)
 
 ### 7.2 配置变更重试
 
-配置变更通过 `changeSlotConfig()`（`managed_slots.go:274-313`）执行，内置 3 次重试和指数退避。如果目标节点不是 Leader，通过 RPC 转发到 Leader 节点执行。
+配置变更通过 `changeSlotConfig()` 执行，但重试逻辑已经收敛到共享 `Retry` helper：由 `Interval`、`MaxWait` 和 `IsRetryable` 控制重试节拍、总预算和可重试错误，而不是固定 3 次指数退避。如果目标节点不是 Leader，则仍会通过 RPC 转发到 Leader 节点执行。
 
 ## 8. 跨层通信
 
 ### 8.1 Transport 注册
 
 ```go
-// cluster.go:87-93
-server.Handle(msgTypeRaft, handleRaftMessage)           // msgType=1, Raft 消息
-rpcMux.Handle(rpcServiceForward, handleForwardRPC)      // serviceID=1, 请求转发
-rpcMux.Handle(rpcServiceManagedSlot, handleManagedSlotRPC)    // serviceID=20, Slot 管理
+// transport_glue.go
+server.Handle(msgTypeRaft, handleRaftMessage)                // msgType=1, Raft 消息
+rpcMux.Handle(rpcServiceForward, handleForwardRPC)           // serviceID=1, 请求转发
+rpcMux.Handle(rpcServiceController, handleControllerRPC)     // serviceID=10, controller RPC
+rpcMux.Handle(rpcServiceManagedSlot, handleManagedSlotRPC)   // serviceID=20, Slot 管理
 ```
 
 ### 8.2 Raft 消息传输
