@@ -56,6 +56,7 @@ type Envelope struct {
 	Generation uint64
 	RequestID  uint64
 	Kind       MessageKind
+	Sync       bool
 	Payload    []byte
 
 	FetchRequest  *FetchRequestEnvelope

@@ -547,6 +547,67 @@ func TestPeerSessionSendDispatchesProgressAckRPC(t *testing.T) {
 	}
 }
 
+func TestPeerSessionSendProgressAckAppliesLeaderHWFromRPCResponse(t *testing.T) {
+	server := transport.NewServer()
+	mux := transport.NewRPCMux()
+	mux.Handle(RPCServiceProgressAck, func(ctx context.Context, body []byte) ([]byte, error) {
+		ack, err := decodeProgressAck(body)
+		if err != nil {
+			return nil, err
+		}
+		return encodeProgressAckResponse(progressAckResponseEnvelope{LeaderHW: ack.MatchOffset})
+	})
+	server.HandleRPCMux(mux)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("server.Start() error = %v", err)
+	}
+	defer server.Stop()
+
+	client := transport.NewClient(transport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{2: server.Listener().Addr().String()},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter := newAdapterWithTestTimeout(t, client, time.Second)
+	delivered := make(chan runtime.Envelope, 1)
+	adapter.RegisterHandler(func(env runtime.Envelope) {
+		delivered <- env
+	})
+
+	session := adapter.SessionManager().Session(2)
+	env := runtime.Envelope{
+		Peer:       2,
+		ChannelKey: "g-progress",
+		Epoch:      3,
+		Generation: 7,
+		RequestID:  1,
+		Kind:       runtime.MessageKindProgressAck,
+		ProgressAck: &runtime.ProgressAckEnvelope{
+			ChannelKey:  "g-progress",
+			Epoch:       3,
+			Generation:  7,
+			ReplicaID:   1,
+			MatchOffset: 11,
+		},
+	}
+
+	if err := session.Send(env); err != nil {
+		t.Fatalf("session.Send() error = %v", err)
+	}
+
+	select {
+	case got := <-delivered:
+		if got.Kind != runtime.MessageKindFetchResponse {
+			t.Fatalf("Kind = %v, want fetch response", got.Kind)
+		}
+		if got.FetchResponse == nil || got.FetchResponse.LeaderHW != 11 {
+			t.Fatalf("FetchResponse = %+v", got.FetchResponse)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for progress ack commit update")
+	}
+}
+
 func TestAdapterHandleProgressAckInvokesRegisteredHandler(t *testing.T) {
 	client := transport.NewClient(transport.NewPool(staticDiscovery{
 		addrs: map[uint64]string{},

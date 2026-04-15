@@ -21,6 +21,7 @@ const (
 	fetchBatchRequestVersion  byte = 1
 	fetchBatchResponseVersion byte = 1
 	progressAckCodecVersion   byte = 1
+	progressAckResponseVer    byte = 1
 )
 
 func encodeFetchRequest(req runtime.FetchRequestEnvelope) ([]byte, error) {
@@ -423,6 +424,39 @@ func decodeProgressAck(data []byte) (runtime.ProgressAckEnvelope, error) {
 		return runtime.ProgressAckEnvelope{}, fmt.Errorf("channeltransport: trailing progress ack payload bytes")
 	}
 	return ack, nil
+}
+
+type progressAckResponseEnvelope struct {
+	LeaderHW uint64
+}
+
+func encodeProgressAckResponse(resp progressAckResponseEnvelope) ([]byte, error) {
+	buf := bytes.NewBuffer(make([]byte, 0, 16))
+	buf.WriteByte(progressAckResponseVer)
+	if err := binary.Write(buf, binary.BigEndian, resp.LeaderHW); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func decodeProgressAckResponse(data []byte) (progressAckResponseEnvelope, error) {
+	rd := bytes.NewReader(data)
+	version, err := rd.ReadByte()
+	if err != nil {
+		return progressAckResponseEnvelope{}, err
+	}
+	if version != progressAckResponseVer {
+		return progressAckResponseEnvelope{}, fmt.Errorf("channeltransport: unknown progress ack response codec version %d", version)
+	}
+
+	var resp progressAckResponseEnvelope
+	if err := binary.Read(rd, binary.BigEndian, &resp.LeaderHW); err != nil {
+		return progressAckResponseEnvelope{}, err
+	}
+	if rd.Len() != 0 {
+		return progressAckResponseEnvelope{}, fmt.Errorf("channeltransport: trailing progress ack response payload bytes")
+	}
+	return resp, nil
 }
 
 func writeChannelKey(buf *bytes.Buffer, channelKey channel.ChannelKey) error {

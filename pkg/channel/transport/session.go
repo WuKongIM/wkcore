@@ -266,8 +266,27 @@ func (s *peerSession) sendProgressAck(env runtime.Envelope) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.adapter.rpcTimeout)
 	defer cancel()
-	_, err = s.adapter.client.RPCService(ctx, uint64(s.peer), fetchRPCShardKey(env.ChannelKey), RPCServiceProgressAck, body)
-	return err
+	respBody, err := s.adapter.client.RPCService(ctx, uint64(s.peer), fetchRPCShardKey(env.ChannelKey), RPCServiceProgressAck, body)
+	if err != nil {
+		return err
+	}
+	if len(respBody) == 0 {
+		return nil
+	}
+	resp, err := decodeProgressAckResponse(respBody)
+	if err != nil {
+		return err
+	}
+	if resp.LeaderHW == 0 {
+		return nil
+	}
+	s.deliverFetchResponse(0, runtime.FetchResponseEnvelope{
+		ChannelKey: env.ChannelKey,
+		Epoch:      env.Epoch,
+		Generation: env.Generation,
+		LeaderHW:   resp.LeaderHW,
+	})
+	return nil
 }
 
 func (s *peerSession) deliverFetchResponse(requestID uint64, resp runtime.FetchResponseEnvelope) {
@@ -278,6 +297,7 @@ func (s *peerSession) deliverFetchResponse(requestID uint64, resp runtime.FetchR
 		Generation:    resp.Generation,
 		RequestID:     requestID,
 		Kind:          runtime.MessageKindFetchResponse,
+		Sync:          true,
 		FetchResponse: &resp,
 	})
 }
@@ -290,6 +310,7 @@ func (s *peerSession) deliverFetchFailure(env runtime.Envelope, err error) {
 		Generation: env.Generation,
 		RequestID:  env.RequestID,
 		Kind:       runtime.MessageKindFetchFailure,
+		Sync:       true,
 	}
 	if err != nil {
 		failed.Payload = []byte(err.Error())

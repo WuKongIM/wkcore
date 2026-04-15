@@ -952,6 +952,165 @@ func TestSessionFetchResponseSendsProgressAckAfterApplyFetch(t *testing.T) {
 	}
 }
 
+func TestSessionFetchResponseReentrantProgressAckDoesNotDeadlock(t *testing.T) {
+	env := newSessionTestEnv(t)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2501, 4, 2, []core.NodeID{1, 2}))
+
+	env.factory.replicas[0].state.LEO = 9
+	session := env.sessions.session(2)
+
+	delivered := false
+	session.afterSend = func() {
+		if delivered {
+			return
+		}
+		delivered = true
+		env.transport.deliver(Envelope{
+			Peer:       2,
+			ChannelKey: testChannelKey(2501),
+			Generation: 1,
+			Epoch:      4,
+			RequestID:  1,
+			Kind:       MessageKindFetchResponse,
+			Sync:       true,
+			FetchResponse: &FetchResponseEnvelope{
+				LeaderHW: 9,
+				Records:  []core.Record{{Payload: []byte("ok"), SizeBytes: 2}},
+			},
+		})
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- env.runtime.sendEnvelope(Envelope{
+			Peer:       2,
+			ChannelKey: testChannelKey(2501),
+			Epoch:      4,
+			Generation: 1,
+			RequestID:  1,
+			Kind:       MessageKindFetchRequest,
+			FetchRequest: &FetchRequestEnvelope{
+				ChannelKey:  testChannelKey(2501),
+				Epoch:       4,
+				Generation:  1,
+				ReplicaID:   1,
+				FetchOffset: 9,
+				OffsetEpoch: 4,
+				MaxBytes:    defaultFetchMaxBytes,
+			},
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("sendEnvelope() error = %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("sendEnvelope deadlocked while handling a synchronous fetch response")
+	}
+
+	session.mu.Lock()
+	sent := append([]Envelope(nil), session.sent...)
+	session.mu.Unlock()
+	if len(sent) < 3 {
+		t.Fatalf("expected initial fetch, progress ack, and follow-up fetch, got %d sends", len(sent))
+	}
+	if sent[1].Kind != MessageKindProgressAck {
+		t.Fatalf("second outbound kind = %v, want progress ack", sent[1].Kind)
+	}
+	if sent[2].Kind != MessageKindFetchRequest {
+		t.Fatalf("third outbound kind = %v, want fetch request", sent[2].Kind)
+	}
+}
+
+func TestSessionFetchResponseReentrantQueuedPeerDrainDoesNotDeadlock(t *testing.T) {
+	env := newSessionTestEnv(t)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2502, 4, 2, []core.NodeID{1, 2}))
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2503, 4, 2, []core.NodeID{1, 2}))
+
+	session := env.sessions.session(2)
+	delivered := false
+	session.afterSend = func() {
+		if delivered {
+			return
+		}
+		delivered = true
+		env.runtime.peerRequests.enqueue(Envelope{
+			Peer:       2,
+			ChannelKey: testChannelKey(2503),
+			Epoch:      4,
+			Generation: 1,
+			RequestID:  2,
+			Kind:       MessageKindFetchRequest,
+			FetchRequest: &FetchRequestEnvelope{
+				ChannelKey:  testChannelKey(2503),
+				Epoch:       4,
+				Generation:  1,
+				ReplicaID:   1,
+				FetchOffset: 0,
+				OffsetEpoch: 4,
+				MaxBytes:    defaultFetchMaxBytes,
+			},
+		})
+		env.transport.deliver(Envelope{
+			Peer:       2,
+			ChannelKey: testChannelKey(2502),
+			Generation: 1,
+			Epoch:      4,
+			RequestID:  1,
+			Kind:       MessageKindFetchResponse,
+			Sync:       true,
+			FetchResponse: &FetchResponseEnvelope{
+				LeaderHW: 0,
+			},
+		})
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- env.runtime.sendEnvelope(Envelope{
+			Peer:       2,
+			ChannelKey: testChannelKey(2502),
+			Epoch:      4,
+			Generation: 1,
+			RequestID:  1,
+			Kind:       MessageKindFetchRequest,
+			FetchRequest: &FetchRequestEnvelope{
+				ChannelKey:  testChannelKey(2502),
+				Epoch:       4,
+				Generation:  1,
+				ReplicaID:   1,
+				FetchOffset: 0,
+				OffsetEpoch: 4,
+				MaxBytes:    defaultFetchMaxBytes,
+			},
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("sendEnvelope() error = %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("sendEnvelope deadlocked while draining queued peer work from a synchronous fetch response")
+	}
+
+	session.mu.Lock()
+	sent := append([]Envelope(nil), session.sent...)
+	session.mu.Unlock()
+	if len(sent) < 2 {
+		t.Fatalf("expected initial fetch plus queued drain send, got %d sends", len(sent))
+	}
+	if sent[1].Kind != MessageKindFetchRequest {
+		t.Fatalf("second outbound kind = %v, want fetch request", sent[1].Kind)
+	}
+	if sent[1].ChannelKey != testChannelKey(2503) {
+		t.Fatalf("second outbound channel = %q, want %q", sent[1].ChannelKey, testChannelKey(2503))
+	}
+}
+
 func TestSessionNonEmptyFetchResponseQueuesImmediateFollowerRefetch(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.FollowerReplicationRetryInterval = time.Hour
@@ -1111,6 +1270,46 @@ func TestSessionEmptyFetchResponseUsesRetryIntervalBeforeFollowerRefetch(t *test
 	}
 
 	t.Fatalf("expected empty fetch response to trigger delayed follower re-fetch, got %d sends", session.sendCount())
+}
+
+func TestSessionEmptyFetchResponseSendsProgressAckWhenFollowerHasUncommittedData(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2521, 4, 2, []core.NodeID{1, 2}))
+
+	replica := env.factory.replicas[0]
+	replica.mu.Lock()
+	replica.state.LEO = 5
+	replica.mu.Unlock()
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		ChannelKey: testChannelKey(2521),
+		Generation: 1,
+		Epoch:      4,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 0,
+		},
+	})
+
+	session := env.sessions.session(2)
+	session.mu.Lock()
+	sent := append([]Envelope(nil), session.sent...)
+	session.mu.Unlock()
+	if len(sent) == 0 {
+		t.Fatal("expected empty fetch response to report follower progress when local LEO exceeds leader HW")
+	}
+	if sent[0].Kind != MessageKindProgressAck {
+		t.Fatalf("first outbound kind = %v, want progress ack", sent[0].Kind)
+	}
+	if sent[0].ProgressAck == nil {
+		t.Fatal("expected progress ack payload")
+	}
+	if sent[0].ProgressAck.MatchOffset != 5 {
+		t.Fatalf("progress ack match offset = %d, want 5", sent[0].ProgressAck.MatchOffset)
+	}
 }
 
 func TestSessionServeFetchReturnsReplicaFetchResult(t *testing.T) {

@@ -38,6 +38,10 @@ type runtime struct {
 	backpressureRetry           map[core.NodeID]*backpressureRetryState
 	backpressureMu              sync.Mutex
 	sendCoordMu                 sync.Mutex
+	syncDeliveryMu              sync.Mutex
+	syncDeliveryDepth           int
+	syncDeferredSends           []deferredEnvelope
+	syncDeferredPeerDrains      map[core.NodeID]struct{}
 	schedulerDrainMu            sync.Mutex
 	schedulerWorker             atomic.Bool
 	closed                      atomic.Bool
@@ -88,6 +92,7 @@ func New(cfg Config) (Runtime, error) {
 		snapshotThrottle:  newSnapshotThrottle(cfg.Limits.MaxRecoveryBytesPerSecond, time.Sleep),
 		replicationRetry:  make(map[core.ChannelKey]map[core.NodeID]*replicationRetryState),
 		backpressureRetry: make(map[core.NodeID]*backpressureRetryState),
+		syncDeferredPeerDrains: make(map[core.NodeID]struct{}),
 		cleanupStop:       make(chan struct{}),
 		cleanupDone:       make(chan struct{}),
 	}

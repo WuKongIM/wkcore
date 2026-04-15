@@ -36,6 +36,11 @@ type peerEnvelopeQueue struct {
 	head  int
 }
 
+type deferredEnvelope struct {
+	env     Envelope
+	onError func(error)
+}
+
 func newPeerRequestState() peerRequestState {
 	return peerRequestState{
 		inflight: make(map[core.NodeID]int),
@@ -296,6 +301,15 @@ func (r *runtime) sendEnvelope(env Envelope) error {
 	r.sendCoordMu.Lock()
 	defer r.sendCoordMu.Unlock()
 
+	err := r.sendEnvelopeLocked(env)
+	r.drainDeferredSyncWorkLocked()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *runtime) sendEnvelopeLocked(env Envelope) error {
 	if r.isClosed() {
 		return ErrChannelNotFound
 	}
@@ -352,6 +366,92 @@ func (r *runtime) sendEnvelope(env Envelope) error {
 		return err
 	}
 	return nil
+}
+
+func (r *runtime) beginSyncDelivery() {
+	r.syncDeliveryMu.Lock()
+	r.syncDeliveryDepth++
+	r.syncDeliveryMu.Unlock()
+}
+
+func (r *runtime) endSyncDelivery() {
+	r.syncDeliveryMu.Lock()
+	if r.syncDeliveryDepth > 0 {
+		r.syncDeliveryDepth--
+	}
+	r.syncDeliveryMu.Unlock()
+}
+
+func (r *runtime) syncDeliveryActive() bool {
+	r.syncDeliveryMu.Lock()
+	defer r.syncDeliveryMu.Unlock()
+	return r.syncDeliveryDepth > 0
+}
+
+func (r *runtime) deferSyncEnvelope(env Envelope, onError func(error)) {
+	r.syncDeliveryMu.Lock()
+	r.syncDeferredSends = append(r.syncDeferredSends, deferredEnvelope{
+		env:     env,
+		onError: onError,
+	})
+	r.syncDeliveryMu.Unlock()
+}
+
+func (r *runtime) deferPeerDrain(peer core.NodeID) {
+	r.syncDeliveryMu.Lock()
+	if r.syncDeferredPeerDrains == nil {
+		r.syncDeferredPeerDrains = make(map[core.NodeID]struct{})
+	}
+	r.syncDeferredPeerDrains[peer] = struct{}{}
+	r.syncDeliveryMu.Unlock()
+}
+
+func (r *runtime) popDeferredSyncWork() (deferredEnvelope, core.NodeID, bool) {
+	r.syncDeliveryMu.Lock()
+	defer r.syncDeliveryMu.Unlock()
+
+	if len(r.syncDeferredSends) > 0 {
+		next := r.syncDeferredSends[0]
+		copy(r.syncDeferredSends, r.syncDeferredSends[1:])
+		r.syncDeferredSends = r.syncDeferredSends[:len(r.syncDeferredSends)-1]
+		return next, 0, true
+	}
+	for peer := range r.syncDeferredPeerDrains {
+		delete(r.syncDeferredPeerDrains, peer)
+		return deferredEnvelope{}, peer, true
+	}
+	return deferredEnvelope{}, 0, false
+}
+
+func (r *runtime) drainDeferredSyncWorkLocked() {
+	for {
+		next, peer, ok := r.popDeferredSyncWork()
+		if !ok {
+			return
+		}
+		if next.env.Kind != 0 {
+			if r.beforePeerSessionHook != nil {
+				r.beforePeerSessionHook(next.env)
+			}
+			err := r.sendEnvelopeLocked(next.env)
+			if next.onError != nil {
+				next.onError(err)
+			}
+			continue
+		}
+		r.drainPeerQueueLocked(peer)
+	}
+}
+
+func (r *runtime) sendOrDeferEnvelope(env Envelope, onError func(error)) {
+	if r.syncDeliveryActive() {
+		r.deferSyncEnvelope(env, onError)
+		return
+	}
+	err := r.sendEnvelope(env)
+	if onError != nil {
+		onError(err)
+	}
 }
 
 func (r *runtime) shouldDropOutboundEnvelope(env Envelope) bool {
@@ -412,12 +512,21 @@ func (r *runtime) drainPeerQueue(peer core.NodeID) {
 	if r.isClosed() {
 		return
 	}
+	r.sendCoordMu.Lock()
+	defer r.sendCoordMu.Unlock()
+	r.drainPeerQueueLocked(peer)
+}
+
+func (r *runtime) drainPeerQueueLocked(peer core.NodeID) {
 	env, ok := r.peerRequests.popQueued(peer)
 	if !ok {
 		r.clearBackpressureRetry(peer)
 		return
 	}
-	if err := r.sendEnvelope(env); err != nil && !errors.Is(err, ErrBackpressured) {
+	if r.beforePeerSessionHook != nil {
+		r.beforePeerSessionHook(env)
+	}
+	if err := r.sendEnvelopeLocked(env); err != nil && !errors.Is(err, ErrBackpressured) {
 		r.retryReplication(env.ChannelKey, env.Peer, true)
 		return
 	}
@@ -434,6 +543,10 @@ func (r *runtime) handleEnvelope(env Envelope) {
 	if r.isClosed() {
 		return
 	}
+	if env.Sync {
+		r.beginSyncDelivery()
+		defer r.endSyncDelivery()
+	}
 	var (
 		ch        *channel
 		knownDrop bool
@@ -448,7 +561,7 @@ func (r *runtime) handleEnvelope(env Envelope) {
 
 	if env.Kind == MessageKindFetchResponse && knownDrop {
 		if r.releaseInflightForEnvelope(env) {
-			r.drainPeerQueue(env.Peer)
+			r.drainPeerQueueOrDefer(env.Peer)
 		}
 		return
 	}
@@ -458,7 +571,7 @@ func (r *runtime) handleEnvelope(env Envelope) {
 				r.retryReplication(env.ChannelKey, env.Peer, true)
 				r.scheduleFollowerReplication(env.ChannelKey, env.Peer)
 			}
-			r.drainPeerQueue(env.Peer)
+			r.drainPeerQueueOrDefer(env.Peer)
 		}
 		return
 	}
@@ -470,12 +583,20 @@ func (r *runtime) handleEnvelope(env Envelope) {
 	if env.Kind == MessageKindFetchResponse {
 		if r.deliverEnvelope(ch, env) {
 			if r.releaseInflightForEnvelope(env) {
-				r.drainPeerQueue(env.Peer)
+				r.drainPeerQueueOrDefer(env.Peer)
 			}
 		}
 		return
 	}
 	_ = r.deliverEnvelope(ch, env)
+}
+
+func (r *runtime) drainPeerQueueOrDefer(peer core.NodeID) {
+	if r.syncDeliveryActive() {
+		r.deferPeerDrain(peer)
+		return
+	}
+	r.drainPeerQueue(peer)
 }
 
 func (r *runtime) scheduleBackpressureRetry(peer core.NodeID) {
@@ -609,9 +730,10 @@ func (r *runtime) applyFetchResponseEnvelope(ch *channel, peer core.NodeID, env 
 
 	meta := ch.metaSnapshot()
 	if meta.Leader != r.cfg.LocalNode {
-		if len(env.Records) > 0 || env.TruncateTo != nil {
-			state := ch.Status()
-			if err := r.sendEnvelope(Envelope{
+		state := ch.Status()
+		shouldReportProgress := len(env.Records) > 0 || env.TruncateTo != nil || state.LEO > env.LeaderHW
+		if shouldReportProgress {
+			r.sendOrDeferEnvelope(Envelope{
 				Peer:       meta.Leader,
 				ChannelKey: ch.key,
 				Epoch:      meta.Epoch,
@@ -625,17 +747,19 @@ func (r *runtime) applyFetchResponseEnvelope(ch *channel, peer core.NodeID, env 
 					ReplicaID:   r.cfg.LocalNode,
 					MatchOffset: state.LEO,
 				},
-			}); err != nil && !errors.Is(err, ErrBackpressured) {
-				r.retryReplication(ch.key, meta.Leader, true)
-			}
+			}, func(err error) {
+				if err != nil && !errors.Is(err, ErrBackpressured) {
+					r.retryReplication(ch.key, meta.Leader, true)
+				}
+			})
 		}
 
 		if len(env.Records) == 0 && env.TruncateTo == nil {
 			r.scheduleFollowerReplication(ch.key, meta.Leader)
 			return nil
 		}
-		state := ch.Status()
-		err := r.sendEnvelope(Envelope{
+		state = ch.Status()
+		r.sendOrDeferEnvelope(Envelope{
 			Peer:       meta.Leader,
 			ChannelKey: ch.key,
 			Epoch:      meta.Epoch,
@@ -651,10 +775,11 @@ func (r *runtime) applyFetchResponseEnvelope(ch *channel, peer core.NodeID, env 
 				OffsetEpoch: state.OffsetEpoch,
 				MaxBytes:    defaultFetchMaxBytes,
 			},
+		}, func(err error) {
+			if err != nil && !errors.Is(err, ErrBackpressured) {
+				r.retryReplication(ch.key, meta.Leader, true)
+			}
 		})
-		if err != nil && !errors.Is(err, ErrBackpressured) {
-			r.retryReplication(ch.key, meta.Leader, true)
-		}
 	}
 	return nil
 }

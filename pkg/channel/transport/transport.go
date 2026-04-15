@@ -32,6 +32,7 @@ type Transport struct {
 	mu           sync.RWMutex
 	handler      func(runtime.Envelope)
 	fetchService runtime.FetchService
+	statusSource channel.HandlerRuntime
 	closeOnce    sync.Once
 
 	sessions *sessionManager
@@ -65,6 +66,9 @@ func New(opts Options) (*Transport, error) {
 		maxPending:   opts.MaxPendingFetchRPC,
 		fetchService: opts.FetchService,
 	}
+	if source, ok := opts.FetchService.(channel.HandlerRuntime); ok {
+		transport.statusSource = source
+	}
 	transport.sessions = newSessionManager(transport)
 	opts.RPCMux.Handle(RPCServiceFetch, transport.handleRPC)
 	opts.RPCMux.Handle(RPCServiceFetchBatch, transport.handleFetchBatchRPC)
@@ -87,6 +91,9 @@ func (t *Transport) Close() error {
 func (t *Transport) BindFetchService(service runtime.FetchService) {
 	t.mu.Lock()
 	t.fetchService = service
+	if source, ok := service.(channel.HandlerRuntime); ok {
+		t.statusSource = source
+	}
 	t.mu.Unlock()
 }
 
@@ -163,7 +170,8 @@ func (t *Transport) handleProgressAckRPC(ctx context.Context, body []byte) ([]by
 		Kind:        runtime.MessageKindProgressAck,
 		ProgressAck: &ack,
 	})
-	return nil, nil
+	leaderHW := t.waitForLeaderHW(ctx, ack)
+	return encodeProgressAckResponse(progressAckResponseEnvelope{LeaderHW: leaderHW})
 }
 
 func (t *Transport) deliver(env runtime.Envelope) {
@@ -183,4 +191,45 @@ func (t *Transport) boundFetchService() (runtime.FetchService, error) {
 		return nil, fmt.Errorf("channeltransport: fetch service must be bound")
 	}
 	return service, nil
+}
+
+func (t *Transport) waitForLeaderHW(ctx context.Context, ack runtime.ProgressAckEnvelope) uint64 {
+	t.mu.RLock()
+	source := t.statusSource
+	t.mu.RUnlock()
+	if source == nil {
+		return 0
+	}
+
+	leaderHW, committed := currentLeaderHW(source, ack)
+	if committed || ack.MatchOffset == 0 {
+		return leaderHW
+	}
+
+	ticker := time.NewTicker(2 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return leaderHW
+		case <-ticker.C:
+			leaderHW, committed = currentLeaderHW(source, ack)
+			if committed {
+				return leaderHW
+			}
+		}
+	}
+}
+
+func currentLeaderHW(source channel.HandlerRuntime, ack runtime.ProgressAckEnvelope) (uint64, bool) {
+	handle, ok := source.Channel(ack.ChannelKey)
+	if !ok {
+		return 0, false
+	}
+	state := handle.Status()
+	if state.Epoch != ack.Epoch {
+		return state.HW, false
+	}
+	return state.HW, state.HW >= ack.MatchOffset
 }
