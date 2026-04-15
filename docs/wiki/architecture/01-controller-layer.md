@@ -1,46 +1,34 @@
 # L1 · Controller 控制层
 
 > 一致性算法：**Raft**（基于 etcd/raft v3）
-> 职责：维护集群拓扑、调度 Slot 层的副本分布、编排修复/重平衡任务
+> 职责：维护集群拓扑、调度 Slot 层副本分布、维护 HashSlotTable，并编排修复 / 迁移 / 扩缩容任务
 
 ## 1. 概述
 
 Controller 是整个分布式系统的"大脑"。它运行一个独立的 Raft Quorum（通常 3 或 5 节点），不依赖 Slot 层或 Channel 层的可用性。它的核心功能是：
 
 1. **节点健康管理**：跟踪所有节点的心跳，维护 Alive / Suspect / Dead / Draining 四个状态。
-2. **副本放置决策**：为每个 Slot 计算期望副本分布（SlotAssignment）。
-3. **修复与重平衡**：检测到副本缺失或负载不均时，生成 ReconcileTask 并下发给 Agent 执行。
-4. **全局可观测**：聚合所有节点上报的 RuntimeView，提供集群状态查询。
+2. **副本放置决策**：为每个 physical Slot 计算期望副本分布（SlotAssignment）。
+3. **HashSlotTable 管理**：维护 `hashSlot -> physical Slot` 映射，并持久化迁移状态。
+4. **修复与运维调度**：支持 Repair / Rebalance，以及 AddSlot / RemoveSlot / StartMigration / AbortMigration。
+5. **全局可观测**：聚合所有节点上报的 RuntimeView，提供集群状态查询。
 
 ## 2. 代码结构
 
 ```
 pkg/
-├── cluster/
-│   ├── controllerraft/         # Controller 的 Raft 引擎
-│   │   ├── service.go          # 核心 Raft 循环（696 行）
-│   │   ├── config.go           # 配置校验
-│   │   └── transport.go        # Raft 消息发送桥接
-│   │
-│   ├── slotcontroller/        # 控制面决策逻辑
-│   │   ├── controller.go       # 主 Tick 循环
-│   │   ├── planner.go          # 放置策略与重平衡算法
-│   │   ├── statemachine.go     # 命令应用状态机
-│   │   ├── commands.go         # 命令类型定义
-│   │   └── types.go            # 核心数据结构
-│   │
-│   └── raftcluster/            # 集群集成层
-│       ├── cluster.go          # 启动与主循环
-│       ├── agent.go            # 节点 Agent（上报 & 执行）
-│       ├── controller_client.go # Controller RPC 客户端
-│       ├── config.go           # 集群配置
-│       ├── operator.go         # 运维操作（drain/resume）
-│       └── readiness.go        # 就绪检查与常量
+├── controller/
+│   ├── raft/                   # Controller Raft 引擎
+│   ├── plane/                  # Planner / StateMachine / Commands
+│   └── meta/                   # 控制面 Pebble 持久化
 │
-└── storage/
-    └── controllermeta/         # 控制面持久化
-        ├── store.go            # Pebble 存储实现（400+ 行）
-        └── types.go            # 数据模型定义
+└── cluster/
+    ├── cluster.go              # 启动、观察循环、Controller RPC
+    ├── agent.go                # 节点 Agent（心跳 / 同步 / 执行任务）
+    ├── controller_client.go    # Controller RPC 客户端
+    ├── operator.go             # AddSlot / RemoveSlot / Rebalance API
+    ├── hashslottable.go        # HashSlotTable 对外桥接
+    └── hashslot_migration.go   # 迁移观察与提交流程
 ```
 
 ## 3. Raft 引擎（controllerraft）
@@ -123,10 +111,17 @@ Planner 按照以下优先级执行决策：
    - 遍历所有 Slot，检查是否有副本在 Dead/Draining 节点上
    - 找到第一个需要修复的 Slot → 选新目标节点 → 生成 RepairTask
 
-2. 重平衡（Rebalance）：修复完成后才执行
+2. HashSlot 迁移保护：跳过正在迁移的 physical Slot，避免副本重平衡与 hash slot 迁移互相干扰
+
+3. 重平衡（Rebalance）：修复完成后才执行
    - 计算各节点负载（承载的 Slot 数量）
    - maxLoad - minLoad > RebalanceSkewThreshold（默认 2）时触发
    - 从最重节点选一个 Slot 迁移到最轻节点
+
+4. 运维命令（AddSlot / RemoveSlot / Rebalance）
+   - `AddSlot`：创建新的 physical Slot，计算迁移计划并写入 HashSlotTable
+   - `RemoveSlot`：把被移除 Slot 承载的 hash slot 迁走，再删除 Assignment
+   - `StartMigration / AbortMigration / FinalizeMigration`：推进单个 hash slot 的迁移生命周期
 ```
 
 **关键代码**：`planner.go:93-166`
@@ -139,7 +134,7 @@ Planner 按照以下优先级执行决策：
 
 ### 4.3 状态机（statemachine）
 
-状态机处理 5 种命令，每次通过 Raft 提交后执行：
+状态机处理控制面命令，每次通过 Raft 提交后执行。除基础的节点状态与任务命令外，还负责 HashSlotTable 的增量变更：
 
 | 命令                        | 作用                            | 代码位置           |
 | --------------------------- | ------------------------------- | ------------------ |
@@ -148,6 +143,8 @@ Planner 按照以下优先级执行决策：
 | EvaluateTimeouts            | 检查心跳超时、转移节点状态      | `statemachine.go:142-166` |
 | TaskResult                  | 处理任务完成/失败，指数退避重试  | `statemachine.go:168-198` |
 | AssignmentTaskUpdate        | 持久化 Assignment 与 Task       | `statemachine.go:200-220` |
+| Start / Advance / Finalize / AbortMigration | 推进单个 hash slot 迁移状态 | `statemachine.go` |
+| AddSlot / RemoveSlot        | 更新 Assignment、生成迁移计划、持久化新表 | `statemachine.go` |
 
 #### 节点状态转移
 
@@ -216,20 +213,21 @@ Controller StateMachine
 
 每个节点都运行一个 `slotAgent`，职责：
 
-1. **周期上报**：每 200ms 通过 RPC 向 Controller Leader 发送心跳（`observeOnce()` → `HeartbeatOnce()`）
+1. **周期上报**：每 200ms 通过 RPC 向 Controller Leader 发送心跳（`observeOnce()` → `HeartbeatOnce()`），同时上报本地 `HashSlotTableVersion`
 2. **同步分配**：拉取最新的 SlotAssignment，对比本地状态，Open/Close 相应的 ManagedSlot
-3. **执行任务**：获取 Controller 分配给本节点的 ReconcileTask 并执行
+3. **表同步**：当 heartbeat 或 assignment 刷新返回更新后的 `HashSlotTable` 时，立即应用到本地 router/runtime
+4. **执行任务**：获取 Controller 分配给本节点的 ReconcileTask，并在本地执行副本修复或配合 hash slot 迁移
 
 **RPC 接口**（`controller_client.go:85-164`）：
 
 | 方法                 | 用途                              |
 | -------------------- | --------------------------------- |
-| Report()             | 发送心跳 + RuntimeView            |
+| Report()             | 发送心跳 + RuntimeView + 本地表版本 |
 | RefreshAssignments() | 拉取所有 SlotAssignment          |
 | GetTask()            | 获取待执行的 ReconcileTask        |
 | ReportTaskResult()   | 上报任务执行结果（成功/失败）     |
 | ListNodes()          | 查询集群节点状态                  |
-| Operator()           | 发起 Drain / Resume 操作          |
+| Operator()           | 发起 Drain / Resume / Rebalance   |
 | ForceReconcile()     | 强制触发某个 Slot 的修复调度      |
 
 **Leader 发现**：客户端优先使用缓存的 LeaderID，如果收到 NotLeader 响应，则根据 hint 重定向（`controller_client.go:201-256`）。
@@ -255,14 +253,16 @@ Controller StateMachine
 | ControllerMetaPath    | string        | 必填         | Controller 元数据 Pebble 路径     |
 | ControllerRaftPath    | string        | 必填         | Controller Raft 日志存储路径      |
 | ControllerReplicaN    | int           | len(Nodes)   | Controller Raft 副本数            |
-| SlotCount            | uint32        | 必填         | MultiRaft Slot 总数              |
-| SlotReplicaN         | int           | 必填         | 每个 Slot 的目标副本数           |
+| HashSlotCount         | uint16        | 256          | 固定逻辑分片数量，用于 Key 哈希   |
+| InitialSlotCount      | uint32        | 必填         | 初始 physical Slot 数量          |
+| SlotReplicaN          | int           | 必填         | 每个 physical Slot 的目标副本数  |
 
 ### 7.2 Planner 配置（slotcontroller/types.go:23-29）
 
 | 参数                     | 类型           | 默认值 | 说明                                  |
 | ------------------------ | -------------- | ------ | ------------------------------------- |
-| SlotCount               | uint32         | -      | 管理的 Slot 总数                     |
+| HashSlotCount           | uint16         | -      | HashSlotTable 管理的逻辑分片总数     |
+| InitialSlotCount        | uint32         | -      | 初始 physical Slot 总数              |
 | ReplicaN                 | int            | -      | 期望副本数                            |
 | RebalanceSkewThreshold   | int            | 2      | 负载差超过此值才触发重平衡            |
 | MaxTaskAttempts          | int            | 3      | 任务最大重试次数                      |

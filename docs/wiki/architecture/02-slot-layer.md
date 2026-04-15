@@ -5,10 +5,11 @@
 
 ## 1. 概述
 
-Slot 层是系统的"元数据中枢"。它将所有元数据分散到多个 Raft Slot 中（通过 CRC32 Hash 分片），在保证强一致的同时，避免单个 Raft Slot 成为瓶颈。
+Slot 层是系统的"元数据中枢"。它先把任意 Key 稳定映射到固定数量的 **HashSlot**，再通过 **HashSlotTable** 查到当前承载该逻辑分片的物理 Raft Slot，在保证强一致的同时支持物理 Slot 的动态扩缩容。
 
 **核心价值**：
-- 将元数据按 Key 哈希到固定数量的 Slot 中，实现水平分片
+- 将元数据按 Key 哈希到固定数量的 HashSlot 中，保证逻辑寻址稳定
+- 通过 HashSlotTable 将 HashSlot 映射到动态物理 Slot，实现在线迁移与再均衡
 - 所有 Slot 在同一个 MultiRaft Runtime 中运行，共享 Tick 和调度，降低资源消耗
 - Controller 层负责管理 Slot 的副本分布，Slot 层本身只关注数据一致性
 
@@ -16,22 +17,24 @@ Slot 层是系统的"元数据中枢"。它将所有元数据分散到多个 Raf
 
 ```
 pkg/
-├── replication/
-│   └── multiraft/              # MultiRaft 核心引擎
-│       ├── slot.go            # 单个 Raft Slot 实现（858 行）
-│       ├── runtime.go          # 多 Slot 调度器
-│       ├── api.go              # 对外 API（250 行）
-│       ├── types.go            # 类型定义（Interface / Option / Envelope）
-│       └── scheduler.go        # Worker 调度
+├── slot/
+│   ├── multiraft/              # MultiRaft 核心引擎
+│   │   ├── slot.go             # 单个物理 Slot 的 Raft 实现
+│   │   ├── runtime.go          # 多 Slot 调度器
+│   │   ├── api.go              # 对外 API
+│   │   ├── types.go            # 类型定义
+│   │   └── scheduler.go        # Worker 调度
+│   ├── meta/                   # 元数据 KV / snapshot / codec
+│   ├── fsm/                    # Slot 状态机与迁移命令
+│   └── proxy/                  # 面向业务层的元数据访问代理
 │
 └── cluster/
-    └── raftcluster/            # 集群集成
-        ├── cluster.go          # 启动与 RPC 注册
-        ├── router.go           # Key → SlotID 路由
-        ├── managed_slots.go   # Controller 管理的 Slot 生命周期
-        ├── transport.go        # Raft Transport 适配
-        ├── forward.go          # 非 Leader 节点的请求转发
-        └── codec.go            # 消息编解码
+    ├── hashslottable.go        # HashSlotTable 与迁移状态
+    ├── router.go               # Key → HashSlot → SlotID 路由
+    ├── managed_slots.go        # Controller 管理的 Slot 生命周期
+    ├── hashslot_migration.go   # HashSlot 迁移观察与调度
+    ├── controller_client.go    # 控制面 RPC / 表同步
+    └── cluster.go              # 启动、观察循环、RPC 注册
 ```
 
 ## 3. MultiRaft Runtime
@@ -146,20 +149,24 @@ Slot 支持批量应用连续的 normal entries 以提升吞吐：
 
 如果 StateMachine 实现了 `BatchStateMachine` 接口，则使用 `ApplyBatch()`；否则逐条 `Apply()`。
 
-## 5. Key → Slot 路由
+## 5. Key → HashSlot → Slot 路由
 
 ### 5.1 路由算法
 
 ```go
-// router.go
+func HashSlotForKey(key string, hashSlotCount uint16) uint16 {
+    return uint16(crc32.ChecksumIEEE([]byte(key)) % uint32(hashSlotCount))
+}
+
 func (r *Router) SlotForKey(key string) SlotID {
-    return SlotID(crc32.ChecksumIEEE([]byte(key))%r.slotCount + 1)
+    hashSlot := r.HashSlotForKey(key)
+    return r.hashSlotTable.Load().Lookup(hashSlot)
 }
 ```
 
-- 使用 CRC32 哈希，将任意 Key 映射到 `[1, SlotCount]` 范围的 SlotID。
-- SlotCount 在集群初始化时确定，后续不可变。
-- 所有节点使用相同的算法，保证路由一致。
+- 第一步使用 CRC32 将任意 Key 映射到固定范围 `[0, HashSlotCount)` 的 HashSlot。
+- 第二步通过 Controller 持久化并下发的 `HashSlotTable` 查到当前 physical Slot。
+- `HashSlotCount` 保持稳定，physical Slot 的数量与承载关系可以动态变化。
 
 ### 5.2 Leader 查询
 
@@ -174,7 +181,7 @@ func (r *Router) LeaderOf(slotID SlotID) (NodeID, error) {
 }
 ```
 
-如果当前节点不是目标 Slot 的 Leader，请求会通过 Forward RPC 转发到 Leader 节点。
+如果当前节点不是目标 physical Slot 的 Leader，请求会通过 Forward RPC 转发到 Leader 节点。Controller 更新 `HashSlotTable` 后，所有节点会在 assignment 刷新或 heartbeat 下发时同步新表并刷新本地路由。
 
 ## 6. 元数据管理
 
@@ -222,7 +229,7 @@ type ChannelRuntimeStatus struct {
 
 ## 7. Managed Slots 生命周期
 
-Controller 通过 Assignment 驱动 Slot 在节点上的打开与关闭：
+Controller 通过 Assignment 驱动 physical Slot 的打开与关闭，同时通过 HashSlotTable 驱动逻辑分片迁移：
 
 ```
 Controller 分配 Assignment（DesiredPeers = [1, 2, 3]）
@@ -234,7 +241,21 @@ Node Agent.ApplyAssignments()                 // agent.go
     └─ 本地多出该 Slot → Runtime.CloseSlot()
 ```
 
-### 7.1 修复任务执行（managed_slots.go:217-272）
+### 7.1 HashSlot 迁移生命周期
+
+```
+Controller StartMigration / AddSlot / RemoveSlot / Rebalance
+    ↓
+持久化 HashSlotTable（migration phase = Snapshot / Delta / Switching）
+    ↓
+Node observeHashSlotMigrations()
+    ├─ Snapshot：源 Slot 导出单个 hash slot 快照，目标 Slot 导入
+    ├─ Delta：源 Slot 对该 hash slot 开启增量双写
+    ├─ Switching：Controller 原子切表，路由开始指向目标 Slot
+    └─ Done / Abort：清理 worker 状态与双写运行时
+```
+
+### 7.2 修复任务执行（managed_slots.go）
 
 ```
 AddLearner(targetNode)
@@ -387,7 +408,7 @@ type Transport interface {
 
 | 维度         | 特征                                                          |
 | ------------ | ------------------------------------------------------------- |
-| 扩展方式     | 增加 SlotCount 可分散元数据负载                               |
+| 扩展方式     | 保持 HashSlotCount 稳定，通过增减 physical Slot 和迁移做扩缩容 |
 | 吞吐瓶颈     | 单 Slot 受限于 Raft 的写入 TPS（通常数千/秒）               |
 | 内存占用     | 每个 Slot 一个 rawNode，内存随 Slot 数线性增长             |
 | 日志压缩     | 支持 Snapshot 机制，定期快照后截断旧日志                     |

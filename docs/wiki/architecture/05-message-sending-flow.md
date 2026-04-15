@@ -19,11 +19,12 @@
 │  Send → NormalizePersonChannel → sendDurable                │
 │    → sendWithMetaRefreshRetry → channellog.Append           │
 └─────────────────────┬───────────────────────────────────────┘
-                      │ 频道寻址（两步定位）
+                      │ 频道寻址（三步定位）
                       ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  L2 Slot 层 — 元数据查询                                    │
-│  SlotForKey(channelID) → CRC32 % SlotCount + 1             │
+│  HashSlotForKey(channelID) → CRC32 % HashSlotCount         │
+│  → HashSlotTable.Lookup(hashSlot) → physical SlotID        │
 │  → 从对应 Slot Raft Leader 获取 ChannelRuntimeMeta         │
 │  → 得到 ISR Leader / Replicas / Epoch 等信息               │
 └─────────────────────┬───────────────────────────────────────┘
@@ -87,23 +88,38 @@ if shouldRefreshAndRetry(err) {
 }
 ```
 
-### 2.3 频道寻址（两步定位）
+### 2.3 频道寻址（三步定位）
 
-#### 第一步：Key → SlotID（哈希路由）
+#### 第一步：Key → HashSlot（稳定哈希）
 
 **代码位置**：`pkg/cluster/router.go`
 
 ```go
-func SlotForKey(key string) SlotID {
-    return SlotID(crc32.ChecksumIEEE([]byte(key)) % slotCount + 1)
+func HashSlotForKey(key string) uint16 {
+    return uint16(crc32.ChecksumIEEE([]byte(key)) % uint32(hashSlotCount))
 }
 ```
 
-- 将 `channelID` 字符串经 CRC32 哈希，对 SlotCount 取模后加 1（Slot 编号从 1 开始）。
-- SlotCount 在集群初始化时确定，后续不可变。
-- 所有节点使用相同算法，保证路由一致性。
+- 将 `channelID` 字符串经 CRC32 哈希后，映射到固定范围 `[0, HashSlotCount)` 的逻辑分片。
+- `HashSlotCount` 是稳定常量，控制“逻辑分片”数量；物理 Slot 数可以通过控制面动态增减。
+- 所有节点使用相同算法，保证同一个 Key 永远落到同一个 hash slot。
 
-#### 第二步：SlotID → ChannelRuntimeMeta → ISR Leader
+#### 第二步：HashSlot → Physical Slot（查表）
+
+**代码位置**：`pkg/cluster/hashslottable.go` · `pkg/cluster/router.go`
+
+```go
+func (r *Router) SlotForKey(key string) SlotID {
+    hashSlot := r.HashSlotForKey(key)
+    return r.hashSlotTable.Load().Lookup(hashSlot)
+}
+```
+
+- `HashSlotTable` 是 Controller 持久化的权威映射：`hashSlot -> physical SlotID`。
+- 当执行 `AddSlot` / `RemoveSlot` / `Rebalance` 时，Controller 会更新 `HashSlotTable`，节点通过 assignment 刷新或 heartbeat 下发同步新表。
+- 这样“Key 的逻辑哈希”与“物理 Slot 的副本分布”被解耦：路由稳定，物理承载可动态调整。
+
+#### 第三步：SlotID → ChannelRuntimeMeta → ISR Leader
 
 **代码位置**：`pkg/slot/proxy/store.go` · `internal/app/channelmeta.go`
 
@@ -128,8 +144,9 @@ func SlotForKey(key string) SlotID {
 ```
 寻址流程：
 channelID = "group_abc"
-    → CRC32("group_abc") % 256 + 1 = SlotID(137)
-    → SlotID(137) 的 Raft Leader 在 Node-2
+    → CRC32("group_abc") % 256 = HashSlot(136)
+    → HashSlotTable.Lookup(136) = SlotID(12)
+    → SlotID(12) 的 Raft Leader 在 Node-2
     → Node-2 返回 ChannelRuntimeMeta{Leader: Node-3, ISR: [3,1,2]}
     → 消息写入路由到 Node-3
 ```
@@ -267,33 +284,38 @@ distributedDeliveryPush.Push(cmd)
 
 ## 3. 频道寻址机制详解
 
-### 3.1 两层路由设计
+### 3.1 三层路由设计
 
-WuKongIM 的频道寻址采用**两层路由**设计，将"找到频道的元数据"和"找到频道的消息日志"分离到不同的层次：
+WuKongIM 的频道寻址采用**三层路由**设计，把“稳定哈希”“物理承载”“频道 ISR 元数据”分离开：
 
 ```
-                    ┌──────────────┐
-  channelID ──────▸ │   CRC32 Hash  │ ──▸ SlotID
-                    └──────────────┘
+                    ┌─────────────────┐
+  channelID ──────▸ │   CRC32 Hash    │ ──▸ HashSlot
+                    └─────────────────┘
                            │
                            ▼
-                    ┌──────────────┐
-    SlotID ────────▸│  Slot Raft   │ ──▸ ChannelRuntimeMeta
-                    │  Leader      │      {Leader, ISR, Epoch, ...}
-                    └──────────────┘
+                    ┌─────────────────┐
+   HashSlot ───────▸│  HashSlotTable  │ ──▸ SlotID
+                    └─────────────────┘
                            │
                            ▼
-                    ┌──────────────┐
-    ISR Leader ────▸│  Channel ISR │ ──▸ 消息读写
-                    │  Leader Node │
-                    └──────────────┘
+                    ┌─────────────────┐
+      SlotID ──────▸│  Slot Raft      │ ──▸ ChannelRuntimeMeta
+                    │  Leader         │      {Leader, ISR, Epoch, ...}
+                    └─────────────────┘
+                           │
+                           ▼
+                    ┌─────────────────┐
+    ISR Leader ────▸│  Channel ISR    │ ──▸ 消息读写
+                    │  Leader Node    │
+                    └─────────────────┘
 ```
 
 ### 3.2 为什么不用一步直接定位
 
-- **解耦元数据与数据**：频道的 ISR Leader 可能因故障/重平衡而迁移，但 `channelID → SlotID` 的映射是静态的。Slot 层负责维护最新的 Leader 信息，客户端不需要感知 Leader 变化。
+- **解耦逻辑哈希与物理承载**：频道的 `channelID → HashSlot` 是稳定的，而 `HashSlotTable` 可以把同一个 hash slot 在线迁移到新的物理 Slot。
 - **元数据强一致**：通过 Raft 保证频道元数据的一致性，避免出现两个节点同时认为自己是 Leader 的情况。
-- **水平扩展**：Slot 将元数据分散到多个 Raft 组，避免单点瓶颈。
+- **支持动态扩缩容**：新增或移除 physical slot 时，只需要调整 `HashSlotTable` 并完成迁移，不必重算所有 Key 的逻辑哈希。
 
 ### 3.3 元数据缓存与刷新
 
