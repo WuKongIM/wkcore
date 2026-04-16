@@ -306,6 +306,39 @@ func TestControllerTickOnceUsesObservationSnapshotAfterWarmup(t *testing.T) {
 	}
 }
 
+func TestControllerTickOnceDoesNotProposeEvaluateTimeouts(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	host.applyObservation(slotcontroller.AgentReport{
+		NodeID:     2,
+		Addr:       "127.0.0.1:2222",
+		ObservedAt: time.Unix(1710000700, 0),
+		Runtime: &controllermeta.SlotRuntimeView{
+			SlotID:              1,
+			CurrentPeers:        []uint64{1},
+			LeaderID:            1,
+			HealthyVoters:       1,
+			HasQuorum:           true,
+			ObservedConfigEpoch: 3,
+			LastReportAt:        time.Unix(1710000701, 0),
+		},
+	})
+
+	before, err := host.raftDB.ForController().LastIndex(context.Background())
+	if err != nil {
+		t.Fatalf("LastIndex(before) error = %v", err)
+	}
+
+	cluster.controllerTickOnce(context.Background())
+
+	after, err := host.raftDB.ForController().LastIndex(context.Background())
+	if err != nil {
+		t.Fatalf("LastIndex(after) error = %v", err)
+	}
+	if after != before {
+		t.Fatalf("LastIndex() after idle controllerTickOnce = %d, want unchanged %d", after, before)
+	}
+}
+
 func TestListObservedRuntimeViewsFallsBackToLocalControllerMetaWhenLeaderUnavailable(t *testing.T) {
 	dir := t.TempDir()
 	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))

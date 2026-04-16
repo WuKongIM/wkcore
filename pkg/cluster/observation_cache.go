@@ -105,6 +105,18 @@ func (c *observationCache) snapshot() observationSnapshot {
 	return snapshot
 }
 
+func (c *observationCache) reset() {
+	if c == nil {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.nodes = make(map[uint64]nodeObservation)
+	c.runtimeViews = make(map[uint32]controllermeta.SlotRuntimeView)
+}
+
 func runtimeViewEquivalent(left, right controllermeta.SlotRuntimeView) bool {
 	if left.SlotID != right.SlotID ||
 		left.LeaderID != right.LeaderID ||

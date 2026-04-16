@@ -114,15 +114,15 @@ func TestControllerHandlerHeartbeatUpdatesLeaderObservationWithoutProposal(t *te
 	if err != nil {
 		t.Fatalf("ListNodes() error = %v", err)
 	}
-	if len(nodes) != 0 {
-		t.Fatalf("ListNodes() = %#v, want empty store state", nodes)
+	if len(nodes) != 1 || nodes[0].NodeID != report.NodeID || nodes[0].Status != controllermeta.NodeStatusAlive {
+		t.Fatalf("ListNodes() = %#v, want one alive durable status edge", nodes)
 	}
 	views, err := host.meta.ListRuntimeViews(context.Background())
 	if err != nil {
 		t.Fatalf("ListRuntimeViews() error = %v", err)
 	}
 	if len(views) != 0 {
-		t.Fatalf("ListRuntimeViews() = %#v, want empty store state", views)
+		t.Fatalf("ListRuntimeViews() = %#v, want runtime view to stay out of durable store", views)
 	}
 }
 

@@ -9,7 +9,7 @@
 
 | 子包 | 入口/核心类型 | 职责 |
 |------|-------------|------|
-| `meta/` | `meta.Store` | Pebble KV 持久化：Node / Assignment / RuntimeView / Task / Membership 的 CRUD |
+| `meta/` | `meta.Store` | Pebble KV 持久化：Node / Assignment / Task / Membership 的 CRUD；`RuntimeView` 结构仍保留但 steady-state 读路径已转为 leader 本地 observation |
 | `raft/` | `raft.NewService()` → `Service` | Raft 共识服务：事件循环、提案处理、日志持久化、Leader 选举 |
 | `plane/` | `plane.NewController()` → `Controller` | 控制面逻辑：StateMachine 命令应用 + Planner 调度决策 + Controller.Tick 编排 |
 
@@ -36,7 +36,7 @@ StateMachine.Apply(ctx, Command) error
 | `SlotAssignment` | meta/types.go | Slot分配：SlotID, DesiredPeers, ConfigEpoch, BalanceVersion |
 | `SlotRuntimeView` | meta/types.go | Slot运行时：CurrentPeers, LeaderID, HasQuorum, ObservedConfigEpoch |
 | `ReconcileTask` | meta/types.go | 调和任务：Kind(Bootstrap/Repair/Rebalance), Step, SourceNode, TargetNode, Attempt, Status |
-| `Command` | plane/commands.go | 命令信封：Kind + Report/Op/Advance/Assignment/Task/Migration/AddSlot/RemoveSlot |
+| `Command` | plane/commands.go | 命令信封：Kind + Report/Op/Advance/Assignment/Task/Migration/AddSlot/RemoveSlot/NodeStatusUpdate |
 
 **节点状态转移:**
 ```
@@ -67,14 +67,17 @@ Unknown → Alive ←→ Suspect(心跳>3s) → Dead(心跳>10s)
 
 ```
 NodeHeartbeat (statemachine.go:79):
-  查找/创建节点 → 更新 Addr/Heartbeat/Weight → 非Draining标记Alive → 保存RuntimeView
+  兼容命令；仍可查找/创建节点并更新 Addr/Heartbeat/Weight/RuntimeView，但 steady-state 观测路径已不再持续提案该命令
 
 OperatorRequest (statemachine.go:113):
   MarkDraining → Status=Draining
   Resume → Status=Alive + 原子删除所有Repair任务 (store.UpsertNodeAndDeleteRepairTasks)
 
+NodeStatusUpdate (statemachine.go):
+  按批读取目标节点 → 校验可选 expected prior status → 应用 Alive/Suspect/Dead/Draining 边沿状态 → 持久化节点
+
 EvaluateTimeouts (statemachine.go:142):
-  遍历节点: Draining跳过, >DeadTimeout(10s)→Dead, >SuspectTimeout(3s)→Suspect, 否则Alive
+  兼容扫描逻辑仍保留在状态机中，但 steady-state 控制流已不再周期性提案该命令
 
 TaskResult (statemachine.go:168):
   成功(Err=nil) → 删除任务
@@ -127,10 +130,11 @@ RemoveSlot:
 
 ```
   ① isLeader() → 非 Leader 直接返回
-  ② snapshot() → 从 Store 加载全量状态(Nodes/Assignments/RuntimeViews/Tasks)
-  ③ Planner.NextDecision(state) → Decision{SlotID, Assignment, Task}
-  ④ SlotID == 0 → 无需操作
-  ⑤ 持久化:
+  ② snapshot() → 从 Store 加载 durable Nodes/Assignments/Tasks，并从 Controller Leader 本地 observation snapshot 取 RuntimeViews
+  ③ 若 leader 仍处于 warmup（尚未收到新鲜观测）则跳过本轮规划
+  ④ Planner.NextDecision(state) → Decision{SlotID, Assignment, Task}
+  ⑤ SlotID == 0 → 无需操作
+  ⑥ 持久化:
      有 Assignment+Task → store.UpsertAssignmentTask (原子)
      仅 Assignment → store.UpsertAssignment
      仅 Task → store.UpsertTask
@@ -166,7 +170,9 @@ AddLearner → CatchUp → Promote → TransferLeader → RemoveOld
 - **仅 Leader 规划**: `Controller.Tick` 第一行检查 `isLeader()`，Follower 上调用是空操作。不要在 Follower 上直接写 Store。
 - **Repair 过时检测**: `statemachine.go:repairTaskObsolete` 在应用 Repair 任务前检查 SourceNode 是否已恢复为 Alive。跳过则避免不必要的迁移。
 - **Attempt 匹配**: `applyTaskResult` 用 Attempt 字段防止过期的 TaskResult 影响新一轮任务。Attempt 不匹配时静默忽略。
-- **Draining 不受心跳影响**: `applyNodeHeartbeat` 中 Draining 状态不会被心跳覆盖为 Alive，必须通过 OperatorResumeNode 显式恢复。
+- **Draining 不受观测恢复影响**: `NodeStatusUpdate` / `applyNodeHeartbeat` 都不能把 Draining 自动恢复为 Alive，必须通过 OperatorResumeNode 显式恢复。
+- **健康状态改为边沿复制**: steady-state 不再周期性 `EvaluateTimeouts`；由 leader 本地 deadline scheduler 只在状态跨边沿时提案 `NodeStatusUpdate`。
+- **规划依赖 leader 本地 observation**: RuntimeView 不再是 steady-state 的 replicated metadata。新 leader warmup 期间必须 fail-closed，优先延迟 Repair/Rebalance，避免误判。
 - **指数退避上限**: `retryDelay` 中 shift 上限为 30，防止溢出。重试延迟 = base × 2^(attempt-1)。
 - **Command 序列化为 JSON**: `raft/service.go:encodeCommand` 使用 JSON（非二进制），TaskAdvance.Err 序列化为 string 再反序列化为 `errors.New`。
 - **Leader 丢失时清理**: `raft/service.go:failInflightProposalsOnLeaderLoss` 在每次状态检查后清理所有 pending 提案，返回 ErrNotLeader。

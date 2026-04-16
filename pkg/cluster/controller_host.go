@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
@@ -13,12 +14,13 @@ import (
 )
 
 type controllerHost struct {
-	meta         *controllermeta.Store
-	raftDB       *raftstorage.DB
-	sm           *slotcontroller.StateMachine
-	service      *controllerraft.Service
-	observations *observationCache
-	localNode    multiraft.NodeID
+	meta            *controllermeta.Store
+	raftDB          *raftstorage.DB
+	sm              *slotcontroller.StateMachine
+	service         *controllerraft.Service
+	observations    *observationCache
+	healthScheduler *nodeHealthScheduler
+	localNode       multiraft.NodeID
 
 	warmupMu         sync.RWMutex
 	warmupLeaderID   multiraft.NodeID
@@ -47,6 +49,18 @@ func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, erro
 	}
 
 	sm := slotcontroller.NewStateMachine(meta, slotcontroller.StateMachineConfig{})
+	host := &controllerHost{
+		meta:         meta,
+		raftDB:       logDB,
+		sm:           sm,
+		observations: newObservationCache(),
+		localNode:    cfg.NodeID,
+	}
+	host.healthScheduler = newNodeHealthScheduler(nodeHealthSchedulerConfig{
+		suspectTimeout: 3 * time.Second,
+		deadTimeout:    10 * time.Second,
+		loadNode:       host.meta.GetNode,
+	})
 	service := controllerraft.NewService(controllerraft.Config{
 		NodeID:         uint64(cfg.NodeID),
 		Peers:          controllerPeers,
@@ -56,16 +70,18 @@ func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, erro
 		Server:         layer.server,
 		RPCMux:         layer.rpcMux,
 		Pool:           layer.raftPool,
+		OnLeaderChange: func(from, to uint64) {
+			host.handleLeaderChange(multiraft.NodeID(from), multiraft.NodeID(to))
+		},
+		OnCommittedCommand: func(cmd slotcontroller.Command) {
+			host.handleCommittedCommand(cmd)
+		},
 	})
-
-	return &controllerHost{
-		meta:         meta,
-		raftDB:       logDB,
-		sm:           sm,
-		service:      service,
-		observations: newObservationCache(),
-		localNode:    cfg.NodeID,
-	}, nil
+	host.service = service
+	host.healthScheduler.cfg.propose = func(ctx context.Context, cmd slotcontroller.Command) error {
+		return host.service.Propose(ctx, cmd)
+	}
+	return host, nil
 }
 
 func (h *controllerHost) Start(ctx context.Context) error {
@@ -78,6 +94,9 @@ func (h *controllerHost) Start(ctx context.Context) error {
 func (h *controllerHost) Stop() {
 	if h == nil {
 		return
+	}
+	if h.healthScheduler != nil {
+		h.healthScheduler.reset()
 	}
 	if h.service != nil {
 		_ = h.service.Stop()
@@ -111,6 +130,15 @@ func (h *controllerHost) applyObservation(report slotcontroller.AgentReport) {
 		h.observations.applyRuntimeView(*report.Runtime)
 	}
 	h.markWarmupReady()
+	if h.healthScheduler != nil {
+		h.healthScheduler.observe(nodeObservation{
+			NodeID:               report.NodeID,
+			Addr:                 report.Addr,
+			ObservedAt:           report.ObservedAt,
+			CapacityWeight:       report.CapacityWeight,
+			HashSlotTableVersion: report.HashSlotTableVersion,
+		})
+	}
 }
 
 func (h *controllerHost) snapshotObservations() observationSnapshot {
@@ -175,4 +203,32 @@ func (h *controllerHost) markWarmupReady() {
 	if h.warmupLeaderID == h.localNode {
 		h.warmupReady = true
 	}
+}
+
+func (h *controllerHost) handleLeaderChange(_, to multiraft.NodeID) {
+	if h == nil {
+		return
+	}
+	if h.observations != nil {
+		h.observations.reset()
+	}
+	if h.healthScheduler != nil {
+		h.healthScheduler.reset()
+	}
+
+	h.warmupMu.Lock()
+	defer h.warmupMu.Unlock()
+
+	h.warmupLeaderID = to
+	h.warmupReady = false
+	if to == h.localNode {
+		h.warmupGeneration++
+	}
+}
+
+func (h *controllerHost) handleCommittedCommand(cmd slotcontroller.Command) {
+	if h == nil || h.healthScheduler == nil {
+		return
+	}
+	h.healthScheduler.handleCommittedCommand(cmd)
 }

@@ -74,6 +74,8 @@ type NodeStatusTransition struct {
 	NewStatus      controllermeta.NodeStatus
 	ExpectedStatus *controllermeta.NodeStatus
 	EvaluatedAt    time.Time
+	Addr           string
+	CapacityWeight int
 }
 
 type NodeStatusUpdate struct {

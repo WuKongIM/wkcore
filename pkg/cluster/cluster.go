@@ -437,13 +437,6 @@ func (c *Cluster) controllerTickOnce(ctx context.Context) {
 		return
 	}
 
-	tickCtx, cancel := c.withControllerTimeout(ctx)
-	_ = c.controller.Propose(tickCtx, slotcontroller.Command{
-		Kind:    slotcontroller.CommandKindEvaluateTimeouts,
-		Advance: &slotcontroller.TaskAdvance{Now: time.Now()},
-	})
-	cancel()
-
 	start := time.Now()
 	state, err := c.snapshotPlannerState(ctx)
 	if err != nil {

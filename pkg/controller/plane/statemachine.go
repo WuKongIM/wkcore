@@ -268,7 +268,15 @@ func (sm *StateMachine) applyNodeStatusUpdate(ctx context.Context, update NodeSt
 
 		node, err := sm.store.GetNode(ctx, transition.NodeID)
 		if errors.Is(err, controllermeta.ErrNotFound) {
-			continue
+			if transition.Addr == "" {
+				continue
+			}
+			node = controllermeta.ClusterNode{
+				NodeID:         transition.NodeID,
+				Addr:           transition.Addr,
+				CapacityWeight: normalizeNodeCapacity(transition.CapacityWeight),
+			}
+			err = nil
 		}
 		if err != nil {
 			return err
@@ -277,6 +285,15 @@ func (sm *StateMachine) applyNodeStatusUpdate(ctx context.Context, update NodeSt
 			continue
 		}
 
+		if transition.Addr != "" {
+			node.Addr = transition.Addr
+		}
+		if transition.CapacityWeight > 0 {
+			node.CapacityWeight = transition.CapacityWeight
+		}
+		if node.CapacityWeight <= 0 {
+			node.CapacityWeight = 1
+		}
 		node.Status = transition.NewStatus
 		if transition.EvaluatedAt.After(node.LastHeartbeatAt) {
 			node.LastHeartbeatAt = transition.EvaluatedAt
@@ -295,6 +312,13 @@ func validNodeStatusTarget(status controllermeta.NodeStatus) bool {
 	default:
 		return false
 	}
+}
+
+func normalizeNodeCapacity(weight int) int {
+	if weight <= 0 {
+		return 1
+	}
+	return weight
 }
 
 func (sm *StateMachine) repairTaskObsolete(ctx context.Context, task controllermeta.ReconcileTask) (bool, error) {

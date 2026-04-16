@@ -751,9 +751,11 @@ func cloneNodeStatusUpdate(update *slotcontroller.NodeStatusUpdate) *slotcontrol
 	}
 	for _, transition := range update.Transitions {
 		next := slotcontroller.NodeStatusTransition{
-			NodeID:      transition.NodeID,
-			NewStatus:   transition.NewStatus,
-			EvaluatedAt: transition.EvaluatedAt,
+			NodeID:         transition.NodeID,
+			NewStatus:      transition.NewStatus,
+			EvaluatedAt:    transition.EvaluatedAt,
+			Addr:           transition.Addr,
+			CapacityWeight: transition.CapacityWeight,
 		}
 		if transition.ExpectedStatus != nil {
 			expected := *transition.ExpectedStatus
