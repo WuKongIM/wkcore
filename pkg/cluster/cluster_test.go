@@ -14,6 +14,7 @@ import (
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
+	metafsm "github.com/WuKongIM/WuKongIM/pkg/slot/fsm"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/transport"
@@ -175,11 +176,11 @@ func TestListObservedRuntimeViewsReadsLeaderObservationSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertRuntimeView() error = %v", err)
 	}
-	host.applyObservation(slotcontroller.AgentReport{
+	host.applyRuntimeReport(runtimeObservationReport{
 		NodeID:     2,
-		Addr:       "127.0.0.1:2222",
 		ObservedAt: time.Unix(1710000300, 0),
-		Runtime: &controllermeta.SlotRuntimeView{
+		FullSync:   true,
+		Views: []controllermeta.SlotRuntimeView{{
 			SlotID:              7,
 			CurrentPeers:        []uint64{1, 2, 3},
 			LeaderID:            2,
@@ -187,7 +188,7 @@ func TestListObservedRuntimeViewsReadsLeaderObservationSnapshot(t *testing.T) {
 			HasQuorum:           true,
 			ObservedConfigEpoch: 9,
 			LastReportAt:        time.Unix(1710000301, 0),
-		},
+		}},
 	})
 
 	views, err := cluster.ListObservedRuntimeViews(context.Background())
@@ -220,11 +221,11 @@ func TestSnapshotPlannerStateUsesObservationSnapshotForRuntime(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertRuntimeView() error = %v", err)
 	}
-	host.applyObservation(slotcontroller.AgentReport{
-		NodeID:     2,
-		Addr:       "127.0.0.1:2222",
+	host.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     uint64(cluster.cfg.NodeID),
 		ObservedAt: time.Unix(1710000401, 0),
-		Runtime: &controllermeta.SlotRuntimeView{
+		FullSync:   true,
+		Views: []controllermeta.SlotRuntimeView{{
 			SlotID:              1,
 			CurrentPeers:        []uint64{1},
 			LeaderID:            1,
@@ -232,7 +233,7 @@ func TestSnapshotPlannerStateUsesObservationSnapshotForRuntime(t *testing.T) {
 			HasQuorum:           true,
 			ObservedConfigEpoch: 3,
 			LastReportAt:        time.Unix(1710000402, 0),
-		},
+		}},
 	})
 
 	state, err := cluster.snapshotPlannerState(context.Background())
@@ -244,7 +245,7 @@ func TestSnapshotPlannerStateUsesObservationSnapshotForRuntime(t *testing.T) {
 	}
 }
 
-func TestControllerTickOnceSkipsPlanningDuringWarmup(t *testing.T) {
+func TestControllerTickOnceSkipsPlanningUntilRuntimeWarm(t *testing.T) {
 	cluster, host, _ := newTestLocalControllerCluster(t, true)
 	cluster.cfg.SlotReplicaN = 1
 	if err := host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
@@ -268,7 +269,7 @@ func TestControllerTickOnceSkipsPlanningDuringWarmup(t *testing.T) {
 	}
 }
 
-func TestControllerTickOnceUsesObservationSnapshotAfterWarmup(t *testing.T) {
+func TestControllerTickOnceRunsAfterRuntimeFullSync(t *testing.T) {
 	cluster, host, _ := newTestLocalControllerCluster(t, true)
 	cluster.cfg.SlotReplicaN = 1
 	if err := host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
@@ -280,19 +281,10 @@ func TestControllerTickOnceUsesObservationSnapshotAfterWarmup(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertNode() error = %v", err)
 	}
-	host.applyObservation(slotcontroller.AgentReport{
-		NodeID:     2,
-		Addr:       "127.0.0.1:2222",
+	host.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     uint64(cluster.cfg.NodeID),
 		ObservedAt: time.Unix(1710000601, 0),
-		Runtime: &controllermeta.SlotRuntimeView{
-			SlotID:              1,
-			CurrentPeers:        []uint64{1},
-			LeaderID:            1,
-			HealthyVoters:       1,
-			HasQuorum:           true,
-			ObservedConfigEpoch: 3,
-			LastReportAt:        time.Unix(1710000602, 0),
-		},
+		FullSync:   true,
 	})
 
 	cluster.controllerTickOnce(context.Background())
@@ -301,18 +293,18 @@ func TestControllerTickOnceUsesObservationSnapshotAfterWarmup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTasks() error = %v", err)
 	}
-	if len(tasks) != 0 {
-		t.Fatalf("ListTasks() = %#v, want observation-backed runtime to suppress bootstrap", tasks)
+	if len(tasks) == 0 {
+		t.Fatalf("ListTasks() = %#v, want planner to run after runtime full sync", tasks)
 	}
 }
 
 func TestControllerTickOnceDoesNotProposeEvaluateTimeouts(t *testing.T) {
 	cluster, host, _ := newTestLocalControllerCluster(t, true)
-	host.applyObservation(slotcontroller.AgentReport{
+	host.applyRuntimeReport(runtimeObservationReport{
 		NodeID:     2,
-		Addr:       "127.0.0.1:2222",
 		ObservedAt: time.Unix(1710000700, 0),
-		Runtime: &controllermeta.SlotRuntimeView{
+		FullSync:   true,
+		Views: []controllermeta.SlotRuntimeView{{
 			SlotID:              1,
 			CurrentPeers:        []uint64{1},
 			LeaderID:            1,
@@ -320,7 +312,7 @@ func TestControllerTickOnceDoesNotProposeEvaluateTimeouts(t *testing.T) {
 			HasQuorum:           true,
 			ObservedConfigEpoch: 3,
 			LastReportAt:        time.Unix(1710000701, 0),
-		},
+		}},
 	})
 
 	before, err := host.raftDB.ForController().LastIndex(context.Background())
@@ -1388,6 +1380,108 @@ func TestObserveOnceContinuesHashSlotMigrationObservationWhenAssignmentSyncFails
 	}
 }
 
+func TestSlotAgentHeartbeatOnceSendsNodeHeartbeatOnly(t *testing.T) {
+	cluster := newUnitObservationTestCluster(t)
+	requireNoErr(t, cluster.ensureManagedSlotLocal(context.Background(), 1, []uint64{1}, false, true))
+
+	var reports []slotcontroller.AgentReport
+	agent := &slotAgent{
+		cluster: cluster,
+		client: fakeControllerClient{
+			reportFn: func(_ context.Context, report slotcontroller.AgentReport) error {
+				reports = append(reports, report)
+				return nil
+			},
+		},
+	}
+
+	if err := agent.HeartbeatOnce(context.Background()); err != nil {
+		t.Fatalf("HeartbeatOnce() error = %v", err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("report calls = %d, want 1", len(reports))
+	}
+	if reports[0].Runtime != nil {
+		t.Fatalf("reports[0].Runtime = %#v, want nil", reports[0].Runtime)
+	}
+}
+
+func TestClusterRuntimeObservationLoopSkipsIdleFlush(t *testing.T) {
+	now := time.Unix(1710015000, 0)
+	sendCalls := 0
+	cluster := &Cluster{
+		observationResources: observationResources{
+			runtimeReporter: newRuntimeObservationReporter(runtimeObservationReporterConfig{
+				nodeID: 1,
+				now:    func() time.Time { return now },
+				snapshot: func() ([]controllermeta.SlotRuntimeView, error) {
+					return []controllermeta.SlotRuntimeView{{
+						SlotID:       1,
+						CurrentPeers: []uint64{1},
+						LeaderID:     1,
+						HasQuorum:    true,
+						LastReportAt: now,
+					}}, nil
+				},
+				send: func(_ context.Context, _ runtimeObservationReport) error {
+					sendCalls++
+					return nil
+				},
+				fullSyncInterval: time.Minute,
+			}),
+		},
+	}
+	cluster.runtimeReporter.requestFullSync()
+
+	cluster.runtimeObservationOnce(context.Background())
+	now = now.Add(5 * time.Second)
+	cluster.runtimeObservationOnce(context.Background())
+
+	if sendCalls != 1 {
+		t.Fatalf("send calls = %d, want 1", sendCalls)
+	}
+}
+
+func TestClusterRuntimeObservationLoopSendsCloseTombstone(t *testing.T) {
+	now := time.Unix(1710016000, 0)
+	var reports []runtimeObservationReport
+	cluster := &Cluster{
+		observationResources: observationResources{
+			runtimeReporter: newRuntimeObservationReporter(runtimeObservationReporterConfig{
+				nodeID: 1,
+				now:    func() time.Time { return now },
+				snapshot: func() ([]controllermeta.SlotRuntimeView, error) {
+					return []controllermeta.SlotRuntimeView{{
+						SlotID:       1,
+						CurrentPeers: []uint64{1},
+						LeaderID:     1,
+						HasQuorum:    true,
+						LastReportAt: now,
+					}}, nil
+				},
+				send: func(_ context.Context, report runtimeObservationReport) error {
+					reports = append(reports, report)
+					return nil
+				},
+				fullSyncInterval: time.Minute,
+			}),
+		},
+	}
+	cluster.runtimeReporter.requestFullSync()
+
+	cluster.runtimeObservationOnce(context.Background())
+	cluster.deleteRuntimePeers(2)
+	now = now.Add(time.Second)
+	cluster.runtimeObservationOnce(context.Background())
+
+	if len(reports) != 2 {
+		t.Fatalf("reports len = %d, want 2", len(reports))
+	}
+	if got, want := reports[1].ClosedSlots, []uint32{2}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ClosedSlots = %v, want %v", got, want)
+	}
+}
+
 func TestOrderHashSlotMigrationsForStartInterleavesSources(t *testing.T) {
 	ordered := orderHashSlotMigrationsForStart([]HashSlotMigration{
 		{HashSlot: 1, Source: 1, Target: 10},
@@ -1750,7 +1844,9 @@ func TestAbortHashSlotMigrationPrefersPendingAbortRequest(t *testing.T) {
 }
 
 type fakeControllerClient struct {
+	reportFn                    func(context.Context, slotcontroller.AgentReport) error
 	reportErr                   error
+	reportRuntimeObservationFn  func(context.Context, runtimeObservationReport) error
 	reportRuntimeObservationErr error
 	listNodesFn                 func(context.Context) ([]controllermeta.ClusterNode, error)
 	nodes                       []controllermeta.ClusterNode
@@ -1866,12 +1962,64 @@ func (f *fakeHashSlotMigrationWorker) Tick() []slotmigration.Transition {
 	return transitions
 }
 
-func (f fakeControllerClient) Report(_ context.Context, _ slotcontroller.AgentReport) error {
+func (f fakeControllerClient) Report(ctx context.Context, report slotcontroller.AgentReport) error {
+	if f.reportFn != nil {
+		return f.reportFn(ctx, report)
+	}
 	return f.reportErr
 }
 
-func (f fakeControllerClient) ReportRuntimeObservation(_ context.Context, _ runtimeObservationReport) error {
+func (f fakeControllerClient) ReportRuntimeObservation(ctx context.Context, report runtimeObservationReport) error {
+	if f.reportRuntimeObservationFn != nil {
+		return f.reportRuntimeObservationFn(ctx, report)
+	}
 	return f.reportRuntimeObservationErr
+}
+
+func newUnitObservationTestCluster(t *testing.T) *Cluster {
+	t.Helper()
+
+	dir := t.TempDir()
+	metaDB, err := metadb.Open(filepath.Join(dir, "data"))
+	if err != nil {
+		t.Fatalf("open metadb: %v", err)
+	}
+	raftDB, err := raftstorage.Open(filepath.Join(dir, "raft"))
+	if err != nil {
+		_ = metaDB.Close()
+		t.Fatalf("open raftstorage: %v", err)
+	}
+
+	cluster, err := NewCluster(Config{
+		NodeID:       1,
+		ListenAddr:   "127.0.0.1:0",
+		SlotCount:    1,
+		SlotReplicaN: 1,
+		Nodes: []NodeConfig{
+			{NodeID: 1, Addr: "127.0.0.1:0"},
+		},
+		NewStorage: func(slotID multiraft.SlotID) (multiraft.Storage, error) {
+			return raftDB.ForSlot(uint64(slotID)), nil
+		},
+		NewStateMachine: metafsm.NewStateMachineFactory(metaDB),
+	})
+	if err != nil {
+		_ = raftDB.Close()
+		_ = metaDB.Close()
+		t.Fatalf("NewCluster() error = %v", err)
+	}
+	if err := cluster.Start(); err != nil {
+		_ = raftDB.Close()
+		_ = metaDB.Close()
+		t.Fatalf("cluster.Start() error = %v", err)
+	}
+
+	t.Cleanup(func() {
+		cluster.Stop()
+		_ = raftDB.Close()
+		_ = metaDB.Close()
+	})
+	return cluster
 }
 
 func (f fakeControllerClient) ListNodes(ctx context.Context) ([]controllermeta.ClusterNode, error) {

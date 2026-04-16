@@ -274,7 +274,7 @@ func finalizeHashSlotMigrationOnController(ctx context.Context, nodes []*testNod
 		return errors.New("controller leader not found")
 	}
 	payload := make([]byte, 0, 1+1+4+1+19)
-	payload = append(payload, 1 /* controller codec version */, 11 /* finalize_migration kind */)
+	payload = append(payload, 1 /* controller codec version */, 13 /* finalize_migration kind */)
 	payload = binary.BigEndian.AppendUint32(payload, 0)
 	payload = binary.AppendUvarint(payload, 19)
 	payload = binary.BigEndian.AppendUint16(payload, hashSlot)

@@ -52,37 +52,160 @@ func TestObservationCacheUpsertNodeReportKeepsNewestObservation(t *testing.T) {
 	}
 }
 
-func TestObservationCacheUpsertRuntimeViewDeduplicatesUnchangedView(t *testing.T) {
+func TestObservationCacheApplyRuntimeReportFullSyncReplacesNodeViews(t *testing.T) {
 	cache := newObservationCache()
-	older := controllermeta.SlotRuntimeView{
-		SlotID:              7,
-		CurrentPeers:        []uint64{1, 2, 3},
-		LeaderID:            2,
-		HealthyVoters:       3,
-		HasQuorum:           true,
-		ObservedConfigEpoch: 9,
-		LastReportAt:        time.Unix(10, 0),
-	}
-	newer := controllermeta.SlotRuntimeView{
-		SlotID:              7,
-		CurrentPeers:        []uint64{1, 2, 3},
-		LeaderID:            2,
-		HealthyVoters:       3,
-		HasQuorum:           true,
-		ObservedConfigEpoch: 9,
-		LastReportAt:        time.Unix(20, 0),
-	}
+	cache.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     1,
+		ObservedAt: time.Unix(10, 0),
+		FullSync:   true,
+		Views: []controllermeta.SlotRuntimeView{
+			{
+				SlotID:              1,
+				CurrentPeers:        []uint64{1, 2, 3},
+				LeaderID:            1,
+				HealthyVoters:       3,
+				HasQuorum:           true,
+				ObservedConfigEpoch: 1,
+				LastReportAt:        time.Unix(10, 0),
+			},
+			{
+				SlotID:              2,
+				CurrentPeers:        []uint64{1, 2, 3},
+				LeaderID:            2,
+				HealthyVoters:       3,
+				HasQuorum:           true,
+				ObservedConfigEpoch: 1,
+				LastReportAt:        time.Unix(10, 0),
+			},
+		},
+	})
+	cache.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     2,
+		ObservedAt: time.Unix(10, 0),
+		FullSync:   true,
+		Views: []controllermeta.SlotRuntimeView{{
+			SlotID:              9,
+			CurrentPeers:        []uint64{2, 3, 4},
+			LeaderID:            2,
+			HealthyVoters:       3,
+			HasQuorum:           true,
+			ObservedConfigEpoch: 1,
+			LastReportAt:        time.Unix(10, 0),
+		}},
+	})
 
-	cache.applyRuntimeView(older)
-	firstPeerPtr := &cache.runtimeViews[older.SlotID].CurrentPeers[0]
-	cache.applyRuntimeView(newer)
+	cache.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     1,
+		ObservedAt: time.Unix(20, 0),
+		FullSync:   true,
+		Views: []controllermeta.SlotRuntimeView{{
+			SlotID:              2,
+			CurrentPeers:        []uint64{1, 3},
+			LeaderID:            3,
+			HealthyVoters:       2,
+			HasQuorum:           true,
+			ObservedConfigEpoch: 2,
+			LastReportAt:        time.Unix(20, 0),
+		}},
+	})
 
-	stored := cache.runtimeViews[older.SlotID]
-	if !stored.LastReportAt.Equal(newer.LastReportAt) {
-		t.Fatalf("runtimeViews[%d].LastReportAt = %v, want %v", older.SlotID, stored.LastReportAt, newer.LastReportAt)
+	snapshot := cache.snapshot()
+	if got, want := len(snapshot.RuntimeViews), 2; got != want {
+		t.Fatalf("snapshot.RuntimeViews len = %d, want %d", got, want)
 	}
-	if &stored.CurrentPeers[0] != firstPeerPtr {
-		t.Fatal("applyRuntimeView() replaced unchanged CurrentPeers slice, want deduplicated reuse")
+	if got, want := snapshot.RuntimeViews[0].SlotID, uint32(2); got != want {
+		t.Fatalf("snapshot.RuntimeViews[0].SlotID = %d, want %d", got, want)
+	}
+	if got, want := snapshot.RuntimeViews[1].SlotID, uint32(9); got != want {
+		t.Fatalf("snapshot.RuntimeViews[1].SlotID = %d, want %d", got, want)
+	}
+	if got, want := snapshot.RuntimeViews[0].CurrentPeers, []uint64{1, 3}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot.RuntimeViews[0].CurrentPeers = %v, want %v", got, want)
+	}
+}
+
+func TestObservationCacheApplyRuntimeReportIncrementalUpsertsAndDeletes(t *testing.T) {
+	cache := newObservationCache()
+	cache.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     2,
+		ObservedAt: time.Unix(30, 0),
+		FullSync:   true,
+		Views: []controllermeta.SlotRuntimeView{{
+			SlotID:              9,
+			CurrentPeers:        []uint64{2, 3, 4},
+			LeaderID:            3,
+			HealthyVoters:       3,
+			HasQuorum:           true,
+			ObservedConfigEpoch: 1,
+			LastReportAt:        time.Unix(30, 0),
+		}},
+	})
+	cache.applyRuntimeReport(runtimeObservationReport{
+		NodeID:      2,
+		ObservedAt:  time.Unix(40, 0),
+		ClosedSlots: []uint32{9},
+		Views: []controllermeta.SlotRuntimeView{{
+			SlotID:              7,
+			CurrentPeers:        []uint64{2, 4},
+			LeaderID:            2,
+			HealthyVoters:       2,
+			HasQuorum:           true,
+			ObservedConfigEpoch: 2,
+			LastReportAt:        time.Unix(40, 0),
+		}},
+	})
+
+	snapshot := cache.snapshot()
+	if got, want := len(snapshot.RuntimeViews), 1; got != want {
+		t.Fatalf("snapshot.RuntimeViews len = %d, want %d", got, want)
+	}
+	if got, want := snapshot.RuntimeViews[0].SlotID, uint32(7); got != want {
+		t.Fatalf("snapshot.RuntimeViews[0].SlotID = %d, want %d", got, want)
+	}
+	if got, want := snapshot.RuntimeViews[0].CurrentPeers, []uint64{2, 4}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot.RuntimeViews[0].CurrentPeers = %v, want %v", got, want)
+	}
+}
+
+func TestObservationCacheEvictsStaleRuntimeViews(t *testing.T) {
+	now := time.Unix(100, 0)
+	cache := newObservationCache()
+	cache.now = func() time.Time { return now }
+	cache.runtimeViewTTL = 30 * time.Second
+
+	cache.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     1,
+		ObservedAt: time.Unix(100, 0),
+		FullSync:   true,
+		Views: []controllermeta.SlotRuntimeView{{
+			SlotID:       1,
+			CurrentPeers: []uint64{1},
+			LeaderID:     1,
+			HasQuorum:    true,
+			LastReportAt: time.Unix(100, 0),
+		}},
+	})
+	now = time.Unix(120, 0)
+	cache.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     2,
+		ObservedAt: time.Unix(120, 0),
+		FullSync:   true,
+		Views: []controllermeta.SlotRuntimeView{{
+			SlotID:       2,
+			CurrentPeers: []uint64{2},
+			LeaderID:     2,
+			HasQuorum:    true,
+			LastReportAt: time.Unix(120, 0),
+		}},
+	})
+
+	now = time.Unix(131, 0)
+	snapshot := cache.snapshot()
+	if got, want := len(snapshot.RuntimeViews), 1; got != want {
+		t.Fatalf("snapshot.RuntimeViews len = %d, want %d", got, want)
+	}
+	if got, want := snapshot.RuntimeViews[0].SlotID, uint32(2); got != want {
+		t.Fatalf("snapshot.RuntimeViews[0].SlotID = %d, want %d", got, want)
 	}
 }
 
@@ -95,14 +218,19 @@ func TestObservationCacheSnapshotReturnsStableCopies(t *testing.T) {
 		CapacityWeight:       4,
 		HashSlotTableVersion: 11,
 	})
-	cache.applyRuntimeView(controllermeta.SlotRuntimeView{
-		SlotID:              9,
-		CurrentPeers:        []uint64{2, 3, 4},
-		LeaderID:            3,
-		HealthyVoters:       3,
-		HasQuorum:           true,
-		ObservedConfigEpoch: 12,
-		LastReportAt:        time.Unix(40, 0),
+	cache.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     2,
+		ObservedAt: time.Unix(40, 0),
+		FullSync:   true,
+		Views: []controllermeta.SlotRuntimeView{{
+			SlotID:              9,
+			CurrentPeers:        []uint64{2, 3, 4},
+			LeaderID:            3,
+			HealthyVoters:       3,
+			HasQuorum:           true,
+			ObservedConfigEpoch: 12,
+			LastReportAt:        time.Unix(40, 0),
+		}},
 	})
 
 	snapshot := cache.snapshot()

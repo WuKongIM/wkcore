@@ -68,6 +68,18 @@ func (h *controllerHandler) Handle(ctx context.Context, body []byte) ([]byte, er
 			resp.HashSlotTable = table.Encode()
 		}
 		return encodeControllerResponse(req.Kind, resp)
+	case controllerRPCRuntimeReport:
+		if req.RuntimeReport == nil {
+			return nil, ErrInvalidConfig
+		}
+		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
+			return marshalRedirect()
+		}
+		if c.controllerHost == nil {
+			return nil, ErrNotStarted
+		}
+		c.controllerHost.applyRuntimeReport(*req.RuntimeReport)
+		return encodeControllerResponse(req.Kind, controllerRPCResponse{})
 	case controllerRPCTaskResult:
 		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
 			return marshalRedirect()

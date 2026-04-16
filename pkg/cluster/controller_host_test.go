@@ -158,3 +158,78 @@ func TestControllerHostLeaderChangeClearsNodeMirrorOnLeaderLoss(t *testing.T) {
 		t.Fatal("mirroredNode(1) ok = true after leader loss, want false")
 	}
 }
+
+func TestControllerHostWarmupRequiresRuntimeFullSync(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, true)
+	requireNoErr(t, host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          1,
+		Addr:            "127.0.0.1:7001",
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Unix(1710001000, 0),
+		CapacityWeight:  1,
+	}))
+	requireNoErr(t, host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          2,
+		Addr:            "127.0.0.1:7002",
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Unix(1710001000, 0),
+		CapacityWeight:  1,
+	}))
+
+	if host.warmupComplete() {
+		t.Fatal("warmupComplete() = true before runtime full sync, want false")
+	}
+
+	host.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     1,
+		ObservedAt: time.Unix(1710001001, 0),
+		FullSync:   true,
+	})
+	if host.warmupComplete() {
+		t.Fatal("warmupComplete() = true after only one node full sync, want false")
+	}
+
+	host.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     2,
+		ObservedAt: time.Unix(1710001002, 0),
+		FullSync:   true,
+	})
+	if !host.warmupComplete() {
+		t.Fatal("warmupComplete() = false after all alive nodes full sync, want true")
+	}
+}
+
+func TestControllerHostLeaderChangeResetsRuntimeWarmupCoverage(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, true)
+	requireNoErr(t, host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          1,
+		Addr:            "127.0.0.1:7001",
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Unix(1710001100, 0),
+		CapacityWeight:  1,
+	}))
+
+	host.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     1,
+		ObservedAt: time.Unix(1710001101, 0),
+		FullSync:   true,
+	})
+	if !host.warmupComplete() {
+		t.Fatal("warmupComplete() = false after local full sync, want true")
+	}
+
+	host.handleLeaderChange(host.localNode, 2)
+	host.handleLeaderChange(2, host.localNode)
+	if host.warmupComplete() {
+		t.Fatal("warmupComplete() = true after leader change reset, want false")
+	}
+
+	host.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     1,
+		ObservedAt: time.Unix(1710001102, 0),
+		FullSync:   true,
+	})
+	if !host.warmupComplete() {
+		t.Fatal("warmupComplete() = false after post-reset full sync, want true")
+	}
+}

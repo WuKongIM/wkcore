@@ -60,7 +60,100 @@ func TestControllerHandlerHeartbeatRedirectsFollower(t *testing.T) {
 	}
 }
 
-func TestControllerHandlerHeartbeatUpdatesLeaderObservationWithoutProposal(t *testing.T) {
+func TestControllerHandlerRuntimeReportRedirectsFollower(t *testing.T) {
+	cluster, _, _ := newTestLocalControllerCluster(t, false)
+	handler := &controllerHandler{cluster: cluster}
+	body, err := encodeControllerRequest(controllerRPCRequest{
+		Kind: controllerRPCRuntimeReport,
+		RuntimeReport: &runtimeObservationReport{
+			NodeID:     2,
+			ObservedAt: time.Unix(1710000200, 0),
+			FullSync:   true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("encodeControllerRequest() error = %v", err)
+	}
+
+	respBody, err := handler.Handle(context.Background(), body)
+	if err != nil {
+		t.Fatalf("controllerHandler.Handle() error = %v", err)
+	}
+	resp, err := decodeControllerResponse(controllerRPCRuntimeReport, respBody)
+	if err != nil {
+		t.Fatalf("decodeControllerResponse() error = %v", err)
+	}
+	if !resp.NotLeader {
+		t.Fatal("controllerHandler.Handle() NotLeader = false, want true")
+	}
+}
+
+func TestControllerHandlerRuntimeReportUpdatesLeaderObservationWithoutProposal(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	handler := &controllerHandler{cluster: cluster}
+	before, err := host.raftDB.ForController().LastIndex(context.Background())
+	if err != nil {
+		t.Fatalf("LastIndex(before) error = %v", err)
+	}
+	report := runtimeObservationReport{
+		NodeID:     2,
+		ObservedAt: time.Unix(1710000200, 0),
+		FullSync:   true,
+		Views: []controllermeta.SlotRuntimeView{{
+			SlotID:              7,
+			CurrentPeers:        []uint64{1, 2, 3},
+			LeaderID:            2,
+			HealthyVoters:       3,
+			HasQuorum:           true,
+			ObservedConfigEpoch: 9,
+			LastReportAt:        time.Unix(1710000201, 0),
+		}},
+	}
+	body, err := encodeControllerRequest(controllerRPCRequest{
+		Kind:          controllerRPCRuntimeReport,
+		RuntimeReport: &report,
+	})
+	if err != nil {
+		t.Fatalf("encodeControllerRequest() error = %v", err)
+	}
+
+	respBody, err := handler.Handle(context.Background(), body)
+	if err != nil {
+		t.Fatalf("controllerHandler.Handle() error = %v", err)
+	}
+	resp, err := decodeControllerResponse(controllerRPCRuntimeReport, respBody)
+	if err != nil {
+		t.Fatalf("decodeControllerResponse() error = %v", err)
+	}
+	if resp.NotLeader {
+		t.Fatal("controllerHandler.Handle() NotLeader = true, want false")
+	}
+
+	after, err := host.raftDB.ForController().LastIndex(context.Background())
+	if err != nil {
+		t.Fatalf("LastIndex(after) error = %v", err)
+	}
+	if after != before {
+		t.Fatalf("LastIndex() after runtime report = %d, want unchanged %d", after, before)
+	}
+
+	snapshot := host.snapshotObservations()
+	if len(snapshot.Nodes) != 0 {
+		t.Fatalf("snapshot.Nodes = %#v", snapshot.Nodes)
+	}
+	if len(snapshot.RuntimeViews) != 1 || snapshot.RuntimeViews[0].SlotID != report.Views[0].SlotID {
+		t.Fatalf("snapshot.RuntimeViews = %#v", snapshot.RuntimeViews)
+	}
+	views, err := host.meta.ListRuntimeViews(context.Background())
+	if err != nil {
+		t.Fatalf("ListRuntimeViews() error = %v", err)
+	}
+	if len(views) != 0 {
+		t.Fatalf("ListRuntimeViews() = %#v, want runtime view to stay out of durable store", views)
+	}
+}
+
+func TestControllerHandlerHeartbeatUpdatesNodeObservationOnly(t *testing.T) {
 	cluster, host, _ := newTestLocalControllerCluster(t, true)
 	handler := &controllerHandler{cluster: cluster}
 	report := slotcontroller.AgentReport{
@@ -106,8 +199,8 @@ func TestControllerHandlerHeartbeatUpdatesLeaderObservationWithoutProposal(t *te
 	if len(snapshot.Nodes) != 1 || snapshot.Nodes[0].NodeID != report.NodeID {
 		t.Fatalf("snapshot.Nodes = %#v", snapshot.Nodes)
 	}
-	if len(snapshot.RuntimeViews) != 1 || snapshot.RuntimeViews[0].SlotID != report.Runtime.SlotID {
-		t.Fatalf("snapshot.RuntimeViews = %#v", snapshot.RuntimeViews)
+	if len(snapshot.RuntimeViews) != 0 {
+		t.Fatalf("snapshot.RuntimeViews = %#v, want no runtime views from heartbeat", snapshot.RuntimeViews)
 	}
 
 	nodes, err := host.meta.ListNodes(context.Background())
@@ -116,13 +209,6 @@ func TestControllerHandlerHeartbeatUpdatesLeaderObservationWithoutProposal(t *te
 	}
 	if len(nodes) != 1 || nodes[0].NodeID != report.NodeID || nodes[0].Status != controllermeta.NodeStatusAlive {
 		t.Fatalf("ListNodes() = %#v, want one alive durable status edge", nodes)
-	}
-	views, err := host.meta.ListRuntimeViews(context.Background())
-	if err != nil {
-		t.Fatalf("ListRuntimeViews() error = %v", err)
-	}
-	if len(views) != 0 {
-		t.Fatalf("ListRuntimeViews() = %#v, want runtime view to stay out of durable store", views)
 	}
 }
 

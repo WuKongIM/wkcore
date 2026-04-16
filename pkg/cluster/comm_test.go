@@ -40,15 +40,15 @@ type testNode struct {
 }
 
 const (
-	testClusterTickInterval   = 25 * time.Millisecond
-	testClusterElectionTick   = 6
-	testClusterHeartbeatTick  = 1
-	testClusterDialTimeout    = 750 * time.Millisecond
-	testClusterForwardTimeout = 750 * time.Millisecond
-	testClusterPoolSize       = 1
-	testLeaderPollInterval    = 50 * time.Millisecond
-	testLeaderConfirmations   = 4
-	testManagedSlotProbeWait  = 300 * time.Millisecond
+	testClusterTickInterval    = 25 * time.Millisecond
+	testClusterElectionTick    = 6
+	testClusterHeartbeatTick   = 1
+	testClusterDialTimeout     = 750 * time.Millisecond
+	testClusterForwardTimeout  = 750 * time.Millisecond
+	testClusterPoolSize        = 1
+	testLeaderPollInterval     = 50 * time.Millisecond
+	testLeaderConfirmations    = 4
+	testManagedSlotProbeWait   = 300 * time.Millisecond
 	testControllerProbeTimeout = 250 * time.Millisecond
 )
 
@@ -823,7 +823,7 @@ func slotForControllerLeader(assignments []controllermeta.SlotAssignment, contro
 
 const (
 	controllerProbeCodecVersion      byte  = 1
-	controllerProbeKindAssignments   byte  = 2
+	controllerProbeKindAssignments   byte  = 3
 	controllerProbeFlagNotLeader     byte  = 1 << 0
 	controllerProbeServiceID         uint8 = 14
 	controllerProbePayloadHeaderSize       = 10

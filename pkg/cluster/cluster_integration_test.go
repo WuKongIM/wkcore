@@ -135,7 +135,7 @@ func TestThreeNodeClusterReelectsAfterLeaderRestart(t *testing.T) {
 	waitForChannelVisibleOnNodes(t, testNodes, afterRestartID, 1)
 }
 
-func TestClusterReportsRuntimeViewsToController(t *testing.T) {
+func TestClusterReportsRuntimeViewsToControllerIncrementally(t *testing.T) {
 	nodes := startThreeNodesWithControllerWithSettle(t, 4, 3, false)
 	defer stopNodes(nodes)
 

@@ -23,15 +23,22 @@ type observationSnapshot struct {
 }
 
 type observationCache struct {
-	mu           sync.RWMutex
-	nodes        map[uint64]nodeObservation
-	runtimeViews map[uint32]controllermeta.SlotRuntimeView
+	mu                 sync.Mutex
+	nodes              map[uint64]nodeObservation
+	runtimeViewsByNode map[uint64]map[uint32]controllermeta.SlotRuntimeView
+	runtimeObservedAt  map[uint64]time.Time
+	runtimeReceivedAt  map[uint64]time.Time
+	now                func() time.Time
+	runtimeViewTTL     time.Duration
 }
 
 func newObservationCache() *observationCache {
 	return &observationCache{
-		nodes:        make(map[uint64]nodeObservation),
-		runtimeViews: make(map[uint32]controllermeta.SlotRuntimeView),
+		nodes:              make(map[uint64]nodeObservation),
+		runtimeViewsByNode: make(map[uint64]map[uint32]controllermeta.SlotRuntimeView),
+		runtimeObservedAt:  make(map[uint64]time.Time),
+		runtimeReceivedAt:  make(map[uint64]time.Time),
+		now:                time.Now,
 	}
 }
 
@@ -56,25 +63,60 @@ func (c *observationCache) applyNodeReport(report slotcontroller.AgentReport) {
 	c.nodes[report.NodeID] = observation
 }
 
-func (c *observationCache) applyRuntimeView(view controllermeta.SlotRuntimeView) {
-	if c == nil || view.SlotID == 0 {
+func (c *observationCache) applyRuntimeReport(report runtimeObservationReport) {
+	if c == nil || report.NodeID == 0 {
 		return
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	current, ok := c.runtimeViews[view.SlotID]
-	if ok && view.LastReportAt.Before(current.LastReportAt) {
+	receivedAt := time.Now()
+	if c.now != nil {
+		receivedAt = c.now()
+	}
+	if lastObservedAt, ok := c.runtimeObservedAt[report.NodeID]; ok && report.ObservedAt.Before(lastObservedAt) {
 		return
 	}
-	if ok && runtimeViewEquivalent(current, view) {
-		current.LastReportAt = view.LastReportAt
-		c.runtimeViews[view.SlotID] = current
+
+	nodeViews := c.runtimeViewsByNode[report.NodeID]
+	if report.FullSync || nodeViews == nil {
+		nodeViews = make(map[uint32]controllermeta.SlotRuntimeView, len(report.Views))
+		c.runtimeViewsByNode[report.NodeID] = nodeViews
+	}
+
+	if report.FullSync {
+		for _, view := range report.Views {
+			if view.SlotID == 0 {
+				continue
+			}
+			nodeViews[view.SlotID] = cloneRuntimeView(view)
+		}
+		c.runtimeObservedAt[report.NodeID] = report.ObservedAt
+		c.runtimeReceivedAt[report.NodeID] = receivedAt
 		return
 	}
-	view.CurrentPeers = cloneUint64Slice(view.CurrentPeers)
-	c.runtimeViews[view.SlotID] = view
+
+	for _, view := range report.Views {
+		if view.SlotID == 0 {
+			continue
+		}
+		current, ok := nodeViews[view.SlotID]
+		if ok && view.LastReportAt.Before(current.LastReportAt) {
+			continue
+		}
+		if ok && runtimeViewEquivalent(current, view) {
+			current.LastReportAt = view.LastReportAt
+			nodeViews[view.SlotID] = current
+			continue
+		}
+		nodeViews[view.SlotID] = cloneRuntimeView(view)
+	}
+	for _, slotID := range report.ClosedSlots {
+		delete(nodeViews, slotID)
+	}
+	c.runtimeObservedAt[report.NodeID] = report.ObservedAt
+	c.runtimeReceivedAt[report.NodeID] = receivedAt
 }
 
 func (c *observationCache) snapshot() observationSnapshot {
@@ -82,18 +124,29 @@ func (c *observationCache) snapshot() observationSnapshot {
 		return observationSnapshot{}
 	}
 
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.evictStaleRuntimeViewsLocked()
 
 	snapshot := observationSnapshot{
-		Nodes:        make([]nodeObservation, 0, len(c.nodes)),
-		RuntimeViews: make([]controllermeta.SlotRuntimeView, 0, len(c.runtimeViews)),
+		Nodes: make([]nodeObservation, 0, len(c.nodes)),
 	}
 	for _, node := range c.nodes {
 		snapshot.Nodes = append(snapshot.Nodes, node)
 	}
-	for _, view := range c.runtimeViews {
-		view.CurrentPeers = cloneUint64Slice(view.CurrentPeers)
+	runtimeViews := make(map[uint32]controllermeta.SlotRuntimeView)
+	for _, nodeViews := range c.runtimeViewsByNode {
+		for slotID, view := range nodeViews {
+			current, ok := runtimeViews[slotID]
+			if ok && current.LastReportAt.After(view.LastReportAt) {
+				continue
+			}
+			runtimeViews[slotID] = cloneRuntimeView(view)
+		}
+	}
+	snapshot.RuntimeViews = make([]controllermeta.SlotRuntimeView, 0, len(runtimeViews))
+	for _, view := range runtimeViews {
 		snapshot.RuntimeViews = append(snapshot.RuntimeViews, view)
 	}
 	sort.Slice(snapshot.Nodes, func(i, j int) bool {
@@ -114,7 +167,27 @@ func (c *observationCache) reset() {
 	defer c.mu.Unlock()
 
 	c.nodes = make(map[uint64]nodeObservation)
-	c.runtimeViews = make(map[uint32]controllermeta.SlotRuntimeView)
+	c.runtimeViewsByNode = make(map[uint64]map[uint32]controllermeta.SlotRuntimeView)
+	c.runtimeObservedAt = make(map[uint64]time.Time)
+	c.runtimeReceivedAt = make(map[uint64]time.Time)
+}
+
+func (c *observationCache) evictStaleRuntimeViewsLocked() {
+	if c == nil || c.runtimeViewTTL <= 0 {
+		return
+	}
+	now := time.Now()
+	if c.now != nil {
+		now = c.now()
+	}
+	for nodeID, receivedAt := range c.runtimeReceivedAt {
+		if receivedAt.IsZero() || now.Sub(receivedAt) <= c.runtimeViewTTL {
+			continue
+		}
+		delete(c.runtimeObservedAt, nodeID)
+		delete(c.runtimeReceivedAt, nodeID)
+		delete(c.runtimeViewsByNode, nodeID)
+	}
 }
 
 func runtimeViewEquivalent(left, right controllermeta.SlotRuntimeView) bool {

@@ -28,6 +28,7 @@ type controllerHost struct {
 	warmupLeaderID   multiraft.NodeID
 	warmupGeneration uint64
 	warmupReady      bool
+	warmupFullSyncs  map[uint64]struct{}
 }
 
 func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, error) {
@@ -52,12 +53,16 @@ func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, erro
 
 	sm := slotcontroller.NewStateMachine(meta, slotcontroller.StateMachineConfig{})
 	host := &controllerHost{
-		meta:         meta,
-		raftDB:       logDB,
-		sm:           sm,
-		observations: newObservationCache(),
-		localNode:    cfg.NodeID,
+		meta:            meta,
+		raftDB:          logDB,
+		sm:              sm,
+		observations:    newObservationCache(),
+		localNode:       cfg.NodeID,
+		warmupFullSyncs: make(map[uint64]struct{}),
 	}
+	timeouts := cfg.Timeouts
+	timeouts.applyDefaults()
+	host.observations.runtimeViewTTL = 3 * timeouts.ObservationRuntimeFullSyncInterval
 	host.healthScheduler = newNodeHealthScheduler(nodeHealthSchedulerConfig{
 		suspectTimeout: 3 * time.Second,
 		deadTimeout:    10 * time.Second,
@@ -129,10 +134,6 @@ func (h *controllerHost) applyObservation(report slotcontroller.AgentReport) {
 	}
 	h.syncLeaderWarmupState()
 	h.observations.applyNodeReport(report)
-	if report.Runtime != nil {
-		h.observations.applyRuntimeView(*report.Runtime)
-	}
-	h.markWarmupReady()
 	if h.healthScheduler != nil {
 		h.healthScheduler.observe(nodeObservation{
 			NodeID:               report.NodeID,
@@ -141,6 +142,18 @@ func (h *controllerHost) applyObservation(report slotcontroller.AgentReport) {
 			CapacityWeight:       report.CapacityWeight,
 			HashSlotTableVersion: report.HashSlotTableVersion,
 		})
+	}
+}
+
+func (h *controllerHost) applyRuntimeReport(report runtimeObservationReport) {
+	if h == nil || h.observations == nil {
+		return
+	}
+	h.syncLeaderWarmupState()
+	h.observations.applyRuntimeReport(report)
+	if report.FullSync {
+		h.markWarmupFullSync(report.NodeID)
+		h.refreshWarmupReady()
 	}
 }
 
@@ -237,6 +250,7 @@ func (h *controllerHost) syncLeaderWarmupState() {
 	if leaderID != h.warmupLeaderID {
 		h.warmupLeaderID = leaderID
 		h.warmupReady = false
+		h.warmupFullSyncs = make(map[uint64]struct{})
 		if leaderID == h.localNode {
 			h.warmupGeneration++
 		}
@@ -244,20 +258,59 @@ func (h *controllerHost) syncLeaderWarmupState() {
 	}
 	if leaderID != h.localNode {
 		h.warmupReady = false
+		h.warmupFullSyncs = make(map[uint64]struct{})
 	}
 }
 
-func (h *controllerHost) markWarmupReady() {
-	if h == nil {
+func (h *controllerHost) markWarmupFullSync(nodeID uint64) {
+	if h == nil || nodeID == 0 {
 		return
 	}
 
 	h.warmupMu.Lock()
 	defer h.warmupMu.Unlock()
 
-	if h.warmupLeaderID == h.localNode {
-		h.warmupReady = true
+	if h.warmupLeaderID != h.localNode {
+		return
 	}
+	if h.warmupFullSyncs == nil {
+		h.warmupFullSyncs = make(map[uint64]struct{})
+	}
+	h.warmupFullSyncs[nodeID] = struct{}{}
+}
+
+func (h *controllerHost) refreshWarmupReady() {
+	if h == nil || h.meta == nil {
+		return
+	}
+
+	h.syncLeaderWarmupState()
+
+	nodes, err := h.meta.ListNodes(context.Background())
+	if err != nil {
+		return
+	}
+
+	h.warmupMu.Lock()
+	defer h.warmupMu.Unlock()
+
+	if h.warmupLeaderID != h.localNode {
+		h.warmupReady = false
+		return
+	}
+
+	aliveCount := 0
+	for _, node := range nodes {
+		if node.Status != controllermeta.NodeStatusAlive {
+			continue
+		}
+		aliveCount++
+		if _, ok := h.warmupFullSyncs[node.NodeID]; !ok {
+			h.warmupReady = false
+			return
+		}
+	}
+	h.warmupReady = aliveCount > 0
 }
 
 func (h *controllerHost) handleLeaderChange(_, to multiraft.NodeID) {
@@ -284,6 +337,7 @@ func (h *controllerHost) handleLeaderChange(_, to multiraft.NodeID) {
 
 	h.warmupLeaderID = to
 	h.warmupReady = false
+	h.warmupFullSyncs = make(map[uint64]struct{})
 	if to == h.localNode {
 		h.warmupGeneration++
 	}
@@ -298,6 +352,10 @@ func (h *controllerHost) handleCommittedCommand(cmd slotcontroller.Command) {
 	}
 	if h.healthScheduler != nil {
 		h.healthScheduler.handleCommittedCommand(cmd)
+	}
+	switch cmd.Kind {
+	case slotcontroller.CommandKindNodeStatusUpdate, slotcontroller.CommandKindOperatorRequest:
+		h.refreshWarmupReady()
 	}
 }
 
