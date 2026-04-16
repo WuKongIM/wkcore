@@ -189,6 +189,188 @@ func TestChannelMetaSyncRefreshClearsAppliedLocalOnHashSlotTableVersionChange(t 
 	require.Equal(t, map[channel.ChannelKey]struct{}{got.Key: {}}, cloneAppliedLocalSet(syncer.appliedLocal))
 }
 
+func TestChannelMetaSyncRefreshReturnsExistingAuthoritativeMetaWithoutBootstrap(t *testing.T) {
+	id := channel.ChannelID{ID: "g1", Type: 2}
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 1,
+		LeaderEpoch:  3,
+		Replicas:     []uint64{2, 4},
+		ISR:          []uint64{2, 4},
+		Leader:       2,
+		MinISR:       2,
+		Status:       uint8(channel.StatusActive),
+	}
+	source := &fakeChannelMetaSource{
+		get: map[channel.ChannelID]metadb.ChannelRuntimeMeta{id: meta},
+	}
+	bootstrapStore := &fakeBootstrapStore{getErr: metadb.ErrNotFound}
+	bootstrapCluster := &fakeBootstrapCluster{slotID: 9, peers: []uint64{2, 4}, leader: 2}
+	cluster := &fakeChannelMetaCluster{}
+	syncer := &channelMetaSync{
+		source:    source,
+		cluster:   cluster,
+		bootstrap: newChannelMetaBootstrapper(bootstrapCluster, bootstrapStore, 2, time.Now, wklog.NewNop()),
+		localNode: 2,
+	}
+
+	got, err := syncer.RefreshChannelMeta(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), got.Epoch)
+	require.Equal(t, []channel.Meta{got}, cluster.applied)
+	require.Empty(t, bootstrapStore.upserts)
+	require.Zero(t, bootstrapCluster.leaderCalls)
+}
+
+func TestChannelMetaSyncRefreshBootstrapsOnAuthoritativeMiss(t *testing.T) {
+	id := channel.ChannelID{ID: "g1", Type: 2}
+	authoritative := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 1,
+		LeaderEpoch:  4,
+		Replicas:     []uint64{2, 7},
+		ISR:          []uint64{2, 7},
+		Leader:       2,
+		MinISR:       2,
+		Status:       uint8(channel.StatusActive),
+	}
+	source := &fakeChannelMetaSource{
+		getResults: []fakeChannelMetaGetResult{
+			{err: metadb.ErrNotFound},
+			{err: metadb.ErrNotFound},
+			{meta: authoritative},
+			{meta: authoritative},
+		},
+	}
+	bootstrapCluster := &fakeBootstrapCluster{slotID: 3, peers: []uint64{2, 7}, leader: 2}
+	cluster := &fakeChannelMetaCluster{}
+	syncer := &channelMetaSync{
+		source:    source,
+		cluster:   cluster,
+		bootstrap: newChannelMetaBootstrapper(bootstrapCluster, source, 2, time.Now, wklog.NewNop()),
+		localNode: 2,
+	}
+
+	got, err := syncer.RefreshChannelMeta(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), got.Epoch)
+	require.Equal(t, []channel.Meta{got}, cluster.applied)
+	require.Len(t, source.upserts, 1)
+	require.Equal(t, authoritative, source.lastGetMeta)
+}
+
+func TestChannelMetaSyncRefreshAppliesAuthoritativeRereadInsteadOfBootstrapCandidate(t *testing.T) {
+	id := channel.ChannelID{ID: "g1", Type: 2}
+	authoritative := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 9,
+		LeaderEpoch:  11,
+		Replicas:     []uint64{2, 8, 9},
+		ISR:          []uint64{2, 8},
+		Leader:       8,
+		MinISR:       2,
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatU64),
+	}
+	source := &fakeChannelMetaSource{
+		getResults: []fakeChannelMetaGetResult{
+			{err: metadb.ErrNotFound},
+			{err: metadb.ErrNotFound},
+			{meta: authoritative},
+			{meta: authoritative},
+		},
+	}
+	bootstrapCluster := &fakeBootstrapCluster{slotID: 5, peers: []uint64{2, 7, 8}, leader: 2}
+	cluster := &fakeChannelMetaCluster{}
+	syncer := &channelMetaSync{
+		source:    source,
+		cluster:   cluster,
+		bootstrap: newChannelMetaBootstrapper(bootstrapCluster, source, 2, time.Now, wklog.NewNop()),
+		localNode: 2,
+	}
+
+	got, err := syncer.RefreshChannelMeta(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, authoritative.ChannelEpoch, got.Epoch)
+	require.Equal(t, authoritative.LeaderEpoch, got.LeaderEpoch)
+	require.Equal(t, channel.NodeID(authoritative.Leader), got.Leader)
+	require.Equal(t, projectChannelMeta(authoritative), got)
+	require.Len(t, source.upserts, 1)
+	require.NotEqual(t, authoritative.Leader, source.upserts[0].Leader)
+	require.NotEqual(t, authoritative.ChannelEpoch, source.upserts[0].ChannelEpoch)
+	require.Equal(t, []channel.Meta{projectChannelMeta(authoritative)}, cluster.applied)
+}
+
+func TestChannelMetaSyncRefreshDoesNotApplyPartialMetadataWhenBootstrapFails(t *testing.T) {
+	id := channel.ChannelID{ID: "g1", Type: 2}
+	bootstrapErr := errors.New("write failed")
+	source := &fakeChannelMetaSource{
+		getResults: []fakeChannelMetaGetResult{
+			{err: metadb.ErrNotFound},
+			{err: metadb.ErrNotFound},
+		},
+		upsertErr: bootstrapErr,
+	}
+	bootstrapCluster := &fakeBootstrapCluster{slotID: 7, peers: []uint64{2, 4}, leader: 2}
+	cluster := &fakeChannelMetaCluster{}
+	syncer := &channelMetaSync{
+		source:    source,
+		cluster:   cluster,
+		bootstrap: newChannelMetaBootstrapper(bootstrapCluster, source, 2, time.Now, wklog.NewNop()),
+		localNode: 2,
+	}
+
+	_, err := syncer.RefreshChannelMeta(context.Background(), id)
+	require.ErrorContains(t, err, "upsert runtime metadata")
+	require.ErrorIs(t, err, bootstrapErr)
+	require.Empty(t, cluster.applied)
+	require.Nil(t, cloneAppliedLocalSet(syncer.appliedLocal))
+	require.Len(t, source.upserts, 1)
+}
+
+func TestChannelMetaSyncRefreshPreservesRetryableBootstrapErrorsWithoutApplyingLocalState(t *testing.T) {
+	testCases := []struct {
+		name string
+		err  error
+	}{
+		{name: "no leader", err: raftcluster.ErrNoLeader},
+		{name: "slot not found", err: raftcluster.ErrSlotNotFound},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			id := channel.ChannelID{ID: "g1", Type: 2}
+			source := &fakeChannelMetaSource{
+				getResults: []fakeChannelMetaGetResult{
+					{err: metadb.ErrNotFound},
+					{err: metadb.ErrNotFound},
+				},
+			}
+			bootstrapCluster := &fakeBootstrapCluster{
+				slotID:    8,
+				peers:     []uint64{2, 4},
+				leaderErr: tt.err,
+			}
+			cluster := &fakeChannelMetaCluster{}
+			syncer := &channelMetaSync{
+				source:    source,
+				cluster:   cluster,
+				bootstrap: newChannelMetaBootstrapper(bootstrapCluster, source, 2, time.Now, wklog.NewNop()),
+				localNode: 2,
+			}
+
+			_, err := syncer.RefreshChannelMeta(context.Background(), id)
+			require.ErrorIs(t, err, tt.err)
+			require.Empty(t, cluster.applied)
+			require.Nil(t, cloneAppliedLocalSet(syncer.appliedLocal))
+			require.Empty(t, source.upserts)
+		})
+	}
+}
+
 func TestChannelMetaSyncSyncOnceClearsAppliedLocalOnHashSlotTableVersionChange(t *testing.T) {
 	staleKey := channelhandler.KeyFromChannelID(channel.ChannelID{ID: "stale", Type: 1})
 	freshID := channel.ChannelID{ID: "fresh", Type: 1}
@@ -597,18 +779,39 @@ func TestChannelMetaBootstrapperLogsMissingBootstrappedAndFailedEvents(t *testin
 }
 
 type fakeChannelMetaSource struct {
-	get     map[channel.ChannelID]metadb.ChannelRuntimeMeta
-	list    []metadb.ChannelRuntimeMeta
-	getErr  error
-	listErr error
-	version uint64
+	get         map[channel.ChannelID]metadb.ChannelRuntimeMeta
+	list        []metadb.ChannelRuntimeMeta
+	getErr      error
+	listErr     error
+	version     uint64
+	getResults  []fakeChannelMetaGetResult
+	getCalls    int
+	lastGetMeta metadb.ChannelRuntimeMeta
+	upsertErr   error
+	upserts     []metadb.ChannelRuntimeMeta
+}
+
+type fakeChannelMetaGetResult struct {
+	meta metadb.ChannelRuntimeMeta
+	err  error
 }
 
 func (f *fakeChannelMetaSource) GetChannelRuntimeMeta(_ context.Context, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error) {
+	if f.getCalls < len(f.getResults) {
+		result := f.getResults[f.getCalls]
+		f.getCalls++
+		if result.err != nil {
+			return metadb.ChannelRuntimeMeta{}, result.err
+		}
+		f.lastGetMeta = result.meta
+		return result.meta, nil
+	}
 	if f.getErr != nil {
 		return metadb.ChannelRuntimeMeta{}, f.getErr
 	}
-	return f.get[channel.ChannelID{ID: channelID, Type: uint8(channelType)}], nil
+	meta := f.get[channel.ChannelID{ID: channelID, Type: uint8(channelType)}]
+	f.lastGetMeta = meta
+	return meta, nil
 }
 
 func (f *fakeChannelMetaSource) ListChannelRuntimeMeta(context.Context) ([]metadb.ChannelRuntimeMeta, error) {
@@ -620,6 +823,11 @@ func (f *fakeChannelMetaSource) ListChannelRuntimeMeta(context.Context) ([]metad
 
 func (f *fakeChannelMetaSource) HashSlotTableVersion() uint64 {
 	return f.version
+}
+
+func (f *fakeChannelMetaSource) UpsertChannelRuntimeMeta(_ context.Context, meta metadb.ChannelRuntimeMeta) error {
+	f.upserts = append(f.upserts, meta)
+	return f.upsertErr
 }
 
 type fakeChannelMetaCluster struct {
@@ -671,10 +879,11 @@ func (f *fakeBootstrapStore) UpsertChannelRuntimeMeta(_ context.Context, meta me
 }
 
 type fakeBootstrapCluster struct {
-	slotID    multiraft.SlotID
-	peers     []uint64
-	leader    uint64
-	leaderErr error
+	slotID      multiraft.SlotID
+	peers       []uint64
+	leader      uint64
+	leaderErr   error
+	leaderCalls int
 }
 
 func (f *fakeBootstrapCluster) SlotForKey(string) multiraft.SlotID {
@@ -690,6 +899,7 @@ func (f *fakeBootstrapCluster) PeersForSlot(multiraft.SlotID) []multiraft.NodeID
 }
 
 func (f *fakeBootstrapCluster) LeaderOf(multiraft.SlotID) (multiraft.NodeID, error) {
+	f.leaderCalls++
 	if f.leaderErr != nil {
 		return 0, f.leaderErr
 	}
