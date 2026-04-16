@@ -30,6 +30,9 @@ func TestControllerHostStartElectsSingleLocalPeer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newControllerHost() error = %v", err)
 	}
+	if host.observations == nil {
+		t.Fatal("newControllerHost() observations = nil")
+	}
 	requireNoErr(t, host.Start(context.Background()))
 	t.Cleanup(host.Stop)
 

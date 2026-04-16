@@ -12,10 +12,11 @@ import (
 )
 
 type controllerHost struct {
-	meta    *controllermeta.Store
-	raftDB  *raftstorage.DB
-	sm      *slotcontroller.StateMachine
-	service *controllerraft.Service
+	meta         *controllermeta.Store
+	raftDB       *raftstorage.DB
+	sm           *slotcontroller.StateMachine
+	service      *controllerraft.Service
+	observations *observationCache
 }
 
 func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, error) {
@@ -51,10 +52,11 @@ func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, erro
 	})
 
 	return &controllerHost{
-		meta:    meta,
-		raftDB:  logDB,
-		sm:      sm,
-		service: service,
+		meta:         meta,
+		raftDB:       logDB,
+		sm:           sm,
+		service:      service,
+		observations: newObservationCache(),
 	}, nil
 }
 
@@ -89,4 +91,21 @@ func (h *controllerHost) LeaderID() multiraft.NodeID {
 		return 0
 	}
 	return multiraft.NodeID(h.service.LeaderID())
+}
+
+func (h *controllerHost) applyObservation(report slotcontroller.AgentReport) {
+	if h == nil || h.observations == nil {
+		return
+	}
+	h.observations.applyNodeReport(report)
+	if report.Runtime != nil {
+		h.observations.applyRuntimeView(*report.Runtime)
+	}
+}
+
+func (h *controllerHost) snapshotObservations() observationSnapshot {
+	if h == nil || h.observations == nil {
+		return observationSnapshot{}
+	}
+	return h.observations.snapshot()
 }
