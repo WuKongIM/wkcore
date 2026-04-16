@@ -119,3 +119,18 @@ func (h *RecordingHandler) FrameCount() int {
 
 	return len(h.Frames)
 }
+
+func (h *RecordingHandler) Protocols() []string {
+	if h == nil {
+		return nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	out := make([]string, 0, len(h.Contexts))
+	for _, ctx := range h.Contexts {
+		out = append(out, ctx.Protocol)
+	}
+	return out
+}
