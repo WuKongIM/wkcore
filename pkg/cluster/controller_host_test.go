@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
 )
 
@@ -118,5 +119,42 @@ func TestControllerHostHandleCommittedCommandReloadsHashSlotSnapshotOnHashSlotMu
 	}
 	if migration := snapshot.GetMigration(3); migration == nil {
 		t.Fatal("hashSlotTableSnapshot().GetMigration(3) = nil, want active migration")
+	}
+}
+
+func TestControllerHostLeaderChangeReloadsNodeMirrorOnLocalLeadership(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	requireNoErr(t, host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          1,
+		Addr:            "127.0.0.1:7001",
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Unix(1710000000, 0),
+		CapacityWeight:  1,
+	}))
+
+	host.handleLeaderChange(2, host.localNode)
+
+	node, ok := host.healthScheduler.mirroredNode(1)
+	if !ok {
+		t.Fatal("mirroredNode(1) ok = false, want true")
+	}
+	if node.Status != controllermeta.NodeStatusAlive {
+		t.Fatalf("mirroredNode(1).Status = %v, want alive", node.Status)
+	}
+}
+
+func TestControllerHostLeaderChangeClearsNodeMirrorOnLeaderLoss(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	host.healthScheduler.mirrorNode(controllermeta.ClusterNode{
+		NodeID:         1,
+		Addr:           "127.0.0.1:7001",
+		Status:         controllermeta.NodeStatusAlive,
+		CapacityWeight: 1,
+	})
+
+	host.handleLeaderChange(host.localNode, 2)
+
+	if _, ok := host.healthScheduler.mirroredNode(1); ok {
+		t.Fatal("mirroredNode(1) ok = true after leader loss, want false")
 	}
 }

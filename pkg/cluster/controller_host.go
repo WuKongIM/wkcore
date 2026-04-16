@@ -61,6 +61,7 @@ func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, erro
 	host.healthScheduler = newNodeHealthScheduler(nodeHealthSchedulerConfig{
 		suspectTimeout: 3 * time.Second,
 		deadTimeout:    10 * time.Second,
+		loadNodes:      host.meta.ListNodes,
 		loadNode:       host.meta.GetNode,
 	})
 	service := controllerraft.NewService(controllerraft.Config{
@@ -270,6 +271,9 @@ func (h *controllerHost) handleLeaderChange(_, to multiraft.NodeID) {
 		h.healthScheduler.reset()
 	}
 	if to == h.localNode {
+		if h.healthScheduler != nil {
+			_ = h.healthScheduler.reloadAllNodes(context.Background())
+		}
 		_ = h.reloadHashSlotTableSnapshot(context.Background())
 	} else {
 		h.clearHashSlotTableSnapshot()

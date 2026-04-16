@@ -302,6 +302,84 @@ func TestNodeHealthSchedulerHandleCommittedCommandRefreshesMirror(t *testing.T) 
 	}
 }
 
+func TestNodeHealthSchedulerHandleCommittedCommandRefreshesMirrorForNodeStatusUpdate(t *testing.T) {
+	node := controllermeta.ClusterNode{
+		NodeID:         1,
+		Addr:           "127.0.0.1:7001",
+		Status:         controllermeta.NodeStatusAlive,
+		CapacityWeight: 1,
+	}
+
+	scheduler := newNodeHealthScheduler(nodeHealthSchedulerConfig{
+		loadNode: func(context.Context, uint64) (controllermeta.ClusterNode, error) {
+			return node, nil
+		},
+	})
+
+	scheduler.mirrorNode(controllermeta.ClusterNode{
+		NodeID:         1,
+		Addr:           "127.0.0.1:7001",
+		Status:         controllermeta.NodeStatusDead,
+		CapacityWeight: 1,
+	})
+
+	scheduler.handleCommittedCommand(slotcontroller.Command{
+		Kind: slotcontroller.CommandKindNodeStatusUpdate,
+		NodeStatusUpdate: &slotcontroller.NodeStatusUpdate{
+			Transitions: []slotcontroller.NodeStatusTransition{{
+				NodeID:    1,
+				NewStatus: controllermeta.NodeStatusSuspect,
+			}},
+		},
+	})
+
+	mirrored, ok := scheduler.mirroredNode(1)
+	if !ok {
+		t.Fatal("mirroredNode(1) ok = false, want true")
+	}
+	if mirrored.Status != controllermeta.NodeStatusAlive {
+		t.Fatalf("mirroredNode(1).Status = %v, want alive from store refresh", mirrored.Status)
+	}
+}
+
+func TestNodeHealthSchedulerHandleCommittedCommandRefreshesMirrorForOperatorRequest(t *testing.T) {
+	node := controllermeta.ClusterNode{
+		NodeID:         1,
+		Addr:           "127.0.0.1:7001",
+		Status:         controllermeta.NodeStatusAlive,
+		CapacityWeight: 1,
+	}
+
+	scheduler := newNodeHealthScheduler(nodeHealthSchedulerConfig{
+		loadNode: func(context.Context, uint64) (controllermeta.ClusterNode, error) {
+			return node, nil
+		},
+	})
+
+	scheduler.mirrorNode(controllermeta.ClusterNode{
+		NodeID:         1,
+		Addr:           "127.0.0.1:7001",
+		Status:         controllermeta.NodeStatusDraining,
+		CapacityWeight: 1,
+	})
+
+	scheduler.handleCommittedCommand(slotcontroller.Command{
+		Kind: slotcontroller.CommandKindOperatorRequest,
+		Op: &slotcontroller.OperatorRequest{
+			NodeID: 1,
+			Kind:   slotcontroller.OperatorMarkNodeDraining,
+		},
+	})
+
+	mirrored, ok := scheduler.mirroredNode(1)
+	if !ok {
+		t.Fatal("mirroredNode(1) ok = false, want true")
+	}
+	if mirrored.Status != controllermeta.NodeStatusAlive {
+		t.Fatalf("mirroredNode(1).Status = %v, want alive from store refresh", mirrored.Status)
+	}
+}
+
 func TestNodeHealthSchedulerResetClearsMirror(t *testing.T) {
 	scheduler := newNodeHealthScheduler(nodeHealthSchedulerConfig{
 		loadNode: func(context.Context, uint64) (controllermeta.ClusterNode, error) {
