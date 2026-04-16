@@ -26,8 +26,9 @@ type nodeHealthSchedulerConfig struct {
 type nodeHealthScheduler struct {
 	cfg nodeHealthSchedulerConfig
 
-	mu    sync.Mutex
-	nodes map[uint64]*nodeHealthState
+	mu         sync.Mutex
+	nodes      map[uint64]*nodeHealthState
+	nodeMirror map[uint64]controllermeta.ClusterNode
 }
 
 type nodeHealthState struct {
@@ -53,8 +54,9 @@ func newNodeHealthScheduler(cfg nodeHealthSchedulerConfig) *nodeHealthScheduler 
 		}
 	}
 	return &nodeHealthScheduler{
-		cfg:   cfg,
-		nodes: make(map[uint64]*nodeHealthState),
+		cfg:        cfg,
+		nodes:      make(map[uint64]*nodeHealthState),
+		nodeMirror: make(map[uint64]controllermeta.ClusterNode),
 	}
 }
 
@@ -149,9 +151,28 @@ func (s *nodeHealthScheduler) reset() {
 		}
 	}
 	s.nodes = make(map[uint64]*nodeHealthState)
+	s.nodeMirror = make(map[uint64]controllermeta.ClusterNode)
 }
 
-func (s *nodeHealthScheduler) handleCommittedCommand(slotcontroller.Command) {
+func (s *nodeHealthScheduler) handleCommittedCommand(cmd slotcontroller.Command) {
+	if s == nil || s.cfg.loadNode == nil {
+		return
+	}
+
+	switch cmd.Kind {
+	case slotcontroller.CommandKindNodeStatusUpdate:
+		if cmd.NodeStatusUpdate == nil {
+			return
+		}
+		for _, transition := range cmd.NodeStatusUpdate.Transitions {
+			s.refreshNodeFromStore(context.Background(), transition.NodeID)
+		}
+	case slotcontroller.CommandKindOperatorRequest:
+		if cmd.Op == nil {
+			return
+		}
+		s.refreshNodeFromStore(context.Background(), cmd.Op.NodeID)
+	}
 }
 
 func (s *nodeHealthScheduler) ensureNodeLocked(nodeID uint64) *nodeHealthState {
@@ -164,12 +185,76 @@ func (s *nodeHealthScheduler) ensureNodeLocked(nodeID uint64) *nodeHealthState {
 	return state
 }
 
+func (s *nodeHealthScheduler) mirrorNode(node controllermeta.ClusterNode) {
+	if s == nil || node.NodeID == 0 {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nodeMirror[node.NodeID] = node
+}
+
+func (s *nodeHealthScheduler) mirroredNode(nodeID uint64) (controllermeta.ClusterNode, bool) {
+	if s == nil || nodeID == 0 {
+		return controllermeta.ClusterNode{}, false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	node, ok := s.nodeMirror[nodeID]
+	return node, ok
+}
+
+func (s *nodeHealthScheduler) loadNodeForTransition(nodeID uint64) (controllermeta.ClusterNode, error) {
+	if node, ok := s.mirroredNode(nodeID); ok {
+		return node, nil
+	}
+	if s == nil || s.cfg.loadNode == nil {
+		return controllermeta.ClusterNode{}, controllermeta.ErrClosed
+	}
+	node, err := s.cfg.loadNode(context.Background(), nodeID)
+	if err == nil {
+		s.mirrorNode(node)
+	}
+	return node, err
+}
+
+func (s *nodeHealthScheduler) refreshNodeFromStore(ctx context.Context, nodeID uint64) {
+	if s == nil || s.cfg.loadNode == nil || nodeID == 0 {
+		return
+	}
+
+	node, err := s.cfg.loadNode(ctx, nodeID)
+	if errors.Is(err, controllermeta.ErrNotFound) {
+		s.mu.Lock()
+		delete(s.nodeMirror, nodeID)
+		s.mu.Unlock()
+		return
+	}
+	if err != nil {
+		return
+	}
+	s.mirrorNode(node)
+}
+
 func (s *nodeHealthScheduler) proposeStatusTransition(observation nodeObservation, desired controllermeta.NodeStatus, evaluatedAt time.Time) {
 	if s == nil || s.cfg.propose == nil || s.cfg.loadNode == nil {
 		return
 	}
 
-	node, err := s.cfg.loadNode(context.Background(), observation.NodeID)
+	var (
+		node controllermeta.ClusterNode
+		err  error
+	)
+	if desired == controllermeta.NodeStatusAlive {
+		node, err = s.loadNodeForTransition(observation.NodeID)
+	} else {
+		node, err = s.cfg.loadNode(context.Background(), observation.NodeID)
+		if err == nil {
+			s.mirrorNode(node)
+		}
+	}
 	if err != nil && !errors.Is(err, controllermeta.ErrNotFound) {
 		return
 	}

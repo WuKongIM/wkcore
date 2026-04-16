@@ -177,6 +177,151 @@ func TestNodeHealthSchedulerProposesOnlyOnStatusEdge(t *testing.T) {
 	}
 }
 
+func TestNodeHealthSchedulerUsesMirrorForRepeatedAliveObservation(t *testing.T) {
+	now := time.Unix(400, 0)
+	loadCalls := 0
+
+	scheduler := newNodeHealthScheduler(nodeHealthSchedulerConfig{
+		suspectTimeout: time.Second,
+		deadTimeout:    2 * time.Second,
+		now:            func() time.Time { return now },
+		afterFunc: func(time.Duration, func()) healthTimer {
+			return &recordingHealthTimer{}
+		},
+		loadNode: func(context.Context, uint64) (controllermeta.ClusterNode, error) {
+			loadCalls++
+			return controllermeta.ClusterNode{
+				NodeID:         1,
+				Addr:           "127.0.0.1:7001",
+				Status:         controllermeta.NodeStatusAlive,
+				CapacityWeight: 1,
+			}, nil
+		},
+		propose: func(context.Context, slotcontroller.Command) error { return nil },
+	})
+
+	scheduler.observe(nodeObservation{
+		NodeID:         1,
+		Addr:           "127.0.0.1:7001",
+		ObservedAt:     now,
+		CapacityWeight: 1,
+	})
+	now = now.Add(200 * time.Millisecond)
+	scheduler.observe(nodeObservation{
+		NodeID:         1,
+		Addr:           "127.0.0.1:7001",
+		ObservedAt:     now,
+		CapacityWeight: 1,
+	})
+
+	if loadCalls != 1 {
+		t.Fatalf("loadNode calls = %d, want 1", loadCalls)
+	}
+}
+
+func TestNodeHealthSchedulerMirrorMissLoadsNodeAndBackfills(t *testing.T) {
+	now := time.Unix(500, 0)
+	loadCalls := 0
+
+	scheduler := newNodeHealthScheduler(nodeHealthSchedulerConfig{
+		suspectTimeout: time.Second,
+		deadTimeout:    2 * time.Second,
+		now:            func() time.Time { return now },
+		afterFunc: func(time.Duration, func()) healthTimer {
+			return &recordingHealthTimer{}
+		},
+		loadNode: func(context.Context, uint64) (controllermeta.ClusterNode, error) {
+			loadCalls++
+			return controllermeta.ClusterNode{
+				NodeID:         1,
+				Addr:           "127.0.0.1:7001",
+				Status:         controllermeta.NodeStatusAlive,
+				CapacityWeight: 1,
+			}, nil
+		},
+		propose: func(context.Context, slotcontroller.Command) error { return nil },
+	})
+
+	scheduler.observe(nodeObservation{
+		NodeID:         1,
+		Addr:           "127.0.0.1:7001",
+		ObservedAt:     now,
+		CapacityWeight: 1,
+	})
+
+	if loadCalls != 1 {
+		t.Fatalf("loadNode calls = %d, want 1", loadCalls)
+	}
+	node, ok := scheduler.mirroredNode(1)
+	if !ok {
+		t.Fatal("mirroredNode(1) ok = false, want true")
+	}
+	if node.Status != controllermeta.NodeStatusAlive {
+		t.Fatalf("mirroredNode(1).Status = %v, want alive", node.Status)
+	}
+}
+
+func TestNodeHealthSchedulerHandleCommittedCommandRefreshesMirror(t *testing.T) {
+	now := time.Unix(600, 0)
+	node := controllermeta.ClusterNode{
+		NodeID:         1,
+		Addr:           "127.0.0.1:7001",
+		Status:         controllermeta.NodeStatusAlive,
+		CapacityWeight: 1,
+	}
+
+	scheduler := newNodeHealthScheduler(nodeHealthSchedulerConfig{
+		suspectTimeout: time.Second,
+		deadTimeout:    2 * time.Second,
+		now:            func() time.Time { return now },
+		afterFunc: func(time.Duration, func()) healthTimer {
+			return &recordingHealthTimer{}
+		},
+		loadNode: func(context.Context, uint64) (controllermeta.ClusterNode, error) {
+			return node, nil
+		},
+		propose: func(context.Context, slotcontroller.Command) error { return nil },
+	})
+
+	scheduler.mirrorNode(node)
+	node.Status = controllermeta.NodeStatusSuspect
+
+	scheduler.handleCommittedCommand(slotcontroller.Command{
+		Kind: slotcontroller.CommandKindNodeStatusUpdate,
+		NodeStatusUpdate: &slotcontroller.NodeStatusUpdate{
+			Transitions: []slotcontroller.NodeStatusTransition{{NodeID: 1, NewStatus: controllermeta.NodeStatusSuspect}},
+		},
+	})
+
+	mirrored, ok := scheduler.mirroredNode(1)
+	if !ok {
+		t.Fatal("mirroredNode(1) ok = false, want true")
+	}
+	if mirrored.Status != controllermeta.NodeStatusSuspect {
+		t.Fatalf("mirroredNode(1).Status = %v, want suspect", mirrored.Status)
+	}
+}
+
+func TestNodeHealthSchedulerResetClearsMirror(t *testing.T) {
+	scheduler := newNodeHealthScheduler(nodeHealthSchedulerConfig{
+		loadNode: func(context.Context, uint64) (controllermeta.ClusterNode, error) {
+			return controllermeta.ClusterNode{}, nil
+		},
+	})
+	scheduler.mirrorNode(controllermeta.ClusterNode{
+		NodeID:         1,
+		Addr:           "127.0.0.1:7001",
+		Status:         controllermeta.NodeStatusAlive,
+		CapacityWeight: 1,
+	})
+
+	scheduler.reset()
+
+	if _, ok := scheduler.mirroredNode(1); ok {
+		t.Fatal("mirroredNode(1) ok = true after reset, want false")
+	}
+}
+
 type recordingHealthTimer struct {
 	delay     time.Duration
 	fn        func()
