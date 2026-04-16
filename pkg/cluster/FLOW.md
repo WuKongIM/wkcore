@@ -17,8 +17,9 @@
 | `slotExecutor` | `slot_executor.go:11` | 任务执行器：Bootstrap / Repair / Rebalance 三种任务的分步执行 |
 | `controllerClient` | `controller_client.go:31` | Controller RPC 客户端：Leader 发现 + 重试 + 读写操作 |
 | `controllerHandler` | `controller_handler.go:12` | Controller RPC 服务端：请求分发到 Propose / Meta 查询 |
-| `controllerHost` | `controller_host.go` | Controller 本地宿主：管理 Controller Raft + 状态机 + 元数据库 |
-| `observerLoop` | `observer.go:8` | 周期观测循环：驱动心跳 → 同步分配 → 调和 → 迁移观测 → Controller Tick |
+| `controllerHost` | `controller_host.go` | Controller 本地宿主：管理 Controller Raft + 状态机 + 元数据库 + leader-local observation cache |
+| `runtimeObservationReporter` | `runtime_observation_reporter.go` | 本地 runtime 镜像：扫描 cached status、生成 dirty delta / tombstone / full sync |
+| `observerLoop` | `observer.go:8` | 周期循环基础设施；当前拆成 heartbeatLoop / runtimeObservationLoop / observerLoop 三条节拍 |
 
 ## 3. 对外接口
 
@@ -62,6 +63,8 @@ API.Server() / RPCMux() / Discovery() / RPCService(ctx, nodeID, slotID, serviceI
 | `controllerClient` | controller_client.go:31 | controllerAPI 实现：Leader 缓存 + 逐 peer 探测 + 重定向跟随 |
 | `assignmentCache` | assignment_cache.go | 分配缓存：slotID → desiredPeers 映射，原子快照 |
 | `runtimeState` | runtime_state.go | 运行时状态：slotID → 当前 peers 映射（线程安全） |
+| `runtimeObservationReporter` | runtime_observation_reporter.go | 节点侧 runtime 增量上报器：mirror / dirtyViews / closedSlots / needFullSync |
+| `observationCache` | observation_cache.go | leader-local 观测缓存：节点心跳 + `runtimeViewsByNode` 聚合视图 + TTL 淘汰 |
 | `ObserverHooks` | config.go:71 | 可观测钩子：OnControllerCall / OnControllerDecision / OnReconcileStep / OnForwardPropose / OnSlotEnsure / OnTaskResult / OnHashSlotMigration / OnLeaderChange |
 
 ## 5. 核心流程
@@ -99,11 +102,14 @@ Start():
      条件: ControllerEnabled()
      → newHashSlotMigrationWorker()
      → newControllerClient(peers, cache)
+     → onLeaderChange 时通知 runtimeObservationReporter.requestFullSync()
      → 创建 slotAgent{cluster, client, cache}
   ⑦ startObservationLoop():
      条件: controllerClient != nil
-     → 周期 ControllerObservation 间隔启动 observerLoop
-     → 每 tick: observeOnce() + controllerTickOnce()
+     → 创建 runtimeObservationReporter
+     → 周期 ObservationHeartbeatInterval 启动 heartbeatLoop（仅 node heartbeat）
+     → 周期 ObservationRuntimeScanInterval 启动 runtimeObservationLoop（delta scan + runtime_report flush）
+     → 周期 ControllerObservation 间隔启动 observerLoop（assignment sync / reconcile / migration / controllerTick）
   ⑧ seedLegacySlotsIfConfigured():
      条件: !ControllerEnabled()（静态部署模式）
      → 遍历 cfg.Slots → openOrBootstrapSlot (根据持久化状态决定 Open 还是 Bootstrap)
@@ -139,22 +145,35 @@ ProposeWithHashSlot:
 
 ### 5.3 观测循环（Observation Loop）
 
-入口: `cluster.go:391 observeOnce` + `cluster.go:409 controllerTickOnce`
+入口: `cluster.go:startObservationLoop`
 
 ```
-observerLoop 每 ControllerObservation 间隔 (默认200ms) 执行:
+heartbeatLoop 每 ObservationHeartbeatInterval (默认2s) 执行:
 
-observeOnce(ctx):
+heartbeatOnce(ctx):
   ① agent.HeartbeatOnce(ctx):
-     → client.Report(nodeStatus)  // 上报节点心跳
-     → 遍历本地打开的 Slot:
-        runtime.Status(slotID) → buildRuntimeView → client.Report(runtimeView)
+     → client.Report(nodeStatus)  // 仅上报节点心跳
      → 响应中携带 HashSlotTable → applyHashSlotTablePayload 更新 Router + 状态机
-     → Controller Leader 本地只更新 `observationCache` / `nodeHealthScheduler`
-       steady-state 不再为 heartbeat/runtime 走 Raft 提案
+     → Controller Leader 本地只更新 `observationCache.nodes` / `nodeHealthScheduler`
+       steady-state heartbeat 不再夹带 per-slot RuntimeView
        heartbeat 返回的 HashSlotTable 优先读 `controllerHost` 的 leader-local snapshot
        snapshot miss 时才 fallback `controllerMeta.LoadHashSlotTable()`
-  ② agent.SyncAssignments(ctx):
+
+runtimeObservationLoop 每 ObservationRuntimeScanInterval (默认1s) 执行:
+
+runtimeObservationOnce(ctx):
+  ① runtimeObservationReporter.tick(ctx)
+     → snapshotRuntimeObservationViews():
+        遍历 runtime.Slots() → runtime.Status(slotID) → buildRuntimeView
+     → 与 mirror 对比：
+        - LeaderID / CurrentPeers / HealthyVoters / HasQuorum / ObservedConfigEpoch 变化 → dirtyViews
+        - deleteRuntimePeers(slotID) → closedSlots tombstone
+     → 若无 dirty / tombstone 且未到 full sync 周期 → 不发 controller RPC
+     → flush 成功后更新本地 mirror，失败则保留 dirty 状态
+     → leader redirect / leader change / 定期自愈 时发送 `FullSync=true`
+
+observeOnce(ctx):
+  ① agent.SyncAssignments(ctx):
      → client.RefreshAssignments() 从 Controller Leader 拉取最新分配
      → 写入 assignmentCache
      → 失败 fallback: 直接读本地 controllerMeta
@@ -164,9 +183,14 @@ observeOnce(ctx):
 
 controllerTickOnce(ctx):
   条件: 本节点是 Controller Leader
-  ① 若 leader 仍处于 warmup（尚未收到 fresh observation）→ 直接跳过
+  ① 若 leader 仍处于 warmup（尚未收到当前 leader term 下、覆盖全部 alive 节点的 runtime `FullSync=true`）→ 直接跳过
   ② snapshotPlannerState:
      → ListNodes + ListAssignments + ListTasks + leader-local observation RuntimeViews
+     → runtime views 来自 `observationCache.runtimeViewsByNode`
+        - `FullSync=true`：替换单个 reporting node 的完整快照
+        - `FullSync=false`：增量 upsert + `ClosedSlots` 删除
+        - snapshot 时按 slot 聚合为 planner 需要的视图
+        - 长期未更新节点通过 coarse TTL 淘汰 zombie runtime view
   ③ planner.NextDecision(state)
      → 如果有新决策且对应 Slot 无现有任务 → Propose(AssignmentTaskUpdate)
      → 成功后通过 OnControllerDecision 上报任务类型与决策耗时
