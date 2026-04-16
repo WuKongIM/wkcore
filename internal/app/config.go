@@ -13,13 +13,33 @@ import (
 )
 
 type Config struct {
-	Node         NodeConfig
-	Storage      StorageConfig
-	Cluster      ClusterConfig
-	API          APIConfig
-	Gateway      GatewayConfig
-	Conversation ConversationConfig
-	Log          LogConfig
+	Node          NodeConfig
+	Storage       StorageConfig
+	Cluster       ClusterConfig
+	API           APIConfig
+	Gateway       GatewayConfig
+	Conversation  ConversationConfig
+	Observability ObservabilityConfig
+	Log           LogConfig
+}
+
+type ObservabilityConfig struct {
+	MetricsEnabled      bool
+	HealthDetailEnabled bool
+	HealthDebugEnabled  bool
+
+	metricsEnabledSet      bool
+	healthDetailEnabledSet bool
+	healthDebugEnabledSet  bool
+}
+
+func (c *ObservabilityConfig) SetExplicitFlags(metricsSet, detailSet, debugSet bool) {
+	if c == nil {
+		return
+	}
+	c.metricsEnabledSet = metricsSet
+	c.healthDetailEnabledSet = detailSet
+	c.healthDebugEnabledSet = debugSet
 }
 
 type LogConfig struct {
@@ -256,6 +276,15 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	}
 	if c.Conversation.ChannelProbeBatchSize <= 0 {
 		c.Conversation.ChannelProbeBatchSize = 512
+	}
+	if !c.Observability.metricsEnabledSet {
+		c.Observability.MetricsEnabled = true
+	}
+	if !c.Observability.healthDetailEnabledSet {
+		c.Observability.HealthDetailEnabled = true
+	}
+	if !c.Observability.healthDebugEnabledSet {
+		c.Observability.HealthDebugEnabled = false
 	}
 	if c.Conversation.SyncDefaultLimit <= 0 {
 		c.Conversation.SyncDefaultLimit = 200

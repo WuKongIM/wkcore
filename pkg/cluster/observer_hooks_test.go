@@ -3,10 +3,13 @@ package cluster
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/pkg/cluster/slotmigration"
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
+	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/transport"
 	"go.etcd.io/raft/v3/raftpb"
@@ -123,6 +126,85 @@ func TestObserverHooksOnControllerCall(t *testing.T) {
 	}
 }
 
+func TestObserverHooksOnControllerDecision(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.ControllerReplicaN = 1
+	cfg.SlotReplicaN = 1
+	cfg.Nodes = []NodeConfig{{NodeID: cfg.NodeID, Addr: "127.0.0.1:0"}}
+	cfg.ControllerMetaPath = filepath.Join(t.TempDir(), "controller-meta")
+	cfg.ControllerRaftPath = filepath.Join(t.TempDir(), "controller-raft")
+
+	discovery := NewStaticDiscovery(cfg.Nodes)
+	layer := newTransportLayer(cfg, discovery, nil)
+	requireNoErr(t, layer.Start(
+		"127.0.0.1:0",
+		func([]byte) {},
+		func(context.Context, []byte) ([]byte, error) { return nil, nil },
+		func(context.Context, []byte) ([]byte, error) { return nil, nil },
+		func(context.Context, []byte) ([]byte, error) { return nil, nil },
+	))
+	t.Cleanup(layer.Stop)
+
+	cfg.Nodes[0].Addr = layer.server.Listener().Addr().String()
+	host, err := newControllerHost(cfg, layer)
+	if err != nil {
+		t.Fatalf("newControllerHost() error = %v", err)
+	}
+	requireNoErr(t, host.Start(context.Background()))
+	t.Cleanup(host.Stop)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for host.LeaderID() != cfg.NodeID && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if host.LeaderID() != cfg.NodeID {
+		t.Fatalf("controllerHost.LeaderID() = %d, want %d", host.LeaderID(), cfg.NodeID)
+	}
+
+	requireNoErr(t, host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          uint64(cfg.NodeID),
+		Addr:            cfg.Nodes[0].Addr,
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Now(),
+		CapacityWeight:  1,
+	}))
+
+	var (
+		gotSlot uint32
+		gotKind string
+		calls   int
+	)
+	cluster := &Cluster{
+		cfg: cfg,
+		controllerResources: controllerResources{
+			controllerMeta: host.meta,
+			controller:     host.service,
+		},
+		obs: ObserverHooks{
+			OnControllerDecision: func(slotID uint32, kind string, dur time.Duration) {
+				calls++
+				gotSlot = slotID
+				gotKind = kind
+				if dur <= 0 {
+					t.Fatalf("OnControllerDecision() duration = %v, want > 0", dur)
+				}
+			},
+		},
+	}
+
+	cluster.controllerTickOnce(context.Background())
+
+	if calls != 1 {
+		t.Fatalf("OnControllerDecision() calls = %d, want 1", calls)
+	}
+	if gotSlot != 1 {
+		t.Fatalf("OnControllerDecision() slotID = %d, want 1", gotSlot)
+	}
+	if gotKind != "bootstrap" {
+		t.Fatalf("OnControllerDecision() kind = %q, want %q", gotKind, "bootstrap")
+	}
+}
+
 func TestObserverHooksOnReconcileStep(t *testing.T) {
 	sentinel := errors.New("reconcile step failed")
 	var (
@@ -172,6 +254,181 @@ func TestObserverHooksOnReconcileStep(t *testing.T) {
 	}
 	if !errors.Is(gotErr, sentinel) {
 		t.Fatalf("OnReconcileStep() err = %v, want %v", gotErr, sentinel)
+	}
+}
+
+func TestObserverHooksOnTaskResult(t *testing.T) {
+	var (
+		gotSlot   uint32
+		gotKind   string
+		gotResult string
+		calls     int
+	)
+	cluster := &Cluster{
+		obs: ObserverHooks{
+			OnTaskResult: func(slotID uint32, kind string, result string) {
+				calls++
+				gotSlot = slotID
+				gotKind = kind
+				gotResult = result
+			},
+		},
+	}
+	agent := &slotAgent{
+		cluster: cluster,
+		client: fakeControllerClient{
+			reportTaskResultFn: func(context.Context, controllermeta.ReconcileTask, error) error {
+				return nil
+			},
+		},
+	}
+
+	err := agent.reportTaskResult(context.Background(), controllermeta.ReconcileTask{
+		SlotID: 1,
+		Kind:   controllermeta.TaskKindRepair,
+	}, context.DeadlineExceeded)
+	if err != nil {
+		t.Fatalf("reportTaskResult() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("OnTaskResult() calls = %d, want 1", calls)
+	}
+	if gotSlot != 1 {
+		t.Fatalf("OnTaskResult() slotID = %d, want 1", gotSlot)
+	}
+	if gotKind != "repair" {
+		t.Fatalf("OnTaskResult() kind = %q, want %q", gotKind, "repair")
+	}
+	if gotResult != "timeout" {
+		t.Fatalf("OnTaskResult() result = %q, want %q", gotResult, "timeout")
+	}
+}
+
+func TestObserverHooksOnHashSlotMigrationComplete(t *testing.T) {
+	table := NewHashSlotTable(8, 2)
+	table.StartMigration(3, 1, 2)
+
+	var (
+		gotHashSlot uint16
+		gotSource   multiraft.SlotID
+		gotTarget   multiraft.SlotID
+		gotResult   string
+		calls       int
+	)
+	cluster := &Cluster{
+		cfg:             Config{NodeID: 1},
+		router:          NewRouter(table, 1, nil),
+		migrationWorker: &fakeHashSlotMigrationWorker{transitionsByTick: [][]slotmigration.Transition{{{HashSlot: 3, Source: 1, Target: 2, To: slotmigration.PhaseDone}}}},
+		controllerResources: controllerResources{
+			controllerClient: fakeControllerClient{
+				finalizeMigrationFn: func(_ context.Context, req slotcontroller.MigrationRequest) error {
+					if req.HashSlot != 3 || req.Source != 1 || req.Target != 2 {
+						t.Fatalf("finalize migration req = %#v", req)
+					}
+					return nil
+				},
+			},
+		},
+		obs: ObserverHooks{
+			OnHashSlotMigration: func(hashSlot uint16, source, target multiraft.SlotID, result string) {
+				calls++
+				gotHashSlot = hashSlot
+				gotSource = source
+				gotTarget = target
+				gotResult = result
+			},
+		},
+	}
+
+	restore := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+		if slotID != 1 {
+			return 0, nil, false
+		}
+		return 1, nil, true
+	})
+	defer restore()
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err != nil {
+		t.Fatalf("observeHashSlotMigrations() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("OnHashSlotMigration() calls = %d, want 1", calls)
+	}
+	if gotHashSlot != 3 {
+		t.Fatalf("OnHashSlotMigration() hashSlot = %d, want 3", gotHashSlot)
+	}
+	if gotSource != 1 || gotTarget != 2 {
+		t.Fatalf("OnHashSlotMigration() source=%d target=%d, want 1->2", gotSource, gotTarget)
+	}
+	if gotResult != "ok" {
+		t.Fatalf("OnHashSlotMigration() result = %q, want %q", gotResult, "ok")
+	}
+}
+
+func TestObserverHooksOnHashSlotMigrationAbort(t *testing.T) {
+	table := NewHashSlotTable(8, 2)
+	table.StartMigration(3, 1, 2)
+	table.AdvanceMigration(3, PhaseDelta)
+
+	var (
+		gotHashSlot uint16
+		gotSource   multiraft.SlotID
+		gotTarget   multiraft.SlotID
+		gotResult   string
+		calls       int
+	)
+	cluster := &Cluster{
+		cfg:    Config{NodeID: 1},
+		router: NewRouter(table, 1, nil),
+		migrationWorker: &fakeHashSlotMigrationWorker{
+			active: []slotmigration.Migration{{HashSlot: 3, Source: 1, Target: 2, Phase: slotmigration.PhaseDelta}},
+			transitionsByTick: [][]slotmigration.Transition{
+				{{HashSlot: 3, Source: 1, Target: 2, TimedOut: true}},
+			},
+		},
+		controllerResources: controllerResources{
+			controllerClient: fakeControllerClient{
+				abortMigrationFn: func(_ context.Context, req slotcontroller.MigrationRequest) error {
+					if req.HashSlot != 3 || req.Source != 1 || req.Target != 2 {
+						t.Fatalf("abort migration req = %#v", req)
+					}
+					return nil
+				},
+			},
+		},
+		obs: ObserverHooks{
+			OnHashSlotMigration: func(hashSlot uint16, source, target multiraft.SlotID, result string) {
+				calls++
+				gotHashSlot = hashSlot
+				gotSource = source
+				gotTarget = target
+				gotResult = result
+			},
+		},
+	}
+
+	restore := cluster.setManagedSlotLeaderTestHook(func(_ *Cluster, slotID multiraft.SlotID) (multiraft.NodeID, error, bool) {
+		if slotID != 1 {
+			return 0, nil, false
+		}
+		return 1, nil, true
+	})
+	defer restore()
+
+	if err := cluster.observeHashSlotMigrations(context.Background()); err != nil {
+		t.Fatalf("observeHashSlotMigrations() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("OnHashSlotMigration() calls = %d, want 1", calls)
+	}
+	if gotHashSlot != 3 {
+		t.Fatalf("OnHashSlotMigration() hashSlot = %d, want 3", gotHashSlot)
+	}
+	if gotSource != 1 || gotTarget != 2 {
+		t.Fatalf("OnHashSlotMigration() source=%d target=%d, want 1->2", gotSource, gotTarget)
+	}
+	if gotResult != "abort" {
+		t.Fatalf("OnHashSlotMigration() result = %q, want %q", gotResult, "abort")
 	}
 }
 

@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	channelhandler "github.com/WuKongIM/WuKongIM/pkg/channel/handler"
 	channelruntime "github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
 	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
 	channeltransport "github.com/WuKongIM/WuKongIM/pkg/channel/transport"
+	obsmetrics "github.com/WuKongIM/WuKongIM/pkg/metrics"
 )
 
 type appChannelCluster struct {
@@ -22,6 +24,10 @@ type appChannelCluster struct {
 
 	applyMu    sync.Mutex
 	applyLocks map[channel.ChannelKey]*appChannelApplyLock
+
+	metricsMu      sync.Mutex
+	metrics        *obsmetrics.Registry
+	activeChannels map[channel.ChannelKey]struct{}
 }
 
 type appChannelApplyLock struct {
@@ -80,6 +86,7 @@ func (c *appChannelCluster) ApplyMeta(meta channel.Meta) error {
 		runtimeErr = c.runtime.UpsertMeta(meta)
 	}
 	if runtimeErr == nil {
+		c.setChannelActive(key, meta.Status != channel.StatusDeleted)
 		return nil
 	}
 	c.service.RestoreMeta(key, previous, ok)
@@ -116,14 +123,20 @@ func (c *appChannelCluster) Append(ctx context.Context, req channel.AppendReques
 	if c == nil || c.service == nil {
 		return channel.AppendResult{}, channel.ErrInvalidConfig
 	}
-	return c.service.Append(ctx, req)
+	start := time.Now()
+	result, err := c.service.Append(ctx, req)
+	c.observeAppend(err, time.Since(start))
+	return result, err
 }
 
 func (c *appChannelCluster) Fetch(ctx context.Context, req channel.FetchRequest) (channel.FetchResult, error) {
 	if c == nil || c.service == nil {
 		return channel.FetchResult{}, channel.ErrInvalidConfig
 	}
-	return c.service.Fetch(ctx, req)
+	start := time.Now()
+	result, err := c.service.Fetch(ctx, req)
+	c.observeFetch(time.Since(start))
+	return result, err
 }
 
 func (c *appChannelCluster) Status(id channel.ChannelID) (channel.ChannelRuntimeStatus, error) {
@@ -161,6 +174,7 @@ func (c *appChannelCluster) RemoveLocal(key channel.ChannelKey) error {
 	if c.service != nil {
 		c.service.RestoreMeta(key, channel.Meta{}, false)
 	}
+	c.setChannelActive(key, false)
 	return err
 }
 
@@ -175,8 +189,49 @@ func (c *appChannelCluster) Close() error {
 			}
 			c.closeErr = errors.Join(c.closeErr, closeFn())
 		}
+		c.metricsMu.Lock()
+		c.activeChannels = nil
+		if c.metrics != nil {
+			c.metrics.Channel.SetActiveChannels(0)
+		}
+		c.metricsMu.Unlock()
 	})
 	return c.closeErr
+}
+
+func (c *appChannelCluster) observeAppend(err error, dur time.Duration) {
+	if c == nil || c.metrics == nil {
+		return
+	}
+	result := "ok"
+	if err != nil {
+		result = "err"
+	}
+	c.metrics.Channel.ObserveAppend(result, dur)
+}
+
+func (c *appChannelCluster) observeFetch(dur time.Duration) {
+	if c == nil || c.metrics == nil {
+		return
+	}
+	c.metrics.Channel.ObserveFetch(dur)
+}
+
+func (c *appChannelCluster) setChannelActive(key channel.ChannelKey, active bool) {
+	if c == nil || c.metrics == nil {
+		return
+	}
+	c.metricsMu.Lock()
+	defer c.metricsMu.Unlock()
+	if c.activeChannels == nil {
+		c.activeChannels = make(map[channel.ChannelKey]struct{})
+	}
+	if active {
+		c.activeChannels[key] = struct{}{}
+	} else {
+		delete(c.activeChannels, key)
+	}
+	c.metrics.Channel.SetActiveChannels(len(c.activeChannels))
 }
 
 type appChannelRuntimeControl struct {

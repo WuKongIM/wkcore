@@ -25,6 +25,7 @@ import (
 	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
 	channeltransport "github.com/WuKongIM/WuKongIM/pkg/channel/transport"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
+	obsmetrics "github.com/WuKongIM/WuKongIM/pkg/metrics"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
 	metafsm "github.com/WuKongIM/WuKongIM/pkg/slot/fsm"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
@@ -39,7 +40,7 @@ func build(cfg Config) (_ *App, err error) {
 		return nil, err
 	}
 
-	app := &App{cfg: cfg}
+	app := &App{cfg: cfg, createdAt: time.Now()}
 	defer func() {
 		if err == nil {
 			return
@@ -74,6 +75,9 @@ func build(cfg Config) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: create logger: %w", err)
 	}
+	if cfg.Observability.MetricsEnabled {
+		app.metrics = obsmetrics.New(cfg.Node.ID, cfg.Node.Name)
+	}
 
 	app.db, err = metadb.Open(cfg.Storage.DBPath)
 	if err != nil {
@@ -85,7 +89,14 @@ func build(cfg Config) (_ *App, err error) {
 		return nil, fmt.Errorf("app: open raftstorage: %w", err)
 	}
 
-	app.cluster, err = raftcluster.NewCluster(cfg.Cluster.runtimeConfig(cfg.Storage, app.db, app.raftDB, cfg.Node.ID, app.logger.Named("cluster")))
+	clusterCfg := cfg.Cluster.runtimeConfig(cfg.Storage, app.db, app.raftDB, cfg.Node.ID, app.logger.Named("cluster"))
+	var transportObserver transport.ObserverHooks
+	if app.metrics != nil {
+		clusterCfg.Observer = clusterMetricsObserver{metrics: app.metrics}.Hooks()
+		transportObserver = transportMetricsObserver{metrics: app.metrics}.Hooks()
+		clusterCfg.TransportObserver = transportObserver
+	}
+	app.cluster, err = raftcluster.NewCluster(clusterCfg)
 	if err != nil {
 		return nil, fmt.Errorf("app: create cluster: %w", err)
 	}
@@ -110,7 +121,12 @@ func build(cfg Config) (_ *App, err error) {
 	if dialTimeout <= 0 {
 		dialTimeout = defaultDataPlaneDialTimeout
 	}
-	app.dataPlanePool = transport.NewPool(discovery, poolSize, dialTimeout)
+	app.dataPlanePool = transport.NewPool(transport.PoolConfig{
+		Discovery:   discovery,
+		Size:        poolSize,
+		DialTimeout: dialTimeout,
+		Observer:    transportObserver,
+	})
 	app.dataPlaneClient = transport.NewClient(app.dataPlanePool)
 	app.isrTransport, err = channeltransport.New(channeltransport.Options{
 		LocalNode:          channel.NodeID(cfg.Node.ID),
@@ -148,6 +164,7 @@ func build(cfg Config) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: create channel cluster: %w", err)
 	}
+	app.channelLog.metrics = app.metrics
 
 	app.store = metastore.New(app.cluster, app.db)
 	app.nodeClient = accessnode.NewClient(app.cluster)
@@ -278,6 +295,13 @@ func build(cfg Config) (_ *App, err error) {
 			ConversationSyncEnabled:  cfg.Conversation.SyncEnabled,
 			ConversationDefaultLimit: cfg.Conversation.SyncDefaultLimit,
 			ConversationMaxLimit:     cfg.Conversation.SyncMaxLimit,
+			MetricsHandler:           app.metricsHandler(),
+			HealthDetailEnabled:      cfg.Observability.HealthDetailEnabled,
+			HealthDetails:            app.healthDetailsSnapshot,
+			Readyz:                   app.readyzReport,
+			DebugEnabled:             cfg.Observability.HealthDebugEnabled,
+			DebugConfig:              app.debugConfigSnapshot,
+			DebugCluster:             app.debugClusterSnapshot,
 			Logger:                   app.logger.Named("access.api"),
 		})
 	}
@@ -288,9 +312,14 @@ func build(cfg Config) (_ *App, err error) {
 		Logger:   app.logger.Named("access.gateway"),
 	})
 
+	var gatewayObserver gateway.Observer
+	if app.metrics != nil {
+		gatewayObserver = gatewayMetricsObserver{metrics: app.metrics}
+	}
 	app.gateway, err = gateway.New(gateway.Options{
 		Handler:        app.gatewayHandler,
 		Authenticator:  gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{TokenAuthOn: cfg.Gateway.TokenAuthOn, NodeID: cfg.Node.ID}),
+		Observer:       gatewayObserver,
 		DefaultSession: cfg.Gateway.DefaultSession,
 		Listeners:      cfg.Gateway.Listeners,
 	})

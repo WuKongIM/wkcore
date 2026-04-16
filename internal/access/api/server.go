@@ -36,6 +36,13 @@ type Options struct {
 	ConversationSyncEnabled  bool
 	ConversationDefaultLimit int
 	ConversationMaxLimit     int
+	MetricsHandler           http.Handler
+	HealthDetailEnabled      bool
+	HealthDetails            func() any
+	Readyz                   func(context.Context) (bool, any)
+	DebugEnabled             bool
+	DebugConfig              func() any
+	DebugCluster             func() any
 	Logger                   wklog.Logger
 }
 
@@ -52,6 +59,13 @@ type Server struct {
 	conversationSyncEnabled  bool
 	conversationDefaultLimit int
 	conversationMaxLimit     int
+	metricsHandler           http.Handler
+	healthDetailEnabled      bool
+	healthDetails            func() any
+	readyz                   func(context.Context) (bool, any)
+	debugEnabled             bool
+	debugConfig              func() any
+	debugCluster             func() any
 	logger                   wklog.Logger
 	started                  bool
 }
@@ -74,6 +88,13 @@ func New(opts Options) *Server {
 		conversationSyncEnabled:  opts.ConversationSyncEnabled,
 		conversationDefaultLimit: defaultLimit,
 		conversationMaxLimit:     maxLimit,
+		metricsHandler:           opts.MetricsHandler,
+		healthDetailEnabled:      opts.HealthDetailEnabled,
+		healthDetails:            opts.HealthDetails,
+		readyz:                   opts.Readyz,
+		debugEnabled:             opts.DebugEnabled,
+		debugConfig:              opts.DebugConfig,
+		debugCluster:             opts.DebugCluster,
 		logger:                   opts.Logger,
 	}
 	srv.registerRoutes()

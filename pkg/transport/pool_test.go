@@ -58,6 +58,97 @@ func TestPoolSendDeliversMessage(t *testing.T) {
 	}
 }
 
+func TestPoolObserverTracksSentBytes(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	received := make(chan struct{}, 1)
+	go acceptFrames(t, ln, func(msgType uint8, body []byte) {
+		if msgType == 9 && string(body) == "hello" {
+			received <- struct{}{}
+		}
+	})
+
+	var (
+		gotType  uint8
+		gotBytes int
+		calls    int
+	)
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: ln.Addr().String()}},
+		Size:        1,
+		DialTimeout: time.Second,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRaft,
+		Observer: ObserverHooks{
+			OnSend: func(msgType uint8, bytes int) {
+				calls++
+				gotType = msgType
+				gotBytes = bytes
+			},
+		},
+	})
+	defer pool.Close()
+
+	if err := pool.Send(2, 0, 9, []byte("hello")); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for send")
+	}
+
+	requireEventually(t, func() bool { return calls == 1 })
+	if gotType != 9 {
+		t.Fatalf("observer msgType = %d, want 9", gotType)
+	}
+	if gotBytes != len("hello") {
+		t.Fatalf("observer bytes = %d, want %d", gotBytes, len("hello"))
+	}
+}
+
+func TestPoolStatsReportActiveAndIdleConnections(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	go acceptFrames(t, ln, func(uint8, []byte) {})
+
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: ln.Addr().String()}},
+		Size:        2,
+		DialTimeout: time.Second,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRaft,
+	})
+	defer pool.Close()
+
+	if err := pool.Send(2, 0, 1, []byte("a")); err != nil {
+		t.Fatalf("first Send() error = %v", err)
+	}
+
+	stats := pool.Stats()
+	if len(stats) != 1 {
+		t.Fatalf("Stats() len = %d, want 1", len(stats))
+	}
+	if stats[0].NodeID != 2 {
+		t.Fatalf("Stats() nodeID = %d, want 2", stats[0].NodeID)
+	}
+	if stats[0].Active != 1 {
+		t.Fatalf("Stats() active = %d, want 1", stats[0].Active)
+	}
+	if stats[0].Idle != 1 {
+		t.Fatalf("Stats() idle = %d, want 1", stats[0].Idle)
+	}
+}
+
 func TestPoolRPCRoundTrip(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

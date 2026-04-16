@@ -46,6 +46,50 @@ func TestServerHandleMessage(t *testing.T) {
 	requireEventually(t, func() bool { return received.Load() == 1 })
 }
 
+func TestServerObserverTracksReceivedBytes(t *testing.T) {
+	var (
+		gotType  uint8
+		gotBytes int
+		calls    atomic.Int32
+	)
+	s := NewServerWithConfig(ServerConfig{
+		ConnConfig: ConnConfig{
+			Observer: ObserverHooks{
+				OnReceive: func(msgType uint8, bytes int) {
+					gotType = msgType
+					gotBytes = bytes
+					calls.Add(1)
+				},
+			},
+		},
+	})
+	s.Handle(1, func(body []byte) {})
+	if err := s.Start("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+
+	conn, err := net.Dial("tcp", s.Listener().Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	var bufs net.Buffers
+	writeFrame(&bufs, 1, []byte("ping"))
+	if _, err := bufs.WriteTo(conn); err != nil {
+		t.Fatalf("WriteTo() error = %v", err)
+	}
+
+	requireEventually(t, func() bool { return calls.Load() == 1 })
+	if gotType != 1 {
+		t.Fatalf("observer msgType = %d, want 1", gotType)
+	}
+	if gotBytes != len("ping") {
+		t.Fatalf("observer bytes = %d, want %d", gotBytes, len("ping"))
+	}
+}
+
 func TestServerHandleRPC(t *testing.T) {
 	s := NewServer()
 	s.HandleRPC(func(ctx context.Context, body []byte) ([]byte, error) {

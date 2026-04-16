@@ -43,7 +43,11 @@ func (t *transportLayer) Start(
 		t.discovery = NewStaticDiscovery(t.cfg.Nodes)
 	}
 
-	t.server = transport.NewServer()
+	t.server = transport.NewServerWithConfig(transport.ServerConfig{
+		ConnConfig: transport.ConnConfig{
+			Observer: t.cfg.TransportObserver,
+		},
+	})
 	t.server.Handle(msgTypeRaft, handleRaft)
 	t.rpcMux.Handle(rpcServiceForward, handleForward)
 	t.rpcMux.Handle(rpcServiceController, handleController)
@@ -59,6 +63,7 @@ func (t *transportLayer) Start(
 		DialTimeout: t.cfg.DialTimeout,
 		QueueSizes:  [3]int{2048, 0, 0},
 		DefaultPri:  transport.PriorityRaft,
+		Observer:    t.cfg.TransportObserver,
 	})
 	t.rpcPool = transport.NewPool(transport.PoolConfig{
 		Discovery:   t.discovery,
@@ -66,6 +71,7 @@ func (t *transportLayer) Start(
 		DialTimeout: t.cfg.DialTimeout,
 		QueueSizes:  [3]int{0, 1024, 256},
 		DefaultPri:  transport.PriorityRPC,
+		Observer:    t.cfg.TransportObserver,
 	})
 	t.raftClient = transport.NewClient(t.raftPool)
 	t.fwdClient = transport.NewClient(t.rpcPool)

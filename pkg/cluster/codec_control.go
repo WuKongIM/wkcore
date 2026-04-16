@@ -16,6 +16,7 @@ const (
 	controllerRPCListAssignments   string           = "list_assignments"
 	controllerRPCListNodes         string           = "list_nodes"
 	controllerRPCListRuntimeViews  string           = "list_runtime_views"
+	controllerRPCListTasks         string           = "list_tasks"
 	controllerRPCOperator          string           = "operator"
 	controllerRPCGetTask           string           = "get_task"
 	controllerRPCForceReconcile    string           = "force_reconcile"
@@ -41,6 +42,7 @@ const (
 	controllerKindListAssignments
 	controllerKindListNodes
 	controllerKindListRuntimeViews
+	controllerKindListTasks
 	controllerKindOperator
 	controllerKindGetTask
 	controllerKindForceReconcile
@@ -78,6 +80,7 @@ type controllerRPCResponse struct {
 	Nodes                []controllermeta.ClusterNode
 	Assignments          []controllermeta.SlotAssignment
 	RuntimeViews         []controllermeta.SlotRuntimeView
+	Tasks                []controllermeta.ReconcileTask
 	Task                 *controllermeta.ReconcileTask
 	HashSlotTableVersion uint64
 	HashSlotTable        []byte
@@ -213,7 +216,7 @@ func encodeControllerRequestPayload(req controllerRPCRequest) ([]byte, error) {
 			return nil, ErrInvalidConfig
 		}
 		return encodeRemoveSlotRequest(*req.RemoveSlot), nil
-	case controllerRPCListAssignments, controllerRPCListNodes, controllerRPCListRuntimeViews, controllerRPCGetTask, controllerRPCForceReconcile:
+	case controllerRPCListAssignments, controllerRPCListNodes, controllerRPCListRuntimeViews, controllerRPCListTasks, controllerRPCGetTask, controllerRPCForceReconcile:
 		return nil, nil
 	default:
 		return nil, ErrInvalidConfig
@@ -264,7 +267,7 @@ func decodeControllerRequestPayload(req *controllerRPCRequest, payload []byte) e
 		}
 		req.RemoveSlot = &removeSlot
 		return nil
-	case controllerRPCListAssignments, controllerRPCListNodes, controllerRPCListRuntimeViews, controllerRPCGetTask, controllerRPCForceReconcile:
+	case controllerRPCListAssignments, controllerRPCListNodes, controllerRPCListRuntimeViews, controllerRPCListTasks, controllerRPCGetTask, controllerRPCForceReconcile:
 		if len(payload) != 0 {
 			return ErrInvalidConfig
 		}
@@ -288,6 +291,8 @@ func encodeControllerResponsePayload(kind string, resp controllerRPCResponse) ([
 		return encodeClusterNodes(resp.Nodes), nil
 	case controllerRPCListRuntimeViews:
 		return encodeRuntimeViews(resp.RuntimeViews), nil
+	case controllerRPCListTasks:
+		return encodeReconcileTasks(resp.Tasks), nil
 	case controllerRPCGetTask:
 		if resp.Task == nil {
 			return nil, nil
@@ -338,6 +343,13 @@ func decodeControllerResponsePayload(kind string, resp *controllerRPCResponse, p
 		}
 		resp.RuntimeViews = views
 		return nil
+	case controllerRPCListTasks:
+		tasks, err := decodeReconcileTasks(payload)
+		if err != nil {
+			return err
+		}
+		resp.Tasks = tasks
+		return nil
 	case controllerRPCGetTask:
 		if len(payload) == 0 {
 			return nil
@@ -363,6 +375,8 @@ func controllerKindCode(kind string) (byte, error) {
 		return controllerKindListNodes, nil
 	case controllerRPCListRuntimeViews:
 		return controllerKindListRuntimeViews, nil
+	case controllerRPCListTasks:
+		return controllerKindListTasks, nil
 	case controllerRPCOperator:
 		return controllerKindOperator, nil
 	case controllerRPCGetTask:
@@ -398,6 +412,8 @@ func controllerKindName(kind byte) (string, error) {
 		return controllerRPCListNodes, nil
 	case controllerKindListRuntimeViews:
 		return controllerRPCListRuntimeViews, nil
+	case controllerKindListTasks:
+		return controllerRPCListTasks, nil
 	case controllerKindOperator:
 		return controllerRPCOperator, nil
 	case controllerKindGetTask:
@@ -791,6 +807,38 @@ func decodeRuntimeViews(body []byte) ([]controllermeta.SlotRuntimeView, error) {
 		return nil, ErrInvalidConfig
 	}
 	return views, nil
+}
+
+func encodeReconcileTasks(tasks []controllermeta.ReconcileTask) []byte {
+	body := binary.AppendUvarint(make([]byte, 0, len(tasks)*40), uint64(len(tasks)))
+	for _, task := range tasks {
+		body = appendBytes(body, encodeReconcileTask(task))
+	}
+	return body
+}
+
+func decodeReconcileTasks(body []byte) ([]controllermeta.ReconcileTask, error) {
+	count, rest, err := readUvarint(body)
+	if err != nil {
+		return nil, err
+	}
+	tasks := make([]controllermeta.ReconcileTask, 0, count)
+	for i := uint64(0); i < count; i++ {
+		taskBody, next, err := readBytes(rest)
+		if err != nil {
+			return nil, err
+		}
+		task, err := decodeReconcileTask(taskBody)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, task)
+		rest = next
+	}
+	if len(rest) != 0 {
+		return nil, ErrInvalidConfig
+	}
+	return tasks, nil
 }
 
 func appendRuntimeView(dst []byte, view controllermeta.SlotRuntimeView) []byte {

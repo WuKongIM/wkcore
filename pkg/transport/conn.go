@@ -12,6 +12,7 @@ import (
 
 type ConnConfig struct {
 	QueueSizes [numPriorities]int
+	Observer   ObserverHooks
 }
 
 type rpcResponse struct {
@@ -24,6 +25,7 @@ type MuxConn struct {
 	writer     *priorityWriter
 	pending    *pendingMap
 	dispatch   func(uint8, []byte, func())
+	observer   ObserverHooks
 	readerDone chan struct{}
 	closeOnce  sync.Once
 	closed     atomic.Bool
@@ -32,9 +34,10 @@ type MuxConn struct {
 func newMuxConn(raw net.Conn, dispatch func(uint8, []byte, func()), cfg ConnConfig) *MuxConn {
 	mc := &MuxConn{
 		raw:        raw,
-		writer:     newPriorityWriter(raw, cfg.QueueSizes),
+		writer:     newPriorityWriter(raw, cfg.QueueSizes, cfg.Observer),
 		pending:    newPendingMap(16),
 		dispatch:   dispatch,
+		observer:   cfg.Observer,
 		readerDone: make(chan struct{}),
 	}
 	go mc.readLoop()
@@ -105,6 +108,9 @@ func (mc *MuxConn) readLoop() {
 				loopErr = err
 			}
 			return
+		}
+		if hook := mc.observer.OnReceive; hook != nil {
+			hook(msgType, len(body))
 		}
 		if msgType == MsgTypeRPCResponse {
 			mc.handleRPCResponse(body)

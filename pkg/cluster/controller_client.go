@@ -17,6 +17,7 @@ type controllerAPI interface {
 	ListNodes(ctx context.Context) ([]controllermeta.ClusterNode, error)
 	RefreshAssignments(ctx context.Context) ([]controllermeta.SlotAssignment, error)
 	ListRuntimeViews(ctx context.Context) ([]controllermeta.SlotRuntimeView, error)
+	ListTasks(ctx context.Context) ([]controllermeta.ReconcileTask, error)
 	Operator(ctx context.Context, op slotcontroller.OperatorRequest) error
 	GetTask(ctx context.Context, slotID uint32) (controllermeta.ReconcileTask, error)
 	ForceReconcile(ctx context.Context, slotID uint32) error
@@ -88,6 +89,14 @@ func (c *controllerClient) ListRuntimeViews(ctx context.Context) ([]controllerme
 		return nil, err
 	}
 	return resp.RuntimeViews, nil
+}
+
+func (c *controllerClient) ListTasks(ctx context.Context) ([]controllermeta.ReconcileTask, error) {
+	resp, err := c.call(ctx, controllerRPCRequest{Kind: controllerRPCListTasks})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Tasks, nil
 }
 
 func (c *controllerClient) Operator(ctx context.Context, op slotcontroller.OperatorRequest) error {

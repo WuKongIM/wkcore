@@ -245,6 +245,18 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 	if err != nil {
 		return app.Config{}, err
 	}
+	metricsEnable, err := parseBool(v, "WK_METRICS_ENABLE")
+	if err != nil {
+		return app.Config{}, err
+	}
+	healthDetailEnable, err := parseBool(v, "WK_HEALTH_DETAIL_ENABLE")
+	if err != nil {
+		return app.Config{}, err
+	}
+	healthDebugEnable, err := parseBool(v, "WK_HEALTH_DEBUG_ENABLE")
+	if err != nil {
+		return app.Config{}, err
+	}
 
 	cfg := app.Config{
 		Node: app.NodeConfig{
@@ -304,6 +316,11 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 			},
 			Listeners: listeners,
 		},
+		Observability: app.ObservabilityConfig{
+			MetricsEnabled:      metricsEnable,
+			HealthDetailEnabled: healthDetailEnable,
+			HealthDebugEnabled:  healthDebugEnable,
+		},
 		Log: app.LogConfig{
 			Level:      stringValue(v, "WK_LOG_LEVEL"),
 			Dir:        stringValue(v, "WK_LOG_DIR"),
@@ -316,6 +333,11 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 		},
 	}
 	cfg.Log.SetExplicitFlags(stringValue(v, "WK_LOG_COMPRESS") != "", stringValue(v, "WK_LOG_CONSOLE") != "")
+	cfg.Observability.SetExplicitFlags(
+		stringValue(v, "WK_METRICS_ENABLE") != "",
+		stringValue(v, "WK_HEALTH_DETAIL_ENABLE") != "",
+		stringValue(v, "WK_HEALTH_DEBUG_ENABLE") != "",
+	)
 
 	if listenAddr := stringValue(v, "WK_API_LISTEN_ADDR"); listenAddr != "" {
 		cfg.API.ListenAddr = listenAddr

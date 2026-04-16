@@ -29,6 +29,8 @@ API.NodeID() / IsLocal(nodeID)
 API.SlotForKey(key) / HashSlotForKey(key) / HashSlotTableVersion()
 API.LeaderOf(slotID) / Propose(ctx, slotID, cmd)
 API.SlotIDs() / PeersForSlot(slotID)
+API.ListNodes(ctx)
+API.ListTasks(ctx)
 API.WaitForManagedSlotsReady(ctx)
 
 // 运维操作 — operator.go
@@ -36,6 +38,7 @@ API.ListSlotAssignments(ctx) / ListObservedRuntimeViews(ctx)
 API.GetReconcileTask(ctx, slotID) / ForceReconcile(ctx, slotID)
 API.MarkNodeDraining(ctx, nodeID) / ResumeNode(ctx, nodeID)
 API.TransferSlotLeader(ctx, slotID, nodeID) / RecoverSlot(ctx, slotID, strategy)
+API.TransportPoolStats()
 Cluster.AddSlot(ctx) / RemoveSlot(ctx, slotID) / Rebalance(ctx)
 
 // 传输层 — 共享给业务层注册额外 Handler
@@ -47,7 +50,7 @@ API.Server() / RPCMux() / Discovery() / RPCService(ctx, nodeID, slotID, serviceI
 | 类型 | 文件 | 说明 |
 |------|------|------|
 | `Cluster` | cluster.go:59 | 核心结构体，聚合传输/Controller/Agent/ManagedSlot/迁移等全部资源 |
-| `Config` | config.go:32 | 配置容器：NodeID, ListenAddr, SlotCount, HashSlotCount, 工厂函数, 超时参数等 |
+| `Config` | config.go:32 | 配置容器：NodeID, ListenAddr, SlotCount, HashSlotCount, 工厂函数, 超时参数, Observer / TransportObserver 等 |
 | `Timeouts` | config.go:59 | 9 个可配超时：ControllerObservation/Request/LeaderWait, Forward/ConfigChange/LeaderTransfer 重试预算等 |
 | `Router` | router.go:9 | 路由器：持有 HashSlotTable(atomic), 负责 key→slot→leader 映射 |
 | `HashSlotTable` | hashslottable.go | Hash Slot 路由表：hashSlot→物理SlotID 映射 + 迁移状态 |
@@ -59,7 +62,7 @@ API.Server() / RPCMux() / Discovery() / RPCService(ctx, nodeID, slotID, serviceI
 | `controllerClient` | controller_client.go:31 | controllerAPI 实现：Leader 缓存 + 逐 peer 探测 + 重定向跟随 |
 | `assignmentCache` | assignment_cache.go | 分配缓存：slotID → desiredPeers 映射，原子快照 |
 | `runtimeState` | runtime_state.go | 运行时状态：slotID → 当前 peers 映射（线程安全） |
-| `ObserverHooks` | config.go:71 | 可观测钩子：OnControllerCall / OnReconcileStep / OnForwardPropose / OnSlotEnsure / OnLeaderChange |
+| `ObserverHooks` | config.go:71 | 可观测钩子：OnControllerCall / OnControllerDecision / OnReconcileStep / OnForwardPropose / OnSlotEnsure / OnTaskResult / OnHashSlotMigration / OnLeaderChange |
 
 ## 5. 核心流程
 
@@ -80,6 +83,8 @@ Start():
        rpcServiceController → handleControllerRPC
        rpcServiceManagedSlot → handleManagedSlotRPC
      创建 raftPool + rpcPool → raftClient + fwdClient
+     Server / Pool 通过 Config.TransportObserver 上报 transport send/receive bytes
+     Cluster.TransportPoolStats() 在观测刷新时聚合 raftPool/rpcPool 的 active/idle 连接数
   ④ startControllerRaftIfLocalPeer():
      条件: ControllerEnabled() && HasLocalControllerPeer()
      → newControllerHost(cfg, transport)
@@ -159,6 +164,7 @@ controllerTickOnce(ctx):
      → ListNodes + ListAssignments + ListRuntimeViews + ListTasks
   ③ planner.NextDecision(state)
      → 如果有新决策且对应 Slot 无现有任务 → Propose(AssignmentTaskUpdate)
+     → 成功后通过 OnControllerDecision 上报任务类型与决策耗时
 ```
 
 ### 5.4 分配调和（Reconciliation）
@@ -192,6 +198,7 @@ Tick(ctx):
        c. getTask(fresh read) 确认任务仍有效
        d. executeReconcileTask → slotExecutor.Execute [见 5.6]
        e. reportTaskResult → Controller 反馈执行结果
+          → 成功后通过 OnTaskResult 上报任务类型与结果
           失败时存 pendingTaskReport，下轮重试上报
 ```
 
@@ -270,7 +277,9 @@ observeHashSlotMigrations(ctx):
        同时 fsm 层的 DeltaForwarder 将 live write 转发到 target Slot
      → PhaseSwitching: advanceHashSlotMigration
      → PhaseDone: finalizeHashSlotMigration → 更新 HashSlotTable
+       → 成功后通过 OnHashSlotMigration 上报 `result=ok`
      → TimedOut: AbortHashSlotMigration + 记录 pendingAbort
+       → 成功后通过 OnHashSlotMigration 上报 `result=abort`
 
 Delta 转发 (运行时):
   源 Slot fsm 收到被迁移 hashSlot 的 apply → makeHashSlotDeltaForwarder:

@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"net"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +17,7 @@ type PoolConfig struct {
 	DialTimeout time.Duration
 	QueueSizes  [numPriorities]int
 	DefaultPri  Priority
+	Observer    ObserverHooks
 }
 
 // Pool manages outbound TCP connections to remote nodes.
@@ -82,6 +84,44 @@ func (p *Pool) Close() {
 	})
 }
 
+func (p *Pool) Stats() []PoolPeerStats {
+	if p == nil {
+		return nil
+	}
+
+	stats := make([]PoolPeerStats, 0)
+	p.nodes.Range(func(key, value any) bool {
+		nodeID, ok := key.(NodeID)
+		if !ok {
+			return true
+		}
+		set, ok := value.(*nodeConnSet)
+		if !ok || set == nil {
+			return true
+		}
+		active := 0
+		for i := range set.conns {
+			if mc := set.conns[i].Load(); mc != nil && !mc.closed.Load() {
+				active++
+			}
+		}
+		idle := len(set.conns) - active
+		if idle < 0 {
+			idle = 0
+		}
+		stats = append(stats, PoolPeerStats{
+			NodeID: nodeID,
+			Active: active,
+			Idle:   idle,
+		})
+		return true
+	})
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].NodeID < stats[j].NodeID
+	})
+	return stats
+}
+
 func (p *Pool) acquire(nodeID NodeID, shardKey uint64) (*MuxConn, error) {
 	set, err := p.getOrCreateNodeSet(nodeID)
 	if err != nil {
@@ -105,7 +145,7 @@ func (p *Pool) acquire(nodeID NodeID, shardKey uint64) (*MuxConn, error) {
 		return nil, err
 	}
 	setTCPKeepAlive(raw)
-	mc := newMuxConn(raw, nil, ConnConfig{QueueSizes: p.cfg.QueueSizes})
+	mc := newMuxConn(raw, nil, ConnConfig{QueueSizes: p.cfg.QueueSizes, Observer: p.cfg.Observer})
 	set.conns[idx].Store(mc)
 	return mc, nil
 }

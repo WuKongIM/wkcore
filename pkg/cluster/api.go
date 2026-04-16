@@ -25,8 +25,12 @@ type API interface {
 	PeersForSlot(slotID multiraft.SlotID) []multiraft.NodeID
 	WaitForManagedSlotsReady(ctx context.Context) error
 
+	ListNodes(ctx context.Context) ([]controllermeta.ClusterNode, error)
 	ListSlotAssignments(ctx context.Context) ([]controllermeta.SlotAssignment, error)
 	ListObservedRuntimeViews(ctx context.Context) ([]controllermeta.SlotRuntimeView, error)
+	ListTasks(ctx context.Context) ([]controllermeta.ReconcileTask, error)
+	GetMigrationStatus() []HashSlotMigration
+	TransportPoolStats() []transport.PoolPeerStats
 	GetReconcileTask(ctx context.Context, slotID uint32) (controllermeta.ReconcileTask, error)
 	ForceReconcile(ctx context.Context, slotID uint32) error
 	MarkNodeDraining(ctx context.Context, nodeID uint64) error

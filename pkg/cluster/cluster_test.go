@@ -61,6 +61,17 @@ func (u *testHashSlotOwnershipUpdater) SetDeltaForwarder(fn func(context.Context
 	u.deltaForwarder = fn
 }
 
+type singleNodeDiscovery struct {
+	addr string
+}
+
+func (d singleNodeDiscovery) Resolve(nodeID transport.NodeID) (string, error) {
+	if nodeID != 1 {
+		return "", transport.ErrNodeNotFound
+	}
+	return d.addr, nil
+}
+
 type testHashSlotSnapshotStateMachine struct {
 	testHashSlotOwnershipUpdater
 	exportedHashSlots []uint16
@@ -266,6 +277,69 @@ func TestListSlotAssignmentsFallsBackToLocalControllerMetaWhenControllerReadTime
 	}
 	if len(assignments) != 1 || assignments[0].SlotID != assignment.SlotID {
 		t.Fatalf("ListSlotAssignments() = %v", assignments)
+	}
+}
+
+func TestListTasksUsesControllerClientWhenAvailable(t *testing.T) {
+	dir := t.TempDir()
+	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
+	if err != nil {
+		t.Fatalf("open controllermeta: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	task := controllermeta.ReconcileTask{
+		SlotID:    1,
+		Kind:      controllermeta.TaskKindRepair,
+		Step:      controllermeta.TaskStepAddLearner,
+		Status:    controllermeta.TaskStatusPending,
+		NextRunAt: time.Now(),
+	}
+	if err := store.UpsertTask(context.Background(), task); err != nil {
+		t.Fatalf("UpsertTask() error = %v", err)
+	}
+
+	sentinel := errors.New("controller client called")
+	cluster := newTestClusterWithController(store, 0, fakeControllerClient{listTasksErr: sentinel})
+
+	_, err = cluster.ListTasks(context.Background())
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("ListTasks() error = %v, want %v", err, sentinel)
+	}
+}
+
+func TestListTasksFallsBackToLocalControllerMetaWhenLeaderUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
+	if err != nil {
+		t.Fatalf("open controllermeta: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	task := controllermeta.ReconcileTask{
+		SlotID:    1,
+		Kind:      controllermeta.TaskKindRepair,
+		Step:      controllermeta.TaskStepAddLearner,
+		Status:    controllermeta.TaskStatusRetrying,
+		Attempt:   2,
+		NextRunAt: time.Now().Add(time.Second),
+	}
+	if err := store.UpsertTask(context.Background(), task); err != nil {
+		t.Fatalf("UpsertTask() error = %v", err)
+	}
+
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, fakeControllerClient{listTasksErr: ErrNoLeader})
+
+	tasks, err := cluster.ListTasks(context.Background())
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].SlotID != task.SlotID {
+		t.Fatalf("ListTasks() = %v", tasks)
 	}
 }
 
@@ -687,6 +761,81 @@ func TestObserveHashSlotMigrationsAdvancesControllerLifecycle(t *testing.T) {
 	if len(finalized) != 1 || finalized[0].HashSlot != 3 {
 		t.Fatalf("finalized after third tick = %#v", finalized)
 	}
+}
+
+func TestTransportPoolStatsMergeRaftAndRPCPools(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				for {
+					if _, _, err := transport.ReadMessage(c); err != nil {
+						return
+					}
+				}
+			}(conn)
+		}
+	}()
+
+	cluster := &Cluster{
+		transportResources: transportResources{
+			raftPool: transport.NewPool(transport.PoolConfig{
+				Discovery:   singleNodeDiscovery{addr: ln.Addr().String()},
+				Size:        2,
+				DialTimeout: time.Second,
+				QueueSizes:  [3]int{4, 4, 4},
+				DefaultPri:  transport.PriorityRaft,
+			}),
+			rpcPool: transport.NewPool(transport.PoolConfig{
+				Discovery:   singleNodeDiscovery{addr: ln.Addr().String()},
+				Size:        3,
+				DialTimeout: time.Second,
+				QueueSizes:  [3]int{4, 4, 4},
+				DefaultPri:  transport.PriorityRPC,
+			}),
+		},
+	}
+	defer cluster.raftPool.Close()
+	defer cluster.rpcPool.Close()
+
+	if err := cluster.raftPool.Send(1, 0, 1, []byte("raft")); err != nil {
+		t.Fatalf("raftPool.Send() error = %v", err)
+	}
+	if err := cluster.rpcPool.Send(1, 0, 2, []byte("rpc-a")); err != nil {
+		t.Fatalf("rpcPool first Send() error = %v", err)
+	}
+	if err := cluster.rpcPool.Send(1, 1, 2, []byte("rpc-b")); err != nil {
+		t.Fatalf("rpcPool second Send() error = %v", err)
+	}
+
+	stats := cluster.TransportPoolStats()
+	if len(stats) != 1 {
+		t.Fatalf("TransportPoolStats() len = %d, want 1", len(stats))
+	}
+	if stats[0].NodeID != 1 {
+		t.Fatalf("TransportPoolStats() nodeID = %d, want 1", stats[0].NodeID)
+	}
+	if stats[0].Active != 3 {
+		t.Fatalf("TransportPoolStats() active = %d, want 3", stats[0].Active)
+	}
+	if stats[0].Idle != 2 {
+		t.Fatalf("TransportPoolStats() idle = %d, want 2", stats[0].Idle)
+	}
+
+	_ = ln.Close()
+	<-done
 }
 
 func TestObserveHashSlotMigrationsSkipsWhenLocalNodeIsNotSourceLeader(t *testing.T) {
@@ -1433,6 +1582,9 @@ type fakeControllerClient struct {
 	listRuntimeViewsFn   func(context.Context) ([]controllermeta.SlotRuntimeView, error)
 	runtimeViews         []controllermeta.SlotRuntimeView
 	listRuntimeViewsErr  error
+	listTasksFn          func(context.Context) ([]controllermeta.ReconcileTask, error)
+	listTasks            []controllermeta.ReconcileTask
+	listTasksErr         error
 	getTaskFn            func(context.Context, uint32) (controllermeta.ReconcileTask, error)
 	tasks                map[uint32]controllermeta.ReconcileTask
 	getTaskErr           error
@@ -1558,6 +1710,13 @@ func (f fakeControllerClient) ListRuntimeViews(ctx context.Context) ([]controlle
 		return f.listRuntimeViewsFn(ctx)
 	}
 	return append([]controllermeta.SlotRuntimeView(nil), f.runtimeViews...), f.listRuntimeViewsErr
+}
+
+func (f fakeControllerClient) ListTasks(ctx context.Context) ([]controllermeta.ReconcileTask, error) {
+	if f.listTasksFn != nil {
+		return f.listTasksFn(ctx)
+	}
+	return append([]controllermeta.ReconcileTask(nil), f.listTasks...), f.listTasksErr
 }
 
 func (f fakeControllerClient) Operator(_ context.Context, _ slotcontroller.OperatorRequest) error {

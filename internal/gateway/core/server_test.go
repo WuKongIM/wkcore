@@ -13,6 +13,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/transport"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+	"github.com/stretchr/testify/require"
 )
 
 func TestServer(t *testing.T) {
@@ -748,7 +749,7 @@ func TestServerStart(t *testing.T) {
 			},
 		}
 
-		srv := newServerWithListeners(t, handler, proto, factory, gateway.SessionOptions{}, nil, []gateway.ListenerOptions{
+		srv := newServerWithListeners(t, handler, proto, factory, gateway.SessionOptions{}, nil, nil, []gateway.ListenerOptions{
 			{
 				Name:      "listener-a",
 				Network:   "tcp",
@@ -805,7 +806,7 @@ func TestServerStart(t *testing.T) {
 			},
 		}
 
-		srv := newServerWithListeners(t, handler, proto, factory, gateway.SessionOptions{}, nil, []gateway.ListenerOptions{
+		srv := newServerWithListeners(t, handler, proto, factory, gateway.SessionOptions{}, nil, nil, []gateway.ListenerOptions{
 			{
 				Name:      "listener-a",
 				Network:   "tcp",
@@ -1000,6 +1001,66 @@ func TestWriteTimeout(t *testing.T) {
 	}
 }
 
+func TestObserverReceivesGatewayLifecycleEvents(t *testing.T) {
+	handler := newTestHandler()
+	handler.onFrame = func(ctx *gateway.Context, f frame.Frame) error {
+		return ctx.WriteFrame(&frame.RecvPacket{Payload: []byte("ack")})
+	}
+
+	proto := newScriptedProtocol("wkproto")
+	proto.encodedBytes = []byte("encoded")
+	proto.pushDecode(decodeResult{
+		frames:   []frame.Frame{&frame.ConnectPacket{UID: "u1"}},
+		consumed: 1,
+	})
+
+	observer := &recordingObserver{}
+	srv, transportFactory := newTestServerWithObserver(
+		t,
+		handler,
+		proto,
+		gateway.SessionOptions{},
+		gateway.AuthenticatorFunc(func(*gateway.Context, *frame.ConnectPacket) (*gateway.AuthResult, error) {
+			return &gateway.AuthResult{Connack: &frame.ConnackPacket{ReasonCode: frame.ReasonSuccess}}, nil
+		}),
+		observer,
+	)
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = srv.Stop()
+	})
+
+	conn := transportFactory.MustOpen("listener-a", 1)
+	transportFactory.MustData("listener-a", 1, []byte("c"))
+	proto.pushDecode(decodeResult{
+		frames:   []frame.Frame{&frame.SendPacket{Payload: []byte("hello")}},
+		consumed: 1,
+	})
+	transportFactory.MustData("listener-a", 1, []byte("s"))
+	waitFor(t, func() bool {
+		return observer.openCount() == 1 &&
+			observer.authCount() == 1 &&
+			observer.inboundCount() == 1 &&
+			observer.outboundCount() >= 2 &&
+			observer.handledCount() == 1 &&
+			len(conn.Writes()) >= 2
+	})
+
+	transportFactory.MustClose("listener-a", 1, nil)
+	waitFor(t, func() bool { return observer.closeCount() == 1 })
+
+	require.Equal(t, "tcp", observer.opens[0].Protocol)
+	require.Equal(t, "ok", observer.auths[0].Status)
+	require.Equal(t, "SEND", observer.inbound[0].FrameType)
+	require.Equal(t, 5, observer.inbound[0].Bytes)
+	require.Equal(t, "RECV", observer.outbound[len(observer.outbound)-1].FrameType)
+	require.Equal(t, 3, observer.outbound[len(observer.outbound)-1].Bytes)
+	require.Equal(t, "SEND", observer.handled[0].FrameType)
+}
+
 func newTestServer(t *testing.T, handler *testHandler, proto *scriptedProtocol, sessOpts gateway.SessionOptions) (*core.Server, *testkit.FakeTransportFactory) {
 	t.Helper()
 	return newTestServerWithAuthenticator(t, handler, proto, sessOpts, nil)
@@ -1009,7 +1070,7 @@ func newTestServerWithAuthenticator(t *testing.T, handler *testHandler, proto *s
 	t.Helper()
 
 	transportFactory := testkit.NewFakeTransportFactory("fake-transport")
-	srv := newServerWithListeners(t, handler, proto, transportFactory, sessOpts, authenticator, []gateway.ListenerOptions{
+	srv := newServerWithListeners(t, handler, proto, transportFactory, sessOpts, authenticator, nil, []gateway.ListenerOptions{
 		{
 			Name:      "listener-a",
 			Network:   "tcp",
@@ -1021,7 +1082,23 @@ func newTestServerWithAuthenticator(t *testing.T, handler *testHandler, proto *s
 	return srv, transportFactory
 }
 
-func newServerWithListeners(t *testing.T, handler *testHandler, proto *scriptedProtocol, transportFactory transport.Factory, sessOpts gateway.SessionOptions, authenticator gateway.Authenticator, listeners []gateway.ListenerOptions) *core.Server {
+func newTestServerWithObserver(t *testing.T, handler *testHandler, proto *scriptedProtocol, sessOpts gateway.SessionOptions, authenticator gateway.Authenticator, observer gateway.Observer) (*core.Server, *testkit.FakeTransportFactory) {
+	t.Helper()
+
+	transportFactory := testkit.NewFakeTransportFactory("fake-transport")
+	srv := newServerWithListeners(t, handler, proto, transportFactory, sessOpts, authenticator, observer, []gateway.ListenerOptions{
+		{
+			Name:      "listener-a",
+			Network:   "tcp",
+			Address:   "127.0.0.1:9000",
+			Transport: transportFactory.Name(),
+			Protocol:  proto.Name(),
+		},
+	})
+	return srv, transportFactory
+}
+
+func newServerWithListeners(t *testing.T, handler *testHandler, proto *scriptedProtocol, transportFactory transport.Factory, sessOpts gateway.SessionOptions, authenticator gateway.Authenticator, observer gateway.Observer, listeners []gateway.ListenerOptions) *core.Server {
 	t.Helper()
 
 	registry := core.NewRegistry()
@@ -1036,12 +1113,95 @@ func newServerWithListeners(t *testing.T, handler *testHandler, proto *scriptedP
 		Handler:        handler,
 		Authenticator:  authenticator,
 		DefaultSession: sessOpts,
+		Observer:       observer,
 		Listeners:      append([]gateway.ListenerOptions(nil), listeners...),
 	})
 	if err != nil {
 		t.Fatalf("new server failed: %v", err)
 	}
 	return srv
+}
+
+type recordingObserver struct {
+	mu       sync.Mutex
+	opens    []gateway.ConnectionEvent
+	closes   []gateway.ConnectionEvent
+	auths    []gateway.AuthEvent
+	inbound  []gateway.FrameEvent
+	outbound []gateway.FrameEvent
+	handled  []gateway.FrameHandleEvent
+}
+
+func (r *recordingObserver) OnConnectionOpen(event gateway.ConnectionEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.opens = append(r.opens, event)
+}
+
+func (r *recordingObserver) OnConnectionClose(event gateway.ConnectionEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closes = append(r.closes, event)
+}
+
+func (r *recordingObserver) OnAuth(event gateway.AuthEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.auths = append(r.auths, event)
+}
+
+func (r *recordingObserver) OnFrameIn(event gateway.FrameEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.inbound = append(r.inbound, event)
+}
+
+func (r *recordingObserver) OnFrameOut(event gateway.FrameEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.outbound = append(r.outbound, event)
+}
+
+func (r *recordingObserver) OnFrameHandled(event gateway.FrameHandleEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.handled = append(r.handled, event)
+}
+
+func (r *recordingObserver) openCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.opens)
+}
+
+func (r *recordingObserver) closeCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.closes)
+}
+
+func (r *recordingObserver) authCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.auths)
+}
+
+func (r *recordingObserver) inboundCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.inbound)
+}
+
+func (r *recordingObserver) outboundCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.outbound)
+}
+
+func (r *recordingObserver) handledCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.handled)
 }
 
 type decodeResult struct {

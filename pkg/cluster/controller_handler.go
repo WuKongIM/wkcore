@@ -122,6 +122,15 @@ func (h *controllerHandler) Handle(ctx context.Context, body []byte) ([]byte, er
 			return nil, err
 		}
 		return encodeControllerResponse(req.Kind, controllerRPCResponse{RuntimeViews: views})
+	case controllerRPCListTasks:
+		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
+			return marshalRedirect()
+		}
+		tasks, err := c.controllerMeta.ListTasks(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return encodeControllerResponse(req.Kind, controllerRPCResponse{Tasks: tasks})
 	case controllerRPCOperator:
 		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
 			return marshalRedirect()

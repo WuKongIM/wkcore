@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -89,6 +90,7 @@ func NewServer(registry *Registry, opts *gatewaytypes.Options) (*Server, error) 
 	cfg := gatewaytypes.Options{
 		Handler:        opts.Handler,
 		Authenticator:  opts.Authenticator,
+		Observer:       opts.Observer,
 		DefaultSession: opts.DefaultSession,
 		Listeners:      append([]gatewaytypes.ListenerOptions(nil), opts.Listeners...),
 	}
@@ -327,6 +329,7 @@ func (s *Server) onOpen(listener *listenerRuntime, conn transport.Conn) error {
 	state.session = sess
 	state.queue = queue
 	s.registerState(state)
+	s.observeConnectionOpen(state)
 
 	if err := listener.adapter.OnOpen(sess); err != nil {
 		state.close(gatewaytypes.CloseReasonProtocolError, err)
@@ -410,11 +413,12 @@ func (s *Server) onData(listener *listenerRuntime, conn transport.Conn, data []b
 				}
 				continue
 			}
+			s.observeFrameIn(state, f)
 			if asyncFrame, ok := cloneAsyncSendFrame(s.options.DefaultSession.AsyncSendDispatch, f); ok {
 				s.dispatchFrameAsync(state, replyToken, asyncFrame)
 				continue
 			}
-			if err := s.dispatcher.frame(state, replyToken, f); err != nil {
+			if err := s.dispatchFrame(state, replyToken, f); err != nil {
 				s.handleHandlerError(state, err)
 				if state.isClosed() {
 					return nil
@@ -449,16 +453,28 @@ func (s *Server) dispatchFrameAsync(state *sessionState, replyToken string, f fr
 	s.workerWG.Add(1)
 	go func() {
 		defer s.workerWG.Done()
-		if err := s.dispatcher.frame(state, replyToken, f); err != nil {
+		if err := s.dispatchFrame(state, replyToken, f); err != nil {
 			s.handleHandlerError(state, err)
 		}
 	}()
+}
+
+func (s *Server) dispatchFrame(state *sessionState, replyToken string, f frame.Frame) error {
+	start := time.Now()
+	err := s.dispatcher.frame(state, replyToken, f)
+	s.observeFrameHandled(state, f, time.Since(start), err)
+	return err
 }
 
 func (s *Server) handleAuthFrame(state *sessionState, replyToken string, f frame.Frame) (bool, error) {
 	if state == nil || !state.requiresAuth() || state.isAuthenticated() {
 		return false, nil
 	}
+	start := time.Now()
+	status := "fail"
+	defer func() {
+		s.observeAuth(state, status, time.Since(start))
+	}()
 
 	connect, ok := f.(*frame.ConnectPacket)
 	if !ok {
@@ -534,6 +550,7 @@ func (s *Server) handleAuthFrame(state *sessionState, replyToken string, f frame
 		return true, nil
 	}
 	state.setAuthenticated(true)
+	status = "ok"
 	if !state.openWasDispatched() {
 		if err := s.dispatchSessionOpen(state); err != nil {
 			return true, err
@@ -568,6 +585,7 @@ func (s *Server) encodeAndQueue(state *sessionState, f frame.Frame, meta session
 	if err != nil {
 		return err
 	}
+	s.observeFrameOut(state, f, len(encoded))
 	return state.queue.EnqueueEncoded(encoded)
 }
 
@@ -580,6 +598,7 @@ func (s *Server) writeImmediateFrame(state *sessionState, f frame.Frame) error {
 	if err != nil {
 		return err
 	}
+	s.observeFrameOut(state, f, len(encoded))
 	return s.writePayload(state, encoded)
 }
 
@@ -811,6 +830,7 @@ func (st *sessionState) close(reason gatewaytypes.CloseReason, err error) {
 			st.cancelRequestContext()
 		}
 		st.setCloseReason(reason)
+		st.server.observeConnectionClose(st)
 		st.server.unregisterState(st)
 		if err != nil && st.openWasDispatched() {
 			st.server.dispatcher.sessionError(st, reason, err)
@@ -833,6 +853,96 @@ func (st *sessionState) close(reason gatewaytypes.CloseReason, err error) {
 		}
 		close(st.closedCh)
 	})
+}
+
+func (s *Server) observeConnectionOpen(state *sessionState) {
+	if s == nil || s.options.Observer == nil {
+		return
+	}
+	s.options.Observer.OnConnectionOpen(connectionEventForState(state))
+}
+
+func (s *Server) observeConnectionClose(state *sessionState) {
+	if s == nil || s.options.Observer == nil {
+		return
+	}
+	s.options.Observer.OnConnectionClose(connectionEventForState(state))
+}
+
+func (s *Server) observeAuth(state *sessionState, status string, dur time.Duration) {
+	if s == nil || s.options.Observer == nil {
+		return
+	}
+	s.options.Observer.OnAuth(gatewaytypes.AuthEvent{
+		ConnectionEvent: connectionEventForState(state),
+		Status:          status,
+		Duration:        dur,
+	})
+}
+
+func (s *Server) observeFrameIn(state *sessionState, f frame.Frame) {
+	if s == nil || s.options.Observer == nil || f == nil {
+		return
+	}
+	s.options.Observer.OnFrameIn(gatewaytypes.FrameEvent{
+		ConnectionEvent: connectionEventForState(state),
+		FrameType:       f.GetFrameType().String(),
+		Bytes:           framePayloadBytes(f),
+	})
+}
+
+func (s *Server) observeFrameOut(state *sessionState, f frame.Frame, encodedBytes int) {
+	if s == nil || s.options.Observer == nil || f == nil {
+		return
+	}
+	bytes := framePayloadBytes(f)
+	if bytes == 0 {
+		bytes = encodedBytes
+	}
+	s.options.Observer.OnFrameOut(gatewaytypes.FrameEvent{
+		ConnectionEvent: connectionEventForState(state),
+		FrameType:       f.GetFrameType().String(),
+		Bytes:           bytes,
+	})
+}
+
+func (s *Server) observeFrameHandled(state *sessionState, f frame.Frame, dur time.Duration, err error) {
+	if s == nil || s.options.Observer == nil || f == nil {
+		return
+	}
+	s.options.Observer.OnFrameHandled(gatewaytypes.FrameHandleEvent{
+		ConnectionEvent: connectionEventForState(state),
+		FrameType:       f.GetFrameType().String(),
+		Duration:        dur,
+		Err:             err,
+	})
+}
+
+func connectionEventForState(state *sessionState) gatewaytypes.ConnectionEvent {
+	if state == nil || state.listener == nil {
+		return gatewaytypes.ConnectionEvent{}
+	}
+	network := strings.ToLower(strings.TrimSpace(state.listener.options.Network))
+	protocol := network
+	if network == "websocket" {
+		protocol = "ws"
+	}
+	return gatewaytypes.ConnectionEvent{
+		Listener: state.listener.options.Name,
+		Network:  network,
+		Protocol: protocol,
+	}
+}
+
+func framePayloadBytes(f frame.Frame) int {
+	switch pkt := f.(type) {
+	case *frame.SendPacket:
+		return len(pkt.Payload)
+	case *frame.RecvPacket:
+		return len(pkt.Payload)
+	default:
+		return 0
+	}
 }
 
 func (st *sessionState) isClosed() bool {

@@ -123,6 +123,11 @@ func (a *slotAgent) reportTaskResult(ctx context.Context, task controllermeta.Re
 		}
 		return a.client.ReportTaskResult(attemptCtx, task, taskErr)
 	})
+	if err == nil {
+		if hook := a.cluster.obs.OnTaskResult; hook != nil {
+			hook(task.SlotID, controllerTaskKindName(task.Kind), controllerTaskResult(taskErr))
+		}
+	}
 	return err
 }
 

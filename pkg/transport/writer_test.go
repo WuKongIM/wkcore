@@ -70,7 +70,7 @@ func TestPriorityWriterLoopWritesFramesAndSignalsDone(t *testing.T) {
 	server, client := net.Pipe()
 	defer server.Close()
 
-	pw := newPriorityWriter(client, [numPriorities]int{4, 4, 4})
+	pw := newPriorityWriter(client, [numPriorities]int{4, 4, 4}, ObserverHooks{})
 	defer pw.stop()
 
 	done := make(chan error, 1)

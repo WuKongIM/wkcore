@@ -53,7 +53,11 @@ type Server struct {
 }
 
 func NewServer() *Server {
-	s := &Server{stopCh: make(chan struct{})}
+	return NewServerWithConfig(ServerConfig{})
+}
+
+func NewServerWithConfig(cfg ServerConfig) *Server {
+	s := &Server{stopCh: make(chan struct{}), cfg: cfg}
 	s.handlers.Store(newHandlerTable())
 	return s
 }

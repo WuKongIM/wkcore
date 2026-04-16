@@ -9,6 +9,7 @@ import (
 type Options struct {
 	Handler        Handler
 	Authenticator  Authenticator
+	Observer       Observer
 	DefaultSession SessionOptions
 	Listeners      []ListenerOptions
 }

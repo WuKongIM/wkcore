@@ -63,3 +63,4 @@ learn_project/
 wukongim.conf
 .devdata/
 docker/dev-cluster/
+docker/dev-observability/

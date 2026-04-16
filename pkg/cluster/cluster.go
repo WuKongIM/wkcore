@@ -178,7 +178,11 @@ func (c *Cluster) startTransportLayer() error {
 }
 
 func (c *Cluster) startServer() error {
-	c.server = transport.NewServer()
+	c.server = transport.NewServerWithConfig(transport.ServerConfig{
+		ConnConfig: transport.ConnConfig{
+			Observer: c.cfg.TransportObserver,
+		},
+	})
 	c.server.Handle(msgTypeRaft, c.handleRaftMessage)
 	c.rpcMux.Handle(rpcServiceForward, c.handleForwardRPC)
 	c.rpcMux.Handle(rpcServiceController, c.handleControllerRPC)
@@ -197,6 +201,7 @@ func (c *Cluster) startPools() {
 		DialTimeout: c.cfg.DialTimeout,
 		QueueSizes:  [3]int{2048, 0, 0},
 		DefaultPri:  transport.PriorityRaft,
+		Observer:    c.cfg.TransportObserver,
 	})
 	c.rpcPool = transport.NewPool(transport.PoolConfig{
 		Discovery:   c.discovery,
@@ -204,6 +209,7 @@ func (c *Cluster) startPools() {
 		DialTimeout: c.cfg.DialTimeout,
 		QueueSizes:  [3]int{0, 1024, 256},
 		DefaultPri:  transport.PriorityRPC,
+		Observer:    c.cfg.TransportObserver,
 	})
 	c.raftClient = transport.NewClient(c.raftPool)
 	c.fwdClient = transport.NewClient(c.rpcPool)
@@ -435,6 +441,7 @@ func (c *Cluster) controllerTickOnce(ctx context.Context) {
 	})
 	cancel()
 
+	start := time.Now()
 	state, err := c.snapshotPlannerState(ctx)
 	if err != nil {
 		return
@@ -452,12 +459,18 @@ func (c *Cluster) controllerTickOnce(ctx context.Context) {
 	}
 
 	proposeCtx, cancel := c.withControllerTimeout(ctx)
-	_ = c.controller.Propose(proposeCtx, slotcontroller.Command{
+	err = c.controller.Propose(proposeCtx, slotcontroller.Command{
 		Kind:       slotcontroller.CommandKindAssignmentTaskUpdate,
 		Assignment: &decision.Assignment,
 		Task:       decision.Task,
 	})
 	cancel()
+	if err != nil {
+		return
+	}
+	if hook := c.obs.OnControllerDecision; hook != nil {
+		hook(decision.SlotID, controllerTaskKindName(decision.Task.Kind), observerElapsed(start))
+	}
 }
 
 func (c *Cluster) snapshotPlannerState(ctx context.Context) (slotcontroller.PlannerState, error) {
@@ -581,6 +594,30 @@ func observerElapsed(start time.Time) time.Duration {
 		return time.Nanosecond
 	}
 	return elapsed
+}
+
+func controllerTaskKindName(kind controllermeta.TaskKind) string {
+	switch kind {
+	case controllermeta.TaskKindBootstrap:
+		return "bootstrap"
+	case controllermeta.TaskKindRepair:
+		return "repair"
+	case controllermeta.TaskKindRebalance:
+		return "rebalance"
+	default:
+		return "unknown"
+	}
+}
+
+func controllerTaskResult(err error) string {
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	default:
+		return "fail"
+	}
 }
 
 func (c *Cluster) NodeID() multiraft.NodeID {
@@ -875,6 +912,27 @@ func (c *Cluster) PeersForSlot(slotID multiraft.SlotID) []multiraft.NodeID {
 	return peers
 }
 
+func (c *Cluster) ListNodes(ctx context.Context) ([]controllermeta.ClusterNode, error) {
+	if c.controllerClient != nil {
+		var nodes []controllermeta.ClusterNode
+		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
+			var err error
+			nodes, err = c.controllerClient.ListNodes(attemptCtx)
+			return err
+		})
+		if err == nil {
+			return nodes, nil
+		}
+		if !controllerReadFallbackAllowed(err) || c.controllerMeta == nil {
+			return nil, err
+		}
+	}
+	if c.controllerMeta != nil {
+		return c.controllerMeta.ListNodes(ctx)
+	}
+	return nil, ErrNotStarted
+}
+
 func (c *Cluster) ListObservedRuntimeViews(ctx context.Context) ([]controllermeta.SlotRuntimeView, error) {
 	if c.controllerClient != nil {
 		var views []controllermeta.SlotRuntimeView
@@ -892,6 +950,27 @@ func (c *Cluster) ListObservedRuntimeViews(ctx context.Context) ([]controllermet
 	}
 	if c.controllerMeta != nil {
 		return c.controllerMeta.ListRuntimeViews(ctx)
+	}
+	return nil, ErrNotStarted
+}
+
+func (c *Cluster) ListTasks(ctx context.Context) ([]controllermeta.ReconcileTask, error) {
+	if c.controllerClient != nil {
+		var tasks []controllermeta.ReconcileTask
+		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
+			var err error
+			tasks, err = c.controllerClient.ListTasks(attemptCtx)
+			return err
+		})
+		if err == nil {
+			return tasks, nil
+		}
+		if !controllerReadFallbackAllowed(err) || c.controllerMeta == nil {
+			return nil, err
+		}
+	}
+	if c.controllerMeta != nil {
+		return c.controllerMeta.ListTasks(ctx)
 	}
 	return nil, ErrNotStarted
 }

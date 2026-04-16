@@ -27,6 +27,9 @@ WK_CLUSTER_LEADER_TRANSFER_RETRY_BUDGET=300ms
 WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]
 
 WK_API_LISTEN_ADDR=0.0.0.0:5001
+WK_METRICS_ENABLE=true
+WK_HEALTH_DETAIL_ENABLE=true
+WK_HEALTH_DEBUG_ENABLE=false
 
 # Optional: allow gateway send frames on the same connection to dispatch concurrently.
 # WK_GATEWAY_DEFAULT_SESSION_ASYNC_SEND_DISPATCH=true

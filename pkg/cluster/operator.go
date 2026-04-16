@@ -3,12 +3,14 @@ package cluster
 import (
 	"context"
 	"errors"
+	"sort"
 	"time"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
 	controllerraft "github.com/WuKongIM/WuKongIM/pkg/controller/raft"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/transport"
 )
 
 type TaskStatus = controllermeta.TaskStatus
@@ -233,6 +235,38 @@ func (c *Cluster) GetMigrationStatus() []HashSlotMigration {
 		return nil
 	}
 	return table.ActiveMigrations()
+}
+
+func (c *Cluster) TransportPoolStats() []transport.PoolPeerStats {
+	if c == nil {
+		return nil
+	}
+
+	merged := make(map[transport.NodeID]transport.PoolPeerStats)
+	mergePoolStats := func(pool *transport.Pool) {
+		if pool == nil {
+			return
+		}
+		for _, stat := range pool.Stats() {
+			current := merged[stat.NodeID]
+			current.NodeID = stat.NodeID
+			current.Active += stat.Active
+			current.Idle += stat.Idle
+			merged[stat.NodeID] = current
+		}
+	}
+
+	mergePoolStats(c.raftPool)
+	mergePoolStats(c.rpcPool)
+
+	stats := make([]transport.PoolPeerStats, 0, len(merged))
+	for _, stat := range merged {
+		stats = append(stats, stat)
+	}
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].NodeID < stats[j].NodeID
+	})
+	return stats
 }
 
 func nextSlotDefinition(c *Cluster, assignments []controllermeta.SlotAssignment) (multiraft.SlotID, []uint64, error) {

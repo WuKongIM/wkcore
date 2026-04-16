@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/transport"
 	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
@@ -53,6 +54,7 @@ type Config struct {
 	DialTimeout                  time.Duration
 	Timeouts                     Timeouts
 	Observer                     ObserverHooks
+	TransportObserver            transport.ObserverHooks
 	Logger                       wklog.Logger
 }
 
@@ -69,11 +71,14 @@ type Timeouts struct {
 }
 
 type ObserverHooks struct {
-	OnControllerCall func(kind string, dur time.Duration, err error)
-	OnReconcileStep  func(slotID uint32, step string, dur time.Duration, err error)
-	OnForwardPropose func(slotID uint32, attempts int, dur time.Duration, err error)
-	OnSlotEnsure     func(slotID uint32, action string, err error)
-	OnLeaderChange   func(slotID uint32, from, to multiraft.NodeID)
+	OnControllerCall     func(kind string, dur time.Duration, err error)
+	OnControllerDecision func(slotID uint32, kind string, dur time.Duration)
+	OnReconcileStep      func(slotID uint32, step string, dur time.Duration, err error)
+	OnForwardPropose     func(slotID uint32, attempts int, dur time.Duration, err error)
+	OnSlotEnsure         func(slotID uint32, action string, err error)
+	OnTaskResult         func(slotID uint32, kind string, result string)
+	OnHashSlotMigration  func(hashSlot uint16, source, target multiraft.SlotID, result string)
+	OnLeaderChange       func(slotID uint32, from, to multiraft.NodeID)
 }
 
 type NodeConfig struct {

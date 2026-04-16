@@ -3,6 +3,7 @@ package app
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	accessapi "github.com/WuKongIM/WuKongIM/internal/access/api"
 	accessgateway "github.com/WuKongIM/WuKongIM/internal/access/gateway"
@@ -18,6 +19,7 @@ import (
 	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
 	channeltransport "github.com/WuKongIM/WuKongIM/pkg/channel/transport"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
+	obsmetrics "github.com/WuKongIM/WuKongIM/pkg/metrics"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	metastore "github.com/WuKongIM/WuKongIM/pkg/slot/proxy"
@@ -26,8 +28,9 @@ import (
 )
 
 type App struct {
-	cfg    Config
-	logger wklog.Logger
+	cfg       Config
+	logger    wklog.Logger
+	createdAt time.Time
 
 	db                    *metadb.DB
 	raftDB                *raftstorage.DB
@@ -55,6 +58,7 @@ type App struct {
 	isrTransport    *channeltransport.Transport
 	dataPlanePool   *transport.Pool
 	dataPlaneClient *transport.Client
+	metrics         *obsmetrics.Registry
 
 	stopOnce       sync.Once
 	lifecycle      sync.Mutex

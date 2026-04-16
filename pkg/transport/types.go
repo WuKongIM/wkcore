@@ -21,3 +21,14 @@ type RPCHandler func(ctx context.Context, body []byte) ([]byte, error)
 type Discovery interface {
 	Resolve(nodeID NodeID) (addr string, err error)
 }
+
+type ObserverHooks struct {
+	OnSend    func(msgType uint8, bytes int)
+	OnReceive func(msgType uint8, bytes int)
+}
+
+type PoolPeerStats struct {
+	NodeID NodeID
+	Active int
+	Idle   int
+}

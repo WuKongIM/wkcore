@@ -163,6 +163,9 @@ func (c *Cluster) observeHashSlotMigrations(ctx context.Context) error {
 			if err := c.migrationWorker.AbortMigration(transition.HashSlot); err != nil {
 				return err
 			}
+			if hook := c.obs.OnHashSlotMigration; hook != nil {
+				hook(transition.HashSlot, transition.Source, transition.Target, "abort")
+			}
 			continue
 		}
 		switch transition.To {
@@ -173,6 +176,9 @@ func (c *Cluster) observeHashSlotMigrations(ctx context.Context) error {
 		case slotmigration.PhaseDone:
 			if err := c.finalizeHashSlotMigration(ctx, transition.HashSlot, transition.Source, transition.Target); err != nil {
 				return err
+			}
+			if hook := c.obs.OnHashSlotMigration; hook != nil {
+				hook(transition.HashSlot, transition.Source, transition.Target, "ok")
 			}
 		}
 	}

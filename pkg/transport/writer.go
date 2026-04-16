@@ -23,17 +23,19 @@ type writeItem struct {
 }
 
 type priorityWriter struct {
-	conn   net.Conn
-	queues [numPriorities]chan writeItem
-	stopCh chan struct{}
-	doneCh chan struct{}
+	conn     net.Conn
+	queues   [numPriorities]chan writeItem
+	observer ObserverHooks
+	stopCh   chan struct{}
+	doneCh   chan struct{}
 }
 
-func newPriorityWriter(conn net.Conn, queueSizes [numPriorities]int) *priorityWriter {
+func newPriorityWriter(conn net.Conn, queueSizes [numPriorities]int, observer ObserverHooks) *priorityWriter {
 	pw := &priorityWriter{
-		conn:   conn,
-		stopCh: make(chan struct{}),
-		doneCh: make(chan struct{}),
+		conn:     conn,
+		observer: observer,
+		stopCh:   make(chan struct{}),
+		doneCh:   make(chan struct{}),
 	}
 	for i := range pw.queues {
 		size := queueSizes[i]
@@ -115,6 +117,11 @@ func (pw *priorityWriter) loop() {
 		if err != nil {
 			return
 		}
+		if hook := pw.observer.OnSend; hook != nil {
+			for i := range batch {
+				hook(batch[i].msgType, len(batch[i].body))
+			}
+		}
 	}
 }
 
@@ -149,4 +156,3 @@ func (pw *priorityWriter) drain(batch []writeItem, p Priority, max int) []writeI
 	}
 	return batch
 }
-

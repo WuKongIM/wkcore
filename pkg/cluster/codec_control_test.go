@@ -124,6 +124,23 @@ func TestControllerCodecRoundTripResponsePayloads(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "tasks",
+			kind: controllerRPCListTasks,
+			resp: controllerRPCResponse{
+				Tasks: []controllermeta.ReconcileTask{{
+					SlotID:     11,
+					Kind:       controllermeta.TaskKindRebalance,
+					Step:       controllermeta.TaskStepPromote,
+					SourceNode: 8,
+					TargetNode: 3,
+					Attempt:    4,
+					NextRunAt:  nextRunAt,
+					Status:     controllermeta.TaskStatusPending,
+					LastError:  "",
+				}},
+			},
+		},
 	}
 
 	for _, tc := range cases {

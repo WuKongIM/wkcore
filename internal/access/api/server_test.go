@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
@@ -29,6 +30,131 @@ func TestHealthzReturnsOK(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.JSONEq(t, `{"status":"ok"}`, rec.Body.String())
+}
+
+func TestMetricsEndpointUsesInjectedHandler(t *testing.T) {
+	srv := New(Options{
+		MetricsHandler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestHealthzDetailsReturnsInjectedSnapshot(t *testing.T) {
+	srv := New(Options{
+		HealthDetailEnabled: true,
+		HealthDetails: func() any {
+			return map[string]any{
+				"status":    "healthy",
+				"node_id":   1,
+				"node_name": "node-1",
+			}
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/healthz/details", nil)
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"status":"healthy","node_id":1,"node_name":"node-1"}`, rec.Body.String())
+}
+
+func TestReadyzReturnsServiceUnavailableWhenNotReady(t *testing.T) {
+	srv := New(Options{
+		Readyz: func(context.Context) (bool, any) {
+			return false, map[string]any{"status": "not_ready"}
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.JSONEq(t, `{"status":"not_ready"}`, rec.Body.String())
+}
+
+func TestDebugConfigRouteRequiresDebugEnable(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		srv := New(Options{
+			DebugConfig: func() any {
+				return map[string]any{"node_id": 1}
+			},
+		})
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/debug/config", nil)
+
+		srv.Engine().ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusNotFound, rec.Code)
+	})
+
+	t.Run("enabled", func(t *testing.T) {
+		srv := New(Options{
+			DebugEnabled: true,
+			DebugConfig: func() any {
+				return map[string]any{"node_id": 1}
+			},
+		})
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/debug/config", nil)
+
+		srv.Engine().ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.JSONEq(t, `{"node_id":1}`, rec.Body.String())
+	})
+}
+
+func TestDebugClusterRouteRequiresDebugEnable(t *testing.T) {
+	optsType := reflect.TypeOf(Options{})
+	debugClusterField, ok := optsType.FieldByName("DebugCluster")
+	require.True(t, ok, "Options should expose DebugCluster")
+	require.Equal(t, reflect.TypeOf((func() any)(nil)), debugClusterField.Type)
+
+	newServer := func(debugEnabled bool) *Server {
+		opts := reflect.New(optsType).Elem()
+		opts.FieldByName("DebugEnabled").SetBool(debugEnabled)
+		opts.FieldByName("DebugCluster").Set(reflect.ValueOf(func() any {
+			return map[string]any{"hash_slot_table_version": 7}
+		}))
+		return New(opts.Interface().(Options))
+	}
+
+	t.Run("disabled", func(t *testing.T) {
+		srv := newServer(false)
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/debug/cluster", nil)
+
+		srv.Engine().ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusNotFound, rec.Code)
+	})
+
+	t.Run("enabled", func(t *testing.T) {
+		srv := newServer(true)
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/debug/cluster", nil)
+
+		srv.Engine().ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.JSONEq(t, `{"hash_slot_table_version":7}`, rec.Body.String())
+	})
 }
 
 func TestSendMessageMapsJSONToUsecaseCommand(t *testing.T) {
