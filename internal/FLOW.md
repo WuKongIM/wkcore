@@ -386,7 +386,7 @@ handleRecvAck(ctx, pkt):
 - **停止顺序相反**: `Stop()` 先停 API/Gateway（停止接入新请求），再停业务层，最后停 Cluster 和关闭数据库。`stopOnce` 保证幂等。
 - **Person 频道 ID 规范化**: 发送到 Person 频道时，`NormalizePersonChannel(fromUID, channelID)` 会将两个 UID 排序拼接为统一的 channelID。直接使用原始 channelID 会导致同一对话产生两个不同的 Channel。
 - **sendWithMetaRefreshRetry**: 消息 Append 遇到 `ErrStaleMeta`、`ErrNotLeader` 或 `ErrRerouted` 时会触发一次刷新重试。若权威 `ChannelRuntimeMeta` 读到 `ErrNotFound`，刷新路径会先按 Slot 拓扑 bootstrap 缺失的运行时元数据，再重新读取权威结果、应用到本地 ISR runtime，然后只重试一次 Append。
-- **runtime-meta bootstrap 只依赖拓扑**: bootstrap 仅依赖 `SlotForKey`、Slot peers 和当前 Slot leader 来生成初始 `ChannelRuntimeMeta`，不依赖业务 `channel-info` 是否存在。当前阶段只有发送链路里的 refresh path 会这样补齐运行时元数据，通用读路径保持纯读取语义。
+- **runtime-meta bootstrap 只依赖拓扑**: bootstrap 仅依赖 `SlotForKey`、Slot peers 和当前 Slot leader 来生成初始 `ChannelRuntimeMeta`，不依赖业务 `channel-info` 是否存在。当前发送链路中的 refresh path 会这样补齐运行时元数据，通用读路径保持纯读取语义。
 - **asyncCommittedDispatcher 的 preferLocal**: 已提交消息优先在本地节点投递。如果本节点不是 Channel Leader，会通过 nodeClient RPC 转发。这避免了所有投递都经过 Leader 的瓶颈。
 - **投递 Actor 按 Channel 隔离**: 每个 Channel 有独立的 Actor，通过 shard 分片减少锁竞争。Actor 空闲超过 1 分钟会被回收。
 - **投递重试有上限**: 默认重试延迟 [500ms, 1s, 2s]，最大重试次数 = len(retryDelays)+1 = 4 次。超过后消息进入离线处理。
