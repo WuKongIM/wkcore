@@ -8,6 +8,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/stretchr/testify/require"
@@ -376,6 +377,109 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 		Payload:     []byte("hi"),
 		ClientSeq:   21,
 	}}, dispatcher.calls)
+}
+
+func TestSendRetriesOnceAfterBootstrappingMissingRuntimeMeta(t *testing.T) {
+	dispatcher := &recordingCommittedDispatcher{}
+	cluster := &fakeChannelCluster{
+		sendReplies: []fakeChannelClusterSendReply{
+			{err: channel.ErrStaleMeta},
+			{result: channel.AppendResult{
+				MessageID:  301,
+				MessageSeq: 4,
+				Message: channel.Message{
+					MessageID:   301,
+					MessageSeq:  4,
+					ChannelID:   "group-1",
+					ChannelType: frame.ChannelTypeGroup,
+					FromUID:     "u1",
+					ClientMsgNo: "bootstrap-1",
+					Payload:     []byte("hi group"),
+					ClientSeq:   33,
+				},
+			}},
+		},
+	}
+	refresher := &fakeMetaRefresher{
+		metas: []channel.Meta{{
+			ID:          channel.ChannelID{ID: "group-1", Type: frame.ChannelTypeGroup},
+			Epoch:       17,
+			LeaderEpoch: 6,
+		}},
+	}
+	app := New(Options{
+		Now:                 fixedNowFn,
+		Cluster:             cluster,
+		MetaRefresher:       refresher,
+		CommittedDispatcher: dispatcher,
+	})
+
+	result, err := app.Send(context.Background(), SendCommand{
+		FromUID:     "u1",
+		ChannelID:   "group-1",
+		ChannelType: frame.ChannelTypeGroup,
+		Payload:     []byte("hi group"),
+		ClientSeq:   33,
+		ClientMsgNo: "bootstrap-1",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, frame.ReasonSuccess, result.Reason)
+	require.Equal(t, int64(301), result.MessageID)
+	require.Equal(t, uint64(4), result.MessageSeq)
+	require.Equal(t, []channel.ChannelID{{ID: "group-1", Type: frame.ChannelTypeGroup}}, refresher.keys)
+	require.Len(t, cluster.appliedMetas, 1)
+	require.Equal(t, channel.Meta{
+		ID:          channel.ChannelID{ID: "group-1", Type: frame.ChannelTypeGroup},
+		Epoch:       17,
+		LeaderEpoch: 6,
+	}, cluster.appliedMetas[0])
+	require.Len(t, cluster.sendRequests, 2)
+	require.Equal(t, channel.ChannelID{ID: "group-1", Type: frame.ChannelTypeGroup}, cluster.sendRequests[0].ChannelID)
+	require.Zero(t, cluster.sendRequests[0].ExpectedChannelEpoch)
+	require.Equal(t, uint64(17), cluster.sendRequests[1].ExpectedChannelEpoch)
+	require.Equal(t, uint64(6), cluster.sendRequests[1].ExpectedLeaderEpoch)
+	require.Equal(t, []channel.Message{{
+		MessageID:   301,
+		MessageSeq:  4,
+		ChannelID:   "group-1",
+		ChannelType: frame.ChannelTypeGroup,
+		FromUID:     "u1",
+		ClientMsgNo: "bootstrap-1",
+		Payload:     []byte("hi group"),
+		ClientSeq:   33,
+	}}, dispatcher.calls)
+}
+
+func TestSendFailsWhenBootstrapReturnsRetryableTopologyError(t *testing.T) {
+	cluster := &fakeChannelCluster{
+		sendReplies: []fakeChannelClusterSendReply{
+			{err: channel.ErrStaleMeta},
+		},
+	}
+	refresher := &fakeMetaRefresher{
+		errs: []error{raftcluster.ErrNoLeader},
+	}
+	app := New(Options{
+		Now:           fixedNowFn,
+		Cluster:       cluster,
+		MetaRefresher: refresher,
+	})
+
+	result, err := app.Send(context.Background(), SendCommand{
+		FromUID:     "u1",
+		ChannelID:   "group-2",
+		ChannelType: frame.ChannelTypeGroup,
+		Payload:     []byte("hi group"),
+		ClientSeq:   34,
+		ClientMsgNo: "bootstrap-err-1",
+	})
+
+	require.ErrorIs(t, err, raftcluster.ErrNoLeader)
+	require.Equal(t, SendResult{}, result)
+	require.Equal(t, []channel.ChannelID{{ID: "group-2", Type: frame.ChannelTypeGroup}}, refresher.keys)
+	require.Len(t, cluster.sendRequests, 1)
+	require.Empty(t, cluster.appliedMetas)
 }
 
 func TestSendDurablePersonPropagatesRequestContextToClusterAndMetaRefresh(t *testing.T) {
