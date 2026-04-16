@@ -41,6 +41,9 @@ func newChannelMetaBootstrapper(cluster channelMetaBootstrapCluster, store chann
 	if logger == nil {
 		logger = wklog.NewNop()
 	}
+	if defaultMinISR <= 0 {
+		defaultMinISR = 2
+	}
 	return &channelMetaBootstrapper{
 		cluster:       cluster,
 		store:         store,
@@ -66,14 +69,19 @@ func (b *channelMetaBootstrapper) EnsureChannelRuntimeMeta(ctx context.Context, 
 	}
 
 	slotID := b.cluster.SlotForKey(id.ID)
+	replicas := projectBootstrapReplicaIDs(b.cluster.PeersForSlot(slotID))
+	minISR := int64(clampBootstrapMinISR(b.defaultMinISR, len(replicas)))
 	b.logger.Info("missing runtime metadata; bootstrapping",
 		wklog.Event("app.channelmeta.bootstrap.missing"),
 		wklog.ChannelID(id.ID),
 		wklog.ChannelType(int64(id.Type)),
 		wklog.SlotID(uint64(slotID)),
+		wklog.Uint64("leader", 0),
+		wklog.Int("replicaCount", len(replicas)),
+		wklog.Int64("minISR", minISR),
+		wklog.Bool("created", false),
 	)
 
-	replicas := projectBootstrapReplicaIDs(b.cluster.PeersForSlot(slotID))
 	if len(replicas) == 0 {
 		bootstrapErr := fmt.Errorf("channelmeta bootstrap: slot peers empty for slot %d", slotID)
 		b.logBootstrapFailure(id, slotID, 0, 0, 0, bootstrapErr)
@@ -83,11 +91,11 @@ func (b *channelMetaBootstrapper) EnsureChannelRuntimeMeta(ctx context.Context, 
 	leader, err := b.cluster.LeaderOf(slotID)
 	if err != nil {
 		if errors.Is(err, raftcluster.ErrNoLeader) || errors.Is(err, raftcluster.ErrSlotNotFound) {
-			b.logBootstrapFailure(id, slotID, 0, len(replicas), int64(clampBootstrapMinISR(b.defaultMinISR, len(replicas))), err)
+			b.logBootstrapFailure(id, slotID, 0, len(replicas), minISR, err)
 			return metadb.ChannelRuntimeMeta{}, false, err
 		}
 		wrappedErr := fmt.Errorf("channelmeta bootstrap: resolve leader for slot %d: %w", slotID, err)
-		b.logBootstrapFailure(id, slotID, 0, len(replicas), int64(clampBootstrapMinISR(b.defaultMinISR, len(replicas))), wrappedErr)
+		b.logBootstrapFailure(id, slotID, 0, len(replicas), minISR, wrappedErr)
 		return metadb.ChannelRuntimeMeta{}, false, wrappedErr
 	}
 
@@ -99,7 +107,7 @@ func (b *channelMetaBootstrapper) EnsureChannelRuntimeMeta(ctx context.Context, 
 		Replicas:     replicas,
 		ISR:          append([]uint64(nil), replicas...),
 		Leader:       uint64(leader),
-		MinISR:       int64(clampBootstrapMinISR(b.defaultMinISR, len(replicas))),
+		MinISR:       minISR,
 		Status:       uint8(channel.StatusActive),
 		Features:     uint64(channel.MessageSeqFormatLegacyU32),
 		LeaseUntilMS: b.now().UTC().Add(channelMetaBootstrapLease).UnixMilli(),

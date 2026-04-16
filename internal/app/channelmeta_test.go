@@ -439,6 +439,36 @@ func TestChannelMetaBootstrapperClampsMinISRForSingleReplica(t *testing.T) {
 	require.Equal(t, int64(1), store.upserts[0].MinISR)
 }
 
+func TestChannelMetaBootstrapperDefaultsMinISRToTwo(t *testing.T) {
+	store := &fakeBootstrapStore{
+		getErr: metadb.ErrNotFound,
+		authoritativeMeta: metadb.ChannelRuntimeMeta{
+			ChannelID:   "defaulted",
+			ChannelType: 1,
+			Replicas:    []uint64{4, 5, 6},
+			ISR:         []uint64{4, 5, 6},
+			Leader:      5,
+			MinISR:      2,
+			Status:      uint8(channel.StatusActive),
+			Features:    uint64(channel.MessageSeqFormatLegacyU32),
+		},
+	}
+	cluster := &fakeBootstrapCluster{
+		slotID: 7,
+		peers:  []uint64{4, 5, 6},
+		leader: 5,
+	}
+
+	bootstrapper := newChannelMetaBootstrapper(cluster, store, 0, time.Now, wklog.NewNop())
+
+	meta, created, err := bootstrapper.EnsureChannelRuntimeMeta(context.Background(), channel.ChannelID{ID: "defaulted", Type: 1})
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, int64(2), meta.MinISR)
+	require.Len(t, store.upserts, 1)
+	require.Equal(t, int64(2), store.upserts[0].MinISR)
+}
+
 func TestChannelMetaBootstrapperFailsWhenSlotHasNoPeers(t *testing.T) {
 	store := &fakeBootstrapStore{getErr: metadb.ErrNotFound}
 	cluster := &fakeBootstrapCluster{slotID: 5}
@@ -528,6 +558,10 @@ func TestChannelMetaBootstrapperLogsMissingBootstrappedAndFailedEvents(t *testin
 	requireBootstrapFieldEquals(t, entries[0], "channelID", "u2@u1")
 	requireBootstrapFieldEquals(t, entries[0], "channelType", int64(1))
 	requireBootstrapFieldEquals(t, entries[0], "slotID", uint64(21))
+	requireBootstrapFieldEquals(t, entries[0], "leader", uint64(0))
+	requireBootstrapFieldEquals(t, entries[0], "replicaCount", 3)
+	requireBootstrapFieldEquals(t, entries[0], "minISR", int64(2))
+	requireBootstrapFieldEquals(t, entries[0], "created", false)
 
 	require.Equal(t, "INFO", entries[1].level)
 	require.Equal(t, "bootstrapped runtime metadata", entries[1].msg)
@@ -546,6 +580,10 @@ func TestChannelMetaBootstrapperLogsMissingBootstrappedAndFailedEvents(t *testin
 	requireBootstrapFieldEquals(t, entries[2], "channelID", "failed")
 	requireBootstrapFieldEquals(t, entries[2], "channelType", int64(2))
 	requireBootstrapFieldEquals(t, entries[2], "slotID", uint64(22))
+	requireBootstrapFieldEquals(t, entries[2], "leader", uint64(0))
+	requireBootstrapFieldEquals(t, entries[2], "replicaCount", 2)
+	requireBootstrapFieldEquals(t, entries[2], "minISR", int64(2))
+	requireBootstrapFieldEquals(t, entries[2], "created", false)
 
 	require.Equal(t, "ERROR", entries[3].level)
 	require.Equal(t, "failed to bootstrap runtime metadata", entries[3].msg)
