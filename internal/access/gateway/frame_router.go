@@ -23,6 +23,15 @@ func (h *Handler) OnFrame(ctx *coregateway.Context, f frame.Frame) error {
 }
 
 func (h *Handler) handleSend(ctx *coregateway.Context, pkt *frame.SendPacket) error {
+	if reason, err := decryptSendPacketIfNeeded(ctx, pkt); err != nil {
+		fields := append([]wklog.Field{
+			wklog.Event("access.gateway.frame.send_decrypt_failed"),
+		}, gatewaySendFields(ctx, pkt.ChannelID, pkt.ChannelType)...)
+		fields = append(fields, wklog.Error(err))
+		h.frameLogger().Warn("reject encrypted send request", fields...)
+		return writeSendack(ctx, pkt, message.SendResult{Reason: reason})
+	}
+
 	cmd, err := mapSendCommand(ctx, pkt)
 	if err != nil {
 		fields := append([]wklog.Field{

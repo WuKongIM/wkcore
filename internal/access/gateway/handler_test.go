@@ -10,6 +10,7 @@ import (
 
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
 	gatewaysession "github.com/WuKongIM/WuKongIM/internal/gateway/session"
+	"github.com/WuKongIM/WuKongIM/internal/gateway/wkprotoenc"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
@@ -163,6 +164,156 @@ func TestHandlerOnFrameSendMapsCommandAndWritesSendack(t *testing.T) {
 	require.Equal(t, uint64(13), ack.ClientSeq)
 	require.Equal(t, "m4", ack.ClientMsgNo)
 	require.Equal(t, "reply-1", write.meta.ReplyToken)
+}
+
+func TestHandlerOnFrameSendDecryptsEncryptedPayloadBeforeUsecase(t *testing.T) {
+	sender := newOptionRecordingSession(1, "tcp")
+	sender.SetValue(coregateway.SessionValueUID, "u1")
+	setEncryptedSession(sender, wkprotoenc.SessionKeys{
+		AESKey: []byte("1234567890abcdef"),
+		AESIV:  []byte("abcdef1234567890"),
+	})
+	msgs := &fakeMessageUsecase{
+		sendResult: message.SendResult{
+			MessageID:  42,
+			MessageSeq: 9,
+			Reason:     frame.ReasonSuccess,
+		},
+	}
+	handler := New(Options{Messages: msgs})
+
+	ctx := &coregateway.Context{
+		Session:        sender,
+		Listener:       "tcp",
+		ReplyToken:     "reply-encrypted",
+		RequestContext: context.Background(),
+	}
+	packet := &frame.SendPacket{
+		ChannelID:   "u2",
+		ChannelType: frame.ChannelTypePerson,
+		Payload:     []byte("hi"),
+		ClientSeq:   5,
+		ClientMsgNo: "m-encrypted",
+	}
+	mustEncryptSendPacket(t, packet, wkprotoenc.SessionKeys{
+		AESKey: []byte("1234567890abcdef"),
+		AESIV:  []byte("abcdef1234567890"),
+	})
+
+	require.NoError(t, handler.OnFrame(ctx, packet))
+	require.Len(t, msgs.sendCommands, 1)
+	require.Equal(t, []byte("hi"), msgs.sendCommands[0].Payload)
+	require.Equal(t, "", msgs.sendCommands[0].MsgKey)
+}
+
+func TestHandlerOnFrameSendRejectsInvalidEncryptedMsgKey(t *testing.T) {
+	sender := newOptionRecordingSession(1, "tcp")
+	sender.SetValue(coregateway.SessionValueUID, "u1")
+	setEncryptedSession(sender, wkprotoenc.SessionKeys{
+		AESKey: []byte("1234567890abcdef"),
+		AESIV:  []byte("abcdef1234567890"),
+	})
+	msgs := &fakeMessageUsecase{}
+	handler := New(Options{Messages: msgs})
+
+	ctx := &coregateway.Context{
+		Session:        sender,
+		Listener:       "tcp",
+		ReplyToken:     "reply-msg-key",
+		RequestContext: context.Background(),
+	}
+	packet := &frame.SendPacket{
+		ChannelID:   "u2",
+		ChannelType: frame.ChannelTypePerson,
+		Payload:     []byte("hi"),
+		ClientSeq:   6,
+		ClientMsgNo: "m-msg-key",
+	}
+	mustEncryptSendPacket(t, packet, wkprotoenc.SessionKeys{
+		AESKey: []byte("1234567890abcdef"),
+		AESIV:  []byte("abcdef1234567890"),
+	})
+	packet.MsgKey = "bad-key"
+
+	require.NoError(t, handler.OnFrame(ctx, packet))
+	require.Empty(t, msgs.sendCommands)
+	require.Len(t, sender.Writes(), 1)
+	ack := requireSendackPacket(t, sender.Writes()[0].f)
+	require.Equal(t, frame.ReasonMsgKeyError, ack.ReasonCode)
+}
+
+func TestHandlerOnFrameSendRejectsUndecryptableEncryptedPayload(t *testing.T) {
+	sender := newOptionRecordingSession(1, "tcp")
+	sender.SetValue(coregateway.SessionValueUID, "u1")
+	setEncryptedSession(sender, wkprotoenc.SessionKeys{
+		AESKey: []byte("1234567890abcdef"),
+		AESIV:  []byte("abcdef1234567890"),
+	})
+	msgs := &fakeMessageUsecase{}
+	handler := New(Options{Messages: msgs})
+
+	ctx := &coregateway.Context{
+		Session:        sender,
+		Listener:       "tcp",
+		ReplyToken:     "reply-payload",
+		RequestContext: context.Background(),
+	}
+	packet := &frame.SendPacket{
+		ChannelID:   "u2",
+		ChannelType: frame.ChannelTypePerson,
+		Payload:     []byte("hi"),
+		ClientSeq:   7,
+		ClientMsgNo: "m-payload",
+	}
+	mustEncryptSendPacket(t, packet, wkprotoenc.SessionKeys{
+		AESKey: []byte("1234567890abcdef"),
+		AESIV:  []byte("abcdef1234567890"),
+	})
+	packet.Payload = []byte("not-base64")
+	msgKey, err := wkprotoenc.SendMsgKey(packet, wkprotoenc.SessionKeys{
+		AESKey: []byte("1234567890abcdef"),
+		AESIV:  []byte("abcdef1234567890"),
+	})
+	require.NoError(t, err)
+	packet.MsgKey = msgKey
+
+	require.NoError(t, handler.OnFrame(ctx, packet))
+	require.Empty(t, msgs.sendCommands)
+	require.Len(t, sender.Writes(), 1)
+	ack := requireSendackPacket(t, sender.Writes()[0].f)
+	require.Equal(t, frame.ReasonPayloadDecodeError, ack.ReasonCode)
+}
+
+func TestHandlerOnFrameSendBypassesEncryptedSessionWhenPacketDisablesEncryption(t *testing.T) {
+	sender := newOptionRecordingSession(1, "tcp")
+	sender.SetValue(coregateway.SessionValueUID, "u1")
+	setEncryptedSession(sender, wkprotoenc.SessionKeys{
+		AESKey: []byte("1234567890abcdef"),
+		AESIV:  []byte("abcdef1234567890"),
+	})
+	msgs := &fakeMessageUsecase{
+		sendResult: message.SendResult{Reason: frame.ReasonSuccess},
+	}
+	handler := New(Options{Messages: msgs})
+
+	ctx := &coregateway.Context{
+		Session:        sender,
+		Listener:       "tcp",
+		ReplyToken:     "reply-no-encrypt",
+		RequestContext: context.Background(),
+	}
+	packet := &frame.SendPacket{
+		Setting:     frame.SettingNoEncrypt,
+		ChannelID:   "u2",
+		ChannelType: frame.ChannelTypePerson,
+		Payload:     []byte("plain"),
+		ClientSeq:   8,
+		ClientMsgNo: "m-no-encrypt",
+	}
+
+	require.NoError(t, handler.OnFrame(ctx, packet))
+	require.Len(t, msgs.sendCommands, 1)
+	require.Equal(t, []byte("plain"), msgs.sendCommands[0].Payload)
 }
 
 func TestHandlerOnFrameSendRecanonicalizesPrecomposedPersonChannel(t *testing.T) {
@@ -493,6 +644,22 @@ func requireRecvPacket(t *testing.T, f frame.Frame) *frame.RecvPacket {
 	recv, ok := f.(*frame.RecvPacket)
 	require.True(t, ok, "expected *frame.RecvPacket, got %T", f)
 	return recv
+}
+
+func setEncryptedSession(sess gatewaysession.Session, keys wkprotoenc.SessionKeys) {
+	sess.SetValue(coregateway.SessionValueEncryptionEnabled, true)
+	sess.SetValue(coregateway.SessionValueAESKey, append([]byte(nil), keys.AESKey...))
+	sess.SetValue(coregateway.SessionValueAESIV, append([]byte(nil), keys.AESIV...))
+}
+
+func mustEncryptSendPacket(t *testing.T, packet *frame.SendPacket, keys wkprotoenc.SessionKeys) {
+	t.Helper()
+
+	encrypted, err := wkprotoenc.EncryptPayload(packet.Payload, keys)
+	require.NoError(t, err)
+	packet.Payload = encrypted
+	packet.MsgKey, err = wkprotoenc.SendMsgKey(packet, keys)
+	require.NoError(t, err)
 }
 
 type fakeMessageUsecase struct {

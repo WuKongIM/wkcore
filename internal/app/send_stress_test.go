@@ -20,6 +20,7 @@ import (
 	"time"
 
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
+	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
@@ -1437,6 +1438,27 @@ func writeSendStressClientFrame(client sendStressWorkerClient, f frame.Frame, ti
 }
 
 func writeSendStressFrame(conn net.Conn, f frame.Frame, timeout time.Duration) error {
+	switch pkt := f.(type) {
+	case *frame.ConnectPacket:
+		client, err := appWKProtoClientForConnErr(conn)
+		if err != nil {
+			return err
+		}
+		f, err = client.UseClientKey(pkt)
+		if err != nil {
+			return err
+		}
+	case *frame.SendPacket:
+		if value, ok := appWKProtoClients.Load(conn); ok {
+			client := value.(*testkit.WKProtoClient)
+			cloned := *pkt
+			if err := client.EncryptSendPacket(&cloned); err != nil {
+				return err
+			}
+			f = &cloned
+		}
+	}
+
 	payload, err := codec.New().EncodeFrame(f, frame.LatestVersion)
 	if err != nil {
 		return err
@@ -1480,7 +1502,24 @@ func readSendStressFrameWithin(conn net.Conn, timeout time.Duration) (frame.Fram
 	defer func() {
 		_ = conn.SetReadDeadline(time.Time{})
 	}()
-	return codec.New().DecodePacketWithConn(conn, frame.LatestVersion)
+	f, err := codec.New().DecodePacketWithConn(conn, frame.LatestVersion)
+	if err != nil {
+		return nil, err
+	}
+	if value, ok := appWKProtoClients.Load(conn); ok {
+		client := value.(*testkit.WKProtoClient)
+		switch pkt := f.(type) {
+		case *frame.ConnackPacket:
+			if err := client.ApplyConnack(pkt); err != nil {
+				return nil, err
+			}
+		case *frame.RecvPacket:
+			if err := client.DecryptRecvPacket(pkt); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return f, nil
 }
 
 func waitForSendStressSendack(client sendStressWorkerClient, timeout time.Duration) (*frame.SendackPacket, []string, error) {

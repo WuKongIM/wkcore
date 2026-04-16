@@ -110,7 +110,7 @@ func TestServer(t *testing.T) {
 			consumed: 1,
 		})
 
-		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{}))
+		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{DisableEncryption: true}))
 		if err := srv.Start(); err != nil {
 			t.Fatalf("start failed: %v", err)
 		}
@@ -193,7 +193,7 @@ func TestServer(t *testing.T) {
 			consumed: 1,
 		})
 
-		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{}))
+		srv, transportFactory := newTestServerWithAuthenticator(t, handler, proto, gateway.SessionOptions{}, gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{DisableEncryption: true}))
 		if err := srv.Start(); err != nil {
 			t.Fatalf("start failed: %v", err)
 		}

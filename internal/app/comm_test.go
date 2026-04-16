@@ -14,6 +14,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
+	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	channelhandler "github.com/WuKongIM/WuKongIM/pkg/channel/handler"
 	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
@@ -26,6 +27,8 @@ import (
 
 const multinodeAppReadTimeout = 20 * time.Second
 const appReadTimeout = 2 * time.Second
+
+var appWKProtoClients sync.Map
 
 func envBool(name string, fallback bool) bool {
 	value, ok := os.LookupEnv(name)
@@ -433,6 +436,19 @@ func channelStoreForID(db *channelstore.Engine, id channel.ChannelID) *channelst
 func sendAppWKProtoFrame(t *testing.T, conn net.Conn, f frame.Frame) {
 	t.Helper()
 
+	switch pkt := f.(type) {
+	case *frame.ConnectPacket:
+		client := appWKProtoClientForConn(t, conn)
+		var err error
+		f, err = client.UseClientKey(pkt)
+		require.NoError(t, err)
+	case *frame.SendPacket:
+		client := appWKProtoClientForConn(t, conn)
+		cloned := *pkt
+		require.NoError(t, client.EncryptSendPacket(&cloned))
+		f = &cloned
+	}
+
 	payload, err := codec.New().EncodeFrame(f, frame.LatestVersion)
 	require.NoError(t, err)
 
@@ -450,6 +466,15 @@ func readAppWKProtoFrame(t *testing.T, conn net.Conn) frame.Frame {
 
 	f, err := codec.New().DecodePacketWithConn(conn, frame.LatestVersion)
 	require.NoError(t, err)
+	if value, ok := appWKProtoClients.Load(conn); ok {
+		client := value.(*testkit.WKProtoClient)
+		switch pkt := f.(type) {
+		case *frame.ConnackPacket:
+			require.NoError(t, client.ApplyConnack(pkt))
+		case *frame.RecvPacket:
+			require.NoError(t, client.DecryptRecvPacket(pkt))
+		}
+	}
 	return f
 }
 
@@ -482,6 +507,26 @@ func readAppRecvPacket(t *testing.T, conn net.Conn) *frame.RecvPacket {
 	recv, ok := pkt.(*frame.RecvPacket)
 	require.True(t, ok, "expected *frame.RecvPacket, got %T", pkt)
 	return recv
+}
+
+func appWKProtoClientForConn(t *testing.T, conn net.Conn) *testkit.WKProtoClient {
+	t.Helper()
+
+	client, err := appWKProtoClientForConnErr(conn)
+	require.NoError(t, err)
+	return client
+}
+
+func appWKProtoClientForConnErr(conn net.Conn) (*testkit.WKProtoClient, error) {
+	if value, ok := appWKProtoClients.Load(conn); ok {
+		return value.(*testkit.WKProtoClient), nil
+	}
+	client, err := testkit.NewWKProtoClient()
+	if err != nil {
+		return nil, err
+	}
+	appWKProtoClients.Store(conn, client)
+	return client, nil
 }
 
 func waitForPresenceSessionID(t *testing.T, app *App, uid string) uint64 {

@@ -3,6 +3,7 @@ package wkproto
 import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
+	"github.com/WuKongIM/WuKongIM/internal/gateway/wkprotoenc"
 	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
@@ -55,6 +56,17 @@ func (a *Adapter) Decode(sess session.Session, in []byte) ([]frame.Frame, int, e
 func (a *Adapter) Encode(sess session.Session, f frame.Frame, _ session.OutboundMeta) ([]byte, error) {
 	if a == nil {
 		return nil, nil
+	}
+	if recv, ok := f.(*frame.RecvPacket); ok && !recv.Setting.IsSet(frame.SettingNoEncrypt) && wkprotoenc.SessionEncryptionEnabled(sess) {
+		keys, ok := wkprotoenc.SessionKeysFromSession(sess)
+		if !ok {
+			return nil, wkprotoenc.ErrMissingSessionKey
+		}
+		sealed, err := wkprotoenc.SealRecvPacket(recv, keys)
+		if err != nil {
+			return nil, err
+		}
+		f = sealed
 	}
 	version, ok := sessionVersion(sess, true)
 	if !ok {

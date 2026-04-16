@@ -8,6 +8,7 @@ import (
 
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
+	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
@@ -246,6 +247,11 @@ type fixedGatewayRouter struct {
 	groupID uint64
 }
 
+type wkprotoTestConn struct {
+	net.Conn
+	client *testkit.WKProtoClient
+}
+
 func (r fixedGatewayRouter) SlotForKey(string) uint64 {
 	if r.groupID == 0 {
 		return 1
@@ -323,7 +329,9 @@ func dialGateway(t *testing.T, gw *coregateway.Gateway, listener string) net.Con
 
 	conn, err := net.Dial("tcp", gw.ListenerAddr(listener))
 	require.NoError(t, err)
-	return conn
+	client, err := testkit.NewWKProtoClient()
+	require.NoError(t, err)
+	return &wkprotoTestConn{Conn: conn, client: client}
 }
 
 func connectWKProtoClient(t *testing.T, conn net.Conn, uid string) *frame.ConnackPacket {
@@ -356,6 +364,19 @@ func sendWKProtoFrame(t *testing.T, conn net.Conn, f frame.Frame) {
 func sendWKProtoFrameVersion(t *testing.T, conn net.Conn, f frame.Frame, version uint8) {
 	t.Helper()
 
+	if wrapped, ok := conn.(*wkprotoTestConn); ok {
+		switch pkt := f.(type) {
+		case *frame.ConnectPacket:
+			var err error
+			f, err = wrapped.client.UseClientKey(pkt)
+			require.NoError(t, err)
+		case *frame.SendPacket:
+			cloned := *pkt
+			require.NoError(t, wrapped.client.EncryptSendPacket(&cloned))
+			f = &cloned
+		}
+	}
+
 	payload, err := codec.New().EncodeFrame(f, version)
 	require.NoError(t, err)
 
@@ -378,6 +399,14 @@ func readWKProtoFrameVersion(t *testing.T, conn net.Conn, version uint8) frame.F
 
 	f, err := codec.New().DecodePacketWithConn(conn, version)
 	require.NoError(t, err)
+	if wrapped, ok := conn.(*wkprotoTestConn); ok {
+		switch pkt := f.(type) {
+		case *frame.ConnackPacket:
+			require.NoError(t, wrapped.client.ApplyConnack(pkt))
+		case *frame.RecvPacket:
+			require.NoError(t, wrapped.client.DecryptRecvPacket(pkt))
+		}
+	}
 	return f
 }
 

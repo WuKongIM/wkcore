@@ -361,7 +361,7 @@ func TestGatewayStartStopWSJSONRPC(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = gw.Stop() })
 
-	url := "ws://" + gw.ListenerAddr("ws-jsonrpc") + binding.DefaultWSPath
+	url := "ws://" + gw.ListenerAddr("ws-jsonrpc")
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -433,7 +433,6 @@ func TestGatewayStartStopWSJSONRPCOverStdnet(t *testing.T) {
 				Name:      "ws-jsonrpc-stdnet",
 				Network:   "websocket",
 				Address:   "127.0.0.1:0",
-				Path:      binding.DefaultWSPath,
 				Transport: "stdnet",
 				Protocol:  "jsonrpc",
 			},
@@ -447,7 +446,7 @@ func TestGatewayStartStopWSJSONRPCOverStdnet(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = gw.Stop() })
 
-	url := "ws://" + gw.ListenerAddr("ws-jsonrpc-stdnet") + binding.DefaultWSPath
+	url := "ws://" + gw.ListenerAddr("ws-jsonrpc-stdnet")
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -469,6 +468,154 @@ func TestGatewayStartStopWSJSONRPCOverStdnet(t *testing.T) {
 	}
 
 	waitUntil(t, time.Second, func() bool { return handler.FrameCount() == 1 })
+}
+
+func TestGatewayWSMuxSupportsJSONRPCAndWKProto(t *testing.T) {
+	handler := testkit.NewRecordingHandler()
+	gw, err := gateway.New(gateway.Options{
+		Handler:       handler,
+		Authenticator: gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{}),
+		Listeners: []gateway.ListenerOptions{
+			{
+				Name:      "ws-gateway",
+				Network:   "websocket",
+				Address:   "127.0.0.1:0",
+				Transport: "gnet",
+				Protocol:  "wsmux",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := gw.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = gw.Stop() })
+
+	url := "ws://" + gw.ListenerAddr("ws-gateway")
+
+	jsonConn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("Dial(jsonrpc): %v", err)
+	}
+	t.Cleanup(func() { _ = jsonConn.Close() })
+
+	jsonPayload, err := pkgjsonrpc.Encode(pkgjsonrpc.PingRequest{
+		BaseRequest: pkgjsonrpc.BaseRequest{
+			Jsonrpc: "2.0",
+			Method:  pkgjsonrpc.MethodPing,
+			ID:      "json-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Encode(jsonrpc): %v", err)
+	}
+	if err := jsonConn.WriteMessage(websocket.TextMessage, jsonPayload); err != nil {
+		t.Fatalf("WriteMessage(jsonrpc): %v", err)
+	}
+
+	waitUntil(t, time.Second, func() bool { return handler.FrameCount() == 1 })
+	waitUntil(t, time.Second, func() bool { return handlerHasProtocol(handler, "jsonrpc") })
+
+	wkConn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("Dial(wkproto): %v", err)
+	}
+	t.Cleanup(func() { _ = wkConn.Close() })
+
+	_ = mustConnectWKProtoWS(t, wkConn, &frame.ConnectPacket{
+		Version:         frame.LatestVersion,
+		UID:             "u1",
+		DeviceID:        "d1",
+		DeviceFlag:      frame.APP,
+		ClientTimestamp: time.Now().UnixMilli(),
+	})
+
+	pingPayload, err := codec.New().EncodeFrame(&frame.PingPacket{}, frame.LatestVersion)
+	if err != nil {
+		t.Fatalf("EncodeFrame(wkproto ping): %v", err)
+	}
+	if err := wkConn.WriteMessage(websocket.BinaryMessage, pingPayload); err != nil {
+		t.Fatalf("WriteMessage(wkproto ping): %v", err)
+	}
+
+	waitUntil(t, time.Second, func() bool { return handler.FrameCount() == 2 })
+	waitUntil(t, time.Second, func() bool { return handlerHasProtocol(handler, "wkproto") })
+}
+
+func TestGatewayWSMuxSupportsJSONRPCAndWKProtoOverStdnet(t *testing.T) {
+	handler := testkit.NewRecordingHandler()
+	gw, err := gateway.New(gateway.Options{
+		Handler:       handler,
+		Authenticator: gateway.NewWKProtoAuthenticator(gateway.WKProtoAuthOptions{}),
+		Listeners: []gateway.ListenerOptions{
+			{
+				Name:      "ws-gateway-stdnet",
+				Network:   "websocket",
+				Address:   "127.0.0.1:0",
+				Transport: "stdnet",
+				Protocol:  "wsmux",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := gw.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = gw.Stop() })
+
+	url := "ws://" + gw.ListenerAddr("ws-gateway-stdnet")
+
+	jsonConn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("Dial(jsonrpc): %v", err)
+	}
+	t.Cleanup(func() { _ = jsonConn.Close() })
+
+	jsonPayload, err := pkgjsonrpc.Encode(pkgjsonrpc.PingRequest{
+		BaseRequest: pkgjsonrpc.BaseRequest{
+			Jsonrpc: "2.0",
+			Method:  pkgjsonrpc.MethodPing,
+			ID:      "json-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Encode(jsonrpc): %v", err)
+	}
+	if err := jsonConn.WriteMessage(websocket.TextMessage, jsonPayload); err != nil {
+		t.Fatalf("WriteMessage(jsonrpc): %v", err)
+	}
+
+	waitUntil(t, time.Second, func() bool { return handler.FrameCount() == 1 })
+	waitUntil(t, time.Second, func() bool { return handlerHasProtocol(handler, "jsonrpc") })
+
+	wkConn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("Dial(wkproto): %v", err)
+	}
+	t.Cleanup(func() { _ = wkConn.Close() })
+
+	_ = mustConnectWKProtoWS(t, wkConn, &frame.ConnectPacket{
+		Version:         frame.LatestVersion,
+		UID:             "u1",
+		DeviceID:        "d1",
+		DeviceFlag:      frame.APP,
+		ClientTimestamp: time.Now().UnixMilli(),
+	})
+
+	pingPayload, err := codec.New().EncodeFrame(&frame.PingPacket{}, frame.LatestVersion)
+	if err != nil {
+		t.Fatalf("EncodeFrame(wkproto ping): %v", err)
+	}
+	if err := wkConn.WriteMessage(websocket.BinaryMessage, pingPayload); err != nil {
+		t.Fatalf("WriteMessage(wkproto ping): %v", err)
+	}
+
+	waitUntil(t, time.Second, func() bool { return handler.FrameCount() == 2 })
+	waitUntil(t, time.Second, func() bool { return handlerHasProtocol(handler, "wkproto") })
 }
 
 func waitUntil(t *testing.T, timeout time.Duration, cond func() bool) {
@@ -494,8 +641,75 @@ func dialTCPGateway(t *testing.T, gw *gateway.Gateway, listener string) net.Conn
 	return conn
 }
 
+func mustConnectWKProtoWS(t *testing.T, conn *websocket.Conn, connect *frame.ConnectPacket) *frame.ConnackPacket {
+	t.Helper()
+
+	client := mustWKProtoTestClient(t)
+	connect, err := client.UseClientKey(connect)
+	if err != nil {
+		t.Fatalf("UseClientKey: %v", err)
+	}
+
+	payload, err := codec.New().EncodeFrame(connect, frame.LatestVersion)
+	if err != nil {
+		t.Fatalf("EncodeFrame: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
+		t.Fatalf("WriteMessage: %v", err)
+	}
+
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	defer func() {
+		_ = conn.SetReadDeadline(time.Time{})
+	}()
+
+	messageType, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	if messageType != websocket.BinaryMessage {
+		t.Fatalf("messageType = %d, want %d", messageType, websocket.BinaryMessage)
+	}
+
+	f, _, err := codec.New().DecodeFrame(data, frame.LatestVersion)
+	if err != nil {
+		t.Fatalf("DecodeFrame: %v", err)
+	}
+	connack, ok := f.(*frame.ConnackPacket)
+	if !ok {
+		t.Fatalf("frame = %T, want *frame.ConnackPacket", f)
+	}
+	if connack.ReasonCode != frame.ReasonSuccess {
+		t.Fatalf("connack.ReasonCode = %v, want %v", connack.ReasonCode, frame.ReasonSuccess)
+	}
+	if err := client.ApplyConnack(connack); err != nil {
+		t.Fatalf("ApplyConnack: %v", err)
+	}
+	return connack
+}
+
+func handlerHasProtocol(handler *testkit.RecordingHandler, protocol string) bool {
+	if handler == nil {
+		return false
+	}
+	for _, got := range handler.Protocols() {
+		if got == protocol {
+			return true
+		}
+	}
+	return false
+}
+
 func mustConnectWKProto(t *testing.T, conn net.Conn, connect *frame.ConnectPacket) *frame.ConnackPacket {
 	t.Helper()
+
+	client := mustWKProtoTestClient(t)
+	connect, err := client.UseClientKey(connect)
+	if err != nil {
+		t.Fatalf("UseClientKey: %v", err)
+	}
 
 	payload, err := codec.New().EncodeFrame(connect, frame.LatestVersion)
 	if err != nil {
@@ -520,7 +734,22 @@ func mustConnectWKProto(t *testing.T, conn net.Conn, connect *frame.ConnectPacke
 	if !ok {
 		t.Fatalf("expected connack packet, got %T", f)
 	}
+	if connack.ReasonCode == frame.ReasonSuccess {
+		if err := client.ApplyConnack(connack); err != nil {
+			t.Fatalf("ApplyConnack: %v", err)
+		}
+	}
 	return connack
+}
+
+func mustWKProtoTestClient(t *testing.T) *testkit.WKProtoClient {
+	t.Helper()
+
+	client, err := testkit.NewWKProtoClient()
+	if err != nil {
+		t.Fatalf("NewWKProtoClient: %v", err)
+	}
+	return client
 }
 
 func assertConnClosed(t *testing.T, conn net.Conn) {

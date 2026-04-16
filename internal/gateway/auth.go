@@ -4,6 +4,7 @@ import (
 	"time"
 
 	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
+	"github.com/WuKongIM/WuKongIM/internal/gateway/wkprotoenc"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
 
@@ -17,12 +18,17 @@ const (
 	SessionValueDeviceFlag      = gatewaytypes.SessionValueDeviceFlag
 	SessionValueDeviceLevel     = gatewaytypes.SessionValueDeviceLevel
 	SessionValueProtocolVersion = gatewaytypes.SessionValueProtocolVersion
+	SessionValueEncryptionEnabled = gatewaytypes.SessionValueEncryptionEnabled
+	SessionValueAESKey            = gatewaytypes.SessionValueAESKey
+	SessionValueAESIV             = gatewaytypes.SessionValueAESIV
 )
 
 type WKProtoAuthOptions struct {
-	TokenAuthOn bool
-	NodeID      uint64
-	Now         func() time.Time
+	TokenAuthOn       bool
+	EncryptionEnabled bool
+	DisableEncryption bool
+	NodeID            uint64
+	Now               func() time.Time
 
 	IsVisitor   func(uid string) bool
 	VerifyToken func(uid string, deviceFlag frame.DeviceFlag, token string) (frame.DeviceLevel, error)
@@ -33,6 +39,13 @@ func NewWKProtoAuthenticator(opts WKProtoAuthOptions) Authenticator {
 	nowFn := opts.Now
 	if nowFn == nil {
 		nowFn = time.Now
+	}
+	encryptionEnabled := true
+	if opts.DisableEncryption {
+		encryptionEnabled = false
+	}
+	if opts.EncryptionEnabled {
+		encryptionEnabled = true
 	}
 
 	return AuthenticatorFunc(func(_ *Context, connect *frame.ConnectPacket) (*AuthResult, error) {
@@ -85,15 +98,35 @@ func NewWKProtoAuthenticator(opts WKProtoAuthOptions) Authenticator {
 		}
 		connack.HasServerVersion = connect.Version > 3
 
+		sessionValues := map[string]any{
+			SessionValueUID:             connect.UID,
+			SessionValueDeviceID:        connect.DeviceID,
+			SessionValueDeviceFlag:      connect.DeviceFlag,
+			SessionValueDeviceLevel:     deviceLevel,
+			SessionValueProtocolVersion: serverVersion,
+		}
+		if encryptionEnabled {
+			if connect.ClientKey == "" {
+				return &AuthResult{
+					Connack: &frame.ConnackPacket{ReasonCode: frame.ReasonClientKeyIsEmpty},
+				}, nil
+			}
+			sessionKeys, serverKey, err := wkprotoenc.NegotiateServerSession(connect.ClientKey)
+			if err != nil {
+				return &AuthResult{
+					Connack: &frame.ConnackPacket{ReasonCode: frame.ReasonAuthFail},
+				}, nil
+			}
+			connack.ServerKey = serverKey
+			connack.Salt = string(sessionKeys.AESIV)
+			sessionValues[SessionValueEncryptionEnabled] = true
+			sessionValues[SessionValueAESKey] = sessionKeys.AESKey
+			sessionValues[SessionValueAESIV] = sessionKeys.AESIV
+		}
+
 		return &AuthResult{
 			Connack: connack,
-			SessionValues: map[string]any{
-				SessionValueUID:             connect.UID,
-				SessionValueDeviceID:        connect.DeviceID,
-				SessionValueDeviceFlag:      connect.DeviceFlag,
-				SessionValueDeviceLevel:     deviceLevel,
-				SessionValueProtocolVersion: serverVersion,
-			},
+			SessionValues: sessionValues,
 		}, nil
 	})
 }

@@ -7,6 +7,7 @@ import (
 	adapterpkg "github.com/WuKongIM/WuKongIM/internal/gateway/protocol/wkproto"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/session"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
+	"github.com/WuKongIM/WuKongIM/internal/gateway/wkprotoenc"
 	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 )
@@ -106,5 +107,119 @@ func TestAdapterUsesSessionVersionForOutboundFrames(t *testing.T) {
 	}
 	if ack.MessageSeq != 42 {
 		t.Fatalf("MessageSeq = %d, want 42", ack.MessageSeq)
+	}
+}
+
+func TestAdapterEncryptsOutboundRecvPacketWhenSessionIsEncrypted(t *testing.T) {
+	adapter := adapterpkg.New()
+	sess := testkit.NewProtocolSession()
+	sess.SetValue(gateway.SessionValueProtocolVersion, uint8(frame.LatestVersion))
+	sess.SetValue(gateway.SessionValueEncryptionEnabled, true)
+	sess.SetValue(gateway.SessionValueAESKey, []byte("1234567890abcdef"))
+	sess.SetValue(gateway.SessionValueAESIV, []byte("abcdef1234567890"))
+
+	original := &frame.RecvPacket{
+		MessageID:   1,
+		MessageSeq:  2,
+		ClientMsgNo: "m1",
+		Timestamp:   3,
+		FromUID:     "u1",
+		ChannelID:   "u2",
+		ChannelType: frame.ChannelTypePerson,
+		Payload:     []byte("hello"),
+	}
+
+	encoded, err := adapter.Encode(sess, original, session.OutboundMeta{})
+	if err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+
+	decodedFrame, _, err := codec.New().DecodeFrame(encoded, frame.LatestVersion)
+	if err != nil {
+		t.Fatalf("DecodeFrame() error = %v", err)
+	}
+	decoded, ok := decodedFrame.(*frame.RecvPacket)
+	if !ok {
+		t.Fatalf("decoded frame = %T, want *frame.RecvPacket", decodedFrame)
+	}
+	if got := string(original.Payload); got != "hello" {
+		t.Fatalf("original payload mutated to %q", got)
+	}
+	if got := string(decoded.Payload); got == "hello" {
+		t.Fatalf("decoded payload should be encrypted, got %q", got)
+	}
+	if decoded.MsgKey == "" {
+		t.Fatal("decoded MsgKey is empty")
+	}
+
+	plain, err := wkprotoenc.DecryptPayload(decoded.Payload, wkprotoenc.SessionKeys{
+		AESKey: []byte("1234567890abcdef"),
+		AESIV:  []byte("abcdef1234567890"),
+	})
+	if err != nil {
+		t.Fatalf("DecryptPayload() error = %v", err)
+	}
+	if got, want := string(plain), "hello"; got != want {
+		t.Fatalf("payload = %q, want %q", got, want)
+	}
+}
+
+func TestAdapterBypassesEncryptionWhenRecvPacketDisablesIt(t *testing.T) {
+	adapter := adapterpkg.New()
+	sess := testkit.NewProtocolSession()
+	sess.SetValue(gateway.SessionValueProtocolVersion, uint8(frame.LatestVersion))
+	sess.SetValue(gateway.SessionValueEncryptionEnabled, true)
+	sess.SetValue(gateway.SessionValueAESKey, []byte("1234567890abcdef"))
+	sess.SetValue(gateway.SessionValueAESIV, []byte("abcdef1234567890"))
+
+	encoded, err := adapter.Encode(sess, &frame.RecvPacket{
+		Setting:     frame.SettingNoEncrypt,
+		MessageID:   1,
+		MessageSeq:  2,
+		ClientMsgNo: "m1",
+		Timestamp:   3,
+		FromUID:     "u1",
+		ChannelID:   "u2",
+		ChannelType: frame.ChannelTypePerson,
+		Payload:     []byte("hello"),
+	}, session.OutboundMeta{})
+	if err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+
+	decodedFrame, _, err := codec.New().DecodeFrame(encoded, frame.LatestVersion)
+	if err != nil {
+		t.Fatalf("DecodeFrame() error = %v", err)
+	}
+	decoded, ok := decodedFrame.(*frame.RecvPacket)
+	if !ok {
+		t.Fatalf("decoded frame = %T, want *frame.RecvPacket", decodedFrame)
+	}
+	if got, want := string(decoded.Payload), "hello"; got != want {
+		t.Fatalf("payload = %q, want %q", got, want)
+	}
+	if decoded.MsgKey != "" {
+		t.Fatalf("MsgKey = %q, want empty", decoded.MsgKey)
+	}
+}
+
+func TestAdapterReturnsErrorWhenEncryptedSessionIsMissingKeys(t *testing.T) {
+	adapter := adapterpkg.New()
+	sess := testkit.NewProtocolSession()
+	sess.SetValue(gateway.SessionValueProtocolVersion, uint8(frame.LatestVersion))
+	sess.SetValue(gateway.SessionValueEncryptionEnabled, true)
+
+	_, err := adapter.Encode(sess, &frame.RecvPacket{
+		MessageID:   1,
+		MessageSeq:  2,
+		ClientMsgNo: "m1",
+		Timestamp:   3,
+		FromUID:     "u1",
+		ChannelID:   "u2",
+		ChannelType: frame.ChannelTypePerson,
+		Payload:     []byte("hello"),
+	}, session.OutboundMeta{})
+	if err == nil {
+		t.Fatal("expected error for missing session keys")
 	}
 }
