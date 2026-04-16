@@ -13,6 +13,7 @@ const (
 	rpcServiceController           uint8            = 14
 	controllerRPCShardKey          multiraft.SlotID = multiraft.SlotID(^uint32(0))
 	controllerRPCHeartbeat         string           = "heartbeat"
+	controllerRPCRuntimeReport     string           = "runtime_report"
 	controllerRPCListAssignments   string           = "list_assignments"
 	controllerRPCListNodes         string           = "list_nodes"
 	controllerRPCListRuntimeViews  string           = "list_runtime_views"
@@ -39,6 +40,7 @@ const (
 const (
 	controllerKindUnknown byte = iota
 	controllerKindHeartbeat
+	controllerKindRuntimeReport
 	controllerKindListAssignments
 	controllerKindListNodes
 	controllerKindListRuntimeViews
@@ -56,14 +58,15 @@ const (
 )
 
 type controllerRPCRequest struct {
-	Kind       string
-	SlotID     uint32
-	Report     *slotcontroller.AgentReport
-	Op         *slotcontroller.OperatorRequest
-	Advance    *controllerTaskAdvance
-	Migration  *slotcontroller.MigrationRequest
-	AddSlot    *slotcontroller.AddSlotRequest
-	RemoveSlot *slotcontroller.RemoveSlotRequest
+	Kind          string
+	SlotID        uint32
+	Report        *slotcontroller.AgentReport
+	RuntimeReport *runtimeObservationReport
+	Op            *slotcontroller.OperatorRequest
+	Advance       *controllerTaskAdvance
+	Migration     *slotcontroller.MigrationRequest
+	AddSlot       *slotcontroller.AddSlotRequest
+	RemoveSlot    *slotcontroller.RemoveSlotRequest
 }
 
 type controllerTaskAdvance struct {
@@ -71,6 +74,14 @@ type controllerTaskAdvance struct {
 	Attempt uint32
 	Now     time.Time
 	Err     string
+}
+
+type runtimeObservationReport struct {
+	NodeID      uint64
+	ObservedAt  time.Time
+	FullSync    bool
+	Views       []controllermeta.SlotRuntimeView
+	ClosedSlots []uint32
 }
 
 type controllerRPCResponse struct {
@@ -191,6 +202,11 @@ func encodeControllerRequestPayload(req controllerRPCRequest) ([]byte, error) {
 			return nil, ErrInvalidConfig
 		}
 		return encodeAgentReport(*req.Report), nil
+	case controllerRPCRuntimeReport:
+		if req.RuntimeReport == nil {
+			return nil, ErrInvalidConfig
+		}
+		return encodeRuntimeObservationReport(*req.RuntimeReport), nil
 	case controllerRPCOperator:
 		if req.Op == nil {
 			return nil, ErrInvalidConfig
@@ -231,6 +247,13 @@ func decodeControllerRequestPayload(req *controllerRPCRequest, payload []byte) e
 			return err
 		}
 		req.Report = &report
+		return nil
+	case controllerRPCRuntimeReport:
+		report, err := decodeRuntimeObservationReport(payload)
+		if err != nil {
+			return err
+		}
+		req.RuntimeReport = &report
 		return nil
 	case controllerRPCOperator:
 		op, err := decodeOperatorRequest(payload)
@@ -281,7 +304,7 @@ func encodeControllerResponsePayload(kind string, resp controllerRPCResponse) ([
 	switch kind {
 	case controllerRPCHeartbeat:
 		return encodeHashSlotTableSync(resp.HashSlotTableVersion, resp.HashSlotTable), nil
-	case controllerRPCOperator, controllerRPCForceReconcile, controllerRPCTaskResult,
+	case controllerRPCRuntimeReport, controllerRPCOperator, controllerRPCForceReconcile, controllerRPCTaskResult,
 		controllerRPCStartMigration, controllerRPCAdvanceMigration, controllerRPCFinalizeMigration,
 		controllerRPCAbortMigration, controllerRPCAddSlot, controllerRPCRemoveSlot:
 		return nil, nil
@@ -313,7 +336,7 @@ func decodeControllerResponsePayload(kind string, resp *controllerRPCResponse, p
 		resp.HashSlotTableVersion = version
 		resp.HashSlotTable = table
 		return nil
-	case controllerRPCOperator, controllerRPCForceReconcile, controllerRPCTaskResult,
+	case controllerRPCRuntimeReport, controllerRPCOperator, controllerRPCForceReconcile, controllerRPCTaskResult,
 		controllerRPCStartMigration, controllerRPCAdvanceMigration, controllerRPCFinalizeMigration,
 		controllerRPCAbortMigration, controllerRPCAddSlot, controllerRPCRemoveSlot:
 		if len(payload) != 0 {
@@ -369,6 +392,8 @@ func controllerKindCode(kind string) (byte, error) {
 	switch kind {
 	case controllerRPCHeartbeat:
 		return controllerKindHeartbeat, nil
+	case controllerRPCRuntimeReport:
+		return controllerKindRuntimeReport, nil
 	case controllerRPCListAssignments:
 		return controllerKindListAssignments, nil
 	case controllerRPCListNodes:
@@ -406,6 +431,8 @@ func controllerKindName(kind byte) (string, error) {
 	switch kind {
 	case controllerKindHeartbeat:
 		return controllerRPCHeartbeat, nil
+	case controllerKindRuntimeReport:
+		return controllerRPCRuntimeReport, nil
 	case controllerKindListAssignments:
 		return controllerRPCListAssignments, nil
 	case controllerKindListNodes:
@@ -510,6 +537,49 @@ func decodeAgentReport(body []byte) (slotcontroller.AgentReport, error) {
 	}
 	report.Runtime = &view
 	return report, nil
+}
+
+func encodeRuntimeObservationReport(report runtimeObservationReport) []byte {
+	body := make([]byte, 0, 32+len(report.Views)*48+len(report.ClosedSlots)*4)
+	body = binary.BigEndian.AppendUint64(body, report.NodeID)
+	body = appendInt64(body, report.ObservedAt.UnixNano())
+	if report.FullSync {
+		body = append(body, 1)
+	} else {
+		body = append(body, 0)
+	}
+	body = append(body, encodeRuntimeViews(report.Views)...)
+	return appendUint32Slice(body, report.ClosedSlots)
+}
+
+func decodeRuntimeObservationReport(body []byte) (runtimeObservationReport, error) {
+	nodeID, rest, err := readUint64(body)
+	if err != nil {
+		return runtimeObservationReport{}, err
+	}
+	observedAtUnix, rest, err := readInt64(rest)
+	if err != nil {
+		return runtimeObservationReport{}, err
+	}
+	if len(rest) < 1 {
+		return runtimeObservationReport{}, ErrInvalidConfig
+	}
+	fullSync := rest[0] == 1
+	views, rest, err := consumeRuntimeViews(rest[1:])
+	if err != nil {
+		return runtimeObservationReport{}, err
+	}
+	closedSlots, rest, err := readUint32Slice(rest)
+	if err != nil || len(rest) != 0 {
+		return runtimeObservationReport{}, ErrInvalidConfig
+	}
+	return runtimeObservationReport{
+		NodeID:      nodeID,
+		ObservedAt:  time.Unix(0, observedAtUnix),
+		FullSync:    fullSync,
+		Views:       views,
+		ClosedSlots: closedSlots,
+	}, nil
 }
 
 func encodeOperatorRequest(op slotcontroller.OperatorRequest) []byte {
@@ -790,23 +860,31 @@ func encodeRuntimeViews(views []controllermeta.SlotRuntimeView) []byte {
 }
 
 func decodeRuntimeViews(body []byte) ([]controllermeta.SlotRuntimeView, error) {
-	count, rest, err := readUvarint(body)
+	views, rest, err := consumeRuntimeViews(body)
 	if err != nil {
 		return nil, err
-	}
-	views := make([]controllermeta.SlotRuntimeView, 0, count)
-	for i := uint64(0); i < count; i++ {
-		view, next, err := consumeRuntimeView(rest)
-		if err != nil {
-			return nil, err
-		}
-		views = append(views, view)
-		rest = next
 	}
 	if len(rest) != 0 {
 		return nil, ErrInvalidConfig
 	}
 	return views, nil
+}
+
+func consumeRuntimeViews(body []byte) ([]controllermeta.SlotRuntimeView, []byte, error) {
+	count, rest, err := readUvarint(body)
+	if err != nil {
+		return nil, nil, err
+	}
+	views := make([]controllermeta.SlotRuntimeView, 0, count)
+	for i := uint64(0); i < count; i++ {
+		view, next, err := consumeRuntimeView(rest)
+		if err != nil {
+			return nil, nil, err
+		}
+		views = append(views, view)
+		rest = next
+	}
+	return views, rest, nil
 }
 
 func encodeReconcileTasks(tasks []controllermeta.ReconcileTask) []byte {
@@ -1002,6 +1080,31 @@ func readUint64Slice(src []byte) ([]uint64, []byte, error) {
 	values := make([]uint64, 0, count)
 	for i := uint64(0); i < count; i++ {
 		value, next, err := readUint64(rest)
+		if err != nil {
+			return nil, nil, err
+		}
+		values = append(values, value)
+		rest = next
+	}
+	return values, rest, nil
+}
+
+func appendUint32Slice(dst []byte, values []uint32) []byte {
+	dst = binary.AppendUvarint(dst, uint64(len(values)))
+	for _, value := range values {
+		dst = binary.BigEndian.AppendUint32(dst, value)
+	}
+	return dst
+}
+
+func readUint32Slice(src []byte) ([]uint32, []byte, error) {
+	count, rest, err := readUvarint(src)
+	if err != nil {
+		return nil, nil, err
+	}
+	values := make([]uint32, 0, count)
+	for i := uint64(0); i < count; i++ {
+		value, next, err := readUint32(rest)
 		if err != nil {
 			return nil, nil, err
 		}

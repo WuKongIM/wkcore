@@ -28,6 +28,10 @@ const (
 	defaultManagedSlotLeaderMoveTimeout = 5 * time.Second
 	defaultConfigChangeRetryBudget      = 300 * time.Millisecond
 	defaultLeaderTransferRetryBudget    = 300 * time.Millisecond
+	defaultObservationHeartbeatInterval = 2 * time.Second
+	defaultObservationRuntimeScan       = 1 * time.Second
+	defaultObservationFlushDebounce     = 200 * time.Millisecond
+	defaultObservationFullSyncInterval  = 60 * time.Second
 )
 
 type Config struct {
@@ -59,15 +63,19 @@ type Config struct {
 }
 
 type Timeouts struct {
-	ControllerObservation     time.Duration
-	ControllerRequest         time.Duration
-	ControllerLeaderWait      time.Duration
-	ForwardRetryBudget        time.Duration
-	ManagedSlotLeaderWait     time.Duration
-	ManagedSlotCatchUp        time.Duration
-	ManagedSlotLeaderMove     time.Duration
-	ConfigChangeRetryBudget   time.Duration
-	LeaderTransferRetryBudget time.Duration
+	ControllerObservation              time.Duration
+	ControllerRequest                  time.Duration
+	ControllerLeaderWait               time.Duration
+	ForwardRetryBudget                 time.Duration
+	ManagedSlotLeaderWait              time.Duration
+	ManagedSlotCatchUp                 time.Duration
+	ManagedSlotLeaderMove              time.Duration
+	ConfigChangeRetryBudget            time.Duration
+	LeaderTransferRetryBudget          time.Duration
+	ObservationHeartbeatInterval       time.Duration
+	ObservationRuntimeScanInterval     time.Duration
+	ObservationRuntimeFlushDebounce    time.Duration
+	ObservationRuntimeFullSyncInterval time.Duration
 }
 
 type ObserverHooks struct {
@@ -256,6 +264,18 @@ func (t *Timeouts) applyDefaults() {
 	}
 	if t.LeaderTransferRetryBudget == 0 {
 		t.LeaderTransferRetryBudget = defaultLeaderTransferRetryBudget
+	}
+	if t.ObservationHeartbeatInterval == 0 {
+		t.ObservationHeartbeatInterval = defaultObservationHeartbeatInterval
+	}
+	if t.ObservationRuntimeScanInterval == 0 {
+		t.ObservationRuntimeScanInterval = defaultObservationRuntimeScan
+	}
+	if t.ObservationRuntimeFlushDebounce == 0 {
+		t.ObservationRuntimeFlushDebounce = defaultObservationFlushDebounce
+	}
+	if t.ObservationRuntimeFullSyncInterval == 0 {
+		t.ObservationRuntimeFullSyncInterval = defaultObservationFullSyncInterval
 	}
 }
 

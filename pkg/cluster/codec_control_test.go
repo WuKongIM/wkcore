@@ -179,3 +179,78 @@ func TestControllerCodecResponseFlags(t *testing.T) {
 		t.Fatalf("decoded response flags = %+v", resp)
 	}
 }
+
+func TestControllerCodecRuntimeObservationReportRoundTrip(t *testing.T) {
+	reportedAt := time.Unix(1710004444, 55)
+	body, err := encodeControllerRequest(controllerRPCRequest{
+		Kind: controllerRPCRuntimeReport,
+		RuntimeReport: &runtimeObservationReport{
+			NodeID:     9,
+			ObservedAt: reportedAt,
+			FullSync:   true,
+			Views: []controllermeta.SlotRuntimeView{
+				{
+					SlotID:              1,
+					CurrentPeers:        []uint64{1, 2, 3},
+					LeaderID:            2,
+					HealthyVoters:       3,
+					HasQuorum:           true,
+					ObservedConfigEpoch: 8,
+					LastReportAt:        reportedAt,
+				},
+				{
+					SlotID:              2,
+					CurrentPeers:        []uint64{2, 3, 4},
+					LeaderID:            3,
+					HealthyVoters:       2,
+					HasQuorum:           true,
+					ObservedConfigEpoch: 9,
+					LastReportAt:        reportedAt.Add(time.Second),
+				},
+			},
+			ClosedSlots: []uint32{7, 8},
+		},
+	})
+	if err != nil {
+		t.Fatalf("encodeControllerRequest() error = %v", err)
+	}
+
+	req, err := decodeControllerRequest(body)
+	if err != nil {
+		t.Fatalf("decodeControllerRequest() error = %v", err)
+	}
+	if req.Kind != controllerRPCRuntimeReport {
+		t.Fatalf("req.Kind = %q, want %q", req.Kind, controllerRPCRuntimeReport)
+	}
+	if req.RuntimeReport == nil {
+		t.Fatal("req.RuntimeReport = nil, want payload")
+	}
+	if !reflect.DeepEqual(*req.RuntimeReport, runtimeObservationReport{
+		NodeID:     9,
+		ObservedAt: reportedAt,
+		FullSync:   true,
+		Views: []controllermeta.SlotRuntimeView{
+			{
+				SlotID:              1,
+				CurrentPeers:        []uint64{1, 2, 3},
+				LeaderID:            2,
+				HealthyVoters:       3,
+				HasQuorum:           true,
+				ObservedConfigEpoch: 8,
+				LastReportAt:        reportedAt,
+			},
+			{
+				SlotID:              2,
+				CurrentPeers:        []uint64{2, 3, 4},
+				LeaderID:            3,
+				HealthyVoters:       2,
+				HasQuorum:           true,
+				ObservedConfigEpoch: 9,
+				LastReportAt:        reportedAt.Add(time.Second),
+			},
+		},
+		ClosedSlots: []uint32{7, 8},
+	}) {
+		t.Fatalf("decoded runtime report = %+v", req.RuntimeReport)
+	}
+}

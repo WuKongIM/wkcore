@@ -14,6 +14,7 @@ import (
 
 type controllerAPI interface {
 	Report(ctx context.Context, report slotcontroller.AgentReport) error
+	ReportRuntimeObservation(ctx context.Context, report runtimeObservationReport) error
 	ListNodes(ctx context.Context) ([]controllermeta.ClusterNode, error)
 	RefreshAssignments(ctx context.Context) ([]controllermeta.SlotAssignment, error)
 	ListRuntimeViews(ctx context.Context) ([]controllermeta.SlotRuntimeView, error)
@@ -59,6 +60,14 @@ func (c *controllerClient) Report(ctx context.Context, report slotcontroller.Age
 		return err
 	}
 	return c.cluster.applyHashSlotTablePayload(resp.HashSlotTable)
+}
+
+func (c *controllerClient) ReportRuntimeObservation(ctx context.Context, report runtimeObservationReport) error {
+	_, err := c.call(ctx, controllerRPCRequest{
+		Kind:          controllerRPCRuntimeReport,
+		RuntimeReport: &report,
+	})
+	return err
 }
 
 func (c *controllerClient) ListNodes(ctx context.Context) ([]controllermeta.ClusterNode, error) {

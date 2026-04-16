@@ -179,6 +179,50 @@ func TestConfigApplyDefaultsPreservesExplicitTimeouts(t *testing.T) {
 	}
 }
 
+func TestConfigApplyDefaultsIncludesObservationCadence(t *testing.T) {
+	cfg := validTestConfig()
+
+	cfg.applyDefaults()
+
+	if cfg.Timeouts.ObservationHeartbeatInterval != 2*time.Second {
+		t.Fatalf("ObservationHeartbeatInterval = %v, want %v", cfg.Timeouts.ObservationHeartbeatInterval, 2*time.Second)
+	}
+	if cfg.Timeouts.ObservationRuntimeScanInterval != time.Second {
+		t.Fatalf("ObservationRuntimeScanInterval = %v, want %v", cfg.Timeouts.ObservationRuntimeScanInterval, time.Second)
+	}
+	if cfg.Timeouts.ObservationRuntimeFlushDebounce != 200*time.Millisecond {
+		t.Fatalf("ObservationRuntimeFlushDebounce = %v, want %v", cfg.Timeouts.ObservationRuntimeFlushDebounce, 200*time.Millisecond)
+	}
+	if cfg.Timeouts.ObservationRuntimeFullSyncInterval != 60*time.Second {
+		t.Fatalf("ObservationRuntimeFullSyncInterval = %v, want %v", cfg.Timeouts.ObservationRuntimeFullSyncInterval, 60*time.Second)
+	}
+}
+
+func TestConfigApplyDefaultsPreservesExplicitObservationCadence(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.Timeouts = Timeouts{
+		ObservationHeartbeatInterval:       3 * time.Second,
+		ObservationRuntimeScanInterval:     1500 * time.Millisecond,
+		ObservationRuntimeFlushDebounce:    125 * time.Millisecond,
+		ObservationRuntimeFullSyncInterval: 90 * time.Second,
+	}
+
+	cfg.applyDefaults()
+
+	if cfg.Timeouts.ObservationHeartbeatInterval != 3*time.Second {
+		t.Fatalf("ObservationHeartbeatInterval = %v, want %v", cfg.Timeouts.ObservationHeartbeatInterval, 3*time.Second)
+	}
+	if cfg.Timeouts.ObservationRuntimeScanInterval != 1500*time.Millisecond {
+		t.Fatalf("ObservationRuntimeScanInterval = %v, want %v", cfg.Timeouts.ObservationRuntimeScanInterval, 1500*time.Millisecond)
+	}
+	if cfg.Timeouts.ObservationRuntimeFlushDebounce != 125*time.Millisecond {
+		t.Fatalf("ObservationRuntimeFlushDebounce = %v, want %v", cfg.Timeouts.ObservationRuntimeFlushDebounce, 125*time.Millisecond)
+	}
+	if cfg.Timeouts.ObservationRuntimeFullSyncInterval != 90*time.Second {
+		t.Fatalf("ObservationRuntimeFullSyncInterval = %v, want %v", cfg.Timeouts.ObservationRuntimeFullSyncInterval, 90*time.Second)
+	}
+}
+
 func TestConfigValidate_NodeIDZero(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.NodeID = 0

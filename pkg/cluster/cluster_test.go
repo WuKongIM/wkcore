@@ -1750,36 +1750,37 @@ func TestAbortHashSlotMigrationPrefersPendingAbortRequest(t *testing.T) {
 }
 
 type fakeControllerClient struct {
-	reportErr            error
-	listNodesFn          func(context.Context) ([]controllermeta.ClusterNode, error)
-	nodes                []controllermeta.ClusterNode
-	listNodesErr         error
-	refreshAssignmentsFn func(context.Context) ([]controllermeta.SlotAssignment, error)
-	assignments          []controllermeta.SlotAssignment
-	assignmentsErr       error
-	listRuntimeViewsFn   func(context.Context) ([]controllermeta.SlotRuntimeView, error)
-	runtimeViews         []controllermeta.SlotRuntimeView
-	listRuntimeViewsErr  error
-	listTasksFn          func(context.Context) ([]controllermeta.ReconcileTask, error)
-	listTasks            []controllermeta.ReconcileTask
-	listTasksErr         error
-	getTaskFn            func(context.Context, uint32) (controllermeta.ReconcileTask, error)
-	tasks                map[uint32]controllermeta.ReconcileTask
-	getTaskErr           error
-	reportTaskResultErr  error
-	reportTaskResultFn   func(context.Context, controllermeta.ReconcileTask, error) error
-	startMigrationFn     func(context.Context, slotcontroller.MigrationRequest) error
-	startMigrationErr    error
-	advanceMigrationFn   func(context.Context, slotcontroller.MigrationRequest) error
-	advanceMigrationErr  error
-	finalizeMigrationFn  func(context.Context, slotcontroller.MigrationRequest) error
-	finalizeMigrationErr error
-	abortMigrationFn     func(context.Context, slotcontroller.MigrationRequest) error
-	abortMigrationErr    error
-	addSlotFn            func(context.Context, slotcontroller.AddSlotRequest) error
-	addSlotErr           error
-	removeSlotFn         func(context.Context, slotcontroller.RemoveSlotRequest) error
-	removeSlotErr        error
+	reportErr                   error
+	reportRuntimeObservationErr error
+	listNodesFn                 func(context.Context) ([]controllermeta.ClusterNode, error)
+	nodes                       []controllermeta.ClusterNode
+	listNodesErr                error
+	refreshAssignmentsFn        func(context.Context) ([]controllermeta.SlotAssignment, error)
+	assignments                 []controllermeta.SlotAssignment
+	assignmentsErr              error
+	listRuntimeViewsFn          func(context.Context) ([]controllermeta.SlotRuntimeView, error)
+	runtimeViews                []controllermeta.SlotRuntimeView
+	listRuntimeViewsErr         error
+	listTasksFn                 func(context.Context) ([]controllermeta.ReconcileTask, error)
+	listTasks                   []controllermeta.ReconcileTask
+	listTasksErr                error
+	getTaskFn                   func(context.Context, uint32) (controllermeta.ReconcileTask, error)
+	tasks                       map[uint32]controllermeta.ReconcileTask
+	getTaskErr                  error
+	reportTaskResultErr         error
+	reportTaskResultFn          func(context.Context, controllermeta.ReconcileTask, error) error
+	startMigrationFn            func(context.Context, slotcontroller.MigrationRequest) error
+	startMigrationErr           error
+	advanceMigrationFn          func(context.Context, slotcontroller.MigrationRequest) error
+	advanceMigrationErr         error
+	finalizeMigrationFn         func(context.Context, slotcontroller.MigrationRequest) error
+	finalizeMigrationErr        error
+	abortMigrationFn            func(context.Context, slotcontroller.MigrationRequest) error
+	abortMigrationErr           error
+	addSlotFn                   func(context.Context, slotcontroller.AddSlotRequest) error
+	addSlotErr                  error
+	removeSlotFn                func(context.Context, slotcontroller.RemoveSlotRequest) error
+	removeSlotErr               error
 }
 
 type fakeHashSlotMigrationWorker struct {
@@ -1867,6 +1868,10 @@ func (f *fakeHashSlotMigrationWorker) Tick() []slotmigration.Transition {
 
 func (f fakeControllerClient) Report(_ context.Context, _ slotcontroller.AgentReport) error {
 	return f.reportErr
+}
+
+func (f fakeControllerClient) ReportRuntimeObservation(_ context.Context, _ runtimeObservationReport) error {
+	return f.reportRuntimeObservationErr
 }
 
 func (f fakeControllerClient) ListNodes(ctx context.Context) ([]controllermeta.ClusterNode, error) {

@@ -145,6 +145,22 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 	if err != nil {
 		return app.Config{}, err
 	}
+	observationHeartbeatInterval, err := parseDuration(v, "WK_CLUSTER_OBSERVATION_HEARTBEAT_INTERVAL")
+	if err != nil {
+		return app.Config{}, err
+	}
+	observationRuntimeScanInterval, err := parseDuration(v, "WK_CLUSTER_OBSERVATION_RUNTIME_SCAN_INTERVAL")
+	if err != nil {
+		return app.Config{}, err
+	}
+	observationRuntimeFlushDebounce, err := parseDuration(v, "WK_CLUSTER_OBSERVATION_RUNTIME_FLUSH_DEBOUNCE")
+	if err != nil {
+		return app.Config{}, err
+	}
+	observationRuntimeFullSyncInterval, err := parseDuration(v, "WK_CLUSTER_OBSERVATION_RUNTIME_FULL_SYNC_INTERVAL")
+	if err != nil {
+		return app.Config{}, err
+	}
 	forwardRetryBudget, err := parseDuration(v, "WK_CLUSTER_FORWARD_RETRY_BUDGET")
 	if err != nil {
 		return app.Config{}, err
@@ -287,15 +303,19 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 			HeartbeatTick:      heartbeatTick,
 			DialTimeout:        dialTimeout,
 			Timeouts: raftcluster.Timeouts{
-				ControllerObservation:     controllerObservationInterval,
-				ControllerRequest:         controllerRequestTimeout,
-				ControllerLeaderWait:      controllerLeaderWaitTimeout,
-				ForwardRetryBudget:        forwardRetryBudget,
-				ManagedSlotLeaderWait:     managedSlotLeaderWaitTimeout,
-				ManagedSlotCatchUp:        managedSlotCatchUpTimeout,
-				ManagedSlotLeaderMove:     managedSlotLeaderMoveTimeout,
-				ConfigChangeRetryBudget:   configChangeRetryBudget,
-				LeaderTransferRetryBudget: leaderTransferRetryBudget,
+				ControllerObservation:              controllerObservationInterval,
+				ControllerRequest:                  controllerRequestTimeout,
+				ControllerLeaderWait:               controllerLeaderWaitTimeout,
+				ObservationHeartbeatInterval:       observationHeartbeatInterval,
+				ObservationRuntimeScanInterval:     observationRuntimeScanInterval,
+				ObservationRuntimeFlushDebounce:    observationRuntimeFlushDebounce,
+				ObservationRuntimeFullSyncInterval: observationRuntimeFullSyncInterval,
+				ForwardRetryBudget:                 forwardRetryBudget,
+				ManagedSlotLeaderWait:              managedSlotLeaderWaitTimeout,
+				ManagedSlotCatchUp:                 managedSlotCatchUpTimeout,
+				ManagedSlotLeaderMove:              managedSlotLeaderMoveTimeout,
+				ConfigChangeRetryBudget:            configChangeRetryBudget,
+				LeaderTransferRetryBudget:          leaderTransferRetryBudget,
 			},
 			DataPlaneRPCTimeout: dataPlaneRPCTimeout,
 		},
