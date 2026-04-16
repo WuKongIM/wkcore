@@ -28,6 +28,12 @@ type ConversationUsecase interface {
 	Sync(ctx context.Context, query conversationusecase.SyncQuery) (conversationusecase.SyncResult, error)
 }
 
+type LegacyRouteAddresses struct {
+	TCPAddr string
+	WSAddr  string
+	WSSAddr string
+}
+
 type Options struct {
 	ListenAddr               string
 	Messages                 MessageUsecase
@@ -43,6 +49,8 @@ type Options struct {
 	DebugEnabled             bool
 	DebugConfig              func() any
 	DebugCluster             func() any
+	LegacyRouteExternal      LegacyRouteAddresses
+	LegacyRouteIntranet      LegacyRouteAddresses
 	Logger                   wklog.Logger
 }
 
@@ -66,6 +74,8 @@ type Server struct {
 	debugEnabled             bool
 	debugConfig              func() any
 	debugCluster             func() any
+	legacyRouteExternal      LegacyRouteAddresses
+	legacyRouteIntranet      LegacyRouteAddresses
 	logger                   wklog.Logger
 	started                  bool
 }
@@ -79,6 +89,7 @@ func New(opts Options) *Server {
 	}
 	defaultLimit, maxLimit := normalizeConversationLimits(opts.ConversationDefaultLimit, opts.ConversationMaxLimit)
 	engine := gin.New()
+	engine.Use(openCORSMiddleware())
 	srv := &Server{
 		engine:                   engine,
 		listenAddr:               opts.ListenAddr,
@@ -95,6 +106,8 @@ func New(opts Options) *Server {
 		debugEnabled:             opts.DebugEnabled,
 		debugConfig:              opts.DebugConfig,
 		debugCluster:             opts.DebugCluster,
+		legacyRouteExternal:      opts.LegacyRouteExternal,
+		legacyRouteIntranet:      opts.LegacyRouteIntranet,
 		logger:                   opts.Logger,
 	}
 	srv.registerRoutes()

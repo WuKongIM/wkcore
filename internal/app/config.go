@@ -129,7 +129,10 @@ type GatewayConfig struct {
 }
 
 type APIConfig struct {
-	ListenAddr string
+	ListenAddr      string
+	ExternalTCPAddr string
+	ExternalWSAddr  string
+	ExternalWSSAddr string
 }
 
 type ConversationConfig struct {

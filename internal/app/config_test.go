@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	accessapi "github.com/WuKongIM/WuKongIM/internal/access/api"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	"github.com/stretchr/testify/require"
 
@@ -188,6 +189,27 @@ func TestConfigAllowsDisabledAPIWhenListenAddrEmpty(t *testing.T) {
 
 	require.NoError(t, cfg.ApplyDefaultsAndValidate())
 	require.Equal(t, "", cfg.API.ListenAddr)
+}
+
+func TestLegacyRouteAddressesPreferExplicitExternalConfig(t *testing.T) {
+	cfg := validConfig()
+	cfg.Gateway.Listeners = []gateway.ListenerOptions{
+		binding.TCPWKProto("tcp-wkproto", "127.0.0.1:5100"),
+		binding.WSJSONRPC("ws-jsonrpc", "127.0.0.1:5200"),
+	}
+	cfg.API.ExternalTCPAddr = "im.example.com:15100"
+	cfg.API.ExternalWSSAddr = "wss://im.example.com:15300"
+
+	external, intranet := legacyRouteAddresses(cfg.API, cfg.Gateway.Listeners)
+
+	require.Equal(t, accessapi.LegacyRouteAddresses{
+		TCPAddr: "im.example.com:15100",
+		WSAddr:  "ws://127.0.0.1:5200",
+		WSSAddr: "wss://im.example.com:15300",
+	}, external)
+	require.Equal(t, accessapi.LegacyRouteAddresses{
+		TCPAddr: "127.0.0.1:5100",
+	}, intranet)
 }
 
 func TestConfigPreservesExplicitDataPlaneRPCTimeout(t *testing.T) {

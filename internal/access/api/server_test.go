@@ -157,6 +157,112 @@ func TestDebugClusterRouteRequiresDebugEnable(t *testing.T) {
 	})
 }
 
+func TestRouteReturnsLegacyExternalAddresses(t *testing.T) {
+	srv := New(Options{
+		LegacyRouteExternal: LegacyRouteAddresses{
+			TCPAddr: "198.51.100.10:5100",
+			WSAddr:  "ws://198.51.100.10:5200",
+			WSSAddr: "wss://198.51.100.10:5210",
+		},
+		LegacyRouteIntranet: LegacyRouteAddresses{
+			TCPAddr: "10.0.0.10:5100",
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/route?uid=u1", nil)
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"tcp_addr":"198.51.100.10:5100","ws_addr":"ws://198.51.100.10:5200","wss_addr":"wss://198.51.100.10:5210"}`, rec.Body.String())
+}
+
+func TestRouteReturnsLegacyIntranetAddresses(t *testing.T) {
+	srv := New(Options{
+		LegacyRouteExternal: LegacyRouteAddresses{
+			TCPAddr: "198.51.100.10:5100",
+			WSAddr:  "ws://198.51.100.10:5200",
+			WSSAddr: "wss://198.51.100.10:5210",
+		},
+		LegacyRouteIntranet: LegacyRouteAddresses{
+			TCPAddr: "10.0.0.10:5100",
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/route?uid=u1&intranet=1", nil)
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"tcp_addr":"10.0.0.10:5100","ws_addr":"","wss_addr":""}`, rec.Body.String())
+}
+
+func TestRouteBatchReturnsSingleLegacyGroup(t *testing.T) {
+	srv := New(Options{
+		LegacyRouteExternal: LegacyRouteAddresses{
+			TCPAddr: "198.51.100.10:5100",
+			WSAddr:  "ws://198.51.100.10:5200",
+			WSSAddr: "wss://198.51.100.10:5210",
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/route/batch", bytes.NewBufferString(`["u1","u2"]`))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `[{"uids":["u1","u2"],"tcp_addr":"198.51.100.10:5100","ws_addr":"ws://198.51.100.10:5200","wss_addr":"wss://198.51.100.10:5210"}]`, rec.Body.String())
+}
+
+func TestRouteBatchReturnsLegacyInvalidRequestError(t *testing.T) {
+	srv := New(Options{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/route/batch", bytes.NewBufferString(`{"uids":["u1"]}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"msg":"数据格式有误！","status":400}`, rec.Body.String())
+}
+
+func TestCORSHeadersAddedToNormalResponses(t *testing.T) {
+	srv := New(Options{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("Origin", "http://localhost:5175")
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "*", rec.Header().Get("Access-Control-Allow-Origin"))
+	require.Contains(t, rec.Header().Get("Access-Control-Allow-Methods"), http.MethodGet)
+}
+
+func TestCORSPreflightHandlesUserTokenRoute(t *testing.T) {
+	srv := New(Options{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/user/token", nil)
+	req.Header.Set("Origin", "http://localhost:5175")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "content-type,authorization")
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Equal(t, "*", rec.Header().Get("Access-Control-Allow-Origin"))
+	require.Contains(t, rec.Header().Get("Access-Control-Allow-Methods"), http.MethodPost)
+	require.Contains(t, rec.Header().Get("Access-Control-Allow-Headers"), "Content-Type")
+	require.Contains(t, rec.Header().Get("Access-Control-Allow-Headers"), "Authorization")
+}
+
 func TestSendMessageMapsJSONToUsecaseCommand(t *testing.T) {
 	msgs := &recordingMessageUsecase{
 		result: message.SendResult{

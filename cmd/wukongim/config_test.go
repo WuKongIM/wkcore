@@ -112,6 +112,26 @@ func TestLoadConfigPrefersEnvironmentVariablesOverConfValues(t *testing.T) {
 	require.Equal(t, "127.0.0.1:9090", cfg.API.ListenAddr)
 }
 
+func TestLoadConfigParsesExternalRouteAddresses(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_CLUSTER_SLOT_COUNT=1",
+		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
+		"WK_EXTERNAL_TCPADDR=im.example.com:15100",
+		"WK_EXTERNAL_WSADDR=ws://im.example.com:15200",
+		"WK_EXTERNAL_WSSADDR=wss://im.example.com:15300",
+	)
+
+	cfg, err := loadConfig(configPath)
+	require.NoError(t, err)
+	require.Equal(t, "im.example.com:15100", cfg.API.ExternalTCPAddr)
+	require.Equal(t, "ws://im.example.com:15200", cfg.API.ExternalWSAddr)
+	require.Equal(t, "wss://im.example.com:15300", cfg.API.ExternalWSSAddr)
+}
+
 func TestLoadConfigUsesDefaultSearchPathsWhenFlagPathIsEmpty(t *testing.T) {
 	dir := t.TempDir()
 	confDir := filepath.Join(dir, "conf")

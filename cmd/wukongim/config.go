@@ -320,7 +320,10 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 			DataPlaneRPCTimeout: dataPlaneRPCTimeout,
 		},
 		API: app.APIConfig{
-			ListenAddr: defaultAPIListenAddr,
+			ListenAddr:      defaultAPIListenAddr,
+			ExternalTCPAddr: stringValue(v, "WK_EXTERNAL_TCPADDR"),
+			ExternalWSAddr:  stringValue(v, "WK_EXTERNAL_WSADDR"),
+			ExternalWSSAddr: stringValue(v, "WK_EXTERNAL_WSSADDR"),
 		},
 		Gateway: app.GatewayConfig{
 			TokenAuthOn: tokenAuthOn,

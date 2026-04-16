@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"time"
 
 	accessapi "github.com/WuKongIM/WuKongIM/internal/access/api"
@@ -287,6 +288,7 @@ func build(cfg Config) (_ *App, err error) {
 		Logger:  app.logger.Named("user"),
 	})
 	if cfg.API.ListenAddr != "" {
+		legacyRouteExternal, legacyRouteIntranet := legacyRouteAddresses(cfg.API, cfg.Gateway.Listeners)
 		app.api = accessapi.New(accessapi.Options{
 			ListenAddr:               cfg.API.ListenAddr,
 			Messages:                 app.messageApp,
@@ -302,6 +304,8 @@ func build(cfg Config) (_ *App, err error) {
 			DebugEnabled:             cfg.Observability.HealthDebugEnabled,
 			DebugConfig:              app.debugConfigSnapshot,
 			DebugCluster:             app.debugClusterSnapshot,
+			LegacyRouteExternal:      legacyRouteExternal,
+			LegacyRouteIntranet:      legacyRouteIntranet,
 			Logger:                   app.logger.Named("access.api"),
 		})
 	}
@@ -360,6 +364,63 @@ func effectiveDataPlaneMaxFetchInflight(clusterPoolSize, configured int) int {
 		return configured
 	}
 	return dataPlaneMaxFetchInflightPeer(clusterPoolSize)
+}
+
+func legacyRouteAddresses(apiCfg APIConfig, listeners []gateway.ListenerOptions) (accessapi.LegacyRouteAddresses, accessapi.LegacyRouteAddresses) {
+	external, intranet := legacyRouteAddressesFromListeners(listeners)
+	if trimmed := strings.TrimSpace(apiCfg.ExternalTCPAddr); trimmed != "" {
+		external.TCPAddr = trimmed
+	}
+	if trimmed := strings.TrimSpace(apiCfg.ExternalWSAddr); trimmed != "" {
+		external.WSAddr = trimmed
+	}
+	if trimmed := strings.TrimSpace(apiCfg.ExternalWSSAddr); trimmed != "" {
+		external.WSSAddr = trimmed
+	}
+	return external, intranet
+}
+
+func legacyRouteAddressesFromListeners(listeners []gateway.ListenerOptions) (accessapi.LegacyRouteAddresses, accessapi.LegacyRouteAddresses) {
+	var external accessapi.LegacyRouteAddresses
+	var intranet accessapi.LegacyRouteAddresses
+	for _, listener := range listeners {
+		network := strings.ToLower(strings.TrimSpace(listener.Network))
+		switch network {
+		case "websocket":
+			addr := normalizeLegacyWebsocketAddress(listener.Address)
+			switch {
+			case strings.HasPrefix(strings.ToLower(addr), "wss://"):
+				if external.WSSAddr == "" {
+					external.WSSAddr = addr
+				}
+			case external.WSAddr == "":
+				external.WSAddr = addr
+			}
+		default:
+			if external.TCPAddr == "" {
+				external.TCPAddr = normalizeLegacyTCPAddress(listener.Address)
+			}
+			if intranet.TCPAddr == "" {
+				intranet.TCPAddr = normalizeLegacyTCPAddress(listener.Address)
+			}
+		}
+	}
+	return external, intranet
+}
+
+func normalizeLegacyTCPAddress(addr string) string {
+	trimmed := strings.TrimSpace(addr)
+	trimmed = strings.TrimPrefix(trimmed, "tcp://")
+	return trimmed
+}
+
+func normalizeLegacyWebsocketAddress(addr string) string {
+	trimmed := strings.TrimSpace(addr)
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "ws://") || strings.HasPrefix(lower, "wss://") || trimmed == "" {
+		return trimmed
+	}
+	return "ws://" + trimmed
 }
 
 func effectiveDataPlaneMaxPendingFetch(clusterPoolSize, configured int) int {
