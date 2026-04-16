@@ -202,6 +202,110 @@ func TestListObservedRuntimeViewsReadsLeaderObservationSnapshot(t *testing.T) {
 	}
 }
 
+func TestSnapshotPlannerStateUsesObservationSnapshotForRuntime(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	if err := host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          uint64(cluster.cfg.NodeID),
+		Addr:            cluster.cfg.Nodes[0].Addr,
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Unix(1710000400, 0),
+		CapacityWeight:  1,
+	}); err != nil {
+		t.Fatalf("UpsertNode() error = %v", err)
+	}
+	if err := host.meta.UpsertRuntimeView(context.Background(), controllermeta.SlotRuntimeView{
+		SlotID:       1,
+		CurrentPeers: []uint64{9, 9, 9},
+		LastReportAt: time.Unix(1, 0),
+	}); err != nil {
+		t.Fatalf("UpsertRuntimeView() error = %v", err)
+	}
+	host.applyObservation(slotcontroller.AgentReport{
+		NodeID:     2,
+		Addr:       "127.0.0.1:2222",
+		ObservedAt: time.Unix(1710000401, 0),
+		Runtime: &controllermeta.SlotRuntimeView{
+			SlotID:              1,
+			CurrentPeers:        []uint64{1},
+			LeaderID:            1,
+			HealthyVoters:       1,
+			HasQuorum:           true,
+			ObservedConfigEpoch: 3,
+			LastReportAt:        time.Unix(1710000402, 0),
+		},
+	})
+
+	state, err := cluster.snapshotPlannerState(context.Background())
+	if err != nil {
+		t.Fatalf("snapshotPlannerState() error = %v", err)
+	}
+	if got, want := state.Runtime[1].CurrentPeers, []uint64{1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshotPlannerState() runtime peers = %v, want %v", got, want)
+	}
+}
+
+func TestControllerTickOnceSkipsPlanningDuringWarmup(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	cluster.cfg.SlotReplicaN = 1
+	if err := host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          uint64(cluster.cfg.NodeID),
+		Addr:            cluster.cfg.Nodes[0].Addr,
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Now(),
+		CapacityWeight:  1,
+	}); err != nil {
+		t.Fatalf("UpsertNode() error = %v", err)
+	}
+
+	cluster.controllerTickOnce(context.Background())
+
+	tasks, err := host.meta.ListTasks(context.Background())
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("ListTasks() = %#v, want no planning during warmup", tasks)
+	}
+}
+
+func TestControllerTickOnceUsesObservationSnapshotAfterWarmup(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	cluster.cfg.SlotReplicaN = 1
+	if err := host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          uint64(cluster.cfg.NodeID),
+		Addr:            cluster.cfg.Nodes[0].Addr,
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Now(),
+		CapacityWeight:  1,
+	}); err != nil {
+		t.Fatalf("UpsertNode() error = %v", err)
+	}
+	host.applyObservation(slotcontroller.AgentReport{
+		NodeID:     2,
+		Addr:       "127.0.0.1:2222",
+		ObservedAt: time.Unix(1710000601, 0),
+		Runtime: &controllermeta.SlotRuntimeView{
+			SlotID:              1,
+			CurrentPeers:        []uint64{1},
+			LeaderID:            1,
+			HealthyVoters:       1,
+			HasQuorum:           true,
+			ObservedConfigEpoch: 3,
+			LastReportAt:        time.Unix(1710000602, 0),
+		},
+	})
+
+	cluster.controllerTickOnce(context.Background())
+
+	tasks, err := host.meta.ListTasks(context.Background())
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("ListTasks() = %#v, want observation-backed runtime to suppress bootstrap", tasks)
+	}
+}
+
 func TestListObservedRuntimeViewsFallsBackToLocalControllerMetaWhenLeaderUnavailable(t *testing.T) {
 	dir := t.TempDir()
 	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))

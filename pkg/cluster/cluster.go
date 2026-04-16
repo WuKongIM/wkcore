@@ -433,6 +433,9 @@ func (c *Cluster) controllerTickOnce(ctx context.Context) {
 	if c.controller.LeaderID() != uint64(c.cfg.NodeID) {
 		return
 	}
+	if c.controllerHost != nil && !c.controllerHost.warmupComplete() {
+		return
+	}
 
 	tickCtx, cancel := c.withControllerTimeout(ctx)
 	_ = c.controller.Propose(tickCtx, slotcontroller.Command{
@@ -482,11 +485,11 @@ func (c *Cluster) snapshotPlannerState(ctx context.Context) (slotcontroller.Plan
 	if err != nil {
 		return slotcontroller.PlannerState{}, err
 	}
-	views, err := c.controllerMeta.ListRuntimeViews(ctx)
+	tasks, err := c.controllerMeta.ListTasks(ctx)
 	if err != nil {
 		return slotcontroller.PlannerState{}, err
 	}
-	tasks, err := c.controllerMeta.ListTasks(ctx)
+	views, err := c.plannerRuntimeViews(ctx)
 	if err != nil {
 		return slotcontroller.PlannerState{}, err
 	}
@@ -510,6 +513,19 @@ func (c *Cluster) snapshotPlannerState(ctx context.Context) (slotcontroller.Plan
 		state.Tasks[task.SlotID] = task
 	}
 	return state, nil
+}
+
+func (c *Cluster) plannerRuntimeViews(ctx context.Context) ([]controllermeta.SlotRuntimeView, error) {
+	if c == nil {
+		return nil, ErrNotStarted
+	}
+	if c.controllerHost != nil && c.controllerHost.IsLeader(c.cfg.NodeID) {
+		if snapshot, ok := c.controllerHost.plannerSnapshot(); ok {
+			return snapshot.RuntimeViews, nil
+		}
+		return nil, nil
+	}
+	return c.controllerMeta.ListRuntimeViews(ctx)
 }
 
 // handleRaftMessage is the server handler for msgTypeRaft.

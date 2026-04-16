@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
@@ -17,6 +18,12 @@ type controllerHost struct {
 	sm           *slotcontroller.StateMachine
 	service      *controllerraft.Service
 	observations *observationCache
+	localNode    multiraft.NodeID
+
+	warmupMu         sync.RWMutex
+	warmupLeaderID   multiraft.NodeID
+	warmupGeneration uint64
+	warmupReady      bool
 }
 
 func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, error) {
@@ -57,6 +64,7 @@ func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, erro
 		sm:           sm,
 		service:      service,
 		observations: newObservationCache(),
+		localNode:    cfg.NodeID,
 	}, nil
 }
 
@@ -97,10 +105,12 @@ func (h *controllerHost) applyObservation(report slotcontroller.AgentReport) {
 	if h == nil || h.observations == nil {
 		return
 	}
+	h.syncLeaderWarmupState()
 	h.observations.applyNodeReport(report)
 	if report.Runtime != nil {
 		h.observations.applyRuntimeView(*report.Runtime)
 	}
+	h.markWarmupReady()
 }
 
 func (h *controllerHost) snapshotObservations() observationSnapshot {
@@ -108,4 +118,61 @@ func (h *controllerHost) snapshotObservations() observationSnapshot {
 		return observationSnapshot{}
 	}
 	return h.observations.snapshot()
+}
+
+func (h *controllerHost) warmupComplete() bool {
+	if h == nil {
+		return false
+	}
+	h.syncLeaderWarmupState()
+
+	h.warmupMu.RLock()
+	defer h.warmupMu.RUnlock()
+	return h.warmupLeaderID == h.localNode && h.warmupReady
+}
+
+func (h *controllerHost) plannerSnapshot() (observationSnapshot, bool) {
+	if h == nil {
+		return observationSnapshot{}, false
+	}
+	if !h.warmupComplete() {
+		return observationSnapshot{}, false
+	}
+	return h.snapshotObservations(), true
+}
+
+func (h *controllerHost) syncLeaderWarmupState() {
+	if h == nil {
+		return
+	}
+
+	leaderID := h.LeaderID()
+
+	h.warmupMu.Lock()
+	defer h.warmupMu.Unlock()
+
+	if leaderID != h.warmupLeaderID {
+		h.warmupLeaderID = leaderID
+		h.warmupReady = false
+		if leaderID == h.localNode {
+			h.warmupGeneration++
+		}
+		return
+	}
+	if leaderID != h.localNode {
+		h.warmupReady = false
+	}
+}
+
+func (h *controllerHost) markWarmupReady() {
+	if h == nil {
+		return
+	}
+
+	h.warmupMu.Lock()
+	defer h.warmupMu.Unlock()
+
+	if h.warmupLeaderID == h.localNode {
+		h.warmupReady = true
+	}
 }
