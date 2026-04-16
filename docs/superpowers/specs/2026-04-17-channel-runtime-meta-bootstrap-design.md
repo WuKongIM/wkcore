@@ -97,7 +97,7 @@ Responsibility:
 This coordinator belongs in `internal/app`, not `pkg/slot/proxy`, because bootstrap policy depends on:
 
 - cluster topology
-n- runtime defaults such as bootstrap `MinISR`
+- runtime defaults such as bootstrap `MinISR`
 - bootstrap lease policy
 - the send-path refresh behavior already coordinated in `internal/app/channelmeta.go`
 
@@ -216,7 +216,7 @@ This is intentionally weaker than a dedicated create-if-absent/CAS primitive, bu
 
 ## Failure Semantics
 
-## 1. Retry model stays the same
+### 1. Retry model stays the same
 
 The send path continues to do at most:
 
@@ -225,7 +225,7 @@ The send path continues to do at most:
 
 Bootstrap happens inside that single refresh attempt.
 
-## 2. Retryable bootstrap failures
+### 2. Retryable bootstrap failures
 
 The following failures are treated as retryable send-time failures:
 
@@ -235,7 +235,7 @@ The following failures are treated as retryable send-time failures:
 
 These should return the existing retry-oriented error path rather than fabricate partial metadata.
 
-## 3. Hard bootstrap failures
+### 3. Hard bootstrap failures
 
 The following fail immediately:
 
@@ -244,7 +244,7 @@ The following fail immediately:
 - write succeeds but authoritative re-read fails
 - local `ApplyMeta()` fails after successful ensure and reload
 
-## 4. Bootstrap does not force current-node write ownership
+### 4. Bootstrap does not force current-node write ownership
 
 Bootstrap is not responsible for making the current node the leader.
 
@@ -252,7 +252,7 @@ If the derived slot leader is some other node, then after bootstrap the append r
 
 ## Config Changes
 
-## New config field in `internal/app/config.go`
+### New config field in `internal/app/config.go`
 
 Add to `ClusterConfig`:
 
@@ -264,13 +264,13 @@ Defaulting and validation:
 - validate `> 0`
 - clamp only when deriving bootstrap metadata, not at config parse time
 
-## New config key in `cmd/wukongim/config.go`
+### New config key in `cmd/wukongim/config.go`
 
 Add parsing for:
 
 - `WK_CLUSTER_CHANNEL_BOOTSTRAP_DEFAULT_MIN_ISR`
 
-## Example config update
+### Example config update
 
 Update `wukongim.conf.example` to include:
 
@@ -331,7 +331,7 @@ Recommended fields:
 
 ## Testing Plan
 
-## Unit tests
+### Unit tests
 
 ### `internal/app/channelmeta_test.go`
 
@@ -347,7 +347,7 @@ Add coverage for:
 - bootstrap fails when `LeaderOf` fails
 - bootstrap failure does not apply partial local metadata
 
-## Message-path tests
+### Message-path tests
 
 ### `internal/usecase/message/send_test.go`
 
@@ -357,7 +357,7 @@ Add coverage for:
 - send still returns current retry/not-leader behavior when bootstrap succeeds but current node is not the derived leader
 - bootstrap path is channel-type agnostic
 
-## Integration tests
+### Integration tests
 
 ### `internal/app/integration_test.go`
 
@@ -368,15 +368,15 @@ Add coverage for:
 
 ## Risks and Follow-Up Work
 
-## 1. Lease lifecycle remains incomplete
+### 1. Lease lifecycle remains incomplete
 
 Bootstrap assigns an initial lease, but this design does not yet define the full mechanism that keeps channel runtime metadata aligned with leader and lease evolution over time.
 
-## 2. First rollout ensure semantics are not true create-if-absent
+### 2. First rollout ensure semantics are not true create-if-absent
 
 The initial implementation uses `read -> upsert -> re-read`. If concurrent first-send churn reveals instability, a stronger authoritative ensure primitive may be added later.
 
-## 3. Read paths remain non-healing by design
+### 3. Read paths remain non-healing by design
 
 This is intentional for the first rollout. If later experience shows some read paths should self-heal missing runtime metadata, they should opt into the explicit ensure path one by one.
 
