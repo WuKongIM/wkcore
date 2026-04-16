@@ -237,6 +237,14 @@ func TestConfigRejectsExplicitNonPositiveChannelBootstrapMinISR(t *testing.T) {
 	require.ErrorContains(t, cfg.ApplyDefaultsAndValidate(), "channel bootstrap default min isr")
 }
 
+func TestConfigRejectsExplicitNegativeChannelBootstrapMinISR(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cluster.ChannelBootstrapDefaultMinISR = -1
+	cfg.Cluster.SetExplicitFlags(true)
+
+	require.ErrorContains(t, cfg.ApplyDefaultsAndValidate(), "channel bootstrap default min isr")
+}
+
 func TestClusterRuntimeConfigIncludesTimeoutOverrides(t *testing.T) {
 	cfg := validConfig()
 	cfg.Cluster.Timeouts = raftcluster.Timeouts{
