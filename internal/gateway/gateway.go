@@ -6,6 +6,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/core"
 	protojsonrpc "github.com/WuKongIM/WuKongIM/internal/gateway/protocol/jsonrpc"
 	protowkproto "github.com/WuKongIM/WuKongIM/internal/gateway/protocol/wkproto"
+	protowsmux "github.com/WuKongIM/WuKongIM/internal/gateway/protocol/wsmux"
 	gnettransport "github.com/WuKongIM/WuKongIM/internal/gateway/transport/gnet"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/transport/stdnet"
 )
@@ -64,6 +65,9 @@ func buildRegistry() (*core.Registry, error) {
 		return nil, err
 	}
 	if err := registry.RegisterProtocol(protojsonrpc.New()); err != nil {
+		return nil, err
+	}
+	if err := registry.RegisterProtocol(protowsmux.New()); err != nil {
 		return nil, err
 	}
 	return registry, nil

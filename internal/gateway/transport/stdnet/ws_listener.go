@@ -36,6 +36,7 @@ type wsConn struct {
 	remoteAddr string
 
 	closeOnce sync.Once
+	writeType atomic.Int32
 }
 
 func NewWSListener(opts transport.ListenerOptions, handler transport.ConnHandler) (*WSListener, error) {
@@ -141,6 +142,7 @@ func (l *WSListener) Addr() string {
 func (l *WSListener) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	conn, err := l.upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		transport.LogConnectFailure(l.opts, 0, l.localAddr(), r.RemoteAddr, err)
 		if l.opts.OnError != nil {
 			l.opts.OnError(err)
 		}
@@ -158,12 +160,14 @@ func (l *WSListener) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 
 	if l.handler != nil {
 		if err := l.handler.OnOpen(ws); err != nil {
+			transport.LogConnectFailure(l.opts, ws.ID(), ws.LocalAddr(), ws.RemoteAddr(), err)
 			l.handler.OnClose(ws, err)
 			l.untrackConn(ws.ID())
 			_ = ws.Close()
 			return
 		}
 	}
+	transport.LogConnectSuccess(l.opts, ws)
 
 	l.wg.Add(1)
 	go l.readLoop(ws)
@@ -186,6 +190,7 @@ func (l *WSListener) readLoop(c *wsConn) {
 		if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
 			continue
 		}
+		c.writeType.Store(int32(messageType))
 		if l.handler != nil {
 			if err := l.handler.OnData(c, payload); err != nil {
 				closeErr = err
@@ -221,6 +226,16 @@ func (l *WSListener) untrackConn(id uint64) {
 	l.mu.Unlock()
 }
 
+func (l *WSListener) localAddr() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.ln == nil || l.ln.Addr() == nil {
+		return ""
+	}
+	return l.ln.Addr().String()
+}
+
 func (c *wsConn) ID() uint64 {
 	if c == nil {
 		return 0
@@ -233,9 +248,12 @@ func (c *wsConn) Write(data []byte) error {
 		return nil
 	}
 
-	messageType := websocket.BinaryMessage
-	if utf8.Valid(data) {
-		messageType = websocket.TextMessage
+	messageType := int(c.writeType.Load())
+	if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
+		messageType = websocket.BinaryMessage
+		if utf8.Valid(data) {
+			messageType = websocket.TextMessage
+		}
 	}
 	return c.raw.WriteMessage(messageType, data)
 }

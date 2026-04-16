@@ -291,7 +291,7 @@ func TestTCPAndWebSocketListenersShareOneEngineGroup(t *testing.T) {
 
 	listeners, err := NewFactory().Build([]transport.ListenerSpec{
 		namedTCPListenerSpecWithAddress("tcp-a", tcpHandler, freeTCPAddress(t)),
-		namedWSListenerSpecWithAddress("ws-b", wsHandler, freeTCPAddress(t), "/ws", nil),
+		namedWSListenerSpecWithAddress("ws-b", wsHandler, freeTCPAddress(t), "", nil),
 	})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -317,7 +317,7 @@ func TestTCPAndWebSocketListenersShareOneEngineGroup(t *testing.T) {
 	defer func() { _ = tcpConn.Close() }()
 	writeAndReadExact(t, tcpConn, []byte("ping"), "tcp:ping")
 
-	wsConn := mustDialWS(t, wsListener.Addr(), "/ws")
+	wsConn := mustDialWS(t, wsListener.Addr(), "")
 	defer func() { _ = wsConn.Close() }()
 	if err := wsConn.WriteMessage(websocket.TextMessage, []byte("pong")); err != nil {
 		t.Fatalf("WriteMessage: %v", err)

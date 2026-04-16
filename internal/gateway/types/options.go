@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type Options struct {
@@ -12,6 +14,7 @@ type Options struct {
 	Observer       Observer
 	DefaultSession SessionOptions
 	Listeners      []ListenerOptions
+	Logger         wklog.Logger
 }
 
 type ListenerOptions struct {
@@ -89,9 +92,6 @@ func (o *Options) Validate() error {
 		}
 		if protocol == "" {
 			return ErrListenerProtocolEmpty
-		}
-		if strings.EqualFold(network, "websocket") && o.Listeners[i].Path == "" {
-			return ErrListenerWebsocketPath
 		}
 	}
 	if o.Handler == nil {

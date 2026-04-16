@@ -22,14 +22,14 @@ func TestWSListenerUpgradesDeliversMessagesAndWritesFrames(t *testing.T) {
 		return conn.Write([]byte("ack:" + string(data)))
 	})
 
-	listener := buildWSListener(t, "ws-one", "/ws", handler, nil)
+	listener := buildWSListener(t, "ws-one", "", handler, nil)
 	defer func() { _ = listener.Stop() }()
 
 	if err := listener.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
-	conn := mustDialWS(t, listener.Addr(), "/ws")
+	conn := mustDialWS(t, listener.Addr(), "")
 	defer func() { _ = conn.Close() }()
 
 	if err := conn.WriteMessage(websocket.TextMessage, []byte("ping")); err != nil {
@@ -76,7 +76,7 @@ func TestWSListenerUpgradesDeliversMessagesAndWritesFrames(t *testing.T) {
 
 func TestWSHandshakeRejectsInvalidRequestsAndReportsErrors(t *testing.T) {
 	errs := newErrorRecorder()
-	listener := buildWSListener(t, "ws-one", "/ws", newTCPRecordingHandler(nil), errs.Record)
+	listener := buildWSListener(t, "ws-one", "", newTCPRecordingHandler(nil), errs.Record)
 	defer func() { _ = listener.Stop() }()
 
 	if err := listener.Start(); err != nil {
@@ -101,18 +101,18 @@ func TestWSHandshakeRejectsInvalidRequestsAndReportsErrors(t *testing.T) {
 		},
 		{
 			name: "invalid method",
-			request: strings.Replace(rawUpgradeRequest("/ws", map[string]string{
+			request: strings.Replace(rawUpgradeRequest("/", map[string]string{
 				"Host":                  listener.Addr(),
 				"Upgrade":               "websocket",
 				"Connection":            "Upgrade",
 				"Sec-WebSocket-Key":     validWSKey,
 				"Sec-WebSocket-Version": "13",
-			}), "GET /ws HTTP/1.1", "POST /ws HTTP/1.1", 1),
+			}), "GET / HTTP/1.1", "POST / HTTP/1.1", 1),
 			status: http.StatusMethodNotAllowed,
 		},
 		{
 			name: "missing upgrade header",
-			request: rawUpgradeRequest("/ws", map[string]string{
+			request: rawUpgradeRequest("/", map[string]string{
 				"Host":                  listener.Addr(),
 				"Connection":            "Upgrade",
 				"Sec-WebSocket-Key":     validWSKey,
@@ -122,7 +122,7 @@ func TestWSHandshakeRejectsInvalidRequestsAndReportsErrors(t *testing.T) {
 		},
 		{
 			name: "missing connection header",
-			request: rawUpgradeRequest("/ws", map[string]string{
+			request: rawUpgradeRequest("/", map[string]string{
 				"Host":                  listener.Addr(),
 				"Upgrade":               "websocket",
 				"Sec-WebSocket-Key":     validWSKey,
@@ -132,7 +132,7 @@ func TestWSHandshakeRejectsInvalidRequestsAndReportsErrors(t *testing.T) {
 		},
 		{
 			name: "invalid connection header",
-			request: rawUpgradeRequest("/ws", map[string]string{
+			request: rawUpgradeRequest("/", map[string]string{
 				"Host":                  listener.Addr(),
 				"Upgrade":               "websocket",
 				"Connection":            "close",
@@ -143,7 +143,7 @@ func TestWSHandshakeRejectsInvalidRequestsAndReportsErrors(t *testing.T) {
 		},
 		{
 			name: "missing key",
-			request: rawUpgradeRequest("/ws", map[string]string{
+			request: rawUpgradeRequest("/", map[string]string{
 				"Host":                  listener.Addr(),
 				"Upgrade":               "websocket",
 				"Connection":            "Upgrade",
@@ -153,7 +153,7 @@ func TestWSHandshakeRejectsInvalidRequestsAndReportsErrors(t *testing.T) {
 		},
 		{
 			name: "invalid key",
-			request: rawUpgradeRequest("/ws", map[string]string{
+			request: rawUpgradeRequest("/", map[string]string{
 				"Host":                  listener.Addr(),
 				"Upgrade":               "websocket",
 				"Connection":            "Upgrade",
@@ -164,7 +164,7 @@ func TestWSHandshakeRejectsInvalidRequestsAndReportsErrors(t *testing.T) {
 		},
 		{
 			name: "unsupported version",
-			request: rawUpgradeRequest("/ws", map[string]string{
+			request: rawUpgradeRequest("/", map[string]string{
 				"Host":                  listener.Addr(),
 				"Upgrade":               "websocket",
 				"Connection":            "Upgrade",
@@ -192,7 +192,7 @@ func TestWSHandshakeRejectsInvalidRequestsAndReportsErrors(t *testing.T) {
 
 func TestWSHandshakeFailureReportsErrorBeforeConnectionCloses(t *testing.T) {
 	errs := newErrorRecorder()
-	listener := buildWSListener(t, "ws-one", "/ws", newTCPRecordingHandler(nil), errs.Record)
+	listener := buildWSListener(t, "ws-one", "", newTCPRecordingHandler(nil), errs.Record)
 	defer func() { _ = listener.Stop() }()
 
 	if err := listener.Start(); err != nil {
@@ -212,7 +212,7 @@ func TestWSHandshakeFailureReportsErrorBeforeConnectionCloses(t *testing.T) {
 		closed <- err
 	}()
 
-	req := rawUpgradeRequest("/ws", map[string]string{
+	req := rawUpgradeRequest("/", map[string]string{
 		"Host":                  listener.Addr(),
 		"Connection":            "Upgrade",
 		"Sec-WebSocket-Key":     validWSKey,
@@ -236,14 +236,14 @@ func TestWSWriteProducesWireFrame(t *testing.T) {
 		return conn.Write([]byte("ack:" + string(data)))
 	})
 
-	listener := buildWSListener(t, "ws-one", "/ws", handler, nil)
+	listener := buildWSListener(t, "ws-one", "", handler, nil)
 	defer func() { _ = listener.Stop() }()
 
 	if err := listener.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
-	rawConn := mustRawWSHandshake(t, listener.Addr(), "/ws")
+	rawConn := mustRawWSHandshake(t, listener.Addr(), "")
 	defer func() { _ = rawConn.Close() }()
 
 	if _, err := rawConn.Write(mustEncodeWSFrame(testWSFrame{
@@ -271,14 +271,14 @@ func TestWSWriteProducesWireFrame(t *testing.T) {
 func TestWSRejectsUnmaskedClientFrames(t *testing.T) {
 	errs := newErrorRecorder()
 	handler := newTCPRecordingHandler(nil)
-	listener := buildWSListener(t, "ws-one", "/ws", handler, errs.Record)
+	listener := buildWSListener(t, "ws-one", "", handler, errs.Record)
 	defer func() { _ = listener.Stop() }()
 
 	if err := listener.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
-	rawConn := mustRawWSHandshake(t, listener.Addr(), "/ws")
+	rawConn := mustRawWSHandshake(t, listener.Addr(), "")
 	defer func() { _ = rawConn.Close() }()
 
 	if _, err := rawConn.Write(mustEncodeWSFrame(testWSFrame{
@@ -308,14 +308,14 @@ func TestWSRejectsUnmaskedClientFrames(t *testing.T) {
 
 func TestWSHandlesPingPongAndCloseFrames(t *testing.T) {
 	handler := newTCPRecordingHandler(nil)
-	listener := buildWSListener(t, "ws-one", "/ws", handler, nil)
+	listener := buildWSListener(t, "ws-one", "", handler, nil)
 	defer func() { _ = listener.Stop() }()
 
 	if err := listener.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
-	conn := mustDialWS(t, listener.Addr(), "/ws")
+	conn := mustDialWS(t, listener.Addr(), "")
 	defer func() { _ = conn.Close() }()
 
 	pongCh := make(chan string, 1)
@@ -359,14 +359,14 @@ func TestWSHandlesPingPongAndCloseFrames(t *testing.T) {
 
 func TestWSReassemblesFragmentedMessagesBeforeDelivery(t *testing.T) {
 	handler := newTCPRecordingHandler(nil)
-	listener := buildWSListener(t, "ws-one", "/ws", handler, nil)
+	listener := buildWSListener(t, "ws-one", "", handler, nil)
 	defer func() { _ = listener.Stop() }()
 
 	if err := listener.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
-	rawConn := mustRawWSHandshake(t, listener.Addr(), "/ws")
+	rawConn := mustRawWSHandshake(t, listener.Addr(), "")
 	defer func() { _ = rawConn.Close() }()
 
 	frames := [][]byte{
@@ -563,6 +563,9 @@ func doRawHandshake(t *testing.T, addr, request string) (int, string, bool) {
 const validWSKey = "dGhlIHNhbXBsZSBub25jZQ=="
 
 func rawUpgradeRequest(path string, headers map[string]string) string {
+	if path == "" {
+		path = "/"
+	}
 	var b strings.Builder
 	b.WriteString("GET ")
 	b.WriteString(path)

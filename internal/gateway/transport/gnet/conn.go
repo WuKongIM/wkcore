@@ -175,9 +175,12 @@ func (s *connState) run() {
 				continue
 			}
 			if err := s.runtime.handler.OnOpen(s.transport); err != nil {
+				transport.LogConnectFailure(s.runtime.opts, s.transport.ID(), s.transport.LocalAddr(), s.transport.RemoteAddr(), err)
 				s.fail(err)
 				_ = s.raw.Close()
+				continue
 			}
+			transport.LogConnectSuccess(s.runtime.opts, s.transport)
 		case connEventData:
 			if s.runtime.handler == nil || !s.runtime.shouldDispatch(s) {
 				continue

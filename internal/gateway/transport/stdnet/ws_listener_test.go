@@ -38,7 +38,6 @@ func TestWSListenerUpgradesAndDeliversMessages(t *testing.T) {
 	listener, err := stdnet.NewWSListener(transport.ListenerOptions{
 		Name:    "ws-jsonrpc",
 		Address: "127.0.0.1:0",
-		Path:    "/ws",
 	}, handler)
 	if err != nil {
 		t.Fatalf("NewWSListener: %v", err)
@@ -49,7 +48,7 @@ func TestWSListenerUpgradesAndDeliversMessages(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	url := "ws://" + strings.TrimPrefix(listener.Addr(), "http://") + "/ws"
+	url := "ws://" + strings.TrimPrefix(listener.Addr(), "http://")
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)

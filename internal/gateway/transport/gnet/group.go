@@ -466,6 +466,7 @@ func (g *engineGroup) handleWSTraffic(c gnetv2.Conn, state *connState) gnetv2.Ac
 				return gnetv2.None
 			}
 			if failure != nil {
+				transport.LogConnectFailure(state.runtime.opts, state.id, state.localAddr, state.remoteAddr, failure.err)
 				state.runtime.reportError(failure.err)
 				if len(failure.response) == 0 {
 					_ = c.Close()

@@ -7,7 +7,9 @@ func TCPWKProto(name, address string) gateway.ListenerOptions {
 }
 
 func WSJSONRPC(name, address string) gateway.ListenerOptions {
-	opts := listener(name, "websocket", address, "gnet", "jsonrpc")
-	opts.Path = DefaultWSPath
-	return opts
+	return listener(name, "websocket", address, "gnet", "jsonrpc")
+}
+
+func WSMux(name, address string) gateway.ListenerOptions {
+	return listener(name, "websocket", address, "gnet", "wsmux")
 }

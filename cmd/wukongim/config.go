@@ -379,7 +379,7 @@ const defaultAPIListenAddr = "0.0.0.0:5001"
 func defaultGatewayListeners() []gateway.ListenerOptions {
 	return []gateway.ListenerOptions{
 		binding.TCPWKProto("tcp-wkproto", "0.0.0.0:5100"),
-		binding.WSJSONRPC("ws-jsonrpc", "0.0.0.0:5200"),
+		binding.WSMux("ws-gateway", "0.0.0.0:5200"),
 	}
 }
 

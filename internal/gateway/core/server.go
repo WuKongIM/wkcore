@@ -14,6 +14,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/transport"
 	gatewaytypes "github.com/WuKongIM/WuKongIM/internal/gateway/types"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 var (
@@ -93,6 +94,10 @@ func NewServer(registry *Registry, opts *gatewaytypes.Options) (*Server, error) 
 		Observer:       opts.Observer,
 		DefaultSession: opts.DefaultSession,
 		Listeners:      append([]gatewaytypes.ListenerOptions(nil), opts.Listeners...),
+		Logger:         opts.Logger,
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = wklog.NewNop()
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -201,6 +206,7 @@ func (s *Server) buildListeners(runtimes []*listenerRuntime) error {
 					OnError: func(err error) {
 						s.dispatcher.listenerError(runtime.options.Name, err)
 					},
+					Logger: s.options.Logger.Named("transport").Named(runtime.options.Name),
 				},
 				Handler: &connHandler{server: s, listener: runtime},
 			})
@@ -303,7 +309,7 @@ func (s *Server) onOpen(listener *listenerRuntime, conn transport.Conn) error {
 	}
 	state.requestContext, state.cancelRequestContext = context.WithCancel(context.Background())
 	state.setAuthRequired(listener.options.Protocol == "wkproto" && s.options.Authenticator != nil)
-	if !state.requiresAuth() {
+	if !state.requiresAuth() && listener.options.Protocol != "wsmux" {
 		state.setAuthenticated(true)
 	}
 	state.touchActivity()
@@ -328,6 +334,9 @@ func (s *Server) onOpen(listener *listenerRuntime, conn transport.Conn) error {
 
 	state.session = sess
 	state.queue = queue
+	if listener.options.Protocol != "wsmux" {
+		state.session.SetValue(gatewaytypes.SessionValueProtocolName, listener.options.Protocol)
+	}
 	s.registerState(state)
 	s.observeConnectionOpen(state)
 
@@ -336,7 +345,7 @@ func (s *Server) onOpen(listener *listenerRuntime, conn transport.Conn) error {
 		return nil
 	}
 
-	if !state.requiresAuth() {
+	if !state.requiresAuth() && listener.options.Protocol != "wsmux" {
 		if err := s.dispatchSessionOpen(state); err != nil {
 			s.handleHandlerError(state, err)
 		}
@@ -390,6 +399,12 @@ func (s *Server) onData(listener *listenerRuntime, conn transport.Conn, data []b
 		if consumed == 0 {
 			state.close(gatewaytypes.CloseReasonProtocolError, ErrDecodeNoProgress)
 			return nil
+		}
+		if err := s.syncSessionProtocol(state); err != nil {
+			s.handleHandlerError(state, err)
+			if state.isClosed() {
+				return nil
+			}
 		}
 
 		state.inbound = state.inbound[consumed:]
@@ -689,6 +704,25 @@ func (s *Server) replyTokens(listener *listenerRuntime, sess session.Session, co
 		return nil
 	}
 	return listener.tracker.TakeReplyTokens(sess, count)
+}
+
+func (s *Server) syncSessionProtocol(state *sessionState) error {
+	if state == nil || state.openWasDispatched() {
+		return nil
+	}
+
+	protocol := state.protocolName()
+	if protocol == "" || protocol == "wsmux" {
+		return nil
+	}
+	if protocol == "wkproto" && s.options.Authenticator != nil {
+		state.setAuthRequired(true)
+		return nil
+	}
+
+	state.setAuthRequired(false)
+	state.setAuthenticated(true)
+	return s.dispatchSessionOpen(state)
 }
 
 func (s *Server) handleHandlerError(state *sessionState, err error) {
@@ -1035,6 +1069,21 @@ func (st *sessionState) requiresAuth() bool {
 	st.metaMu.RLock()
 	defer st.metaMu.RUnlock()
 	return st.authRequired
+}
+
+func (st *sessionState) protocolName() string {
+	if st == nil {
+		return ""
+	}
+	if st.session != nil {
+		if value, _ := st.session.Value(gatewaytypes.SessionValueProtocolName).(string); strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	if st.listener == nil {
+		return ""
+	}
+	return strings.TrimSpace(st.listener.options.Protocol)
 }
 
 func (st *sessionState) markOpenDispatched() {

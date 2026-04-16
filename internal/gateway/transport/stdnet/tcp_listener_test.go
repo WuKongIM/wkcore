@@ -59,7 +59,6 @@ func TestFactoryBuildReturnsOneListenerPerSpec(t *testing.T) {
 				Name:    "ws-jsonrpc",
 				Network: "websocket",
 				Address: "127.0.0.1:0",
-				Path:    "/ws",
 			},
 			Handler: handler,
 		},
@@ -99,7 +98,7 @@ func TestFactoryBuildReturnsOneListenerPerSpec(t *testing.T) {
 	}
 	_ = conn.Close()
 
-	url := "ws://" + strings.TrimPrefix(wsListener.Addr(), "http://") + "/ws"
+	url := "ws://" + strings.TrimPrefix(wsListener.Addr(), "http://")
 	wsConn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		t.Fatalf("ws Dial: %v", err)

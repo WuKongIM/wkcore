@@ -322,6 +322,7 @@ func build(cfg Config) (_ *App, err error) {
 		Observer:       gatewayObserver,
 		DefaultSession: cfg.Gateway.DefaultSession,
 		Listeners:      cfg.Gateway.Listeners,
+		Logger:         app.logger.Named("gateway"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("app: create gateway: %w", err)

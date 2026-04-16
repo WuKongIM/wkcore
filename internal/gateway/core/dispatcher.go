@@ -62,7 +62,7 @@ func (d dispatcher) context(state *sessionState, replyToken string, reason gatew
 		Listener:       state.listener.options.Name,
 		Network:        state.listener.options.Network,
 		Transport:      state.listener.options.Transport,
-		Protocol:       state.listener.options.Protocol,
+		Protocol:       state.protocolName(),
 		CloseReason:    reason,
 		ReplyToken:     replyToken,
 		RequestContext: requestContext,

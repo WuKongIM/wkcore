@@ -122,12 +122,14 @@ func (l *TCPListener) acceptLoop() {
 
 		if l.handler != nil {
 			if err := l.handler.OnOpen(c); err != nil {
+				transport.LogConnectFailure(l.opts, c.ID(), c.LocalAddr(), c.RemoteAddr(), err)
 				l.handler.OnClose(c, err)
 				l.untrackConn(c.ID())
 				_ = c.Close()
 				continue
 			}
 		}
+		transport.LogConnectSuccess(l.opts, c)
 
 		l.wg.Add(1)
 		go l.readLoop(c)

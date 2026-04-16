@@ -52,7 +52,7 @@ func TestBuiltinPresetsPopulateCanonicalFields(t *testing.T) {
 	}
 
 	ws := binding.WSJSONRPC("ws-jsonrpc", ":5200")
-	if ws.Network != "websocket" || ws.Transport != "gnet" || ws.Protocol != "jsonrpc" || ws.Path != binding.DefaultWSPath {
+	if ws.Network != "websocket" || ws.Transport != "gnet" || ws.Protocol != "jsonrpc" || ws.Path != "" {
 		t.Fatalf("unexpected ws preset: %+v", ws)
 	}
 }
@@ -119,15 +119,15 @@ func TestOptionsValidatePreservesExplicitFalseCloseOnHandlerError(t *testing.T) 
 	}
 }
 
-func TestOptionsValidateRequiresWebsocketPath(t *testing.T) {
+func TestOptionsValidateAllowsWebsocketRootPath(t *testing.T) {
 	opts := gateway.Options{
 		Handler: noopHandler{},
 		Listeners: []gateway.ListenerOptions{
 			{Name: "ws", Network: "websocket", Address: ":5200", Transport: "stdnet", Protocol: "jsonrpc"},
 		},
 	}
-	if err := opts.Validate(); err == nil {
-		t.Fatal("expected websocket listener path validation error")
+	if err := opts.Validate(); err != nil {
+		t.Fatalf("expected websocket listener without explicit path to be valid, got %v", err)
 	}
 }
 
@@ -150,7 +150,7 @@ func TestOptionsValidateAcceptsExplicitStdnetListeners(t *testing.T) {
 		Handler: noopHandler{},
 		Listeners: []gateway.ListenerOptions{
 			{Name: "tcp", Network: "tcp", Address: ":5100", Transport: "stdnet", Protocol: "wkproto"},
-			{Name: "ws", Network: "websocket", Address: ":5200", Path: binding.DefaultWSPath, Transport: "stdnet", Protocol: "jsonrpc"},
+			{Name: "ws", Network: "websocket", Address: ":5200", Transport: "stdnet", Protocol: "jsonrpc"},
 		},
 	}
 	if err := opts.Validate(); err != nil {
