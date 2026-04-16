@@ -7,6 +7,7 @@ import (
 	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
 	"github.com/WuKongIM/WuKongIM/pkg/transport"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type Peer struct {
@@ -27,6 +28,7 @@ type Config struct {
 	Server             *transport.Server
 	RPCMux             *transport.RPCMux
 	Pool               *transport.Pool
+	Logger             wklog.Logger
 	OnLeaderChange     LeaderChangeObserver
 	OnCommittedCommand CommittedCommandObserver
 }

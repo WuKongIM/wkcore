@@ -164,6 +164,7 @@ AddLearner → CatchUp → Promote → TransferLeader → RemoveOld
 | MaxInflightMsgs | 256 | raft/service.go |
 | CheckQuorum / PreVote | true / true | raft/service.go |
 | Bootstrap 触发 | 无持久化状态 + AllowBootstrap + 最小PeerID | raft/service.go:170 |
+| Raft Logger | `wklog` 结构化日志，模块 `controller.raft`，附带 `raftScope=controller` / `nodeID` / `raftEvent`；heartbeat/read-index/probe 类噪声按 Debug 输出 | raft/logging.go |
 
 ## 8. 避坑清单
 

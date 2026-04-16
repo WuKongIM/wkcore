@@ -114,6 +114,14 @@ func SessionID(val uint64) Field {
 	return Uint64("sessionID", val)
 }
 
+func RaftScope(val string) Field {
+	return String("raftScope", val)
+}
+
+func RaftEvent(val string) Field {
+	return String("raftEvent", val)
+}
+
 func ConnID(val uint64) Field {
 	return Uint64("connID", val)
 }

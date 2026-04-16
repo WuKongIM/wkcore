@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 	"go.etcd.io/raft/v3/raftpb"
 )
 
@@ -15,6 +16,7 @@ type Options struct {
 	TickInterval time.Duration
 	Workers      int
 	Transport    Transport
+	Logger       wklog.Logger
 	Raft         RaftOptions
 }
 

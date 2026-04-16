@@ -7,6 +7,7 @@ import (
 	"math"
 	"sync"
 
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 	raft "go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 )
@@ -70,7 +71,7 @@ type controlAction struct {
 	change ConfigChange
 }
 
-func newSlot(ctx context.Context, nodeID NodeID, raftOpts RaftOptions, opts SlotOptions) (*slot, error) {
+func newSlot(ctx context.Context, nodeID NodeID, logger wklog.Logger, raftOpts RaftOptions, opts SlotOptions) (*slot, error) {
 	state, snapshot, memory, err := newStorageAdapter(opts.Storage).load(ctx)
 	if err != nil {
 		return nil, err
@@ -86,6 +87,7 @@ func newSlot(ctx context.Context, nodeID NodeID, raftOpts RaftOptions, opts Slot
 		MaxInflightMsgs: maxInflight(raftOpts.MaxInflight),
 		CheckQuorum:     raftOpts.CheckQuorum,
 		PreVote:         raftOpts.PreVote,
+		Logger:          newEtcdRaftLogger(logger, nodeID, opts.ID),
 	})
 	if err != nil {
 		return nil, err

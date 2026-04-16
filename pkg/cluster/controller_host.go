@@ -78,6 +78,7 @@ func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, erro
 		Server:         layer.server,
 		RPCMux:         layer.rpcMux,
 		Pool:           layer.raftPool,
+		Logger:         defaultLogger(cfg.Logger).Named("controller"),
 		OnLeaderChange: func(from, to uint64) {
 			host.handleLeaderChange(multiraft.NodeID(from), multiraft.NodeID(to))
 		},

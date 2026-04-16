@@ -108,6 +108,16 @@ func TestSemanticHelpersUseStableKeys(t *testing.T) {
 			want:  Field{Key: "sessionID", Type: Uint64Type, Value: uint64(11)},
 		},
 		{
+			name:  "raft scope",
+			field: RaftScope("slot"),
+			want:  Field{Key: "raftScope", Type: StringType, Value: "slot"},
+		},
+		{
+			name:  "raft event",
+			field: RaftEvent("leader_change"),
+			want:  Field{Key: "raftEvent", Type: StringType, Value: "leader_change"},
+		},
+		{
 			name:  "conn id",
 			field: ConnID(21),
 			want:  Field{Key: "connID", Type: Uint64Type, Value: uint64(21)},

@@ -43,6 +43,7 @@ Runtime.ChangeConfig / TransferLeadership / Status
 | `Storage` interface | multiraft/types.go | Raft 日志存储抽象：InitialState / Entries / Save / MarkApplied |
 | `User` / `Channel` / `Device` | meta/*.go | 业务数据模型 |
 | `ChannelRuntimeMeta` | meta/channel_runtime_meta.go | Leader/ISR/Epoch 运行时元数据 |
+| `Raft Logger` | multiraft/logging.go | `wklog` 结构化日志，模块 `slot.raft`，附带 `raftScope=slot` / `nodeID` / `slotID` / `raftEvent`；heartbeat/read-index/probe 类噪声按 Debug 输出 |
 
 ## 5. 核心流程
 

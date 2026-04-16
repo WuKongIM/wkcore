@@ -154,6 +154,7 @@ func (s *Service) Start(ctx context.Context) error {
 		MaxInflightMsgs:          256,
 		CheckQuorum:              true,
 		PreVote:                  true,
+		Logger:                   newEtcdRaftLogger(s.cfg.Logger, s.cfg.NodeID),
 	})
 	if err != nil {
 		s.mu.Unlock()
