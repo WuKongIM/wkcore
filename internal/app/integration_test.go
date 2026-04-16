@@ -159,6 +159,8 @@ func TestAppStartBootstrapsMissingRuntimeMetaOnFirstSend(t *testing.T) {
 		ID:   deliveryusecase.EncodePersonChannel("sender", "bootstrap-user"),
 		Type: frame.ChannelTypePerson,
 	}
+	_, err = app.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
+	require.ErrorIs(t, err, metadb.ErrNotFound)
 
 	result, err := app.Message().Send(context.Background(), message.SendCommand{
 		FromUID:     "sender",
@@ -207,13 +209,21 @@ func TestAppRuntimeMetaReadMissDoesNotBootstrap(t *testing.T) {
 		return err == nil
 	}, 3*time.Second, 50*time.Millisecond)
 
-	channelID := "read-miss-group"
-	channelType := frame.ChannelTypeGroup
+	id := channel.ChannelID{
+		ID:   "read-miss-group",
+		Type: frame.ChannelTypeGroup,
+	}
 
-	_, err = app.Store().GetChannelRuntimeMeta(context.Background(), channelID, int64(channelType))
+	_, err = app.ChannelLog().Status(id)
+	require.ErrorIs(t, err, channel.ErrStaleMeta)
+
+	_, err = app.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
 	require.ErrorIs(t, err, metadb.ErrNotFound)
 
-	_, err = app.Store().GetChannelRuntimeMeta(context.Background(), channelID, int64(channelType))
+	_, err = app.ChannelLog().Status(id)
+	require.ErrorIs(t, err, channel.ErrStaleMeta)
+
+	_, err = app.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
 	require.ErrorIs(t, err, metadb.ErrNotFound)
 }
 
