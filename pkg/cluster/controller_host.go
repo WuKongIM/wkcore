@@ -21,6 +21,8 @@ type controllerHost struct {
 	observations    *observationCache
 	healthScheduler *nodeHealthScheduler
 	localNode       multiraft.NodeID
+	hashSlotMu      sync.RWMutex
+	hashSlotTable   *HashSlotTable
 
 	warmupMu         sync.RWMutex
 	warmupLeaderID   multiraft.NodeID
@@ -148,6 +150,58 @@ func (h *controllerHost) snapshotObservations() observationSnapshot {
 	return h.observations.snapshot()
 }
 
+func (h *controllerHost) hashSlotTableSnapshot() (*HashSlotTable, bool) {
+	if h == nil {
+		return nil, false
+	}
+
+	h.hashSlotMu.RLock()
+	defer h.hashSlotMu.RUnlock()
+
+	if h.hashSlotTable == nil {
+		return nil, false
+	}
+	return h.hashSlotTable, true
+}
+
+func (h *controllerHost) storeHashSlotTableSnapshot(table *HashSlotTable) {
+	if h == nil {
+		return
+	}
+
+	h.hashSlotMu.Lock()
+	defer h.hashSlotMu.Unlock()
+
+	if table == nil {
+		h.hashSlotTable = nil
+		return
+	}
+	h.hashSlotTable = table.Clone()
+}
+
+func (h *controllerHost) clearHashSlotTableSnapshot() {
+	if h == nil {
+		return
+	}
+
+	h.hashSlotMu.Lock()
+	defer h.hashSlotMu.Unlock()
+	h.hashSlotTable = nil
+}
+
+func (h *controllerHost) reloadHashSlotTableSnapshot(ctx context.Context) error {
+	if h == nil || h.meta == nil {
+		return nil
+	}
+	table, err := h.meta.LoadHashSlotTable(ctx)
+	if err != nil {
+		h.clearHashSlotTableSnapshot()
+		return err
+	}
+	h.storeHashSlotTableSnapshot(table)
+	return nil
+}
+
 func (h *controllerHost) warmupComplete() bool {
 	if h == nil {
 		return false
@@ -215,6 +269,11 @@ func (h *controllerHost) handleLeaderChange(_, to multiraft.NodeID) {
 	if h.healthScheduler != nil {
 		h.healthScheduler.reset()
 	}
+	if to == h.localNode {
+		_ = h.reloadHashSlotTableSnapshot(context.Background())
+	} else {
+		h.clearHashSlotTableSnapshot()
+	}
 
 	h.warmupMu.Lock()
 	defer h.warmupMu.Unlock()
@@ -227,8 +286,27 @@ func (h *controllerHost) handleLeaderChange(_, to multiraft.NodeID) {
 }
 
 func (h *controllerHost) handleCommittedCommand(cmd slotcontroller.Command) {
-	if h == nil || h.healthScheduler == nil {
+	if h == nil {
 		return
 	}
-	h.healthScheduler.handleCommittedCommand(cmd)
+	if shouldRefreshHashSlotSnapshot(cmd) {
+		_ = h.reloadHashSlotTableSnapshot(context.Background())
+	}
+	if h.healthScheduler != nil {
+		h.healthScheduler.handleCommittedCommand(cmd)
+	}
+}
+
+func shouldRefreshHashSlotSnapshot(cmd slotcontroller.Command) bool {
+	switch cmd.Kind {
+	case slotcontroller.CommandKindStartMigration,
+		slotcontroller.CommandKindAdvanceMigration,
+		slotcontroller.CommandKindFinalizeMigration,
+		slotcontroller.CommandKindAbortMigration,
+		slotcontroller.CommandKindAddSlot,
+		slotcontroller.CommandKindRemoveSlot:
+		return true
+	default:
+		return false
+	}
 }

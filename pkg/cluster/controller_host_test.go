@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
 )
 
 func TestControllerHostStartElectsSingleLocalPeer(t *testing.T) {
@@ -52,5 +54,69 @@ func requireNoErr(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestControllerHostHashSlotSnapshotReloadsOnLocalLeaderChange(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+
+	table := NewHashSlotTable(8, 2)
+	requireNoErr(t, host.meta.SaveHashSlotTable(context.Background(), table))
+
+	host.handleLeaderChange(2, host.localNode)
+
+	snapshot, ok := host.hashSlotTableSnapshot()
+	if !ok {
+		t.Fatal("hashSlotTableSnapshot() ok = false, want true")
+	}
+	if snapshot.Version() != table.Version() {
+		t.Fatalf("hashSlotTableSnapshot().Version() = %d, want %d", snapshot.Version(), table.Version())
+	}
+}
+
+func TestControllerHostHashSlotSnapshotClearsOnLeaderLoss(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+
+	host.storeHashSlotTableSnapshot(NewHashSlotTable(8, 2))
+	if _, ok := host.hashSlotTableSnapshot(); !ok {
+		t.Fatal("hashSlotTableSnapshot() ok = false before leader loss, want true")
+	}
+
+	host.handleLeaderChange(host.localNode, 2)
+
+	if _, ok := host.hashSlotTableSnapshot(); ok {
+		t.Fatal("hashSlotTableSnapshot() ok = true after leader loss, want false")
+	}
+}
+
+func TestControllerHostHandleCommittedCommandReloadsHashSlotSnapshotOnHashSlotMutation(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+
+	initial := NewHashSlotTable(8, 2)
+	requireNoErr(t, host.meta.SaveHashSlotTable(context.Background(), initial))
+	host.storeHashSlotTableSnapshot(initial)
+
+	updated := initial.Clone()
+	updated.StartMigration(3, 1, 2)
+	requireNoErr(t, host.meta.SaveHashSlotTable(context.Background(), updated))
+
+	host.handleCommittedCommand(slotcontroller.Command{
+		Kind: slotcontroller.CommandKindStartMigration,
+		Migration: &slotcontroller.MigrationRequest{
+			HashSlot: 3,
+			Source:   1,
+			Target:   2,
+		},
+	})
+
+	snapshot, ok := host.hashSlotTableSnapshot()
+	if !ok {
+		t.Fatal("hashSlotTableSnapshot() ok = false, want true")
+	}
+	if snapshot.Version() != updated.Version() {
+		t.Fatalf("hashSlotTableSnapshot().Version() = %d, want %d", snapshot.Version(), updated.Version())
+	}
+	if migration := snapshot.GetMigration(3); migration == nil {
+		t.Fatal("hashSlotTableSnapshot().GetMigration(3) = nil, want active migration")
 	}
 }

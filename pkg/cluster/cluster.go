@@ -232,6 +232,7 @@ func (c *Cluster) startControllerRaftIfLocalPeer() error {
 		host.Stop()
 		return fmt.Errorf("ensure controller hash slot table: %w", err)
 	}
+	host.storeHashSlotTableSnapshot(table)
 	if c.router != nil {
 		c.router.UpdateHashSlotTable(table)
 	}
