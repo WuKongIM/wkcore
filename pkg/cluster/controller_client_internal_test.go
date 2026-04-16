@@ -319,6 +319,70 @@ func TestControllerClientRuntimeReportFallsThroughRedirectToCurrentLeader(t *tes
 	require.EqualValues(t, 1, atomic.LoadInt32(&seen))
 }
 
+func TestControllerClientRuntimeReportRedirectMarksReporterForFullSync(t *testing.T) {
+	staleLeader := transport.NewServer()
+	staleLeaderMux := transport.NewRPCMux()
+	staleLeaderMux.Handle(rpcServiceController, func(_ context.Context, body []byte) ([]byte, error) {
+		req, err := decodeControllerRequest(body)
+		require.NoError(t, err)
+		require.Equal(t, controllerRPCRuntimeReport, req.Kind)
+		return encodeControllerResponse(req.Kind, controllerRPCResponse{
+			NotLeader: true,
+			LeaderID:  2,
+		})
+	})
+	staleLeader.HandleRPCMux(staleLeaderMux)
+	require.NoError(t, staleLeader.Start("127.0.0.1:0"))
+	t.Cleanup(staleLeader.Stop)
+
+	leader := transport.NewServer()
+	leaderMux := transport.NewRPCMux()
+	leaderMux.Handle(rpcServiceController, func(_ context.Context, body []byte) ([]byte, error) {
+		req, err := decodeControllerRequest(body)
+		require.NoError(t, err)
+		require.Equal(t, controllerRPCRuntimeReport, req.Kind)
+		return encodeControllerResponse(req.Kind, controllerRPCResponse{})
+	})
+	leader.HandleRPCMux(leaderMux)
+	require.NoError(t, leader.Start("127.0.0.1:0"))
+	t.Cleanup(leader.Stop)
+
+	discovery := &controllerClientTestDiscovery{
+		addrs: map[uint64]string{
+			1: staleLeader.Listener().Addr().String(),
+			2: leader.Listener().Addr().String(),
+		},
+	}
+	pool := transport.NewPool(discovery, 1, 50*time.Millisecond)
+	t.Cleanup(pool.Close)
+
+	client := transport.NewClient(pool)
+	t.Cleanup(client.Stop)
+
+	cluster := &Cluster{
+		cfg: Config{NodeID: 3},
+		transportResources: transportResources{
+			fwdClient: client,
+		},
+	}
+	controllerClient := newControllerClient(cluster, []NodeConfig{{NodeID: 1}, {NodeID: 2}}, nil)
+	controllerClient.setLeader(1)
+
+	fullSyncMarks := 0
+	controllerClient.onLeaderChange = func(multiraft.NodeID) {
+		fullSyncMarks++
+	}
+
+	err := controllerClient.ReportRuntimeObservation(context.Background(), runtimeObservationReport{
+		NodeID:     3,
+		ObservedAt: time.Unix(1710006666, 0),
+		FullSync:   false,
+	})
+	require.NoError(t, err)
+	require.Equal(t, multiraft.NodeID(2), controllerClient.cachedLeader())
+	require.Equal(t, 1, fullSyncMarks)
+}
+
 type recordedLogEntry struct {
 	level  string
 	module string

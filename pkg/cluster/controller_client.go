@@ -36,7 +36,8 @@ type controllerClient struct {
 	cache   *assignmentCache
 	peers   []multiraft.NodeID
 
-	leader atomic.Uint64
+	leader         atomic.Uint64
+	onLeaderChange func(multiraft.NodeID)
 }
 
 func newControllerClient(cluster *Cluster, peers []NodeConfig, cache *assignmentCache) *controllerClient {
@@ -340,7 +341,11 @@ func (c *controllerClient) setLeader(nodeID multiraft.NodeID) {
 	if c == nil {
 		return
 	}
+	prev := c.cachedLeader()
 	c.leader.Store(uint64(nodeID))
+	if nodeID != prev && c.onLeaderChange != nil {
+		c.onLeaderChange(nodeID)
+	}
 }
 
 func (c *controllerClient) clearLeader() {

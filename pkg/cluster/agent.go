@@ -41,23 +41,7 @@ func (a *slotAgent) HeartbeatOnce(ctx context.Context) error {
 		return ErrNotStarted
 	}
 	now := time.Now()
-	err := a.client.Report(ctx, slotcontrollerReport(a.cluster, now, nil))
-	if err != nil {
-		return err
-	}
-
-	for _, slotID := range a.cluster.runtime.Slots() {
-		status, err := a.cluster.runtime.Status(slotID)
-		if err != nil {
-			continue
-		}
-		view := buildRuntimeView(now, slotID, status, a.cluster.observationPeersForSlot(slotID))
-		err = a.client.Report(ctx, slotcontrollerReport(a.cluster, now, &view))
-		if err != nil && !isControllerRedirect(err) {
-			return err
-		}
-	}
-	return nil
+	return a.client.Report(ctx, slotcontrollerReport(a.cluster, now, nil))
 }
 
 func (a *slotAgent) SyncAssignments(ctx context.Context) error {

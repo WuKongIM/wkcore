@@ -41,6 +41,22 @@ func (c *Cluster) controllerObservationInterval() time.Duration {
 	return c.timeoutConfig().ControllerObservation
 }
 
+func (c *Cluster) observationHeartbeatInterval() time.Duration {
+	return c.timeoutConfig().ObservationHeartbeatInterval
+}
+
+func (c *Cluster) observationRuntimeScanInterval() time.Duration {
+	return c.timeoutConfig().ObservationRuntimeScanInterval
+}
+
+func (c *Cluster) observationRuntimeFlushDebounce() time.Duration {
+	return c.timeoutConfig().ObservationRuntimeFlushDebounce
+}
+
+func (c *Cluster) observationRuntimeFullSyncInterval() time.Duration {
+	return c.timeoutConfig().ObservationRuntimeFullSyncInterval
+}
+
 func (c *Cluster) forwardRetryInterval() time.Duration {
 	return scaleDerivedInterval(c.timeoutConfig().ForwardRetryBudget, defaultForwardRetryBudget, defaultForwardRetryInterval)
 }

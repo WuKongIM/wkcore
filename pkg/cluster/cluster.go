@@ -56,6 +56,13 @@ type hashSlotRuntimeResources struct {
 	runtimeStateMachines   map[multiraft.SlotID]hashSlotOwnershipUpdater
 }
 
+type observationResources struct {
+	observer          *observerLoop
+	heartbeatObserver *observerLoop
+	runtimeObserver   *observerLoop
+	runtimeReporter   *runtimeObservationReporter
+}
+
 type Cluster struct {
 	cfg    Config
 	logger wklog.Logger
@@ -69,7 +76,7 @@ type Cluster struct {
 	pendingHashSlotAborts map[uint16]pendingHashSlotAbort
 	runState              *runtimeState
 	hashSlotRuntimeResources
-	observer *observerLoop
+	observationResources
 	managedSlotResources
 	stopped atomic.Bool
 }
@@ -281,6 +288,11 @@ func (c *Cluster) startControllerClient() {
 		c.migrationWorker = newHashSlotMigrationWorker()
 	}
 	client := newControllerClient(c, c.cfg.DerivedControllerNodes(), c.assignments)
+	client.onLeaderChange = func(multiraft.NodeID) {
+		if c.runtimeReporter != nil {
+			c.runtimeReporter.requestFullSync()
+		}
+	}
 	c.controllerClient = client
 	c.agent = &slotAgent{
 		cluster: c,
@@ -293,6 +305,26 @@ func (c *Cluster) startObservationLoop() {
 	if c.controllerClient == nil {
 		return
 	}
+	if c.runtimeReporter == nil {
+		c.runtimeReporter = newRuntimeObservationReporter(runtimeObservationReporterConfig{
+			nodeID:           uint64(c.cfg.NodeID),
+			snapshot:         c.snapshotRuntimeObservationViews,
+			send:             c.controllerClient.ReportRuntimeObservation,
+			flushDebounce:    c.observationRuntimeFlushDebounce(),
+			fullSyncInterval: c.observationRuntimeFullSyncInterval(),
+		})
+		c.runtimeReporter.requestFullSync()
+	}
+	c.heartbeatObserver = newObserverLoop(c.observationHeartbeatInterval(), func(ctx context.Context) {
+		if c.agent != nil {
+			_ = c.agent.HeartbeatOnce(ctx)
+		}
+	})
+	c.heartbeatObserver.Start(context.Background())
+	c.runtimeObserver = newObserverLoop(c.observationRuntimeScanInterval(), func(ctx context.Context) {
+		c.runtimeObservationOnce(ctx)
+	})
+	c.runtimeObserver.Start(context.Background())
 	c.observer = newObserverLoop(c.controllerObservationInterval(), func(ctx context.Context) {
 		c.observeOnce(ctx)
 		c.controllerTickOnce(ctx)
@@ -369,6 +401,14 @@ func (c *Cluster) Stop() {
 		c.observer.Stop()
 		c.observer = nil
 	}
+	if c.heartbeatObserver != nil {
+		c.heartbeatObserver.Stop()
+		c.heartbeatObserver = nil
+	}
+	if c.runtimeObserver != nil {
+		c.runtimeObserver.Stop()
+		c.runtimeObserver = nil
+	}
 
 	if c.runtime != nil {
 		_ = c.runtime.Close()
@@ -413,7 +453,6 @@ func (c *Cluster) observeOnce(ctx context.Context) {
 	if c.agent == nil || c.runtime == nil || c.stopped.Load() {
 		return
 	}
-	_ = c.agent.HeartbeatOnce(ctx)
 	assignCtx, cancel := c.withControllerTimeout(ctx)
 	err := c.agent.SyncAssignments(assignCtx)
 	cancel()
@@ -425,6 +464,13 @@ func (c *Cluster) observeOnce(ctx context.Context) {
 		_ = c.agent.ApplyAssignments(ctx)
 	}
 	_ = c.observeHashSlotMigrations(ctx)
+}
+
+func (c *Cluster) runtimeObservationOnce(ctx context.Context) {
+	if c == nil || c.runtimeReporter == nil || c.stopped.Load() {
+		return
+	}
+	_ = c.runtimeReporter.tick(ctx)
 }
 
 func (c *Cluster) controllerTickOnce(ctx context.Context) {
@@ -1144,12 +1190,33 @@ func (c *Cluster) deleteRuntimePeers(slotID multiraft.SlotID) {
 	if c == nil {
 		return
 	}
+	if c.runtimeReporter != nil {
+		c.runtimeReporter.markClosed(uint32(slotID))
+	}
 	if c.runState == nil {
 		c.unregisterRuntimeStateMachine(slotID)
 		return
 	}
 	c.runState.Delete(slotID)
 	c.unregisterRuntimeStateMachine(slotID)
+}
+
+func (c *Cluster) snapshotRuntimeObservationViews() ([]controllermeta.SlotRuntimeView, error) {
+	if c == nil || c.runtime == nil {
+		return nil, nil
+	}
+
+	now := time.Now()
+	slotIDs := c.runtime.Slots()
+	views := make([]controllermeta.SlotRuntimeView, 0, len(slotIDs))
+	for _, slotID := range slotIDs {
+		status, err := c.runtime.Status(slotID)
+		if err != nil {
+			continue
+		}
+		views = append(views, buildRuntimeView(now, slotID, status, c.observationPeersForSlot(slotID)))
+	}
+	return views, nil
 }
 
 func nodeIDsFromUint64s(ids []uint64) []multiraft.NodeID {
