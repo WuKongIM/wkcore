@@ -43,6 +43,7 @@ type channelMetaCluster interface {
 type channelMetaSync struct {
 	source          channelMetaSource
 	cluster         channelMetaCluster
+	bootstrap       *channelMetaBootstrapper
 	localNode       uint64
 	refreshInterval time.Duration
 

@@ -195,6 +195,7 @@ func build(cfg Config) (_ *App, err error) {
 	app.channelMetaSync = &channelMetaSync{
 		source:          app.store,
 		cluster:         app.channelLog,
+		bootstrap:       newChannelMetaBootstrapper(app.cluster, app.store, cfg.Cluster.ChannelBootstrapDefaultMinISR, time.Now, app.logger),
 		localNode:       cfg.Node.ID,
 		refreshInterval: time.Second,
 	}
