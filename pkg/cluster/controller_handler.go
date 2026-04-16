@@ -29,6 +29,21 @@ func (h *controllerHandler) Handle(ctx context.Context, body []byte) ([]byte, er
 			LeaderID:  c.controller.LeaderID(),
 		})
 	}
+	loadHashSlotTable := func() (*HashSlotTable, error) {
+		if c.controllerHost != nil {
+			if table, ok := c.controllerHost.hashSlotTableSnapshot(); ok {
+				return table, nil
+			}
+		}
+		table, err := c.ensureControllerHashSlotTable(ctx, c.controllerMeta)
+		if err != nil {
+			return nil, err
+		}
+		if c.controllerHost != nil {
+			c.controllerHost.storeHashSlotTableSnapshot(table)
+		}
+		return table, nil
+	}
 
 	switch req.Kind {
 	case controllerRPCHeartbeat:
@@ -42,7 +57,7 @@ func (h *controllerHandler) Handle(ctx context.Context, body []byte) ([]byte, er
 			return nil, ErrNotStarted
 		}
 		c.controllerHost.applyObservation(*req.Report)
-		table, err := c.ensureControllerHashSlotTable(ctx, c.controllerMeta)
+		table, err := loadHashSlotTable()
 		if err != nil {
 			return nil, err
 		}
@@ -88,7 +103,7 @@ func (h *controllerHandler) Handle(ctx context.Context, body []byte) ([]byte, er
 		if err != nil {
 			return nil, err
 		}
-		table, err := c.ensureControllerHashSlotTable(ctx, c.controllerMeta)
+		table, err := loadHashSlotTable()
 		if err != nil {
 			return nil, err
 		}

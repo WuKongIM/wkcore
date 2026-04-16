@@ -126,6 +126,130 @@ func TestControllerHandlerHeartbeatUpdatesLeaderObservationWithoutProposal(t *te
 	}
 }
 
+func TestControllerHandlerHeartbeatUsesHashSlotSnapshotWhenWarm(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	handler := &controllerHandler{cluster: cluster}
+
+	snapshot := NewHashSlotTable(8, 2)
+	host.storeHashSlotTableSnapshot(snapshot)
+
+	stored := snapshot.Clone()
+	stored.StartMigration(3, 1, 2)
+	requireNoErr(t, host.meta.SaveHashSlotTable(context.Background(), stored))
+
+	body, err := encodeControllerRequest(controllerRPCRequest{
+		Kind: controllerRPCHeartbeat,
+		Report: &slotcontroller.AgentReport{
+			NodeID:               2,
+			Addr:                 "127.0.0.1:2222",
+			ObservedAt:           time.Unix(1710000300, 0),
+			HashSlotTableVersion: 0,
+		},
+	})
+	if err != nil {
+		t.Fatalf("encodeControllerRequest() error = %v", err)
+	}
+
+	respBody, err := handler.Handle(context.Background(), body)
+	if err != nil {
+		t.Fatalf("controllerHandler.Handle() error = %v", err)
+	}
+	resp, err := decodeControllerResponse(controllerRPCHeartbeat, respBody)
+	if err != nil {
+		t.Fatalf("decodeControllerResponse() error = %v", err)
+	}
+	if resp.HashSlotTableVersion != snapshot.Version() {
+		t.Fatalf("HashSlotTableVersion = %d, want snapshot version %d", resp.HashSlotTableVersion, snapshot.Version())
+	}
+}
+
+func TestControllerHandlerListAssignmentsUsesHashSlotSnapshotWhenWarm(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	handler := &controllerHandler{cluster: cluster}
+
+	requireNoErr(t, host.meta.UpsertAssignment(context.Background(), controllermeta.SlotAssignment{
+		SlotID:       1,
+		DesiredPeers: []uint64{1},
+		ConfigEpoch:  1,
+	}))
+
+	snapshot := NewHashSlotTable(8, 2)
+	host.storeHashSlotTableSnapshot(snapshot)
+
+	stored := snapshot.Clone()
+	stored.StartMigration(3, 1, 2)
+	requireNoErr(t, host.meta.SaveHashSlotTable(context.Background(), stored))
+
+	body, err := encodeControllerRequest(controllerRPCRequest{Kind: controllerRPCListAssignments})
+	if err != nil {
+		t.Fatalf("encodeControllerRequest() error = %v", err)
+	}
+
+	respBody, err := handler.Handle(context.Background(), body)
+	if err != nil {
+		t.Fatalf("controllerHandler.Handle() error = %v", err)
+	}
+	resp, err := decodeControllerResponse(controllerRPCListAssignments, respBody)
+	if err != nil {
+		t.Fatalf("decodeControllerResponse() error = %v", err)
+	}
+	if len(resp.Assignments) != 1 || resp.Assignments[0].SlotID != 1 {
+		t.Fatalf("Assignments = %#v, want slot 1 assignment", resp.Assignments)
+	}
+	if resp.HashSlotTableVersion != snapshot.Version() {
+		t.Fatalf("HashSlotTableVersion = %d, want snapshot version %d", resp.HashSlotTableVersion, snapshot.Version())
+	}
+	table, err := DecodeHashSlotTable(resp.HashSlotTable)
+	if err != nil {
+		t.Fatalf("DecodeHashSlotTable() error = %v", err)
+	}
+	if table.Version() != snapshot.Version() {
+		t.Fatalf("decoded table version = %d, want snapshot version %d", table.Version(), snapshot.Version())
+	}
+}
+
+func TestControllerHandlerHeartbeatBackfillsHashSlotSnapshotOnColdMiss(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	handler := &controllerHandler{cluster: cluster}
+
+	stored := NewHashSlotTable(8, 2)
+	stored.StartMigration(3, 1, 2)
+	requireNoErr(t, host.meta.SaveHashSlotTable(context.Background(), stored))
+
+	body, err := encodeControllerRequest(controllerRPCRequest{
+		Kind: controllerRPCHeartbeat,
+		Report: &slotcontroller.AgentReport{
+			NodeID:               2,
+			Addr:                 "127.0.0.1:2222",
+			ObservedAt:           time.Unix(1710000400, 0),
+			HashSlotTableVersion: 0,
+		},
+	})
+	if err != nil {
+		t.Fatalf("encodeControllerRequest() error = %v", err)
+	}
+
+	respBody, err := handler.Handle(context.Background(), body)
+	if err != nil {
+		t.Fatalf("controllerHandler.Handle() error = %v", err)
+	}
+	resp, err := decodeControllerResponse(controllerRPCHeartbeat, respBody)
+	if err != nil {
+		t.Fatalf("decodeControllerResponse() error = %v", err)
+	}
+	if resp.HashSlotTableVersion != stored.Version() {
+		t.Fatalf("HashSlotTableVersion = %d, want stored version %d", resp.HashSlotTableVersion, stored.Version())
+	}
+
+	snapshot, ok := host.hashSlotTableSnapshot()
+	if !ok {
+		t.Fatal("hashSlotTableSnapshot() ok = false, want true")
+	}
+	if snapshot.Version() != stored.Version() {
+		t.Fatalf("hashSlotTableSnapshot().Version() = %d, want %d", snapshot.Version(), stored.Version())
+	}
+}
+
 func newTestLocalControllerCluster(t *testing.T, start bool) (*Cluster, *controllerHost, *transportLayer) {
 	t.Helper()
 
