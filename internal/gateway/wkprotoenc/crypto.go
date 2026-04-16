@@ -214,7 +214,7 @@ func sharedSecret(private, public [32]byte) ([]byte, error) {
 
 func deriveAESKey(secret []byte) []byte {
 	sum := md5.Sum([]byte(base64.StdEncoding.EncodeToString(secret)))
-	return append([]byte(nil), sum[:]...)
+	return []byte(string(hexLower(sum[:])[:16]))
 }
 
 func randomIV() ([]byte, error) {

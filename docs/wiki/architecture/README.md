@@ -132,6 +132,7 @@ t6  Channel 层感知 ChannelMeta 变化后，触发 ISR 成员调整
 - [Transport 集群网络层详解](./04-transport-layer.md)
 - [发送消息完整流程](./05-message-sending-flow.md)
 - [Slot 集群数据获取与 Leader 路由](./06-slot-data-and-leader-routing.md)
+- [用户连接与跨节点消息路由](./07-user-connection-routing.md)
 
 ## 5. 术语表
 
