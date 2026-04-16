@@ -89,6 +89,7 @@ Start():
      条件: ControllerEnabled() && HasLocalControllerPeer()
      → newControllerHost(cfg, transport)
      → ensureControllerHashSlotTable → 加载或创建默认 HashSlotTable
+     → host.storeHashSlotTableSnapshot(table) 预热 leader-local HashSlot snapshot
      → router.UpdateHashSlotTable
      → host.Start()
   ⑤ startMultiraftRuntime():
@@ -151,6 +152,8 @@ observeOnce(ctx):
      → 响应中携带 HashSlotTable → applyHashSlotTablePayload 更新 Router + 状态机
      → Controller Leader 本地只更新 `observationCache` / `nodeHealthScheduler`
        steady-state 不再为 heartbeat/runtime 走 Raft 提案
+       heartbeat 返回的 HashSlotTable 优先读 `controllerHost` 的 leader-local snapshot
+       snapshot miss 时才 fallback `controllerMeta.LoadHashSlotTable()`
   ② agent.SyncAssignments(ctx):
      → client.RefreshAssignments() 从 Controller Leader 拉取最新分配
      → 写入 assignmentCache
@@ -307,8 +310,11 @@ Delta 转发 (运行时):
   → 解码 req → 校验 Controller Leader:
      非 Leader → marshalRedirect(LeaderID)
      是 Leader → 分发处理:
-       heartbeat         → 更新 leader-local observation / 刷新健康 deadline + 返回 HashSlotTable
-       list_assignments  → controllerMeta.ListAssignments + HashSlotTable
+       heartbeat         → 更新 leader-local observation / 刷新健康 deadline
+                           → 优先读 leader-local HashSlot snapshot 返回版本/表
+                           → snapshot miss 时 fallback store 并回填 snapshot
+       list_assignments  → controllerMeta.ListAssignments
+                           + leader-local HashSlot snapshot（miss 时 fallback store）
        list_nodes        → controllerMeta.ListNodes
        list_runtime_views→ controllerHost.snapshotObservations().RuntimeViews
        operator          → Propose(OperatorRequest)
@@ -352,7 +358,9 @@ Delta 转发 (运行时):
 - **Propose 必须带 HashSlot**: `Propose()` 是兼容旧路径的快捷方式，仅适用于"一个物理 Slot 只有一个 Hash Slot"的场景。一旦 Slot 拥有多个 Hash Slot（AddSlot/Rebalance 后），必须使用 `ProposeWithHashSlot`，否则返回 `ErrHashSlotRequired`。
 - **Forward 重试预算有限**: `ProposeWithHashSlot` 内置 Retry 循环，`ForwardRetryBudget`(默认 300ms) 只重试 `ErrNotLeader`。网络分区或全部 peer 不可达时不会无限重试。
 - **Controller 观测读语义**: `ListObservedRuntimeViews` 在 leader 上优先读本地 `observationCache`；只有 leader 不可达时才允许降级到本地 `controllerMeta`，且结果可能滞后。
+- **Controller HashSlot 读快路径**: leader 处理 `heartbeat` / `list_assignments` 时优先读 `controllerHost` 持有的 HashSlot snapshot；只有 snapshot cold miss 才会回落到 `controllerMeta.LoadHashSlotTable()`，回填后再继续返回。
 - **节点健康改为 deadline 驱动**: steady-state 不再由 `controllerTickOnce()` 提案 `EvaluateTimeouts`；leader 本地 `nodeHealthScheduler` 只在 Alive/Suspect/Dead 边沿变化时提案 `NodeStatusUpdate`。
+- **节点健康 mirror 只反映 committed state**: `nodeHealthScheduler` 对 repeated Alive observation 优先读本地 durable node mirror；mirror miss 才 `GetNode()`。mirror 通过 leader change 全量 reload 和 committed command 增量 refresh 维护，不直接信任 proposal payload。
 - **新 leader 先 warmup 再规划**: leader change 会清空旧 observation，等待 fresh observation 后再恢复 Repair/Rebalance 规划，避免把“暂时未观测到”误判为节点故障。
 - **调和器任务执行权**: 并非所有节点都执行任务。`shouldExecuteTask` 逻辑: Repair/Rebalance 优先 SourceNode 执行，SourceNode 不可用时由 Leader 执行；其他任务由 DesiredPeers 中最小 alive NodeID 执行。错配会导致任务不执行。
 - **源 Slot 保护**: 当 Repair/Rebalance 任务的 SourceNode == 本节点时，即使该 Slot 不在 `desiredLocalSlots` 中，调和器也会保护它不被关闭（`protectedSourceSlots`），否则 changeConfig/RemoveVoter 发送不出去。
