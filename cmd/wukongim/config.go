@@ -94,6 +94,11 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 	if err != nil {
 		return app.Config{}, err
 	}
+	channelBootstrapDefaultMinISR, err := parseInt(v, "WK_CLUSTER_CHANNEL_BOOTSTRAP_DEFAULT_MIN_ISR")
+	if err != nil {
+		return app.Config{}, err
+	}
+	channelBootstrapDefaultMinISRSet := stringValue(v, "WK_CLUSTER_CHANNEL_BOOTSTRAP_DEFAULT_MIN_ISR") != ""
 	hashSlotCount, err := parseUint16(v, "WK_CLUSTER_HASH_SLOT_COUNT")
 	if err != nil {
 		return app.Config{}, err
@@ -288,20 +293,21 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 			ControllerRaftPath: stringValue(v, "WK_STORAGE_CONTROLLER_RAFT_PATH"),
 		},
 		Cluster: app.ClusterConfig{
-			ListenAddr:         stringValue(v, "WK_CLUSTER_LISTEN_ADDR"),
-			SlotCount:          slotCount,
-			HashSlotCount:      hashSlotCount,
-			InitialSlotCount:   initialSlotCount,
-			Nodes:              nodes,
-			ControllerReplicaN: controllerReplicaN,
-			SlotReplicaN:       slotReplicaN,
-			ForwardTimeout:     forwardTimeout,
-			PoolSize:           poolSize,
-			TickInterval:       tickInterval,
-			RaftWorkers:        raftWorkers,
-			ElectionTick:       electionTick,
-			HeartbeatTick:      heartbeatTick,
-			DialTimeout:        dialTimeout,
+			ListenAddr:                    stringValue(v, "WK_CLUSTER_LISTEN_ADDR"),
+			SlotCount:                     slotCount,
+			HashSlotCount:                 hashSlotCount,
+			InitialSlotCount:              initialSlotCount,
+			ChannelBootstrapDefaultMinISR: channelBootstrapDefaultMinISR,
+			Nodes:                         nodes,
+			ControllerReplicaN:            controllerReplicaN,
+			SlotReplicaN:                  slotReplicaN,
+			ForwardTimeout:                forwardTimeout,
+			PoolSize:                      poolSize,
+			TickInterval:                  tickInterval,
+			RaftWorkers:                   raftWorkers,
+			ElectionTick:                  electionTick,
+			HeartbeatTick:                 heartbeatTick,
+			DialTimeout:                   dialTimeout,
 			Timeouts: raftcluster.Timeouts{
 				ControllerObservation:              controllerObservationInterval,
 				ControllerRequest:                  controllerRequestTimeout,
@@ -355,6 +361,7 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 			Format:     stringValue(v, "WK_LOG_FORMAT"),
 		},
 	}
+	cfg.Cluster.SetExplicitFlags(channelBootstrapDefaultMinISRSet)
 	cfg.Log.SetExplicitFlags(stringValue(v, "WK_LOG_COMPRESS") != "", stringValue(v, "WK_LOG_CONSOLE") != "")
 	cfg.Observability.SetExplicitFlags(
 		stringValue(v, "WK_METRICS_ENABLE") != "",

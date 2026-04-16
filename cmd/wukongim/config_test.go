@@ -95,6 +95,37 @@ func TestLoadConfigParsesObservabilityFlags(t *testing.T) {
 	require.True(t, cfg.Observability.HealthDebugEnabled)
 }
 
+func TestLoadConfigParsesChannelBootstrapDefaultMinISR(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_CLUSTER_SLOT_COUNT=1",
+		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
+	)
+	t.Setenv("WK_CLUSTER_CHANNEL_BOOTSTRAP_DEFAULT_MIN_ISR", "3")
+
+	cfg, err := loadConfig(configPath)
+	require.NoError(t, err)
+	require.Equal(t, 3, cfg.Cluster.ChannelBootstrapDefaultMinISR)
+}
+
+func TestLoadConfigRejectsExplicitZeroChannelBootstrapDefaultMinISR(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_CLUSTER_SLOT_COUNT=1",
+		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
+	)
+	t.Setenv("WK_CLUSTER_CHANNEL_BOOTSTRAP_DEFAULT_MIN_ISR", "0")
+
+	_, err := loadConfig(configPath)
+	require.ErrorContains(t, err, "channel bootstrap default min isr")
+}
+
 func TestLoadConfigPrefersEnvironmentVariablesOverConfValues(t *testing.T) {
 	dir := t.TempDir()
 	configPath := writeConf(t, dir, "wukongim.conf",

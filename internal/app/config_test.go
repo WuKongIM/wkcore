@@ -220,6 +220,23 @@ func TestConfigPreservesExplicitDataPlaneRPCTimeout(t *testing.T) {
 	require.Equal(t, 250*time.Millisecond, cfg.Cluster.DataPlaneRPCTimeout)
 }
 
+func TestConfigDefaultsChannelBootstrapMinISR(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cluster.ChannelBootstrapDefaultMinISR = 0
+	cfg.Cluster.SetExplicitFlags(false)
+
+	require.NoError(t, cfg.ApplyDefaultsAndValidate())
+	require.Equal(t, 2, cfg.Cluster.ChannelBootstrapDefaultMinISR)
+}
+
+func TestConfigRejectsExplicitNonPositiveChannelBootstrapMinISR(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cluster.ChannelBootstrapDefaultMinISR = 0
+	cfg.Cluster.SetExplicitFlags(true)
+
+	require.ErrorContains(t, cfg.ApplyDefaultsAndValidate(), "channel bootstrap default min isr")
+}
+
 func TestClusterRuntimeConfigIncludesTimeoutOverrides(t *testing.T) {
 	cfg := validConfig()
 	cfg.Cluster.Timeouts = raftcluster.Timeouts{
@@ -247,18 +264,19 @@ func validConfig() Config {
 			DataDir: "/tmp/wukong-node-1",
 		},
 		Cluster: ClusterConfig{
-			ListenAddr:         "127.0.0.1:7000",
-			SlotCount:          1,
-			Nodes:              []NodeConfigRef{{ID: 1, Addr: "127.0.0.1:7000"}},
-			ControllerReplicaN: 1,
-			SlotReplicaN:       1,
-			ForwardTimeout:     5 * time.Second,
-			PoolSize:           4,
-			TickInterval:       100 * time.Millisecond,
-			RaftWorkers:        2,
-			ElectionTick:       10,
-			HeartbeatTick:      1,
-			DialTimeout:        5 * time.Second,
+			ListenAddr:                    "127.0.0.1:7000",
+			SlotCount:                     1,
+			Nodes:                         []NodeConfigRef{{ID: 1, Addr: "127.0.0.1:7000"}},
+			ControllerReplicaN:            1,
+			SlotReplicaN:                  1,
+			ForwardTimeout:                5 * time.Second,
+			PoolSize:                      4,
+			TickInterval:                  100 * time.Millisecond,
+			RaftWorkers:                   2,
+			ElectionTick:                  10,
+			HeartbeatTick:                 1,
+			ChannelBootstrapDefaultMinISR: 2,
+			DialTimeout:                   5 * time.Second,
 		},
 		API: APIConfig{},
 		Gateway: GatewayConfig{

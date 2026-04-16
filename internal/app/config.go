@@ -79,26 +79,36 @@ type StorageConfig struct {
 }
 
 type ClusterConfig struct {
-	ListenAddr                string
-	SlotCount                 uint32
-	HashSlotCount             uint16
-	InitialSlotCount          uint32
-	Nodes                     []NodeConfigRef
-	Slots                     []SlotConfig
-	ControllerReplicaN        int
-	SlotReplicaN              int
-	ForwardTimeout            time.Duration
-	PoolSize                  int
-	DataPlanePoolSize         int
-	TickInterval              time.Duration
-	RaftWorkers               int
-	ElectionTick              int
-	HeartbeatTick             int
-	DialTimeout               time.Duration
-	Timeouts                  raftcluster.Timeouts
-	DataPlaneRPCTimeout       time.Duration
-	DataPlaneMaxFetchInflight int
-	DataPlaneMaxPendingFetch  int
+	ListenAddr                    string
+	SlotCount                     uint32
+	HashSlotCount                 uint16
+	InitialSlotCount              uint32
+	ChannelBootstrapDefaultMinISR int
+	Nodes                         []NodeConfigRef
+	Slots                         []SlotConfig
+	ControllerReplicaN            int
+	SlotReplicaN                  int
+	ForwardTimeout                time.Duration
+	PoolSize                      int
+	DataPlanePoolSize             int
+	TickInterval                  time.Duration
+	RaftWorkers                   int
+	ElectionTick                  int
+	HeartbeatTick                 int
+	DialTimeout                   time.Duration
+	Timeouts                      raftcluster.Timeouts
+	DataPlaneRPCTimeout           time.Duration
+	DataPlaneMaxFetchInflight     int
+	DataPlaneMaxPendingFetch      int
+
+	channelBootstrapDefaultMinISRSet bool
+}
+
+func (c *ClusterConfig) SetExplicitFlags(channelBootstrapDefaultMinISRSet bool) {
+	if c == nil {
+		return
+	}
+	c.channelBootstrapDefaultMinISRSet = channelBootstrapDefaultMinISRSet
 }
 
 type NodeConfigRef struct {
@@ -216,6 +226,12 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	}
 	if c.Cluster.SlotReplicaN > len(c.Cluster.Nodes) {
 		return fmt.Errorf("%w: slot replica count %d exceeds cluster nodes %d", ErrInvalidConfig, c.Cluster.SlotReplicaN, len(c.Cluster.Nodes))
+	}
+	if c.Cluster.ChannelBootstrapDefaultMinISR <= 0 {
+		if c.Cluster.channelBootstrapDefaultMinISRSet {
+			return fmt.Errorf("%w: channel bootstrap default min isr must be positive", ErrInvalidConfig)
+		}
+		c.Cluster.ChannelBootstrapDefaultMinISR = 2
 	}
 
 	if c.Storage.DBPath == "" {
