@@ -213,15 +213,20 @@ func TestAppRuntimeMetaReadMissDoesNotBootstrap(t *testing.T) {
 		ID:   "read-miss-group",
 		Type: frame.ChannelTypeGroup,
 	}
+	key := channelhandler.KeyFromChannelID(id)
 
 	_, err = app.ChannelLog().Status(id)
 	require.ErrorIs(t, err, channel.ErrStaleMeta)
+	_, ok := app.channelLog.MetaSnapshot(key)
+	require.False(t, ok)
 
 	_, err = app.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
 	require.ErrorIs(t, err, metadb.ErrNotFound)
 
 	_, err = app.ChannelLog().Status(id)
 	require.ErrorIs(t, err, channel.ErrStaleMeta)
+	_, ok = app.channelLog.MetaSnapshot(key)
+	require.False(t, ok)
 
 	_, err = app.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
 	require.ErrorIs(t, err, metadb.ErrNotFound)
