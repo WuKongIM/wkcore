@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -158,6 +159,46 @@ func TestListObservedRuntimeViewsUsesControllerClientWhenAvailable(t *testing.T)
 	_, err = cluster.ListObservedRuntimeViews(context.Background())
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("ListObservedRuntimeViews() error = %v, want %v", err, sentinel)
+	}
+}
+
+func TestListObservedRuntimeViewsReadsLeaderObservationSnapshot(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	cluster.controllerClient = fakeControllerClient{
+		listRuntimeViewsErr: errors.New("controller client should not be used by local leader"),
+	}
+
+	if err := host.meta.UpsertRuntimeView(context.Background(), controllermeta.SlotRuntimeView{
+		SlotID:       7,
+		CurrentPeers: []uint64{9, 9, 9},
+		LastReportAt: time.Unix(1, 0),
+	}); err != nil {
+		t.Fatalf("UpsertRuntimeView() error = %v", err)
+	}
+	host.applyObservation(slotcontroller.AgentReport{
+		NodeID:     2,
+		Addr:       "127.0.0.1:2222",
+		ObservedAt: time.Unix(1710000300, 0),
+		Runtime: &controllermeta.SlotRuntimeView{
+			SlotID:              7,
+			CurrentPeers:        []uint64{1, 2, 3},
+			LeaderID:            2,
+			HealthyVoters:       3,
+			HasQuorum:           true,
+			ObservedConfigEpoch: 9,
+			LastReportAt:        time.Unix(1710000301, 0),
+		},
+	})
+
+	views, err := cluster.ListObservedRuntimeViews(context.Background())
+	if err != nil {
+		t.Fatalf("ListObservedRuntimeViews() error = %v", err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("ListObservedRuntimeViews() len = %d, want 1", len(views))
+	}
+	if got, want := views[0].CurrentPeers, []uint64{1, 2, 3}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListObservedRuntimeViews() peers = %v, want %v", got, want)
 	}
 }
 

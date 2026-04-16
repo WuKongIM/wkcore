@@ -934,6 +934,9 @@ func (c *Cluster) ListNodes(ctx context.Context) ([]controllermeta.ClusterNode, 
 }
 
 func (c *Cluster) ListObservedRuntimeViews(ctx context.Context) ([]controllermeta.SlotRuntimeView, error) {
+	if views, ok := c.localObservedRuntimeViews(); ok {
+		return views, nil
+	}
 	if c.controllerClient != nil {
 		var views []controllermeta.SlotRuntimeView
 		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
@@ -952,6 +955,13 @@ func (c *Cluster) ListObservedRuntimeViews(ctx context.Context) ([]controllermet
 		return c.controllerMeta.ListRuntimeViews(ctx)
 	}
 	return nil, ErrNotStarted
+}
+
+func (c *Cluster) localObservedRuntimeViews() ([]controllermeta.SlotRuntimeView, bool) {
+	if c == nil || c.controllerHost == nil || !c.controllerHost.IsLeader(c.cfg.NodeID) {
+		return nil, false
+	}
+	return c.controllerHost.snapshotObservations().RuntimeViews, true
 }
 
 func (c *Cluster) ListTasks(ctx context.Context) ([]controllermeta.ReconcileTask, error) {

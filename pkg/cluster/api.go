@@ -27,6 +27,7 @@ type API interface {
 
 	ListNodes(ctx context.Context) ([]controllermeta.ClusterNode, error)
 	ListSlotAssignments(ctx context.Context) ([]controllermeta.SlotAssignment, error)
+	// ListObservedRuntimeViews returns the controller leader's observed runtime snapshot when available.
 	ListObservedRuntimeViews(ctx context.Context) ([]controllermeta.SlotRuntimeView, error)
 	ListTasks(ctx context.Context) ([]controllermeta.ReconcileTask, error)
 	GetMigrationStatus() []HashSlotMigration

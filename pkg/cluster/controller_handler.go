@@ -38,17 +38,10 @@ func (h *controllerHandler) Handle(ctx context.Context, body []byte) ([]byte, er
 		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
 			return marshalRedirect()
 		}
-		proposeCtx, cancel := c.withControllerTimeout(ctx)
-		defer cancel()
-		if err := c.controller.Propose(proposeCtx, slotcontroller.Command{
-			Kind:   slotcontroller.CommandKindNodeHeartbeat,
-			Report: req.Report,
-		}); err != nil {
-			if errors.Is(err, controllerraft.ErrNotLeader) {
-				return marshalRedirect()
-			}
-			return nil, err
+		if c.controllerHost == nil {
+			return nil, ErrNotStarted
 		}
+		c.controllerHost.applyObservation(*req.Report)
 		table, err := c.ensureControllerHashSlotTable(ctx, c.controllerMeta)
 		if err != nil {
 			return nil, err
@@ -117,11 +110,12 @@ func (h *controllerHandler) Handle(ctx context.Context, body []byte) ([]byte, er
 		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
 			return marshalRedirect()
 		}
-		views, err := c.controllerMeta.ListRuntimeViews(ctx)
-		if err != nil {
-			return nil, err
+		if c.controllerHost == nil {
+			return nil, ErrNotStarted
 		}
-		return encodeControllerResponse(req.Kind, controllerRPCResponse{RuntimeViews: views})
+		return encodeControllerResponse(req.Kind, controllerRPCResponse{
+			RuntimeViews: c.controllerHost.snapshotObservations().RuntimeViews,
+		})
 	case controllerRPCListTasks:
 		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
 			return marshalRedirect()
