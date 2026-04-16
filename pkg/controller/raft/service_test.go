@@ -235,6 +235,79 @@ func TestServiceProposeAppliesRemoveSlotCommand(t *testing.T) {
 	}
 }
 
+func TestControllerRaftServicePublishesCommittedCommandHook(t *testing.T) {
+	env := newTestEnv(t, []uint64{1})
+	defer env.stopAll()
+
+	var (
+		mu        sync.Mutex
+		committed []slotcontroller.Command
+	)
+
+	env.startNodeWithConfig(t, 1, nil, func(cfg *Config) {
+		cfg.OnCommittedCommand = func(cmd slotcontroller.Command) {
+			mu.Lock()
+			committed = append(committed, cmd)
+			mu.Unlock()
+		}
+	})
+	env.waitForLeader(t, []uint64{1})
+
+	require.NoError(t, env.nodes[1].service.Propose(context.Background(), slotcontroller.Command{
+		Kind: slotcontroller.CommandKindOperatorRequest,
+		Op: &slotcontroller.OperatorRequest{
+			Kind:   slotcontroller.OperatorMarkNodeDraining,
+			NodeID: 2,
+		},
+	}))
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(committed) == 1
+	}, 2*time.Second, 20*time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, slotcontroller.CommandKindOperatorRequest, committed[0].Kind)
+	require.NotNil(t, committed[0].Op)
+	require.Equal(t, uint64(2), committed[0].Op.NodeID)
+}
+
+func TestControllerRaftServicePublishesLeaderChangeHook(t *testing.T) {
+	env := newTestEnv(t, []uint64{1})
+	defer env.stopAll()
+
+	type leaderChange struct {
+		from uint64
+		to   uint64
+	}
+
+	var (
+		mu      sync.Mutex
+		changes []leaderChange
+	)
+
+	env.startNodeWithConfig(t, 1, nil, func(cfg *Config) {
+		cfg.OnLeaderChange = func(from, to uint64) {
+			mu.Lock()
+			changes = append(changes, leaderChange{from: from, to: to})
+			mu.Unlock()
+		}
+	})
+	env.waitForLeader(t, []uint64{1})
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(changes) >= 1
+	}, 2*time.Second, 20*time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, leaderChange{from: 0, to: 1}, changes[len(changes)-1])
+}
+
 func TestFailInflightProposalsOnLeaderLossFailsQueuedAndIndexed(t *testing.T) {
 	queuedResp := make(chan error, 1)
 	indexedResp := make(chan error, 1)
@@ -332,7 +405,16 @@ func (e *testEnv) startNode(t *testing.T, nodeID uint64, peers []Peer) {
 	require.NoError(t, e.startNodeErr(t, nodeID, peers))
 }
 
+func (e *testEnv) startNodeWithConfig(t *testing.T, nodeID uint64, peers []Peer, mutate func(*Config)) {
+	t.Helper()
+	require.NoError(t, e.startNodeErrWithConfig(t, nodeID, peers, mutate))
+}
+
 func (e *testEnv) startNodeErr(t *testing.T, nodeID uint64, peers []Peer) error {
+	return e.startNodeErrWithConfig(t, nodeID, peers, nil)
+}
+
+func (e *testEnv) startNodeErrWithConfig(t *testing.T, nodeID uint64, peers []Peer, mutate func(*Config)) error {
 	t.Helper()
 	node := e.nodes[nodeID]
 	require.NotNil(t, node)
@@ -361,7 +443,7 @@ func (e *testEnv) startNodeErr(t *testing.T, nodeID uint64, peers []Peer) error 
 	require.NoError(t, err)
 	node.sm = slotcontroller.NewStateMachine(node.meta, slotcontroller.StateMachineConfig{})
 
-	node.service = &Service{cfg: Config{
+	cfg := Config{
 		NodeID:         nodeID,
 		Peers:          append([]Peer(nil), peers...),
 		AllowBootstrap: true,
@@ -370,7 +452,11 @@ func (e *testEnv) startNodeErr(t *testing.T, nodeID uint64, peers []Peer) error 
 		Server:         node.server,
 		RPCMux:         node.rpcMux,
 		Pool:           node.pool,
-	}}
+	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	node.service = &Service{cfg: cfg}
 	if err := node.service.Start(context.Background()); err != nil {
 		e.stopNode(nodeID)
 		return err

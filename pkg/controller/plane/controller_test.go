@@ -398,6 +398,81 @@ func TestStateMachineDefaultConfigAppliesHeartbeatTimeouts(t *testing.T) {
 	require.Equal(t, NodeStatusDead, node.Status)
 }
 
+func TestStateMachineApplyNodeStatusUpdateAppliesExpectedTransition(t *testing.T) {
+	store := openControllerStore(t)
+	sm := NewStateMachine(store, StateMachineConfig{})
+	ctx := context.Background()
+
+	require.NoError(t, store.UpsertNode(ctx, controllermeta.ClusterNode{
+		NodeID:          1,
+		Addr:            "127.0.0.1:7001",
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Unix(1, 0),
+		CapacityWeight:  1,
+	}))
+	require.NoError(t, store.UpsertNode(ctx, controllermeta.ClusterNode{
+		NodeID:          2,
+		Addr:            "127.0.0.1:7002",
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Unix(2, 0),
+		CapacityWeight:  1,
+	}))
+
+	alive := statusPtr(controllermeta.NodeStatusAlive)
+	require.NoError(t, sm.Apply(ctx, Command{
+		Kind: CommandKindNodeStatusUpdate,
+		NodeStatusUpdate: &NodeStatusUpdate{
+			Transitions: []NodeStatusTransition{{
+				NodeID:         1,
+				NewStatus:      controllermeta.NodeStatusSuspect,
+				ExpectedStatus: alive,
+				EvaluatedAt:    time.Unix(10, 0),
+			}},
+		},
+	}))
+
+	node, err := store.GetNode(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, controllermeta.NodeStatusSuspect, node.Status)
+	require.Equal(t, time.Unix(10, 0), node.LastHeartbeatAt)
+
+	untouched, err := store.GetNode(ctx, 2)
+	require.NoError(t, err)
+	require.Equal(t, controllermeta.NodeStatusAlive, untouched.Status)
+}
+
+func TestStateMachineApplyNodeStatusUpdateIgnoresMismatchedPriorStatus(t *testing.T) {
+	store := openControllerStore(t)
+	sm := NewStateMachine(store, StateMachineConfig{})
+	ctx := context.Background()
+
+	require.NoError(t, store.UpsertNode(ctx, controllermeta.ClusterNode{
+		NodeID:          1,
+		Addr:            "127.0.0.1:7001",
+		Status:          controllermeta.NodeStatusDead,
+		LastHeartbeatAt: time.Unix(1, 0),
+		CapacityWeight:  1,
+	}))
+
+	alive := statusPtr(controllermeta.NodeStatusAlive)
+	require.NoError(t, sm.Apply(ctx, Command{
+		Kind: CommandKindNodeStatusUpdate,
+		NodeStatusUpdate: &NodeStatusUpdate{
+			Transitions: []NodeStatusTransition{{
+				NodeID:         1,
+				NewStatus:      controllermeta.NodeStatusSuspect,
+				ExpectedStatus: alive,
+				EvaluatedAt:    time.Unix(10, 0),
+			}},
+		},
+	}))
+
+	node, err := store.GetNode(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, controllermeta.NodeStatusDead, node.Status)
+	require.Equal(t, time.Unix(1, 0), node.LastHeartbeatAt)
+}
+
 func TestStateMachineRequiresResumeToLeaveDraining(t *testing.T) {
 	store := openControllerStore(t)
 	sm := NewStateMachine(store, StateMachineConfig{})
@@ -427,6 +502,10 @@ func TestStateMachineRequiresResumeToLeaveDraining(t *testing.T) {
 	node, err = store.GetNode(ctx, 2)
 	require.NoError(t, err)
 	require.Equal(t, NodeStatusAlive, node.Status)
+}
+
+func statusPtr(status controllermeta.NodeStatus) *controllermeta.NodeStatus {
+	return &status
 }
 
 func TestStateMachineResumeNodeClearsRepairTasksForThatNode(t *testing.T) {

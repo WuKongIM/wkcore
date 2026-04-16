@@ -72,15 +72,16 @@ type loadedMemoryStorage struct {
 }
 
 type commandEnvelope struct {
-	Kind       slotcontroller.CommandKind           `json:"kind"`
-	Report     *slotcontroller.AgentReport          `json:"report,omitempty"`
-	Op         *slotcontroller.OperatorRequest      `json:"op,omitempty"`
-	Advance    *taskAdvanceEnvelope                 `json:"advance,omitempty"`
-	Assignment *slotcontrollerAssignmentEnvelope    `json:"assignment,omitempty"`
-	Task       *slotcontrollerReconcileTaskEnvelope `json:"task,omitempty"`
-	Migration  *slotcontroller.MigrationRequest     `json:"migration,omitempty"`
-	AddSlot    *slotcontroller.AddSlotRequest       `json:"add_slot,omitempty"`
-	RemoveSlot *slotcontroller.RemoveSlotRequest    `json:"remove_slot,omitempty"`
+	Kind             slotcontroller.CommandKind           `json:"kind"`
+	Report           *slotcontroller.AgentReport          `json:"report,omitempty"`
+	Op               *slotcontroller.OperatorRequest      `json:"op,omitempty"`
+	Advance          *taskAdvanceEnvelope                 `json:"advance,omitempty"`
+	Assignment       *slotcontrollerAssignmentEnvelope    `json:"assignment,omitempty"`
+	Task             *slotcontrollerReconcileTaskEnvelope `json:"task,omitempty"`
+	Migration        *slotcontroller.MigrationRequest     `json:"migration,omitempty"`
+	AddSlot          *slotcontroller.AddSlotRequest       `json:"add_slot,omitempty"`
+	RemoveSlot       *slotcontroller.RemoveSlotRequest    `json:"remove_slot,omitempty"`
+	NodeStatusUpdate *slotcontroller.NodeStatusUpdate     `json:"node_status_update,omitempty"`
 }
 
 type taskAdvanceEnvelope struct {
@@ -359,6 +360,9 @@ func (s *Service) run(rawNode *raft.RawNode, storageView *storageAdapter, stopCh
 						return err
 					}
 					err = s.cfg.StateMachine.Apply(context.Background(), cmd)
+					if err == nil && s.cfg.OnCommittedCommand != nil {
+						s.cfg.OnCommittedCommand(cmd)
+					}
 					if tracked, ok := pendingByIndex[entry.Index]; ok {
 						tracked.resp <- err
 						delete(pendingByIndex, entry.Index)
@@ -444,7 +448,11 @@ func (s *Service) setError(err error) {
 }
 
 func (s *Service) updateLeader(rawNode *raft.RawNode) {
-	s.leaderID.Store(rawNode.Status().Lead)
+	newLeader := rawNode.Status().Lead
+	oldLeader := s.leaderID.Swap(newLeader)
+	if oldLeader != newLeader && s.cfg.OnLeaderChange != nil {
+		s.cfg.OnLeaderChange(oldLeader, newLeader)
+	}
 }
 
 func newStorageAdapter(storage multiraft.Storage) *storageAdapter {
@@ -620,6 +628,9 @@ func encodeCommand(cmd slotcontroller.Command) ([]byte, error) {
 			SlotID: cmd.RemoveSlot.SlotID,
 		}
 	}
+	if cmd.NodeStatusUpdate != nil {
+		envelope.NodeStatusUpdate = cloneNodeStatusUpdate(cmd.NodeStatusUpdate)
+	}
 	return json.Marshal(envelope)
 }
 
@@ -684,6 +695,9 @@ func decodeCommand(data []byte) (slotcontroller.Command, error) {
 			SlotID: envelope.RemoveSlot.SlotID,
 		}
 	}
+	if envelope.NodeStatusUpdate != nil {
+		cmd.NodeStatusUpdate = cloneNodeStatusUpdate(envelope.NodeStatusUpdate)
+	}
 	return cmd, nil
 }
 
@@ -726,6 +740,28 @@ func cloneConfState(state raftpb.ConfState) raftpb.ConfState {
 		LearnersNext:   append([]uint64(nil), state.LearnersNext...),
 		AutoLeave:      state.AutoLeave,
 	}
+}
+
+func cloneNodeStatusUpdate(update *slotcontroller.NodeStatusUpdate) *slotcontroller.NodeStatusUpdate {
+	if update == nil {
+		return nil
+	}
+	cloned := &slotcontroller.NodeStatusUpdate{
+		Transitions: make([]slotcontroller.NodeStatusTransition, 0, len(update.Transitions)),
+	}
+	for _, transition := range update.Transitions {
+		next := slotcontroller.NodeStatusTransition{
+			NodeID:      transition.NodeID,
+			NewStatus:   transition.NewStatus,
+			EvaluatedAt: transition.EvaluatedAt,
+		}
+		if transition.ExpectedStatus != nil {
+			expected := *transition.ExpectedStatus
+			next.ExpectedStatus = &expected
+		}
+		cloned.Transitions = append(cloned.Transitions, next)
+	}
+	return cloned
 }
 
 func failTracked(queue []trackedProposal, byIndex map[uint64]trackedProposal, err error) {

@@ -19,8 +19,9 @@ const (
 	CommandKindAdvanceMigration
 	CommandKindFinalizeMigration
 	CommandKindAbortMigration
-	CommandKindAddSlot    CommandKind = 14
-	CommandKindRemoveSlot CommandKind = 15
+	CommandKindAddSlot          CommandKind = 14
+	CommandKindRemoveSlot       CommandKind = 15
+	CommandKindNodeStatusUpdate CommandKind = 16
 )
 
 type OperatorKind uint8
@@ -68,14 +69,26 @@ type RemoveSlotRequest struct {
 	SlotID uint64
 }
 
+type NodeStatusTransition struct {
+	NodeID         uint64
+	NewStatus      controllermeta.NodeStatus
+	ExpectedStatus *controllermeta.NodeStatus
+	EvaluatedAt    time.Time
+}
+
+type NodeStatusUpdate struct {
+	Transitions []NodeStatusTransition
+}
+
 type Command struct {
-	Kind       CommandKind
-	Report     *AgentReport
-	Op         *OperatorRequest
-	Advance    *TaskAdvance
-	Assignment *controllermeta.SlotAssignment
-	Task       *controllermeta.ReconcileTask
-	Migration  *MigrationRequest
-	AddSlot    *AddSlotRequest
-	RemoveSlot *RemoveSlotRequest
+	Kind             CommandKind
+	Report           *AgentReport
+	Op               *OperatorRequest
+	Advance          *TaskAdvance
+	Assignment       *controllermeta.SlotAssignment
+	Task             *controllermeta.ReconcileTask
+	Migration        *MigrationRequest
+	AddSlot          *AddSlotRequest
+	RemoveSlot       *RemoveSlotRequest
+	NodeStatusUpdate *NodeStatusUpdate
 }

@@ -73,6 +73,11 @@ func (sm *StateMachine) Apply(ctx context.Context, cmd Command) error {
 		return sm.applyTaskResult(ctx, *cmd.Advance)
 	case CommandKindAssignmentTaskUpdate:
 		return sm.applyAssignmentTaskUpdate(ctx, cmd.Assignment, cmd.Task)
+	case CommandKindNodeStatusUpdate:
+		if cmd.NodeStatusUpdate == nil {
+			return controllermeta.ErrInvalidArgument
+		}
+		return sm.applyNodeStatusUpdate(ctx, *cmd.NodeStatusUpdate)
 	case CommandKindStartMigration:
 		if cmd.Migration == nil {
 			return controllermeta.ErrInvalidArgument
@@ -248,6 +253,47 @@ func (sm *StateMachine) applyAssignmentTaskUpdate(ctx context.Context, assignmen
 		return sm.store.UpsertTask(ctx, *task)
 	default:
 		return controllermeta.ErrInvalidArgument
+	}
+}
+
+func (sm *StateMachine) applyNodeStatusUpdate(ctx context.Context, update NodeStatusUpdate) error {
+	if len(update.Transitions) == 0 {
+		return controllermeta.ErrInvalidArgument
+	}
+
+	for _, transition := range update.Transitions {
+		if transition.NodeID == 0 || !validNodeStatusTarget(transition.NewStatus) {
+			return controllermeta.ErrInvalidArgument
+		}
+
+		node, err := sm.store.GetNode(ctx, transition.NodeID)
+		if errors.Is(err, controllermeta.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if transition.ExpectedStatus != nil && node.Status != *transition.ExpectedStatus {
+			continue
+		}
+
+		node.Status = transition.NewStatus
+		if transition.EvaluatedAt.After(node.LastHeartbeatAt) {
+			node.LastHeartbeatAt = transition.EvaluatedAt
+		}
+		if err := sm.store.UpsertNode(ctx, node); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validNodeStatusTarget(status controllermeta.NodeStatus) bool {
+	switch status {
+	case controllermeta.NodeStatusAlive, controllermeta.NodeStatusSuspect, controllermeta.NodeStatusDead, controllermeta.NodeStatusDraining:
+		return true
+	default:
+		return false
 	}
 }
 

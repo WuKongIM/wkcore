@@ -14,15 +14,21 @@ type Peer struct {
 	Addr   string
 }
 
+type LeaderChangeObserver func(from, to uint64)
+
+type CommittedCommandObserver func(slotcontroller.Command)
+
 type Config struct {
-	NodeID         uint64
-	Peers          []Peer
-	AllowBootstrap bool
-	LogDB          *raftstorage.DB
-	StateMachine   *slotcontroller.StateMachine
-	Server         *transport.Server
-	RPCMux         *transport.RPCMux
-	Pool           *transport.Pool
+	NodeID             uint64
+	Peers              []Peer
+	AllowBootstrap     bool
+	LogDB              *raftstorage.DB
+	StateMachine       *slotcontroller.StateMachine
+	Server             *transport.Server
+	RPCMux             *transport.RPCMux
+	Pool               *transport.Pool
+	OnLeaderChange     LeaderChangeObserver
+	OnCommittedCommand CommittedCommandObserver
 }
 
 func (c Config) validateCore() error {
