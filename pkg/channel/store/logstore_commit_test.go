@@ -220,10 +220,11 @@ func installTestCommitCoordinator(t *testing.T, engine *Engine, handle func(*com
 	t.Helper()
 
 	coordinator := &commitCoordinator{
-		db:       engine.db,
-		requests: make(chan commitRequest, 16),
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
+		db:           engine.db,
+		requests:     make(chan commitRequest, 16),
+		stopAcceptCh: make(chan struct{}),
+		stopCh:       make(chan struct{}),
+		doneCh:       make(chan struct{}),
 	}
 
 	engine.mu.Lock()

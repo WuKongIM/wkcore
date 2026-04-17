@@ -28,12 +28,15 @@ type commitCoordinator struct {
 	flushWindow time.Duration
 	commit      func(*pebble.Batch) error
 
-	requests  chan commitRequest
-	stopCh    chan struct{}
-	doneCh    chan struct{}
-	closeOnce sync.Once
-	submitMu  sync.Mutex
-	isClosing bool
+	requests       chan commitRequest
+	stopAcceptCh   chan struct{}
+	stopCh         chan struct{}
+	doneCh         chan struct{}
+	closeOnce      sync.Once
+	stopAcceptOnce sync.Once
+	acceptMu       sync.RWMutex
+	submitWG       sync.WaitGroup
+	batchMu        sync.Mutex
 }
 
 func newCommitCoordinator(db *pebble.DB) *commitCoordinator {
@@ -43,9 +46,10 @@ func newCommitCoordinator(db *pebble.DB) *commitCoordinator {
 		commit: func(batch *pebble.Batch) error {
 			return batch.Commit(pebble.Sync)
 		},
-		requests: make(chan commitRequest, defaultCommitCoordinatorQueueSize),
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
+		requests:     make(chan commitRequest, defaultCommitCoordinatorQueueSize),
+		stopAcceptCh: make(chan struct{}),
+		stopCh:       make(chan struct{}),
+		doneCh:       make(chan struct{}),
 	}
 	go c.run()
 	return c
@@ -62,29 +66,22 @@ func (c *commitCoordinator) submit(req commitRequest) error {
 		req.done = make(chan error, 1)
 	}
 
-	c.submitMu.Lock()
-	if c.isClosing {
-		c.submitMu.Unlock()
-		return channel.ErrInvalidArgument
-	}
+	c.acceptMu.RLock()
 	select {
-	case <-c.stopCh:
-		c.submitMu.Unlock()
-		return channel.ErrInvalidArgument
-	case <-c.doneCh:
-		c.submitMu.Unlock()
+	case <-c.stopAcceptCh:
+		c.acceptMu.RUnlock()
 		return channel.ErrInvalidArgument
 	default:
 	}
+	c.submitWG.Add(1)
+	c.acceptMu.RUnlock()
+
 	select {
-	case <-c.stopCh:
-		c.submitMu.Unlock()
-		return channel.ErrInvalidArgument
 	case <-c.doneCh:
-		c.submitMu.Unlock()
+		c.submitWG.Done()
 		return channel.ErrInvalidArgument
 	case c.requests <- req:
-		c.submitMu.Unlock()
+		c.submitWG.Done()
 	}
 
 	select {
@@ -100,10 +97,10 @@ func (c *commitCoordinator) close() {
 		return
 	}
 	c.closeOnce.Do(func() {
-		c.submitMu.Lock()
-		c.isClosing = true
+		c.stopAccepting()
+		c.batchMu.Lock()
 		close(c.stopCh)
-		c.submitMu.Unlock()
+		c.batchMu.Unlock()
 		<-c.doneCh
 	})
 }
@@ -117,24 +114,27 @@ func (c *commitCoordinator) run() {
 			c.failPendingRequests(channel.ErrInvalidArgument)
 			return
 		case req := <-c.requests:
-			if c.closing() {
+			c.batchMu.Lock()
+			if c.stopRequested() {
+				c.batchMu.Unlock()
 				req.done <- channel.ErrInvalidArgument
 				c.failPendingRequests(channel.ErrInvalidArgument)
 				return
 			}
 			batch := c.collectBatch(req)
-			if batch.closed || c.closing() {
+			if batch.closed {
+				c.batchMu.Unlock()
 				batch.completeAll(channel.ErrInvalidArgument)
-				continue
+				c.failPendingRequests(channel.ErrInvalidArgument)
+				return
 			}
 			if err := batch.commit(c.db, c.commit); err != nil {
+				c.batchMu.Unlock()
 				batch.completeAll(err)
 				continue
 			}
-			if err := c.publishBatch(batch); err != nil {
-				batch.completeAll(err)
-				continue
-			}
+			batch.publish()
+			c.batchMu.Unlock()
 		}
 	}
 }
@@ -143,11 +143,9 @@ func (c *commitCoordinator) collectBatch(first commitRequest) commitBatch {
 	batch := commitBatch{requests: []commitRequest{first}}
 	if c.flushWindow <= 0 {
 		for {
-			select {
-			case <-c.stopCh:
+			if c.stopRequested() {
 				batch.closed = true
 				return batch
-			default:
 			}
 			select {
 			case req := <-c.requests:
@@ -166,17 +164,29 @@ func (c *commitCoordinator) collectBatch(first commitRequest) commitBatch {
 			batch.requests = append(batch.requests, req)
 		case <-timer.C:
 			return batch
-		case <-c.stopCh:
+		case <-c.stopAcceptCh:
 			batch.closed = true
 			return batch
 		}
 	}
 }
 
-func (c *commitCoordinator) closing() bool {
-	c.submitMu.Lock()
-	defer c.submitMu.Unlock()
-	return c.isClosing
+func (c *commitCoordinator) stopRequested() bool {
+	select {
+	case <-c.stopAcceptCh:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *commitCoordinator) stopAccepting() {
+	c.stopAcceptOnce.Do(func() {
+		c.acceptMu.Lock()
+		close(c.stopAcceptCh)
+		c.acceptMu.Unlock()
+		c.submitWG.Wait()
+	})
 }
 
 func (c *commitCoordinator) failPendingRequests(err error) {
@@ -188,17 +198,6 @@ func (c *commitCoordinator) failPendingRequests(err error) {
 			return
 		}
 	}
-}
-
-func (c *commitCoordinator) publishBatch(batch commitBatch) error {
-	c.submitMu.Lock()
-	defer c.submitMu.Unlock()
-
-	if c.isClosing {
-		return channel.ErrInvalidArgument
-	}
-	batch.publish()
-	return nil
 }
 
 type commitBatch struct {

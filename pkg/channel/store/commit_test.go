@@ -164,15 +164,16 @@ func TestCommitCoordinatorCollectBatchStopsDrainingBufferedRequestsWhenClosed(t 
 	engine, _ := openCountingCommitCoordinatorTestEngine(t)
 
 	coordinator := &commitCoordinator{
-		db:          engine.db,
-		flushWindow: 0,
-		requests:    make(chan commitRequest, 2),
-		stopCh:      make(chan struct{}),
-		doneCh:      make(chan struct{}),
+		db:           engine.db,
+		flushWindow:  0,
+		requests:     make(chan commitRequest, 2),
+		stopAcceptCh: make(chan struct{}),
+		stopCh:       make(chan struct{}),
+		doneCh:       make(chan struct{}),
 	}
 
 	coordinator.requests <- commitRequest{channelKey: "group-2", build: func(*pebble.Batch) error { return nil }}
-	close(coordinator.stopCh)
+	close(coordinator.stopAcceptCh)
 
 	batch := coordinator.collectBatch(commitRequest{channelKey: "group-1", build: func(*pebble.Batch) error { return nil }})
 	if !batch.closed {
@@ -190,12 +191,13 @@ func TestCommitCoordinatorSubmitRejectsAfterCloseStarts(t *testing.T) {
 	engine, _ := openCountingCommitCoordinatorTestEngine(t)
 
 	coordinator := &commitCoordinator{
-		db:       engine.db,
-		requests: make(chan commitRequest, 128),
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
+		db:           engine.db,
+		requests:     make(chan commitRequest, 128),
+		stopAcceptCh: make(chan struct{}),
+		stopCh:       make(chan struct{}),
+		doneCh:       make(chan struct{}),
 	}
-	close(coordinator.stopCh)
+	coordinator.stopAccepting()
 
 	var accepted atomic.Int64
 	drainDone := make(chan struct{})
@@ -228,16 +230,21 @@ func TestCommitCoordinatorSubmitRejectsAfterCloseStarts(t *testing.T) {
 	}
 }
 
-func TestCommitCoordinatorDoesNotPublishIfCloseStartsDuringSync(t *testing.T) {
+func TestCommitCoordinatorPublishesIfCloseStartsDuringSync(t *testing.T) {
 	engine, _ := openCountingCommitCoordinatorTestEngine(t)
 	coordinator := engine.commitCoordinator()
 	coordinator.flushWindow = 0
 
 	commitStarted := make(chan struct{})
 	releaseCommit := make(chan struct{})
+	publishStarted := make(chan struct{})
+	releasePublish := make(chan struct{})
 	closeDone := make(chan struct{})
-	publishCalled := make(chan struct{}, 1)
 	done := make(chan error, 1)
+	t.Cleanup(func() {
+		closeOnce(releaseCommit)
+		closeOnce(releasePublish)
+	})
 
 	coordinator.commit = func(*pebble.Batch) error {
 		close(commitStarted)
@@ -256,7 +263,8 @@ func TestCommitCoordinatorDoesNotPublishIfCloseStartsDuringSync(t *testing.T) {
 				)
 			},
 			publish: func() error {
-				publishCalled <- struct{}{}
+				close(publishStarted)
+				<-releasePublish
 				return nil
 			},
 		})
@@ -274,26 +282,40 @@ func TestCommitCoordinatorDoesNotPublishIfCloseStartsDuringSync(t *testing.T) {
 	}()
 
 	select {
-	case <-coordinator.stopCh:
+	case <-coordinator.stopAcceptCh:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for coordinator shutdown to start")
+		t.Fatal("timeout waiting for coordinator to stop accepting requests")
+	}
+
+	select {
+	case <-coordinator.stopCh:
+		t.Fatal("close fully started before the in-flight batch finished")
+	case <-time.After(200 * time.Millisecond):
 	}
 
 	close(releaseCommit)
 
 	select {
-	case err := <-done:
-		if !errors.Is(err, channel.ErrInvalidArgument) {
-			t.Fatalf("submit() error = %v, want invalid argument when close starts during sync", err)
-		}
+	case <-publishStarted:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for submit to finish after close")
+		t.Fatal("timeout waiting for publish after sync release")
 	}
 
 	select {
-	case <-publishCalled:
-		t.Fatal("publish callback ran after close started during sync")
-	default:
+	case <-coordinator.stopCh:
+		t.Fatal("close fully started before publish completed")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(releasePublish)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("submit() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for submit after publish release")
 	}
 
 	select {
