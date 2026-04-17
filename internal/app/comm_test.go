@@ -304,6 +304,7 @@ func TestThreeNodeAppHarnessUsesSendPathTuning(t *testing.T) {
 		require.NotNil(t, app.dataPlanePool, "node %d should wire data plane pool", nodeID)
 		require.NotNil(t, app.isrTransport, "node %d should wire transport", nodeID)
 		require.Equal(t, 8, appDataPlanePoolSize(t, app), "node %d pool size", nodeID)
+		require.Equal(t, 16, appISRMaxFetchInflightPeerLimit(t, app), "node %d fetch inflight", nodeID)
 		require.Equal(t, 16, appDataPlaneAdapterMaxPendingFetch(t, app), "node %d pending fetch", nodeID)
 		require.Equal(t, 250*time.Millisecond, appISRFollowerReplicationRetryInterval(t, app), "node %d retry interval", nodeID)
 		maxWait, maxRecords, maxBytes := appReplicaAppendGroupCommitConfig(t, app)
