@@ -815,20 +815,11 @@ func TestRunSendStressWorkersThroughputModeCapsInflightPerWorker(t *testing.T) {
 
 func TestSendStressThreeNode(t *testing.T) {
 	preset := sendStressAcceptancePreset()
-	applySendStressAcceptanceConfigEnv(t, preset.Benchmark)
 	cfg := loadSendStressConfig(t)
 	requireSendStressEnabled(t, cfg)
-	require.Equal(t, preset.Benchmark.Mode, cfg.Mode)
-	require.Equal(t, preset.Benchmark.Duration, cfg.Duration)
-	require.Equal(t, preset.Benchmark.Workers, cfg.Workers)
-	require.Equal(t, preset.Benchmark.Senders, cfg.Senders)
-	require.Equal(t, preset.Benchmark.MessagesPerWorker, cfg.MessagesPerWorker)
-	require.Equal(t, preset.Benchmark.MaxInflightPerWorker, cfg.MaxInflightPerWorker)
-	require.Equal(t, preset.Benchmark.DialTimeout, cfg.DialTimeout)
-	require.Equal(t, preset.Benchmark.AckTimeout, cfg.AckTimeout)
-	require.EqualValues(t, preset.Benchmark.Seed, cfg.Seed)
 
 	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(appCfg *Config) {
+		applySendPathTuning(t, appCfg, preset)
 		if cfg.Mode == sendStressModeThroughput {
 			appCfg.Gateway.DefaultSession.AsyncSendDispatch = true
 		}
