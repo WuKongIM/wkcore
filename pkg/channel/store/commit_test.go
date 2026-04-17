@@ -160,6 +160,74 @@ func TestCommitCoordinatorFanoutsBatchFailureToAllWaiters(t *testing.T) {
 	}
 }
 
+func TestCommitCoordinatorCollectBatchStopsDrainingBufferedRequestsWhenClosed(t *testing.T) {
+	engine, _ := openCountingCommitCoordinatorTestEngine(t)
+
+	coordinator := &commitCoordinator{
+		db:          engine.db,
+		flushWindow: 0,
+		requests:    make(chan commitRequest, 2),
+		stopCh:      make(chan struct{}),
+		doneCh:      make(chan struct{}),
+	}
+
+	coordinator.requests <- commitRequest{channelKey: "group-2", build: func(*pebble.Batch) error { return nil }}
+	close(coordinator.stopCh)
+
+	batch := coordinator.collectBatch(commitRequest{channelKey: "group-1", build: func(*pebble.Batch) error { return nil }})
+	if !batch.closed {
+		t.Fatal("collectBatch() should mark batch closed when shutdown has started")
+	}
+	if got := len(batch.requests); got != 1 {
+		t.Fatalf("len(batch.requests) = %d, want 1", got)
+	}
+	if got := len(coordinator.requests); got != 1 {
+		t.Fatalf("len(coordinator.requests) = %d, want 1 buffered request left for shutdown fanout", got)
+	}
+}
+
+func TestCommitCoordinatorSubmitRejectsAfterCloseStarts(t *testing.T) {
+	engine, _ := openCountingCommitCoordinatorTestEngine(t)
+
+	coordinator := &commitCoordinator{
+		db:       engine.db,
+		requests: make(chan commitRequest, 128),
+		stopCh:   make(chan struct{}),
+		doneCh:   make(chan struct{}),
+	}
+	close(coordinator.stopCh)
+
+	var accepted atomic.Int64
+	drainDone := make(chan struct{})
+	go func() {
+		defer close(drainDone)
+		for {
+			select {
+			case req := <-coordinator.requests:
+				accepted.Add(1)
+				req.done <- nil
+			case <-time.After(10 * time.Millisecond):
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 128; i++ {
+		err := coordinator.submit(commitRequest{
+			channelKey: "group-1",
+			build:      func(*pebble.Batch) error { return nil },
+		})
+		if !errors.Is(err, channel.ErrInvalidArgument) {
+			t.Fatalf("submit() error = %v, want invalid argument after shutdown begins", err)
+		}
+	}
+
+	<-drainDone
+	if got := accepted.Load(); got != 0 {
+		t.Fatalf("accepted requests after shutdown = %d, want 0", got)
+	}
+}
+
 func openCountingCommitCoordinatorTestEngine(tb testing.TB) (*Engine, *countingFS) {
 	tb.Helper()
 

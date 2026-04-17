@@ -32,6 +32,8 @@ type commitCoordinator struct {
 	stopCh    chan struct{}
 	doneCh    chan struct{}
 	closeOnce sync.Once
+	submitMu  sync.Mutex
+	isClosing bool
 }
 
 func newCommitCoordinator(db *pebble.DB) *commitCoordinator {
@@ -60,12 +62,29 @@ func (c *commitCoordinator) submit(req commitRequest) error {
 		req.done = make(chan error, 1)
 	}
 
+	c.submitMu.Lock()
+	if c.isClosing {
+		c.submitMu.Unlock()
+		return channel.ErrInvalidArgument
+	}
 	select {
 	case <-c.stopCh:
+		c.submitMu.Unlock()
 		return channel.ErrInvalidArgument
 	case <-c.doneCh:
+		c.submitMu.Unlock()
+		return channel.ErrInvalidArgument
+	default:
+	}
+	select {
+	case <-c.stopCh:
+		c.submitMu.Unlock()
+		return channel.ErrInvalidArgument
+	case <-c.doneCh:
+		c.submitMu.Unlock()
 		return channel.ErrInvalidArgument
 	case c.requests <- req:
+		c.submitMu.Unlock()
 	}
 
 	select {
@@ -81,7 +100,10 @@ func (c *commitCoordinator) close() {
 		return
 	}
 	c.closeOnce.Do(func() {
+		c.submitMu.Lock()
+		c.isClosing = true
 		close(c.stopCh)
+		c.submitMu.Unlock()
 		<-c.doneCh
 	})
 }
@@ -92,10 +114,16 @@ func (c *commitCoordinator) run() {
 	for {
 		select {
 		case <-c.stopCh:
+			c.failPendingRequests(channel.ErrInvalidArgument)
 			return
 		case req := <-c.requests:
+			if c.closing() {
+				req.done <- channel.ErrInvalidArgument
+				c.failPendingRequests(channel.ErrInvalidArgument)
+				return
+			}
 			batch := c.collectBatch(req)
-			if batch.closed {
+			if batch.closed || c.closing() {
 				batch.completeAll(channel.ErrInvalidArgument)
 				continue
 			}
@@ -108,6 +136,12 @@ func (c *commitCoordinator) collectBatch(first commitRequest) commitBatch {
 	batch := commitBatch{requests: []commitRequest{first}}
 	if c.flushWindow <= 0 {
 		for {
+			select {
+			case <-c.stopCh:
+				batch.closed = true
+				return batch
+			default:
+			}
 			select {
 			case req := <-c.requests:
 				batch.requests = append(batch.requests, req)
@@ -128,6 +162,23 @@ func (c *commitCoordinator) collectBatch(first commitRequest) commitBatch {
 		case <-c.stopCh:
 			batch.closed = true
 			return batch
+		}
+	}
+}
+
+func (c *commitCoordinator) closing() bool {
+	c.submitMu.Lock()
+	defer c.submitMu.Unlock()
+	return c.isClosing
+}
+
+func (c *commitCoordinator) failPendingRequests(err error) {
+	for {
+		select {
+		case req := <-c.requests:
+			req.done <- err
+		default:
+			return
 		}
 	}
 }
