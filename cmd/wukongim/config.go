@@ -396,7 +396,13 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 			Format:     stringValue(v, "WK_LOG_FORMAT"),
 		},
 	}
-	cfg.Cluster.SetExplicitFlags(channelBootstrapDefaultMinISRSet)
+	cfg.Cluster.SetExplicitFlags(
+		channelBootstrapDefaultMinISRSet,
+		stringValue(v, "WK_CLUSTER_FOLLOWER_REPLICATION_RETRY_INTERVAL") != "",
+		stringValue(v, "WK_CLUSTER_APPEND_GROUP_COMMIT_MAX_WAIT") != "",
+		stringValue(v, "WK_CLUSTER_APPEND_GROUP_COMMIT_MAX_RECORDS") != "",
+		stringValue(v, "WK_CLUSTER_APPEND_GROUP_COMMIT_MAX_BYTES") != "",
+	)
 	cfg.Log.SetExplicitFlags(stringValue(v, "WK_LOG_COMPRESS") != "", stringValue(v, "WK_LOG_CONSOLE") != "")
 	cfg.Observability.SetExplicitFlags(
 		stringValue(v, "WK_METRICS_ENABLE") != "",

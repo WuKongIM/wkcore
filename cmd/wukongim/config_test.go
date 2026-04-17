@@ -248,6 +248,70 @@ func TestLoadConfigParsesSendPathTuning(t *testing.T) {
 	})
 }
 
+func TestLoadConfigRejectsExplicitInvalidSendPathTuning(t *testing.T) {
+	dir := t.TempDir()
+	basePath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_CLUSTER_SLOT_COUNT=1",
+		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
+	)
+
+	tests := []struct {
+		name    string
+		key     string
+		value   string
+		wantErr string
+	}{
+		{
+			name:    "follower replication retry interval",
+			key:     "WK_CLUSTER_FOLLOWER_REPLICATION_RETRY_INTERVAL",
+			value:   "0s",
+			wantErr: "follower replication retry interval",
+		},
+		{
+			name:    "append group commit max wait",
+			key:     "WK_CLUSTER_APPEND_GROUP_COMMIT_MAX_WAIT",
+			value:   "0s",
+			wantErr: "append group commit max wait",
+		},
+		{
+			name:    "append group commit max records",
+			key:     "WK_CLUSTER_APPEND_GROUP_COMMIT_MAX_RECORDS",
+			value:   "0",
+			wantErr: "append group commit max records",
+		},
+		{
+			name:    "append group commit max bytes",
+			key:     "WK_CLUSTER_APPEND_GROUP_COMMIT_MAX_BYTES",
+			value:   "0",
+			wantErr: "append group commit max bytes",
+		},
+		{
+			name:    "negative follower replication retry interval",
+			key:     "WK_CLUSTER_FOLLOWER_REPLICATION_RETRY_INTERVAL",
+			value:   "-1s",
+			wantErr: "follower replication retry interval",
+		},
+		{
+			name:    "negative append group commit max records",
+			key:     "WK_CLUSTER_APPEND_GROUP_COMMIT_MAX_RECORDS",
+			value:   "-1",
+			wantErr: "append group commit max records",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(tt.key, tt.value)
+
+			_, err := loadConfig(basePath)
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
 func TestLoadConfigUsesDefaultSearchPathsWhenFlagPathIsEmpty(t *testing.T) {
 	dir := t.TempDir()
 	confDir := filepath.Join(dir, "conf")

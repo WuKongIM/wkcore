@@ -105,14 +105,28 @@ type ClusterConfig struct {
 	DataPlaneMaxFetchInflight        int
 	DataPlaneMaxPendingFetch         int
 
-	channelBootstrapDefaultMinISRSet bool
+	channelBootstrapDefaultMinISRSet    bool
+	followerReplicationRetryIntervalSet bool
+	appendGroupCommitMaxWaitSet         bool
+	appendGroupCommitMaxRecordsSet      bool
+	appendGroupCommitMaxBytesSet        bool
 }
 
-func (c *ClusterConfig) SetExplicitFlags(channelBootstrapDefaultMinISRSet bool) {
+func (c *ClusterConfig) SetExplicitFlags(
+	channelBootstrapDefaultMinISRSet bool,
+	followerReplicationRetryIntervalSet bool,
+	appendGroupCommitMaxWaitSet bool,
+	appendGroupCommitMaxRecordsSet bool,
+	appendGroupCommitMaxBytesSet bool,
+) {
 	if c == nil {
 		return
 	}
 	c.channelBootstrapDefaultMinISRSet = channelBootstrapDefaultMinISRSet
+	c.followerReplicationRetryIntervalSet = followerReplicationRetryIntervalSet
+	c.appendGroupCommitMaxWaitSet = appendGroupCommitMaxWaitSet
+	c.appendGroupCommitMaxRecordsSet = appendGroupCommitMaxRecordsSet
+	c.appendGroupCommitMaxBytesSet = appendGroupCommitMaxBytesSet
 }
 
 type NodeConfigRef struct {
@@ -236,6 +250,18 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 			return fmt.Errorf("%w: channel bootstrap default min isr must be positive", ErrInvalidConfig)
 		}
 		c.Cluster.ChannelBootstrapDefaultMinISR = 2
+	}
+	if c.Cluster.FollowerReplicationRetryInterval <= 0 && c.Cluster.followerReplicationRetryIntervalSet {
+		return fmt.Errorf("%w: follower replication retry interval must be positive", ErrInvalidConfig)
+	}
+	if c.Cluster.AppendGroupCommitMaxWait <= 0 && c.Cluster.appendGroupCommitMaxWaitSet {
+		return fmt.Errorf("%w: append group commit max wait must be positive", ErrInvalidConfig)
+	}
+	if c.Cluster.AppendGroupCommitMaxRecords <= 0 && c.Cluster.appendGroupCommitMaxRecordsSet {
+		return fmt.Errorf("%w: append group commit max records must be positive", ErrInvalidConfig)
+	}
+	if c.Cluster.AppendGroupCommitMaxBytes <= 0 && c.Cluster.appendGroupCommitMaxBytesSet {
+		return fmt.Errorf("%w: append group commit max bytes must be positive", ErrInvalidConfig)
 	}
 
 	if c.Storage.DBPath == "" {

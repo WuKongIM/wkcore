@@ -279,10 +279,60 @@ func TestConfigPreservesExplicitSendPathTuning(t *testing.T) {
 	require.Equal(t, 16, cfg.Cluster.DataPlaneMaxPendingFetch)
 }
 
+func TestConfigRejectsExplicitInvalidSendPathTuning(t *testing.T) {
+	t.Run("follower replication retry interval", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Cluster.FollowerReplicationRetryInterval = 0
+		cfg.Cluster.SetExplicitFlags(false, true, false, false, false)
+
+		require.ErrorContains(t, cfg.ApplyDefaultsAndValidate(), "follower replication retry interval")
+	})
+
+	t.Run("append group commit max wait", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Cluster.AppendGroupCommitMaxWait = 0
+		cfg.Cluster.SetExplicitFlags(false, false, true, false, false)
+
+		require.ErrorContains(t, cfg.ApplyDefaultsAndValidate(), "append group commit max wait")
+	})
+
+	t.Run("append group commit max records", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Cluster.AppendGroupCommitMaxRecords = 0
+		cfg.Cluster.SetExplicitFlags(false, false, false, true, false)
+
+		require.ErrorContains(t, cfg.ApplyDefaultsAndValidate(), "append group commit max records")
+	})
+
+	t.Run("append group commit max bytes", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Cluster.AppendGroupCommitMaxBytes = 0
+		cfg.Cluster.SetExplicitFlags(false, false, false, false, true)
+
+		require.ErrorContains(t, cfg.ApplyDefaultsAndValidate(), "append group commit max bytes")
+	})
+
+	t.Run("negative follower replication retry interval", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Cluster.FollowerReplicationRetryInterval = -time.Second
+		cfg.Cluster.SetExplicitFlags(false, true, false, false, false)
+
+		require.ErrorContains(t, cfg.ApplyDefaultsAndValidate(), "follower replication retry interval")
+	})
+
+	t.Run("negative append group commit max records", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Cluster.AppendGroupCommitMaxRecords = -1
+		cfg.Cluster.SetExplicitFlags(false, false, false, true, false)
+
+		require.ErrorContains(t, cfg.ApplyDefaultsAndValidate(), "append group commit max records")
+	})
+}
+
 func TestConfigDefaultsChannelBootstrapMinISR(t *testing.T) {
 	cfg := validConfig()
 	cfg.Cluster.ChannelBootstrapDefaultMinISR = 0
-	cfg.Cluster.SetExplicitFlags(false)
+	cfg.Cluster.SetExplicitFlags(false, false, false, false, false)
 
 	require.NoError(t, cfg.ApplyDefaultsAndValidate())
 	require.Equal(t, 2, cfg.Cluster.ChannelBootstrapDefaultMinISR)
@@ -291,7 +341,7 @@ func TestConfigDefaultsChannelBootstrapMinISR(t *testing.T) {
 func TestConfigRejectsExplicitNonPositiveChannelBootstrapMinISR(t *testing.T) {
 	cfg := validConfig()
 	cfg.Cluster.ChannelBootstrapDefaultMinISR = 0
-	cfg.Cluster.SetExplicitFlags(true)
+	cfg.Cluster.SetExplicitFlags(true, false, false, false, false)
 
 	require.ErrorContains(t, cfg.ApplyDefaultsAndValidate(), "channel bootstrap default min isr")
 }
@@ -299,7 +349,7 @@ func TestConfigRejectsExplicitNonPositiveChannelBootstrapMinISR(t *testing.T) {
 func TestConfigRejectsExplicitNegativeChannelBootstrapMinISR(t *testing.T) {
 	cfg := validConfig()
 	cfg.Cluster.ChannelBootstrapDefaultMinISR = -1
-	cfg.Cluster.SetExplicitFlags(true)
+	cfg.Cluster.SetExplicitFlags(true, false, false, false, false)
 
 	require.ErrorContains(t, cfg.ApplyDefaultsAndValidate(), "channel bootstrap default min isr")
 }
