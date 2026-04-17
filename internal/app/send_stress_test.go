@@ -41,12 +41,6 @@ const (
 	sendStressSeedEnv              = "WK_SEND_STRESS_SEED"
 	sendStressWarmupAckTimeout     = 12 * time.Second
 	sendStressThroughputInflight   = 32
-	sendStressAcceptanceDuration   = 15 * time.Second
-	sendStressAcceptanceWorkers    = 16
-	sendStressAcceptanceSenders    = 32
-	sendStressAcceptanceInflight   = 64
-	sendStressAcceptanceAckTimeout = 20 * time.Second
-	sendStressAcceptanceMinISR     = 2
 )
 
 type sendStressMode string
@@ -262,20 +256,6 @@ func loadSendStressConfig(t *testing.T) sendStressConfig {
 		t.Fatal(err)
 	}
 	return cfg
-}
-
-func sendStressAcceptancePreset() sendStressConfig {
-	return sendStressConfig{
-		Mode:                 sendStressModeThroughput,
-		Duration:             sendStressAcceptanceDuration,
-		Workers:              sendStressAcceptanceWorkers,
-		Senders:              sendStressAcceptanceSenders,
-		MessagesPerWorker:    50,
-		DialTimeout:          3 * time.Second,
-		AckTimeout:           sendStressAcceptanceAckTimeout,
-		MaxInflightPerWorker: sendStressAcceptanceInflight,
-		Seed:                 20260408,
-	}
 }
 
 func validateSendStressConfig(cfg sendStressConfig) error {

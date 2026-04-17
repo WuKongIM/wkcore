@@ -27,8 +27,23 @@ import (
 
 const multinodeAppReadTimeout = 20 * time.Second
 const appReadTimeout = 2 * time.Second
+const sendStressAcceptanceMinISR = 2
 
 var appWKProtoClients sync.Map
+
+func sendStressAcceptancePreset() sendStressConfig {
+	return sendStressConfig{
+		Mode:                 sendStressModeThroughput,
+		Duration:             15 * time.Second,
+		Workers:              16,
+		Senders:              32,
+		MessagesPerWorker:    50,
+		DialTimeout:          3 * time.Second,
+		AckTimeout:           20 * time.Second,
+		MaxInflightPerWorker: 64,
+		Seed:                 20260408,
+	}
+}
 
 func envBool(name string, fallback bool) bool {
 	value, ok := os.LookupEnv(name)
@@ -273,22 +288,28 @@ func applySendPathTuning(t *testing.T, cfg *Config) {
 }
 
 func TestThreeNodeAppHarnessUsesSendPathTuning(t *testing.T) {
+	preset := sendStressAcceptancePreset()
 	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(cfg *Config) {
 		applySendPathTuning(t, cfg)
 	})
 
-	leaderApp := harness.apps[1]
-	require.NotNil(t, leaderApp)
-	require.Equal(t, 250*time.Millisecond, appISRFollowerReplicationRetryInterval(t, leaderApp))
-	maxWait, maxRecords, maxBytes := appReplicaAppendGroupCommitConfig(t, leaderApp)
-	require.Equal(t, 2*time.Millisecond, maxWait)
-	require.Equal(t, 128, maxRecords)
-	require.Equal(t, 256*1024, maxBytes)
+	require.Equal(t, 15*time.Second, preset.Duration)
+	require.Equal(t, 16, preset.Workers)
+	require.Equal(t, 32, preset.Senders)
+	require.Equal(t, 64, preset.MaxInflightPerWorker)
+	require.Equal(t, 20*time.Second, preset.AckTimeout)
 
-	for nodeID, spec := range harness.specs {
-		require.Equal(t, 8, spec.cfg.Cluster.DataPlanePoolSize, "node %d pool size", nodeID)
-		require.Equal(t, 16, spec.cfg.Cluster.DataPlaneMaxFetchInflight, "node %d fetch inflight", nodeID)
-		require.Equal(t, 16, spec.cfg.Cluster.DataPlaneMaxPendingFetch, "node %d pending fetch", nodeID)
+	for nodeID, app := range harness.apps {
+		require.NotNil(t, app, "node %d app should be running", nodeID)
+		require.NotNil(t, app.dataPlanePool, "node %d should wire data plane pool", nodeID)
+		require.NotNil(t, app.isrTransport, "node %d should wire transport", nodeID)
+		require.Equal(t, 8, appDataPlanePoolSize(t, app), "node %d pool size", nodeID)
+		require.Equal(t, 16, appDataPlaneAdapterMaxPendingFetch(t, app), "node %d pending fetch", nodeID)
+		require.Equal(t, 250*time.Millisecond, appISRFollowerReplicationRetryInterval(t, app), "node %d retry interval", nodeID)
+		maxWait, maxRecords, maxBytes := appReplicaAppendGroupCommitConfig(t, app)
+		require.Equal(t, 2*time.Millisecond, maxWait, "node %d append group wait", nodeID)
+		require.Equal(t, 128, maxRecords, "node %d append group records", nodeID)
+		require.Equal(t, 256*1024, maxBytes, "node %d append group bytes", nodeID)
 	}
 }
 
