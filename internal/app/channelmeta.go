@@ -30,9 +30,12 @@ type memoryGenerationStore struct {
 }
 
 type channelReplicaFactory struct {
-	db        *channelstore.Engine
-	localNode channel.NodeID
-	now       func() time.Time
+	db                          *channelstore.Engine
+	localNode                   channel.NodeID
+	now                         func() time.Time
+	appendGroupCommitMaxWait    time.Duration
+	appendGroupCommitMaxRecords int
+	appendGroupCommitMaxBytes   int
 }
 
 type channelMetaCluster interface {
@@ -72,20 +75,30 @@ func (s *memoryGenerationStore) Store(channelKey channel.ChannelKey, generation 
 	return nil
 }
 
-func newChannelReplicaFactory(db *channelstore.Engine, localNode channel.NodeID, now func() time.Time) *channelReplicaFactory {
-	return &channelReplicaFactory{db: db, localNode: localNode, now: now}
+func newChannelReplicaFactory(db *channelstore.Engine, localNode channel.NodeID, now func() time.Time, appendGroupCommitMaxWait time.Duration, appendGroupCommitMaxRecords, appendGroupCommitMaxBytes int) *channelReplicaFactory {
+	return &channelReplicaFactory{
+		db:                          db,
+		localNode:                   localNode,
+		now:                         now,
+		appendGroupCommitMaxWait:    appendGroupCommitMaxWait,
+		appendGroupCommitMaxRecords: appendGroupCommitMaxRecords,
+		appendGroupCommitMaxBytes:   appendGroupCommitMaxBytes,
+	}
 }
 
 func (f *channelReplicaFactory) New(cfg channelruntime.ChannelConfig) (channelreplica.Replica, error) {
 	store := f.db.ForChannel(cfg.ChannelKey, cfg.Meta.ID)
 	return channelreplica.NewReplica(channelreplica.ReplicaConfig{
-		LocalNode:         f.localNode,
-		LogStore:          store,
-		CheckpointStore:   channelCheckpointStore{store: store},
-		ApplyFetchStore:   store,
-		EpochHistoryStore: channelEpochHistoryStore{store: store},
-		SnapshotApplier:   channelSnapshotApplier{store: store},
-		Now:               f.now,
+		LocalNode:                   f.localNode,
+		LogStore:                    store,
+		CheckpointStore:             channelCheckpointStore{store: store},
+		ApplyFetchStore:             store,
+		EpochHistoryStore:           channelEpochHistoryStore{store: store},
+		SnapshotApplier:             channelSnapshotApplier{store: store},
+		Now:                         f.now,
+		AppendGroupCommitMaxWait:    f.appendGroupCommitMaxWait,
+		AppendGroupCommitMaxRecords: f.appendGroupCommitMaxRecords,
+		AppendGroupCommitMaxBytes:   f.appendGroupCommitMaxBytes,
 	})
 }
 

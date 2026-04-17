@@ -138,6 +138,34 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 	if err != nil {
 		return app.Config{}, err
 	}
+	followerReplicationRetryInterval, err := parseDuration(v, "WK_CLUSTER_FOLLOWER_REPLICATION_RETRY_INTERVAL")
+	if err != nil {
+		return app.Config{}, err
+	}
+	appendGroupCommitMaxWait, err := parseDuration(v, "WK_CLUSTER_APPEND_GROUP_COMMIT_MAX_WAIT")
+	if err != nil {
+		return app.Config{}, err
+	}
+	appendGroupCommitMaxRecords, err := parseInt(v, "WK_CLUSTER_APPEND_GROUP_COMMIT_MAX_RECORDS")
+	if err != nil {
+		return app.Config{}, err
+	}
+	appendGroupCommitMaxBytes, err := parseInt(v, "WK_CLUSTER_APPEND_GROUP_COMMIT_MAX_BYTES")
+	if err != nil {
+		return app.Config{}, err
+	}
+	dataPlanePoolSize, err := parseInt(v, "WK_CLUSTER_DATA_PLANE_POOL_SIZE")
+	if err != nil {
+		return app.Config{}, err
+	}
+	dataPlaneMaxFetchInflight, err := parseInt(v, "WK_CLUSTER_DATA_PLANE_MAX_FETCH_INFLIGHT")
+	if err != nil {
+		return app.Config{}, err
+	}
+	dataPlaneMaxPendingFetch, err := parseInt(v, "WK_CLUSTER_DATA_PLANE_MAX_PENDING_FETCH")
+	if err != nil {
+		return app.Config{}, err
+	}
 	controllerObservationInterval, err := parseDuration(v, "WK_CLUSTER_CONTROLLER_OBSERVATION_INTERVAL")
 	if err != nil {
 		return app.Config{}, err
@@ -293,21 +321,26 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 			ControllerRaftPath: stringValue(v, "WK_STORAGE_CONTROLLER_RAFT_PATH"),
 		},
 		Cluster: app.ClusterConfig{
-			ListenAddr:                    stringValue(v, "WK_CLUSTER_LISTEN_ADDR"),
-			SlotCount:                     slotCount,
-			HashSlotCount:                 hashSlotCount,
-			InitialSlotCount:              initialSlotCount,
-			ChannelBootstrapDefaultMinISR: channelBootstrapDefaultMinISR,
-			Nodes:                         nodes,
-			ControllerReplicaN:            controllerReplicaN,
-			SlotReplicaN:                  slotReplicaN,
-			ForwardTimeout:                forwardTimeout,
-			PoolSize:                      poolSize,
-			TickInterval:                  tickInterval,
-			RaftWorkers:                   raftWorkers,
-			ElectionTick:                  electionTick,
-			HeartbeatTick:                 heartbeatTick,
-			DialTimeout:                   dialTimeout,
+			ListenAddr:                       stringValue(v, "WK_CLUSTER_LISTEN_ADDR"),
+			SlotCount:                        slotCount,
+			HashSlotCount:                    hashSlotCount,
+			InitialSlotCount:                 initialSlotCount,
+			ChannelBootstrapDefaultMinISR:    channelBootstrapDefaultMinISR,
+			Nodes:                            nodes,
+			ControllerReplicaN:               controllerReplicaN,
+			SlotReplicaN:                     slotReplicaN,
+			ForwardTimeout:                   forwardTimeout,
+			PoolSize:                         poolSize,
+			DataPlanePoolSize:                dataPlanePoolSize,
+			TickInterval:                     tickInterval,
+			RaftWorkers:                      raftWorkers,
+			ElectionTick:                     electionTick,
+			HeartbeatTick:                    heartbeatTick,
+			DialTimeout:                      dialTimeout,
+			FollowerReplicationRetryInterval: followerReplicationRetryInterval,
+			AppendGroupCommitMaxWait:         appendGroupCommitMaxWait,
+			AppendGroupCommitMaxRecords:      appendGroupCommitMaxRecords,
+			AppendGroupCommitMaxBytes:        appendGroupCommitMaxBytes,
 			Timeouts: raftcluster.Timeouts{
 				ControllerObservation:              controllerObservationInterval,
 				ControllerRequest:                  controllerRequestTimeout,
@@ -323,7 +356,9 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 				ConfigChangeRetryBudget:            configChangeRetryBudget,
 				LeaderTransferRetryBudget:          leaderTransferRetryBudget,
 			},
-			DataPlaneRPCTimeout: dataPlaneRPCTimeout,
+			DataPlaneRPCTimeout:       dataPlaneRPCTimeout,
+			DataPlaneMaxFetchInflight: dataPlaneMaxFetchInflight,
+			DataPlaneMaxPendingFetch:  dataPlaneMaxPendingFetch,
 		},
 		API: app.APIConfig{
 			ListenAddr:      defaultAPIListenAddr,

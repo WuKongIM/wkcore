@@ -141,12 +141,12 @@ func build(cfg Config) (_ *App, err error) {
 	}
 	app.isrRuntime, err = channelruntime.New(channelruntime.Config{
 		LocalNode:                        channel.NodeID(cfg.Node.ID),
-		ReplicaFactory:                   newChannelReplicaFactory(app.channelLogDB, channel.NodeID(cfg.Node.ID), nil),
+		ReplicaFactory:                   newChannelReplicaFactory(app.channelLogDB, channel.NodeID(cfg.Node.ID), nil, cfg.Cluster.AppendGroupCommitMaxWait, cfg.Cluster.AppendGroupCommitMaxRecords, cfg.Cluster.AppendGroupCommitMaxBytes),
 		GenerationStore:                  newMemoryGenerationStore(),
 		Transport:                        app.isrTransport,
 		PeerSessions:                     app.isrTransport,
 		AutoRunScheduler:                 true,
-		FollowerReplicationRetryInterval: time.Second,
+		FollowerReplicationRetryInterval: cfg.Cluster.FollowerReplicationRetryInterval,
 		Limits: channelruntime.Limits{
 			MaxFetchInflightPeer:      effectiveDataPlaneMaxFetchInflight(cfg.Cluster.PoolSize, cfg.Cluster.DataPlaneMaxFetchInflight),
 			MaxSnapshotInflight:       1,

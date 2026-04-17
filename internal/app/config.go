@@ -79,27 +79,31 @@ type StorageConfig struct {
 }
 
 type ClusterConfig struct {
-	ListenAddr                    string
-	SlotCount                     uint32
-	HashSlotCount                 uint16
-	InitialSlotCount              uint32
-	ChannelBootstrapDefaultMinISR int
-	Nodes                         []NodeConfigRef
-	Slots                         []SlotConfig
-	ControllerReplicaN            int
-	SlotReplicaN                  int
-	ForwardTimeout                time.Duration
-	PoolSize                      int
-	DataPlanePoolSize             int
-	TickInterval                  time.Duration
-	RaftWorkers                   int
-	ElectionTick                  int
-	HeartbeatTick                 int
-	DialTimeout                   time.Duration
-	Timeouts                      raftcluster.Timeouts
-	DataPlaneRPCTimeout           time.Duration
-	DataPlaneMaxFetchInflight     int
-	DataPlaneMaxPendingFetch      int
+	ListenAddr                       string
+	SlotCount                        uint32
+	HashSlotCount                    uint16
+	InitialSlotCount                 uint32
+	ChannelBootstrapDefaultMinISR    int
+	FollowerReplicationRetryInterval time.Duration
+	AppendGroupCommitMaxWait         time.Duration
+	AppendGroupCommitMaxRecords      int
+	AppendGroupCommitMaxBytes        int
+	Nodes                            []NodeConfigRef
+	Slots                            []SlotConfig
+	ControllerReplicaN               int
+	SlotReplicaN                     int
+	ForwardTimeout                   time.Duration
+	PoolSize                         int
+	DataPlanePoolSize                int
+	TickInterval                     time.Duration
+	RaftWorkers                      int
+	ElectionTick                     int
+	HeartbeatTick                    int
+	DialTimeout                      time.Duration
+	Timeouts                         raftcluster.Timeouts
+	DataPlaneRPCTimeout              time.Duration
+	DataPlaneMaxFetchInflight        int
+	DataPlaneMaxPendingFetch         int
 
 	channelBootstrapDefaultMinISRSet bool
 }
@@ -350,6 +354,10 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	c.Cluster.DataPlanePoolSize = effectiveDataPlanePoolSize(c.Cluster.PoolSize, c.Cluster.DataPlanePoolSize)
 	c.Cluster.DataPlaneMaxFetchInflight = effectiveDataPlaneMaxFetchInflight(c.Cluster.PoolSize, c.Cluster.DataPlaneMaxFetchInflight)
 	c.Cluster.DataPlaneMaxPendingFetch = effectiveDataPlaneMaxPendingFetch(c.Cluster.PoolSize, c.Cluster.DataPlaneMaxPendingFetch)
+	c.Cluster.FollowerReplicationRetryInterval = effectiveFollowerReplicationRetryInterval(c.Cluster.FollowerReplicationRetryInterval)
+	c.Cluster.AppendGroupCommitMaxWait = effectiveAppendGroupCommitMaxWait(c.Cluster.AppendGroupCommitMaxWait)
+	c.Cluster.AppendGroupCommitMaxRecords = effectiveAppendGroupCommitMaxRecords(c.Cluster.AppendGroupCommitMaxRecords)
+	c.Cluster.AppendGroupCommitMaxBytes = effectiveAppendGroupCommitMaxBytes(c.Cluster.AppendGroupCommitMaxBytes)
 
 	nodeSet := make(map[uint64]struct{}, len(c.Cluster.Nodes))
 	selfNodeFound := false
@@ -385,4 +393,32 @@ func (c ClusterConfig) effectiveInitialSlotCount() uint32 {
 		return c.InitialSlotCount
 	}
 	return c.SlotCount
+}
+
+func effectiveFollowerReplicationRetryInterval(configured time.Duration) time.Duration {
+	if configured > 0 {
+		return configured
+	}
+	return time.Second
+}
+
+func effectiveAppendGroupCommitMaxWait(configured time.Duration) time.Duration {
+	if configured > 0 {
+		return configured
+	}
+	return time.Millisecond
+}
+
+func effectiveAppendGroupCommitMaxRecords(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	return 64
+}
+
+func effectiveAppendGroupCommitMaxBytes(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	return 64 * 1024
 }
