@@ -581,6 +581,57 @@ func TestSendStressConfigDefaultsAndOverrides(t *testing.T) {
 	assertLoadSendStressConfigFailsOnInvalidEnv(t)
 }
 
+func TestSelectSendStressThreeNodeRunUsesAcceptancePresetWhenOnlyOptedIn(t *testing.T) {
+	clearSendStressConfigEnv(t)
+	t.Setenv(sendStressEnv, "1")
+
+	selection := selectSendStressThreeNodeRun(t)
+	preset := sendStressAcceptancePreset()
+
+	require.True(t, selection.useAcceptancePreset)
+	require.Equal(t, preset.Benchmark.Mode, selection.cfg.Mode)
+	require.Equal(t, preset.Benchmark.Duration, selection.cfg.Duration)
+	require.Equal(t, preset.Benchmark.Workers, selection.cfg.Workers)
+	require.Equal(t, preset.Benchmark.Senders, selection.cfg.Senders)
+	require.Equal(t, preset.Benchmark.MessagesPerWorker, selection.cfg.MessagesPerWorker)
+	require.Equal(t, preset.Benchmark.MaxInflightPerWorker, selection.cfg.MaxInflightPerWorker)
+	require.Equal(t, preset.Benchmark.DialTimeout, selection.cfg.DialTimeout)
+	require.Equal(t, preset.Benchmark.AckTimeout, selection.cfg.AckTimeout)
+	require.EqualValues(t, preset.Benchmark.Seed, selection.cfg.Seed)
+	require.Equal(t, preset.MinISR, selection.minISR)
+	expected := preset.Benchmark
+	expected.Enabled = true
+	require.Equal(t, expected, selection.cfg)
+}
+
+func TestSelectSendStressThreeNodeRunPreservesExplicitEnvSelection(t *testing.T) {
+	clearSendStressConfigEnv(t)
+	t.Setenv(sendStressEnv, "1")
+	t.Setenv(sendStressModeEnv, string(sendStressModeThroughput))
+	t.Setenv(sendStressDurationEnv, "21s")
+	t.Setenv(sendStressWorkersEnv, "9")
+	t.Setenv(sendStressSendersEnv, "11")
+	t.Setenv(sendStressMessagesPerWorkerEnv, "13")
+	t.Setenv(sendStressMaxInflightEnv, "17")
+	t.Setenv(sendStressDialTimeoutEnv, "4s")
+	t.Setenv(sendStressAckTimeoutEnv, "5s")
+	t.Setenv(sendStressSeedEnv, "42")
+
+	selection := selectSendStressThreeNodeRun(t)
+
+	require.False(t, selection.useAcceptancePreset)
+	require.Equal(t, sendStressModeThroughput, selection.cfg.Mode)
+	require.Equal(t, 21*time.Second, selection.cfg.Duration)
+	require.Equal(t, 9, selection.cfg.Workers)
+	require.Equal(t, 11, selection.cfg.Senders)
+	require.Equal(t, 13, selection.cfg.MessagesPerWorker)
+	require.Equal(t, 17, selection.cfg.MaxInflightPerWorker)
+	require.Equal(t, 4*time.Second, selection.cfg.DialTimeout)
+	require.Equal(t, 5*time.Second, selection.cfg.AckTimeout)
+	require.EqualValues(t, 42, selection.cfg.Seed)
+	require.Equal(t, 3, selection.minISR)
+}
+
 func TestSendStressConfigDefaultsToLatencyMode(t *testing.T) {
 	clearSendStressConfigEnv(t)
 
@@ -814,12 +865,14 @@ func TestRunSendStressWorkersThroughputModeCapsInflightPerWorker(t *testing.T) {
 }
 
 func TestSendStressThreeNode(t *testing.T) {
-	preset := sendStressAcceptancePreset()
-	cfg := loadSendStressConfig(t)
-	requireSendStressEnabled(t, cfg)
+	selection := selectSendStressThreeNodeRun(t)
+	cfg := selection.cfg
+	preset := selection.preset
 
 	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(appCfg *Config) {
-		applySendPathTuning(t, appCfg, preset)
+		if selection.useAcceptancePreset {
+			applySendPathTuning(t, appCfg, preset)
+		}
 		if cfg.Mode == sendStressModeThroughput {
 			appCfg.Gateway.DefaultSession.AsyncSendDispatch = true
 		}
@@ -827,8 +880,8 @@ func TestSendStressThreeNode(t *testing.T) {
 	leaderID := harness.waitForStableLeader(t, 1)
 	leader := harness.apps[leaderID]
 
-	targets := preloadSendStressChannels(t, harness, leader, cfg, preset.MinISR)
-	assertSendStressAcceptanceMinISR(t, harness, leader, targets, preset.MinISR)
+	targets := preloadSendStressChannels(t, harness, leader, cfg, selection.minISR)
+	assertSendStressAcceptanceMinISR(t, harness, leader, targets, selection.minISR)
 	outcome, records, failures := runSendStressWorkers(t, harness, targets, cfg)
 	verifySendStressCommittedRecords(t, harness, records)
 
@@ -841,6 +894,58 @@ func TestSendStressThreeNode(t *testing.T) {
 	require.Equal(t, outcome.Total, outcome.Success)
 	require.Zero(t, outcome.Failed)
 	require.Len(t, records, int(outcome.Success))
+}
+
+func selectSendStressThreeNodeRun(t *testing.T) sendStressThreeNodeRunSelection {
+	t.Helper()
+
+	preset := sendStressAcceptancePreset()
+	cfg := loadSendStressConfig(t)
+	requireSendStressEnabled(t, cfg)
+
+	if !sendStressThreeNodeHasExplicitTuningEnv() {
+		cfg = preset.Benchmark
+		cfg.Enabled = true
+		return sendStressThreeNodeRunSelection{
+			cfg:                 cfg,
+			preset:              preset,
+			minISR:              preset.MinISR,
+			useAcceptancePreset: true,
+		}
+	}
+
+	return sendStressThreeNodeRunSelection{
+		cfg:                 cfg,
+		preset:              preset,
+		minISR:              3,
+		useAcceptancePreset: false,
+	}
+}
+
+type sendStressThreeNodeRunSelection struct {
+	cfg                 sendStressConfig
+	preset              sendStressAcceptanceSpec
+	minISR              int
+	useAcceptancePreset bool
+}
+
+func sendStressThreeNodeHasExplicitTuningEnv() bool {
+	for _, name := range []string{
+		sendStressModeEnv,
+		sendStressDurationEnv,
+		sendStressWorkersEnv,
+		sendStressSendersEnv,
+		sendStressMessagesPerWorkerEnv,
+		sendStressMaxInflightEnv,
+		sendStressDialTimeoutEnv,
+		sendStressAckTimeoutEnv,
+		sendStressSeedEnv,
+	} {
+		if value, ok := os.LookupEnv(name); ok && strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func clearSendStressConfigEnv(t *testing.T) {
