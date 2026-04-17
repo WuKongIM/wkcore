@@ -520,28 +520,19 @@ func TestSendStressConfigDefaultsAndOverrides(t *testing.T) {
 
 	t.Run("acceptance preset overrides", func(t *testing.T) {
 		clearSendStressConfigEnv(t)
-		t.Setenv(sendStressEnv, "1")
-		t.Setenv(sendStressModeEnv, string(acceptance.Mode))
-		t.Setenv(sendStressDurationEnv, acceptance.Duration.String())
-		t.Setenv(sendStressWorkersEnv, strconv.Itoa(acceptance.Workers))
-		t.Setenv(sendStressSendersEnv, strconv.Itoa(acceptance.Senders))
-		t.Setenv(sendStressMessagesPerWorkerEnv, strconv.Itoa(acceptance.MessagesPerWorker))
-		t.Setenv(sendStressMaxInflightEnv, strconv.Itoa(acceptance.MaxInflightPerWorker))
-		t.Setenv(sendStressDialTimeoutEnv, acceptance.DialTimeout.String())
-		t.Setenv(sendStressAckTimeoutEnv, acceptance.AckTimeout.String())
-		t.Setenv(sendStressSeedEnv, strconv.FormatInt(acceptance.Seed, 10))
+		applySendStressAcceptanceConfigEnv(t, acceptance.Benchmark)
 
 		cfg := loadSendStressConfig(t)
 		require.True(t, cfg.Enabled)
-		require.Equal(t, acceptance.Mode, cfg.Mode)
-		require.Equal(t, acceptance.Duration, cfg.Duration)
-		require.Equal(t, acceptance.Workers, cfg.Workers)
-		require.Equal(t, acceptance.Senders, cfg.Senders)
-		require.Equal(t, acceptance.MessagesPerWorker, cfg.MessagesPerWorker)
-		require.Equal(t, acceptance.MaxInflightPerWorker, cfg.MaxInflightPerWorker)
-		require.Equal(t, acceptance.DialTimeout, cfg.DialTimeout)
-		require.Equal(t, acceptance.AckTimeout, cfg.AckTimeout)
-		require.EqualValues(t, acceptance.Seed, cfg.Seed)
+		require.Equal(t, acceptance.Benchmark.Mode, cfg.Mode)
+		require.Equal(t, acceptance.Benchmark.Duration, cfg.Duration)
+		require.Equal(t, acceptance.Benchmark.Workers, cfg.Workers)
+		require.Equal(t, acceptance.Benchmark.Senders, cfg.Senders)
+		require.Equal(t, acceptance.Benchmark.MessagesPerWorker, cfg.MessagesPerWorker)
+		require.Equal(t, acceptance.Benchmark.MaxInflightPerWorker, cfg.MaxInflightPerWorker)
+		require.Equal(t, acceptance.Benchmark.DialTimeout, cfg.DialTimeout)
+		require.Equal(t, acceptance.Benchmark.AckTimeout, cfg.AckTimeout)
+		require.EqualValues(t, acceptance.Benchmark.Seed, cfg.Seed)
 	})
 
 	enabled, ok, err := parseSendStressEnabled("")
@@ -823,8 +814,19 @@ func TestRunSendStressWorkersThroughputModeCapsInflightPerWorker(t *testing.T) {
 }
 
 func TestSendStressThreeNode(t *testing.T) {
+	preset := sendStressAcceptancePreset()
+	applySendStressAcceptanceConfigEnv(t, preset.Benchmark)
 	cfg := loadSendStressConfig(t)
 	requireSendStressEnabled(t, cfg)
+	require.Equal(t, preset.Benchmark.Mode, cfg.Mode)
+	require.Equal(t, preset.Benchmark.Duration, cfg.Duration)
+	require.Equal(t, preset.Benchmark.Workers, cfg.Workers)
+	require.Equal(t, preset.Benchmark.Senders, cfg.Senders)
+	require.Equal(t, preset.Benchmark.MessagesPerWorker, cfg.MessagesPerWorker)
+	require.Equal(t, preset.Benchmark.MaxInflightPerWorker, cfg.MaxInflightPerWorker)
+	require.Equal(t, preset.Benchmark.DialTimeout, cfg.DialTimeout)
+	require.Equal(t, preset.Benchmark.AckTimeout, cfg.AckTimeout)
+	require.EqualValues(t, preset.Benchmark.Seed, cfg.Seed)
 
 	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(appCfg *Config) {
 		if cfg.Mode == sendStressModeThroughput {
@@ -834,7 +836,8 @@ func TestSendStressThreeNode(t *testing.T) {
 	leaderID := harness.waitForStableLeader(t, 1)
 	leader := harness.apps[leaderID]
 
-	targets := preloadSendStressChannels(t, harness, leader, cfg)
+	targets := preloadSendStressChannels(t, harness, leader, cfg, preset.MinISR)
+	assertSendStressAcceptanceMinISR(t, harness, leader, targets, preset.MinISR)
 	outcome, records, failures := runSendStressWorkers(t, harness, targets, cfg)
 	verifySendStressCommittedRecords(t, harness, records)
 
@@ -874,6 +877,42 @@ func clearSendStressConfigEnv(t *testing.T) {
 					t.Fatalf("restore %s: %v", name, err)
 				}
 			})
+		}
+	}
+}
+
+func applySendStressAcceptanceConfigEnv(t *testing.T, preset sendStressConfig) {
+	t.Helper()
+
+	clearSendStressConfigEnv(t)
+	t.Setenv(sendStressEnv, "1")
+	t.Setenv(sendStressModeEnv, string(preset.Mode))
+	t.Setenv(sendStressDurationEnv, preset.Duration.String())
+	t.Setenv(sendStressWorkersEnv, strconv.Itoa(preset.Workers))
+	t.Setenv(sendStressSendersEnv, strconv.Itoa(preset.Senders))
+	t.Setenv(sendStressMessagesPerWorkerEnv, strconv.Itoa(preset.MessagesPerWorker))
+	t.Setenv(sendStressMaxInflightEnv, strconv.Itoa(preset.MaxInflightPerWorker))
+	t.Setenv(sendStressDialTimeoutEnv, preset.DialTimeout.String())
+	t.Setenv(sendStressAckTimeoutEnv, preset.AckTimeout.String())
+	t.Setenv(sendStressSeedEnv, strconv.FormatInt(preset.Seed, 10))
+}
+
+func assertSendStressAcceptanceMinISR(t *testing.T, harness *threeNodeAppHarness, leader *App, targets []sendStressTarget, minISR int) {
+	t.Helper()
+
+	require.NotNil(t, harness)
+	require.NotNil(t, leader)
+	require.NotEmpty(t, targets)
+
+	for _, target := range targets {
+		meta, err := leader.Store().GetChannelRuntimeMeta(context.Background(), target.ChannelID, int64(target.ChannelType))
+		require.NoError(t, err)
+		require.Equal(t, minISR, meta.MinISR, "leader store should preserve MinISR for %s", target.ChannelID)
+
+		for _, app := range harness.appsWithLeaderFirst(leader.cfg.Node.ID) {
+			meta, err := app.Store().GetChannelRuntimeMeta(context.Background(), target.ChannelID, int64(target.ChannelType))
+			require.NoError(t, err)
+			require.Equal(t, minISR, meta.MinISR, "app %d should preserve MinISR for %s", app.cfg.Node.ID, target.ChannelID)
 		}
 	}
 }
@@ -920,7 +959,7 @@ func filterSendStressEnv(env []string) []string {
 	return filtered
 }
 
-func preloadSendStressChannels(t *testing.T, harness *threeNodeAppHarness, leader *App, cfg sendStressConfig) []sendStressTarget {
+func preloadSendStressChannels(t *testing.T, harness *threeNodeAppHarness, leader *App, cfg sendStressConfig, minISR int) []sendStressTarget {
 	t.Helper()
 	require.NotNil(t, harness)
 	require.NotNil(t, leader)
@@ -943,7 +982,7 @@ func preloadSendStressChannels(t *testing.T, harness *threeNodeAppHarness, leade
 			Replicas:     []uint64{1, 2, 3},
 			ISR:          []uint64{1, 2, 3},
 			Leader:       leaderID,
-			MinISR:       sendStressAcceptanceMinISR,
+			MinISR:       int64(minISR),
 			Status:       uint8(channel.StatusActive),
 			Features:     uint64(channel.MessageSeqFormatLegacyU32),
 			LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),

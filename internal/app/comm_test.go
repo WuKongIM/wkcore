@@ -27,21 +27,42 @@ import (
 
 const multinodeAppReadTimeout = 20 * time.Second
 const appReadTimeout = 2 * time.Second
-const sendStressAcceptanceMinISR = 2
 
 var appWKProtoClients sync.Map
 
-func sendStressAcceptancePreset() sendStressConfig {
-	return sendStressConfig{
-		Mode:                 sendStressModeThroughput,
-		Duration:             15 * time.Second,
-		Workers:              16,
-		Senders:              32,
-		MessagesPerWorker:    50,
-		DialTimeout:          3 * time.Second,
-		AckTimeout:           20 * time.Second,
-		MaxInflightPerWorker: 64,
-		Seed:                 20260408,
+type sendStressAcceptanceSpec struct {
+	Benchmark                        sendStressConfig
+	FollowerReplicationRetryInterval time.Duration
+	AppendGroupCommitMaxWait         time.Duration
+	AppendGroupCommitMaxRecords      int
+	AppendGroupCommitMaxBytes        int
+	DataPlanePoolSize                int
+	DataPlaneMaxFetchInflight        int
+	DataPlaneMaxPendingFetch         int
+	MinISR                           int
+}
+
+func sendStressAcceptancePreset() sendStressAcceptanceSpec {
+	return sendStressAcceptanceSpec{
+		Benchmark: sendStressConfig{
+			Mode:                 sendStressModeThroughput,
+			Duration:             15 * time.Second,
+			Workers:              16,
+			Senders:              32,
+			MessagesPerWorker:    50,
+			DialTimeout:          3 * time.Second,
+			AckTimeout:           20 * time.Second,
+			MaxInflightPerWorker: 64,
+			Seed:                 20260408,
+		},
+		FollowerReplicationRetryInterval: 250 * time.Millisecond,
+		AppendGroupCommitMaxWait:         2 * time.Millisecond,
+		AppendGroupCommitMaxRecords:      128,
+		AppendGroupCommitMaxBytes:        256 * 1024,
+		DataPlanePoolSize:                8,
+		DataPlaneMaxFetchInflight:        16,
+		DataPlaneMaxPendingFetch:         16,
+		MinISR:                           2,
 	}
 }
 
@@ -275,42 +296,42 @@ func newThreeNodeAppHarnessWithOptions(t *testing.T, slotCount uint32, slotRepli
 	return harness
 }
 
-func applySendPathTuning(t *testing.T, cfg *Config) {
+func applySendPathTuning(t *testing.T, cfg *Config, preset sendStressAcceptanceSpec) {
 	t.Helper()
 
-	setClusterConfigDurationField(t, &cfg.Cluster, "FollowerReplicationRetryInterval", 250*time.Millisecond)
-	setClusterConfigDurationField(t, &cfg.Cluster, "AppendGroupCommitMaxWait", 2*time.Millisecond)
-	setClusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxRecords", 128)
-	setClusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxBytes", 256*1024)
-	cfg.Cluster.DataPlanePoolSize = 8
-	cfg.Cluster.DataPlaneMaxFetchInflight = 16
-	cfg.Cluster.DataPlaneMaxPendingFetch = 16
+	setClusterConfigDurationField(t, &cfg.Cluster, "FollowerReplicationRetryInterval", preset.FollowerReplicationRetryInterval)
+	setClusterConfigDurationField(t, &cfg.Cluster, "AppendGroupCommitMaxWait", preset.AppendGroupCommitMaxWait)
+	setClusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxRecords", preset.AppendGroupCommitMaxRecords)
+	setClusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxBytes", preset.AppendGroupCommitMaxBytes)
+	cfg.Cluster.DataPlanePoolSize = preset.DataPlanePoolSize
+	cfg.Cluster.DataPlaneMaxFetchInflight = preset.DataPlaneMaxFetchInflight
+	cfg.Cluster.DataPlaneMaxPendingFetch = preset.DataPlaneMaxPendingFetch
 }
 
 func TestThreeNodeAppHarnessUsesSendPathTuning(t *testing.T) {
 	preset := sendStressAcceptancePreset()
 	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(cfg *Config) {
-		applySendPathTuning(t, cfg)
+		applySendPathTuning(t, cfg, preset)
 	})
 
-	require.Equal(t, 15*time.Second, preset.Duration)
-	require.Equal(t, 16, preset.Workers)
-	require.Equal(t, 32, preset.Senders)
-	require.Equal(t, 64, preset.MaxInflightPerWorker)
-	require.Equal(t, 20*time.Second, preset.AckTimeout)
+	require.Equal(t, 15*time.Second, preset.Benchmark.Duration)
+	require.Equal(t, 16, preset.Benchmark.Workers)
+	require.Equal(t, 32, preset.Benchmark.Senders)
+	require.Equal(t, 64, preset.Benchmark.MaxInflightPerWorker)
+	require.Equal(t, 20*time.Second, preset.Benchmark.AckTimeout)
 
 	for nodeID, app := range harness.apps {
 		require.NotNil(t, app, "node %d app should be running", nodeID)
 		require.NotNil(t, app.dataPlanePool, "node %d should wire data plane pool", nodeID)
 		require.NotNil(t, app.isrTransport, "node %d should wire transport", nodeID)
-		require.Equal(t, 8, appDataPlanePoolSize(t, app), "node %d pool size", nodeID)
-		require.Equal(t, 16, appISRMaxFetchInflightPeerLimit(t, app), "node %d fetch inflight", nodeID)
-		require.Equal(t, 16, appDataPlaneAdapterMaxPendingFetch(t, app), "node %d pending fetch", nodeID)
-		require.Equal(t, 250*time.Millisecond, appISRFollowerReplicationRetryInterval(t, app), "node %d retry interval", nodeID)
+		require.Equal(t, preset.DataPlanePoolSize, appDataPlanePoolSize(t, app), "node %d pool size", nodeID)
+		require.Equal(t, preset.DataPlaneMaxFetchInflight, appISRMaxFetchInflightPeerLimit(t, app), "node %d fetch inflight", nodeID)
+		require.Equal(t, preset.DataPlaneMaxPendingFetch, appDataPlaneAdapterMaxPendingFetch(t, app), "node %d pending fetch", nodeID)
+		require.Equal(t, preset.FollowerReplicationRetryInterval, appISRFollowerReplicationRetryInterval(t, app), "node %d retry interval", nodeID)
 		maxWait, maxRecords, maxBytes := appReplicaAppendGroupCommitConfig(t, app)
-		require.Equal(t, 2*time.Millisecond, maxWait, "node %d append group wait", nodeID)
-		require.Equal(t, 128, maxRecords, "node %d append group records", nodeID)
-		require.Equal(t, 256*1024, maxBytes, "node %d append group bytes", nodeID)
+		require.Equal(t, preset.AppendGroupCommitMaxWait, maxWait, "node %d append group wait", nodeID)
+		require.Equal(t, preset.AppendGroupCommitMaxRecords, maxRecords, "node %d append group records", nodeID)
+		require.Equal(t, preset.AppendGroupCommitMaxBytes, maxBytes, "node %d append group bytes", nodeID)
 	}
 }
 
