@@ -49,6 +49,37 @@ func TestAppChannelClusterUpdatesObservabilityMetrics(t *testing.T) {
 	require.Equal(t, int64(0), registry.Channel.Snapshot().ActiveChannels)
 }
 
+func TestAppChannelClusterAppendForwardsToLeaderWhenLocalReplicaIsFollower(t *testing.T) {
+	req := channel.AppendRequest{
+		ChannelID: channel.ChannelID{ID: "room", Type: 2},
+		Message:   channel.Message{FromUID: "u1", ClientMsgNo: "m1", Payload: []byte("hi")},
+	}
+	service := &stubChannelService{
+		meta: channel.Meta{
+			Key:    channel.ChannelKey("room"),
+			ID:     req.ChannelID,
+			Leader: 2,
+		},
+		appendErr: channel.ErrNotLeader,
+	}
+	remote := &recordingRemoteChannelAppender{
+		result: channel.AppendResult{MessageID: 9, MessageSeq: 10},
+	}
+	cluster := &appChannelCluster{
+		service:        service,
+		localNodeID:    1,
+		remoteAppender: remote,
+	}
+
+	result, err := cluster.Append(context.Background(), req)
+
+	require.NoError(t, err)
+	require.Equal(t, channel.AppendResult{MessageID: 9, MessageSeq: 10}, result)
+	require.Len(t, remote.calls, 1)
+	require.Equal(t, uint64(2), remote.calls[0].nodeID)
+	require.Equal(t, req, remote.calls[0].req)
+}
+
 type stubChannelService struct {
 	meta         channel.Meta
 	appendResult channel.AppendResult
@@ -95,6 +126,22 @@ func (s *stubChannelRuntime) UpsertMeta(meta channel.Meta) error {
 func (s *stubChannelRuntime) RemoveChannel(key channel.ChannelKey) error {
 	s.removes = append(s.removes, key)
 	return nil
+}
+
+type remoteChannelAppendCall struct {
+	nodeID uint64
+	req    channel.AppendRequest
+}
+
+type recordingRemoteChannelAppender struct {
+	calls  []remoteChannelAppendCall
+	result channel.AppendResult
+	err    error
+}
+
+func (r *recordingRemoteChannelAppender) AppendToLeader(ctx context.Context, nodeID uint64, req channel.AppendRequest) (channel.AppendResult, error) {
+	r.calls = append(r.calls, remoteChannelAppendCall{nodeID: nodeID, req: req})
+	return r.result, r.err
 }
 
 func requireMetricFamilyByName(t *testing.T, families []*dto.MetricFamily, name string) *dto.MetricFamily {

@@ -36,6 +36,11 @@ type DeliverySubmit interface {
 type ChannelLog interface {
 	Status(id channel.ChannelID) (channel.ChannelRuntimeStatus, error)
 	Fetch(ctx context.Context, req channel.FetchRequest) (channel.FetchResult, error)
+	Append(ctx context.Context, req channel.AppendRequest) (channel.AppendResult, error)
+}
+
+type ChannelMetaRefresher interface {
+	RefreshChannelMeta(ctx context.Context, id channel.ChannelID) (channel.Meta, error)
 }
 
 type DeliveryAck interface {
@@ -56,6 +61,7 @@ type Options struct {
 	DeliverySubmit   DeliverySubmit
 	DeliveryAck      DeliveryAck
 	DeliveryOffline  DeliveryOffline
+	ChannelMeta      ChannelMetaRefresher
 	DeliveryAckIndex *deliveryruntime.AckIndex
 	Codec            codec.Protocol
 	Logger           wklog.Logger
@@ -71,6 +77,7 @@ type Adapter struct {
 	deliverySubmit   DeliverySubmit
 	deliveryAck      DeliveryAck
 	deliveryOffline  DeliveryOffline
+	channelMeta      ChannelMetaRefresher
 	deliveryAckIndex *deliveryruntime.AckIndex
 	codec            codec.Protocol
 	logger           wklog.Logger
@@ -93,6 +100,7 @@ func New(opts Options) *Adapter {
 		deliverySubmit:   opts.DeliverySubmit,
 		deliveryAck:      opts.DeliveryAck,
 		deliveryOffline:  opts.DeliveryOffline,
+		channelMeta:      opts.ChannelMeta,
 		deliveryAckIndex: opts.DeliveryAckIndex,
 		codec:            opts.Codec,
 		logger:           opts.Logger,
@@ -104,6 +112,7 @@ func New(opts Options) *Adapter {
 		opts.Cluster.RPCMux().Handle(deliveryAckRPCServiceID, adapter.handleDeliveryAckRPC)
 		opts.Cluster.RPCMux().Handle(deliveryOfflineRPCServiceID, adapter.handleDeliveryOfflineRPC)
 		opts.Cluster.RPCMux().Handle(conversationFactsRPCServiceID, adapter.handleConversationFactsRPC)
+		opts.Cluster.RPCMux().Handle(channelAppendRPCServiceID, adapter.handleChannelAppendRPC)
 	}
 	return adapter
 }

@@ -7,4 +7,5 @@ const (
 	deliveryAckRPCServiceID       uint8 = 8
 	deliveryOfflineRPCServiceID   uint8 = 9
 	conversationFactsRPCServiceID uint8 = 13
+	channelAppendRPCServiceID     uint8 = 33
 )

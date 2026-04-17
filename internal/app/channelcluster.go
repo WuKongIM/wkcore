@@ -19,6 +19,9 @@ type appChannelCluster struct {
 	runtime channel.Runtime
 	closers []func() error
 
+	localNodeID    uint64
+	remoteAppender remoteChannelAppender
+
 	closeOnce sync.Once
 	closeErr  error
 
@@ -35,11 +38,16 @@ type appChannelApplyLock struct {
 	refs int
 }
 
+type remoteChannelAppender interface {
+	AppendToLeader(ctx context.Context, nodeID uint64, req channel.AppendRequest) (channel.AppendResult, error)
+}
+
 func newAppChannelCluster(
 	store *channelstore.Engine,
 	rt channelruntime.Runtime,
 	transport *channeltransport.Transport,
 	messageIDs channel.MessageIDGenerator,
+	localNodeID uint64,
 ) (*appChannelCluster, error) {
 	if store == nil || rt == nil || transport == nil || messageIDs == nil {
 		return nil, channel.ErrInvalidConfig
@@ -54,8 +62,9 @@ func newAppChannelCluster(
 	}
 	transport.BindFetchService(rt)
 	return &appChannelCluster{
-		service: service,
-		runtime: appChannelRuntimeControl{runtime: rt},
+		service:     service,
+		runtime:     appChannelRuntimeControl{runtime: rt},
+		localNodeID: localNodeID,
 		closers: []func() error{
 			transport.Close,
 			rt.Close,
@@ -125,6 +134,11 @@ func (c *appChannelCluster) Append(ctx context.Context, req channel.AppendReques
 	}
 	start := time.Now()
 	result, err := c.service.Append(ctx, req)
+	if errors.Is(err, channel.ErrNotLeader) {
+		if forwarded, forwardErr, ok := c.forwardAppendToLeader(ctx, req); ok {
+			result, err = forwarded, forwardErr
+		}
+	}
 	c.observeAppend(err, time.Since(start))
 	return result, err
 }
@@ -232,6 +246,22 @@ func (c *appChannelCluster) setChannelActive(key channel.ChannelKey, active bool
 		delete(c.activeChannels, key)
 	}
 	c.metrics.Channel.SetActiveChannels(len(c.activeChannels))
+}
+
+func (c *appChannelCluster) forwardAppendToLeader(ctx context.Context, req channel.AppendRequest) (channel.AppendResult, error, bool) {
+	if c == nil || c.remoteAppender == nil {
+		return channel.AppendResult{}, nil, false
+	}
+	meta, ok := c.service.MetaSnapshot(channelhandler.KeyFromChannelID(req.ChannelID))
+	if !ok || meta.Leader == 0 {
+		return channel.AppendResult{}, nil, false
+	}
+	leaderID := uint64(meta.Leader)
+	if leaderID == 0 || leaderID == c.localNodeID {
+		return channel.AppendResult{}, nil, false
+	}
+	result, err := c.remoteAppender.AppendToLeader(ctx, leaderID, req)
+	return result, err, true
 }
 
 type appChannelRuntimeControl struct {

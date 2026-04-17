@@ -140,6 +140,116 @@ func TestThreeNodeAppGatewaySendUsesDurableCommit(t *testing.T) {
 	}
 }
 
+func TestThreeNodeAppGatewaySendFromFollowerForwardsDurableAppendToLeader(t *testing.T) {
+	harness := newThreeNodeAppHarness(t)
+	leaderID := harness.waitForStableLeader(t, 1)
+	leader := harness.apps[leaderID]
+	followerID := leaderID%3 + 1
+	require.NotEqual(t, leaderID, followerID)
+	follower := harness.apps[followerID]
+	recipientUID := "three-node-follower-user"
+	channelID := deliveryusecase.EncodePersonChannel("sender-follower", recipientUID)
+
+	id := channel.ChannelID{
+		ID:   channelID,
+		Type: frame.ChannelTypePerson,
+	}
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 16,
+		LeaderEpoch:  7,
+		Replicas:     []uint64{1, 2, 3},
+		ISR:          []uint64{1, 2, 3},
+		Leader:       leader.cfg.Node.ID,
+		MinISR:       3,
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
+	}
+	require.NoError(t, leader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
+	_, err := leader.channelMetaSync.RefreshChannelMeta(context.Background(), id)
+	require.NoError(t, err)
+	_, err = follower.channelMetaSync.RefreshChannelMeta(context.Background(), id)
+	require.NoError(t, err)
+
+	conn := connectAppWKProtoClient(t, follower, "sender-follower")
+
+	sendAppWKProtoFrame(t, conn, &frame.SendPacket{
+		ChannelID:   recipientUID,
+		ChannelType: id.Type,
+		ClientSeq:   1,
+		ClientMsgNo: "three-node-follower-1",
+		Payload:     []byte("hello durable follower"),
+	})
+
+	sendack, ok := readAppWKProtoFrameWithin(t, conn, multinodeAppReadTimeout).(*frame.SendackPacket)
+	require.True(t, ok)
+	require.Equal(t, frame.ReasonSuccess, sendack.ReasonCode)
+	require.NotZero(t, sendack.MessageSeq)
+	require.NotZero(t, sendack.MessageID)
+
+	for _, app := range harness.orderedApps() {
+		msg := waitForAppCommittedMessage(t, channelStoreForID(app.ChannelLogDB(), id), sendack.MessageSeq, 5*time.Second)
+		require.Equal(t, []byte("hello durable follower"), msg.Payload)
+		require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
+	}
+}
+
+func TestThreeNodeAppGatewaySendFromFollowerBootstrapsLeaderOnDemand(t *testing.T) {
+	harness := newThreeNodeAppHarness(t)
+	leaderID := harness.waitForStableLeader(t, 1)
+	leader := harness.apps[leaderID]
+	followerID := leaderID%3 + 1
+	require.NotEqual(t, leaderID, followerID)
+	follower := harness.apps[followerID]
+	recipientUID := "three-node-ondemand-user"
+	channelID := deliveryusecase.EncodePersonChannel("sender-ondemand", recipientUID)
+
+	id := channel.ChannelID{
+		ID:   channelID,
+		Type: frame.ChannelTypePerson,
+	}
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 17,
+		LeaderEpoch:  8,
+		Replicas:     []uint64{1, 2, 3},
+		ISR:          []uint64{1, 2, 3},
+		Leader:       leader.cfg.Node.ID,
+		MinISR:       3,
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
+	}
+	require.NoError(t, leader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
+	_, err := follower.channelMetaSync.RefreshChannelMeta(context.Background(), id)
+	require.NoError(t, err)
+
+	conn := connectAppWKProtoClient(t, follower, "sender-ondemand")
+
+	sendAppWKProtoFrame(t, conn, &frame.SendPacket{
+		ChannelID:   recipientUID,
+		ChannelType: id.Type,
+		ClientSeq:   1,
+		ClientMsgNo: "three-node-ondemand-1",
+		Payload:     []byte("hello durable on demand"),
+	})
+
+	sendack, ok := readAppWKProtoFrameWithin(t, conn, multinodeAppReadTimeout).(*frame.SendackPacket)
+	require.True(t, ok)
+	require.Equal(t, frame.ReasonSuccess, sendack.ReasonCode)
+	require.NotZero(t, sendack.MessageSeq)
+	require.NotZero(t, sendack.MessageID)
+
+	for _, app := range harness.orderedApps() {
+		msg := waitForAppCommittedMessage(t, channelStoreForID(app.ChannelLogDB(), id), sendack.MessageSeq, 5*time.Second)
+		require.Equal(t, []byte("hello durable on demand"), msg.Payload)
+		require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
+	}
+}
+
 func TestThreeNodeAppDurableSendReturnsBeforeRemoteAck(t *testing.T) {
 	harness := newThreeNodeAppHarness(t)
 	ownerID := harness.waitForStableLeader(t, 1)

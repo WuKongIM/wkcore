@@ -79,6 +79,7 @@ SendPacket
    - refresh 先从 Slot 层读取权威 `ChannelRuntimeMeta`
    - 若权威读取返回 `ErrNotFound`，则按当前 Slot 拓扑 bootstrap 一份运行时元数据；该 bootstrap 只依赖 slot peers 和 slot leader，不依赖业务 `channel-info` 是否存在
    - bootstrap 后会重新读取权威元数据，并以重读结果为准 `ApplyMeta` 到本地 ISR runtime，然后只重试一次 `Append`
+   - 若重试时本地副本不是 Channel Leader，`appChannelCluster.Append()` 会按 meta 中的 Leader 通过 `internal/access/node/channel_append_rpc.go` 转发到真正的 Channel Leader
 5. **异步投递**：写入成功后，调用 `dispatcher.SubmitCommitted()` 触发异步消息投递。
 6. **返回结果**：将 `MessageID` 和 `MessageSeq` 封装为 `SendResult`。
 
@@ -394,7 +395,7 @@ rawNode, err := raft.NewRawNode(&raft.Config{
 | PreVote      | 分区节点无法获得多数派 PreVote 支持，不会发起真正选举，不会扰乱集群 |
 | CheckQuorum  | Leader 周期性检查是否仍能与多数派通信，否则主动让出 Leadership       |
 
-**请求转发**：`callAuthoritativeRPC`（`pkg/slot/proxy/authoritative_rpc.go`）实现 Leader 追踪循环——非 Leader 节点收到写请求时，返回 `rpcStatusNotLeader` 和 `leaderID`，调用方根据提示重定向到 Leader。
+**请求转发**：Slot 层的 `callAuthoritativeRPC`（`pkg/slot/proxy/authoritative_rpc.go`）实现 Slot Leader 追踪循环；Channel Durable Append 则由 `internal/access/node/channel_append_rpc.go` 按 `ChannelRuntimeMeta.Leader` 做 channel-leader 转发，两者分别服务不同层级的 leader 路由。
 
 ### 4.3 Channel 层：Leader 租约 + FencedLeader + Epoch
 

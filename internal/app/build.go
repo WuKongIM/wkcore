@@ -161,7 +161,7 @@ func build(cfg Config) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: create channel runtime: %w", err)
 	}
-	app.channelLog, err = newAppChannelCluster(app.channelLogDB, app.isrRuntime, app.isrTransport, messageIDs)
+	app.channelLog, err = newAppChannelCluster(app.channelLogDB, app.isrRuntime, app.isrTransport, messageIDs, cfg.Node.ID)
 	if err != nil {
 		return nil, fmt.Errorf("app: create channel cluster: %w", err)
 	}
@@ -169,6 +169,7 @@ func build(cfg Config) (_ *App, err error) {
 
 	app.store = metastore.New(app.cluster, app.db)
 	app.nodeClient = accessnode.NewClient(app.cluster)
+	app.channelLog.remoteAppender = app.nodeClient
 	app.conversationProjector = conversationusecase.NewProjector(conversationusecase.ProjectorOptions{
 		Store:              app.store,
 		FlushInterval:      cfg.Conversation.FlushInterval,
@@ -255,6 +256,7 @@ func build(cfg Config) (_ *App, err error) {
 		GatewayBootID:    app.gatewayBootID,
 		LocalNodeID:      cfg.Node.ID,
 		ChannelLog:       app.channelLog,
+		ChannelMeta:      app.channelMetaSync,
 		DeliverySubmit:   committedDispatcher,
 		DeliveryAck:      app.deliveryApp,
 		DeliveryOffline:  app.deliveryApp,
