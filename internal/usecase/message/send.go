@@ -5,6 +5,7 @@ import (
 	"time"
 
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
+	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/WuKongIM/WuKongIM/pkg/wklog"
@@ -67,7 +68,10 @@ func (a *App) sendDurable(ctx context.Context, cmd SendCommand) (SendResult, err
 	}
 
 	if a.dispatcher != nil {
-		if err := a.dispatcher.SubmitCommitted(ctx, result.Message); err != nil {
+		if err := a.dispatcher.SubmitCommitted(ctx, deliveryruntime.CommittedEnvelope{
+			Message:         result.Message,
+			SenderSessionID: cmd.SenderSessionID,
+		}); err != nil {
 			fields := append([]wklog.Field{
 				wklog.Event("message.send.dispatch_submit.failed"),
 			}, messageLogFields(channelID, cmd.FromUID)...)

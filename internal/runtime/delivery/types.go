@@ -12,7 +12,10 @@ type ChannelKey struct {
 	ChannelType uint8
 }
 
-type CommittedEnvelope = channel.Message
+type CommittedEnvelope struct {
+	channel.Message
+	SenderSessionID uint64
+}
 
 type RouteKey struct {
 	UID       string

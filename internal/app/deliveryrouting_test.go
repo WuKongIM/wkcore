@@ -265,11 +265,13 @@ func TestAsyncCommittedDispatcherFallsBackToLocalConversationWhenOwnerIsUnknown(
 		conversation: conversation,
 	}
 
-	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), channel.Message{
-		ChannelID:   "g1",
-		ChannelType: 2,
-		MessageID:   101,
-		MessageSeq:  1,
+	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), deliveryruntime.CommittedEnvelope{
+		Message: channel.Message{
+			ChannelID:   "g1",
+			ChannelType: 2,
+			MessageID:   101,
+			MessageSeq:  1,
+		},
 	}))
 
 	require.Eventually(t, func() bool {
@@ -289,20 +291,22 @@ func TestAsyncCommittedDispatcherSubmitsDurableMessageToLocalDelivery(t *testing
 		delivery: delivery,
 	}
 
-	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), channel.Message{
-		MessageID:   88,
-		MessageSeq:  7,
-		Framer:      message.SendCommand{}.Framer,
-		Setting:     3,
-		MsgKey:      "k1",
-		Expire:      60,
-		ClientSeq:   9,
-		ClientMsgNo: "m1",
-		ChannelID:   "u1@u2",
-		ChannelType: 1,
-		Topic:       "chat",
-		FromUID:     "u1",
-		Payload:     []byte("hello"),
+	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), deliveryruntime.CommittedEnvelope{
+		Message: channel.Message{
+			MessageID:   88,
+			MessageSeq:  7,
+			Framer:      message.SendCommand{}.Framer,
+			Setting:     3,
+			MsgKey:      "k1",
+			Expire:      60,
+			ClientSeq:   9,
+			ClientMsgNo: "m1",
+			ChannelID:   "u1@u2",
+			ChannelType: 1,
+			Topic:       "chat",
+			FromUID:     "u1",
+			Payload:     []byte("hello"),
+		},
 	}))
 
 	require.Eventually(t, func() bool {
@@ -322,7 +326,7 @@ func TestAsyncCommittedDispatcherSubmitsDurableMessageToLocalDelivery(t *testing
 		MsgKey:      "k1",
 		Expire:      60,
 		ClientSeq:   9,
-	}, delivery.calls[0])
+	}, delivery.calls[0].Message)
 }
 
 func TestAsyncCommittedDispatcherSubmitsToConversationProjector(t *testing.T) {
@@ -348,12 +352,12 @@ func TestAsyncCommittedDispatcherSubmitsToConversationProjector(t *testing.T) {
 		FromUID:     "u1",
 		Payload:     []byte("hello projector"),
 	}
-	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), msg))
+	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), deliveryruntime.CommittedEnvelope{Message: msg}))
 
 	require.Eventually(t, func() bool {
 		return len(delivery.calls) == 1 && len(conversation.calls) == 1
 	}, time.Second, 10*time.Millisecond)
-	require.Equal(t, msg, delivery.calls[0])
+	require.Equal(t, msg, delivery.calls[0].Message)
 	require.Equal(t, msg, conversation.calls[0])
 }
 
@@ -380,13 +384,13 @@ func TestAsyncCommittedDispatcherPrefersLocalDeliveryWithoutOwnerLookup(t *testi
 		FromUID:     "u1",
 		Payload:     []byte("hello local"),
 	}
-	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), msg))
+	require.NoError(t, dispatcher.SubmitCommitted(context.Background(), deliveryruntime.CommittedEnvelope{Message: msg}))
 
 	require.Eventually(t, func() bool {
 		return len(delivery.calls) == 1 && len(conversation.calls) == 1
 	}, time.Second, 10*time.Millisecond)
 	require.Equal(t, 0, channelLog.StatusCalls())
-	require.Equal(t, msg, delivery.calls[0])
+	require.Equal(t, msg, delivery.calls[0].Message)
 	require.Equal(t, msg, conversation.calls[0])
 }
 
@@ -440,13 +444,15 @@ func TestLocalDeliveryPushBuildsPersonChannelViewPerRouteUID(t *testing.T) {
 	}
 
 	result, err := push.Push(context.Background(), deliveryruntime.PushCommand{
-		Envelope: channel.Message{
-			MessageID:   88,
-			MessageSeq:  7,
-			ChannelID:   "u1@u2",
-			ChannelType: frame.ChannelTypePerson,
-			FromUID:     "u1",
-			Payload:     []byte("hello"),
+		Envelope: deliveryruntime.CommittedEnvelope{
+			Message: channel.Message{
+				MessageID:   88,
+				MessageSeq:  7,
+				ChannelID:   "u1@u2",
+				ChannelType: frame.ChannelTypePerson,
+				FromUID:     "u1",
+				Payload:     []byte("hello"),
+			},
 		},
 		Routes: []deliveryruntime.RouteKey{
 			{UID: "u1", NodeID: 1, BootID: 11, SessionID: 1},
@@ -467,6 +473,72 @@ func TestLocalDeliveryPushBuildsPersonChannelViewPerRouteUID(t *testing.T) {
 	require.True(t, ok)
 
 	require.Equal(t, "u2", senderPacket.ChannelID)
+	require.Equal(t, "u1", recipientPacket.ChannelID)
+}
+
+func TestLocalDeliveryPushSkipsOriginSessionButKeepsOtherSenderSessions(t *testing.T) {
+	origin := newOptionRecordingSession(1, "tcp")
+	origin.SetValue("uid", "u1")
+	mirror := newOptionRecordingSession(3, "tcp")
+	mirror.SetValue("uid", "u1")
+	recipient := newOptionRecordingSession(2, "tcp")
+	recipient.SetValue("uid", "u2")
+	registry := online.NewRegistry()
+	require.NoError(t, registry.Register(online.OnlineConn{
+		SessionID: 1,
+		UID:       "u1",
+		State:     online.LocalRouteStateActive,
+		Session:   origin.Session,
+	}))
+	require.NoError(t, registry.Register(online.OnlineConn{
+		SessionID: 3,
+		UID:       "u1",
+		State:     online.LocalRouteStateActive,
+		Session:   mirror.Session,
+	}))
+	require.NoError(t, registry.Register(online.OnlineConn{
+		SessionID: 2,
+		UID:       "u2",
+		State:     online.LocalRouteStateActive,
+		Session:   recipient.Session,
+	}))
+
+	push := localDeliveryPush{
+		online:        registry,
+		localNodeID:   1,
+		gatewayBootID: 11,
+	}
+
+	result, err := push.Push(context.Background(), deliveryruntime.PushCommand{
+		Envelope: deliveryruntime.CommittedEnvelope{
+			Message: channel.Message{
+				MessageID:   99,
+				MessageSeq:  8,
+				ChannelID:   "u1@u2",
+				ChannelType: frame.ChannelTypePerson,
+				FromUID:     "u1",
+				Payload:     []byte("hello"),
+			},
+			SenderSessionID: 1,
+		},
+		Routes: []deliveryruntime.RouteKey{
+			{UID: "u1", NodeID: 1, BootID: 11, SessionID: 1},
+			{UID: "u1", NodeID: 1, BootID: 11, SessionID: 3},
+			{UID: "u2", NodeID: 1, BootID: 11, SessionID: 2},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Accepted, 2)
+
+	require.Empty(t, origin.Writes())
+	require.Len(t, mirror.Writes(), 1)
+	require.Len(t, recipient.Writes(), 1)
+
+	mirrorPacket, ok := mirror.Writes()[0].f.(*frame.RecvPacket)
+	require.True(t, ok)
+	recipientPacket, ok := recipient.Writes()[0].f.(*frame.RecvPacket)
+	require.True(t, ok)
+	require.Equal(t, "u2", mirrorPacket.ChannelID)
 	require.Equal(t, "u1", recipientPacket.ChannelID)
 }
 
@@ -594,13 +666,13 @@ func (r *recordingSessionCloser) SessionClosed(_ context.Context, cmd message.Se
 
 type recordingCommittedSubmitter struct {
 	submitCalls int
-	calls       []channel.Message
+	calls       []deliveryruntime.CommittedEnvelope
 }
 
-func (r *recordingCommittedSubmitter) SubmitCommitted(_ context.Context, msg channel.Message) error {
+func (r *recordingCommittedSubmitter) SubmitCommitted(_ context.Context, env deliveryruntime.CommittedEnvelope) error {
 	r.submitCalls++
-	copied := msg
-	copied.Payload = append([]byte(nil), msg.Payload...)
+	copied := env
+	copied.Payload = append([]byte(nil), env.Payload...)
 	r.calls = append(r.calls, copied)
 	return nil
 }

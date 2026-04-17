@@ -165,11 +165,12 @@ Stop():
 客户端 SendPacket 到达 Gateway
   ↓
 Handler.OnFrame(ctx, frame):
-  ① 类型分发: SendPacket → handleSend / RecvackPacket → handleRecvAck / PingPacket → 忽略
+  ① 类型分发: SendPacket → handleSend / RecvackPacket → handleRecvAck / PingPacket → handlePing
+     → handlePing(ctx): 直接 writePong(ctx)，不进入 usecase
   ↓
 handleSend(ctx, pkt):
   ② decryptSendPacketIfNeeded: 解密（如需要），失败 → writeSendack(ReasonNotSupportChannelType)
-  ③ mapSendCommand(ctx, pkt): 从 Session 提取 UID/ProtocolVersion，构建 SendCommand
+  ③ mapSendCommand(ctx, pkt): 从 Session 提取 UID/SessionID/ProtocolVersion，构建 SendCommand
   ④ context.WithTimeout(sendTimeout=10s)
   ⑤ messages.Send(ctx, cmd):
      ↓
@@ -183,11 +184,13 @@ message.App.Send(ctx, cmd):
         → cluster.Append(channelID, message)
         → 失败且 ErrStaleMeta / ErrNotLeader / ErrRerouted → refresher.Refresh
         → 权威运行时元数据缺失(ErrNotFound) 时，按 Slot 拓扑 bootstrap RuntimeMeta
+        → 若权威 RuntimeMeta 的 leader lease 已过期/即将过期，或 Slot 拓扑中的 leader/副本集已变化，则先走权威 reconcile：续租 lease，并把 leader / replicas / ISR / MinISR 对齐到当前 Slot 拓扑
         → 重新读取权威 RuntimeMeta → apply 到本地 ISR runtime → 重试一次 Append
         → 若本地副本不是 Channel Leader，appChannelCluster 会按 meta 中的 Leader 通过 `access/node/channel_append_rpc.go` 转发追加请求
      c. Append 成功 → 获得 MessageID + MessageSeq
      d. dispatcher.SubmitCommitted(ctx, committedMessage):
         → asyncCommittedDispatcher 异步分发已提交消息
+        → 同时携带 SenderSessionID（仅用于实时投递过滤当前发起发送的连接，不写入 durable log）
         → 触发 Delivery + Conversation 投影
   ⑩ 返回 SendResult{MessageID, MessageSeq, ReasonSuccess}
   ↓
@@ -221,6 +224,7 @@ asyncCommittedDispatcher.SubmitCommitted(ctx, message):
   ② 本地处理:
      a. delivery.Submit(ctx, committedEnvelope):
         → deliveryRuntime.Manager.Submit [见 5.6]
+        → envelope 内保留 SenderSessionID，用于过滤当前发送连接
      b. conversation.SubmitCommitted(ctx, message):
         → conversationProjector 更新会话投影
 ```
@@ -245,6 +249,8 @@ Actor 状态机:
      → 遍历每个端点:
         本地端点: localDeliveryPush → online.Registry 查找 Session → Session.WriteFrame
         远程端点: nodeClient RPC → 目标节点 localDeliveryPush
+     → 若 route.SessionID == SenderSessionID：跳过当前发起发送的连接
+     → 同 UID 的其他在线 Session 仍正常收到 RecvPacket
      → AckIndex.Bind(sessionID, messageID, channelKey, route)
   ⑤ 等待 Ack:
      → 客户端收到消息后发送 RecvackPacket
@@ -387,8 +393,9 @@ handleRecvAck(ctx, pkt):
 - **启动顺序严格**: `Start()` 按 Cluster → WaitReady → ChannelMetaSync → Presence → Conversation → Gateway → API 顺序启动，任一步骤失败会反向回滚已启动组件。不要尝试跳过或重排。
 - **停止顺序相反**: `Stop()` 先停 API/Gateway（停止接入新请求），再停业务层，最后停 Cluster 和关闭数据库。`stopOnce` 保证幂等。
 - **Person 频道 ID 规范化**: 发送到 Person 频道时，`NormalizePersonChannel(fromUID, channelID)` 会将两个 UID 排序拼接为统一的 channelID。直接使用原始 channelID 会导致同一对话产生两个不同的 Channel。
-- **sendWithMetaRefreshRetry**: 消息 Append 遇到 `ErrStaleMeta`、`ErrNotLeader` 或 `ErrRerouted` 时会触发一次刷新重试。若权威 `ChannelRuntimeMeta` 读到 `ErrNotFound`，刷新路径会先按 Slot 拓扑 bootstrap 缺失的运行时元数据，再重新读取权威结果、应用到本地 ISR runtime，然后只重试一次 Append。重试后的本地 `Append` 若发现当前节点只是 Follower，会按最新 meta 中的 Leader 走 node RPC 转发。
-- **runtime-meta bootstrap 只依赖拓扑**: bootstrap 仅依赖 `SlotForKey`、Slot peers 和当前 Slot leader 来生成初始 `ChannelRuntimeMeta`，不依赖业务 `channel-info` 是否存在。当前发送链路中的 refresh path 会这样补齐运行时元数据，通用读路径保持纯读取语义。
+- **sendWithMetaRefreshRetry**: 消息 Append 遇到 `ErrStaleMeta`、`ErrNotLeader` 或 `ErrRerouted` 时会触发一次刷新重试。若权威 `ChannelRuntimeMeta` 读到 `ErrNotFound`，刷新路径会先按 Slot 拓扑 bootstrap 缺失的运行时元数据；若读到的权威元数据 lease 已过期/即将过期，或 leader / replicas 已落后于当前 Slot 拓扑，则会先做一次权威 reconcile，再重新读取权威结果、应用到本地 ISR runtime，然后只重试一次 Append。重试后的本地 `Append` 若发现当前节点只是 Follower，会按最新 meta 中的 Leader 走 node RPC 转发。
+- **channelMetaSync 不只是被动 apply**: `syncOnce()` 除了把权威 `ChannelRuntimeMeta` 投影到本地 ISR runtime，还会对本节点参与副本的 channel 做一次权威 reconcile：当 lease 即将过期，或 leader / replicas / ISR / MinISR 落后于当前 Slot 拓扑时，就先续租并对齐权威元数据，减少 idle channel 因 lease 过期而首次写失败。
+- **runtime-meta bootstrap / reconcile 只依赖拓扑**: runtime-meta 的 bootstrap 与后续 reconcile 都仅依赖 `SlotForKey`、Slot peers 和当前 Slot leader，不依赖业务 `channel-info` 是否存在。通用读路径仍保持纯读取语义，写路径和主动同步路径负责把权威运行时元数据补齐并续租。
 - **asyncCommittedDispatcher 的 preferLocal**: 已提交消息优先在本地节点投递。如果本节点不是 Channel Leader，会通过 nodeClient RPC 转发。这避免了所有投递都经过 Leader 的瓶颈。
 - **投递 Actor 按 Channel 隔离**: 每个 Channel 有独立的 Actor，通过 shard 分片减少锁竞争。Actor 空闲超过 1 分钟会被回收。
 - **投递重试有上限**: 默认重试延迟 [500ms, 1s, 2s]，最大重试次数 = len(retryDelays)+1 = 4 次。超过后消息进入离线处理。
@@ -397,5 +404,6 @@ handleRecvAck(ctx, pkt):
 - **Presence 失败回滚**: `Activate` 中如果 `dispatchActions` 失败，会先 `bestEffortUnregister`（注销权威路由）再 `online.Unregister`（清理本地）。顺序不能反。
 - **会话冷热分离**: `coldThreshold`(默认 30 天) 之前无消息的会话被标记为冷会话，异步降级 `ClearActiveAt`。冷会话不参与活跃候选，但仍可通过增量扫描或 overlay 返回。
 - **会话增量同步**: `version > 0` 时走增量路径，通过 `ScanUserConversationStatePage` 分页扫描 + `incrementalViewRetainer` 小顶堆保留 top-N。大量会话时避免全量加载。
+- **Gateway 空闲断开只看客户端入站**: `gateway/core/server.go` 的 idle monitor 只根据最近一次客户端入站数据刷新 deadline；客户端发送的任意 frame（包括 `PingPacket`）都会续期，服务端持续下发消息不会延长 `IdleTimeout`。默认超时为 3 分钟。
 - **Gateway TokenAuth 当前不可用**: `Config.Gateway.TokenAuthOn = true` 会直接报错 `gateway token auth requires verifier hooks`，需要先注册验证钩子。
 - **Cluster.Slots 静态配置已废弃**: 配置中设置 `Cluster.Slots` 会直接报错，必须使用 `Cluster.InitialSlotCount` 走 Controller 管理的动态 Slot 分配。

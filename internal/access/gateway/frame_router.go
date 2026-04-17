@@ -16,7 +16,7 @@ func (h *Handler) OnFrame(ctx *coregateway.Context, f frame.Frame) error {
 	case *frame.RecvackPacket:
 		return h.handleRecvAck(ctx, pkt)
 	case *frame.PingPacket:
-		return nil
+		return h.handlePing(ctx)
 	default:
 		return ErrUnsupportedFrame
 	}
@@ -75,4 +75,8 @@ func (h *Handler) handleRecvAck(ctx *coregateway.Context, pkt *frame.RecvackPack
 		return err
 	}
 	return h.messages.RecvAck(cmd)
+}
+
+func (h *Handler) handlePing(ctx *coregateway.Context) error {
+	return writePong(ctx)
 }

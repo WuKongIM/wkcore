@@ -25,6 +25,7 @@ func mapSendCommand(ctx *coregateway.Context, pkt *frame.SendPacket) (message.Se
 	if pkt == nil {
 		return message.SendCommand{
 			FromUID:         senderUID,
+			SenderSessionID: ctx.Session.ID(),
 			ProtocolVersion: protocolVersion,
 		}, nil
 	}
@@ -44,6 +45,7 @@ func mapSendCommand(ctx *coregateway.Context, pkt *frame.SendPacket) (message.Se
 		MsgKey:          pkt.MsgKey,
 		Expire:          pkt.Expire,
 		FromUID:         senderUID,
+		SenderSessionID: ctx.Session.ID(),
 		ClientSeq:       pkt.ClientSeq,
 		ClientMsgNo:     pkt.ClientMsgNo,
 		StreamNo:        pkt.StreamNo,
@@ -97,4 +99,11 @@ func writeSendack(ctx *coregateway.Context, pkt *frame.SendPacket, result messag
 		ClientMsgNo: clientMsgNo,
 		ReasonCode:  result.Reason,
 	})
+}
+
+func writePong(ctx *coregateway.Context) error {
+	if ctx == nil || ctx.Session == nil {
+		return ErrUnauthenticatedSession
+	}
+	return ctx.WriteFrame(&frame.PongPacket{})
 }

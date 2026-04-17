@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
@@ -107,9 +108,9 @@ func (c *Client) ApplyRouteAction(ctx context.Context, action presence.RouteActi
 	return nil
 }
 
-func (c *Client) SubmitCommitted(ctx context.Context, nodeID uint64, msg channel.Message) error {
+func (c *Client) SubmitCommitted(ctx context.Context, nodeID uint64, env deliveryruntime.CommittedEnvelope) error {
 	resp, err := callDeliveryDirect(ctx, c, nodeID, deliverySubmitRPCServiceID, deliverySubmitRequest{
-		Message: msg,
+		Envelope: env,
 	}, decodeDeliveryResponse)
 	if err != nil {
 		return err

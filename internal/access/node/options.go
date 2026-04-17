@@ -30,7 +30,7 @@ type Presence interface {
 }
 
 type DeliverySubmit interface {
-	SubmitCommitted(ctx context.Context, msg channel.Message) error
+	SubmitCommitted(ctx context.Context, env deliveryruntime.CommittedEnvelope) error
 }
 
 type ChannelLog interface {

@@ -8,6 +8,7 @@ type SendCommand struct {
 	MsgKey               string
 	Expire               uint32
 	FromUID              string
+	SenderSessionID      uint64
 	ClientSeq            uint64
 	ClientMsgNo          string
 	StreamNo             string

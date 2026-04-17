@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
 
@@ -106,14 +107,7 @@ func TestActorResolvesSubscribersPageByPageAndOnlyTracksOnlineRoutes(t *testing.
 		MaxRetryAttempts: 4,
 	})
 
-	require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
-		ChannelID:   "g1",
-		ChannelType: 2,
-		MessageID:   101,
-		MessageSeq:  1,
-		FromUID:   "u1",
-		Payload:     []byte("hello group"),
-	}))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g1", frame.ChannelTypeGroup, 101, 1, "hello group")))
 
 	require.Equal(t, 2, resolver.pageCalls["g1"])
 	require.Equal(t, []uint64{2, 4}, pusher.acceptedSessionIDs(101))
@@ -135,14 +129,7 @@ func TestActorDropsRealtimeRoutesWhenInflightBudgetExceeded(t *testing.T) {
 		Limits: Limits{MaxInflightRoutesPerActor: 1},
 	})
 
-	require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
-		ChannelID:   "g-budget",
-		ChannelType: 2,
-		MessageID:   201,
-		MessageSeq:  1,
-		FromUID:   "u1",
-		Payload:     []byte("budget"),
-	}))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-budget", frame.ChannelTypeGroup, 201, 1, "budget")))
 
 	require.Equal(t, []uint64{2}, pusher.acceptedSessionIDs(201))
 }
@@ -153,14 +140,7 @@ func TestActorDispatchesFirstObservedSequenceWithoutWaitingForSequenceOne(t *tes
 		testRoute("u2", 1, 11, 2),
 	}
 
-	require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
-		ChannelID:   "g-first-gap",
-		ChannelType: 2,
-		MessageID:   209,
-		MessageSeq:  9,
-		FromUID:   "u1",
-		Payload:     []byte("gap"),
-	}))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-first-gap", frame.ChannelTypeGroup, 209, 9, "gap")))
 
 	require.Equal(t, []uint64{9}, pusher.pushedSeqs())
 }
@@ -171,22 +151,8 @@ func TestActorDispatchesLateLowerSequenceInsteadOfDroppingIt(t *testing.T) {
 		testRoute("u2", 1, 11, 2),
 	}
 
-	require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
-		ChannelID:   "g-first-gap",
-		ChannelType: 2,
-		MessageID:   209,
-		MessageSeq:  9,
-		FromUID:   "u1",
-		Payload:     []byte("gap"),
-	}))
-	require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
-		ChannelID:   "g-first-gap",
-		ChannelType: 2,
-		MessageID:   208,
-		MessageSeq:  8,
-		FromUID:   "u1",
-		Payload:     []byte("late"),
-	}))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-first-gap", frame.ChannelTypeGroup, 209, 9, "gap")))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-first-gap", frame.ChannelTypeGroup, 208, 8, "late")))
 
 	require.Equal(t, []uint64{9, 8}, pusher.pushedSeqs())
 }
@@ -197,22 +163,8 @@ func TestActorSuppressesDuplicateLateLowerSequenceAfterCompletion(t *testing.T) 
 		testRoute("u2", 1, 11, 2),
 	}
 
-	require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
-		ChannelID:   "g-first-gap",
-		ChannelType: 2,
-		MessageID:   209,
-		MessageSeq:  9,
-		FromUID:   "u1",
-		Payload:     []byte("gap"),
-	}))
-	require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
-		ChannelID:   "g-first-gap",
-		ChannelType: 2,
-		MessageID:   208,
-		MessageSeq:  8,
-		FromUID:   "u1",
-		Payload:     []byte("late"),
-	}))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-first-gap", frame.ChannelTypeGroup, 209, 9, "gap")))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-first-gap", frame.ChannelTypeGroup, 208, 8, "late")))
 
 	require.NoError(t, runtime.AckRoute(context.Background(), RouteAck{
 		UID:        "u2",
@@ -221,14 +173,7 @@ func TestActorSuppressesDuplicateLateLowerSequenceAfterCompletion(t *testing.T) 
 		MessageSeq: 8,
 	}))
 
-	require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
-		ChannelID:   "g-first-gap",
-		ChannelType: 2,
-		MessageID:   208,
-		MessageSeq:  8,
-		FromUID:   "u1",
-		Payload:     []byte("late"),
-	}))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-first-gap", frame.ChannelTypeGroup, 208, 8, "late")))
 
 	require.Equal(t, []uint64{9, 8}, pusher.pushedSeqs())
 }
@@ -250,23 +195,9 @@ func TestActorResolveFailureRetriesBeforeLaterMessages(t *testing.T) {
 		Limits: Limits{MaxInflightRoutesPerActor: 8},
 	})
 
-	require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
-		ChannelID:   "g-flaky",
-		ChannelType: 2,
-		MessageID:   101,
-		MessageSeq:  1,
-		FromUID:   "u1",
-		Payload:     []byte("first"),
-	}))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-flaky", frame.ChannelTypeGroup, 101, 1, "first")))
 
-	require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
-		ChannelID:   "g-flaky",
-		ChannelType: 2,
-		MessageID:   102,
-		MessageSeq:  2,
-		FromUID:   "u1",
-		Payload:     []byte("second"),
-	}))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-flaky", frame.ChannelTypeGroup, 102, 2, "second")))
 
 	require.Empty(t, pusher.pushedSeqs())
 
@@ -302,14 +233,7 @@ func TestActorContinuesResolvingPagesAfterAckReleasesBudget(t *testing.T) {
 		Limits:   Limits{MaxInflightRoutesPerActor: 1},
 	})
 
-	require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
-		ChannelID:   "g-budget",
-		ChannelType: 2,
-		MessageID:   301,
-		MessageSeq:  1,
-		FromUID:   "u1",
-		Payload:     []byte("budget"),
-	}))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-budget", frame.ChannelTypeGroup, 301, 1, "budget")))
 	require.Equal(t, []uint64{2}, pusher.acceptedSessionIDs(301))
 
 	require.NoError(t, runtime.AckRoute(context.Background(), RouteAck{
@@ -346,26 +270,12 @@ func TestActorResumesLaterMessageWhenAckReleasesBudget(t *testing.T) {
 		Limits:   Limits{MaxInflightRoutesPerActor: 1},
 	})
 
-	require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
-		ChannelID:   "g-budget-later",
-		ChannelType: 2,
-		MessageID:   401,
-		MessageSeq:  1,
-		FromUID:   "u1",
-		Payload:     []byte("first"),
-	}))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-budget-later", frame.ChannelTypeGroup, 401, 1, "first")))
 	require.Len(t, pusher.calls, 1)
 	require.Equal(t, uint64(401), pusher.calls[0].envelope.MessageID)
 	require.Equal(t, uint64(2), pusher.calls[0].routes[0].SessionID)
 
-	require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
-		ChannelID:   "g-budget-later",
-		ChannelType: 2,
-		MessageID:   402,
-		MessageSeq:  2,
-		FromUID:   "u1",
-		Payload:     []byte("second"),
-	}))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-budget-later", frame.ChannelTypeGroup, 402, 2, "second")))
 	require.Len(t, pusher.calls, 1)
 
 	require.NoError(t, runtime.AckRoute(context.Background(), RouteAck{
@@ -414,14 +324,7 @@ func TestActorContinuesResolvingPagesAfterRetryDropReleasesBudget(t *testing.T) 
 		Limits:           Limits{MaxInflightRoutesPerActor: 1},
 	})
 
-	require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
-		ChannelID:   "g-budget-retry",
-		ChannelType: 2,
-		MessageID:   501,
-		MessageSeq:  1,
-		FromUID:   "u1",
-		Payload:     []byte("first"),
-	}))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-budget-retry", frame.ChannelTypeGroup, 501, 1, "first")))
 	require.Len(t, pusher.calls, 1)
 	require.Equal(t, uint64(2), pusher.calls[0].routes[0].SessionID)
 

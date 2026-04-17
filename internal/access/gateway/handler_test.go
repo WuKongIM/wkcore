@@ -147,6 +147,7 @@ func TestHandlerOnFrameSendMapsCommandAndWritesSendack(t *testing.T) {
 	msgs := handler.messages.(*fakeMessageUsecase)
 	require.Len(t, msgs.sendCommands, 1)
 	require.Equal(t, "u1", msgs.sendCommands[0].FromUID)
+	require.Equal(t, uint64(1), msgs.sendCommands[0].SenderSessionID)
 	require.Equal(t, "u2@u1", msgs.sendCommands[0].ChannelID)
 	require.Equal(t, frame.ChannelTypePerson, msgs.sendCommands[0].ChannelType)
 	require.Equal(t, uint64(13), msgs.sendCommands[0].ClientSeq)
@@ -531,12 +532,21 @@ func TestHandlerOnFrameRecvackRoutesToMessageUsecase(t *testing.T) {
 	require.True(t, msgs.recvAckCommands[0].Framer.RedDot)
 }
 
-func TestHandlerOnFramePingIsNoop(t *testing.T) {
+func TestHandlerOnFramePingWritesPong(t *testing.T) {
+	sender := newOptionRecordingSession(1, "tcp")
+	sender.SetValue(coregateway.SessionValueUID, "u1")
 	handler := New(Options{Messages: &fakeMessageUsecase{}})
 
-	err := handler.OnFrame(newAuthedContext(t, 1, "u1"), &frame.PingPacket{})
+	err := handler.OnFrame(&coregateway.Context{
+		Session:        sender,
+		Listener:       "tcp",
+		RequestContext: context.Background(),
+	}, &frame.PingPacket{})
 
 	require.NoError(t, err)
+	require.Len(t, sender.Writes(), 1)
+	_, ok := sender.Writes()[0].f.(*frame.PongPacket)
+	require.True(t, ok, "expected *frame.PongPacket, got %T", sender.Writes()[0].f)
 }
 
 func TestNewSharesOnlineRegistryWithInjectedMessageApp(t *testing.T) {

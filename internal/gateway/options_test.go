@@ -3,6 +3,7 @@ package gateway_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
@@ -80,6 +81,9 @@ func TestDefaultSessionOptions(t *testing.T) {
 	}
 	if opts.IdleTimeout <= 0 || opts.WriteTimeout <= 0 {
 		t.Fatalf("expected positive timeout defaults, got %+v", opts)
+	}
+	if opts.IdleTimeout != 3*time.Minute {
+		t.Fatalf("expected default idle timeout %v, got %v", 3*time.Minute, opts.IdleTimeout)
 	}
 }
 

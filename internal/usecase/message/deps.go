@@ -3,6 +3,7 @@ package message
 import (
 	"context"
 
+	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/sequence"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
@@ -37,7 +38,7 @@ type RemoteDelivery interface {
 }
 
 type CommittedMessageDispatcher interface {
-	SubmitCommitted(ctx context.Context, msg channel.Message) error
+	SubmitCommitted(ctx context.Context, env deliveryruntime.CommittedEnvelope) error
 }
 
 type DeliveryAck interface {

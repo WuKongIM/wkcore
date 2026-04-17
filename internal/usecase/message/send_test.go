@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
@@ -94,18 +95,19 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 	})
 
 	result, err := app.Send(context.Background(), SendCommand{
-		Framer:      frame.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
-		Setting:     frame.SettingReceiptEnabled,
-		MsgKey:      "k1",
-		Expire:      60,
-		FromUID:     "u1",
-		ChannelID:   "u2",
-		ChannelType: frame.ChannelTypePerson,
-		Topic:       "chat",
-		Payload:     []byte("hi"),
-		ClientSeq:   9,
-		ClientMsgNo: "m1",
-		StreamNo:    "stream-1",
+		Framer:          frame.Framer{NoPersist: true, RedDot: true, SyncOnce: true},
+		Setting:         frame.SettingReceiptEnabled,
+		MsgKey:          "k1",
+		Expire:          60,
+		FromUID:         "u1",
+		SenderSessionID: 42,
+		ChannelID:       "u2",
+		ChannelType:     frame.ChannelTypePerson,
+		Topic:           "chat",
+		Payload:         []byte("hi"),
+		ClientSeq:       9,
+		ClientMsgNo:     "m1",
+		StreamNo:        "stream-1",
 	})
 
 	require.NoError(t, err)
@@ -126,6 +128,7 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 	require.Equal(t, "u1", cluster.sendRequests[0].Message.FromUID)
 	require.Equal(t, []byte("hi"), cluster.sendRequests[0].Message.Payload)
 	require.Len(t, dispatcher.calls, 1)
+	require.Equal(t, uint64(42), dispatcher.calls[0].SenderSessionID)
 	require.Equal(t, channel.Message{
 		MessageID:   99,
 		MessageSeq:  7,
@@ -142,7 +145,7 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 		Topic:       "chat",
 		FromUID:     "u1",
 		Payload:     []byte("hi"),
-	}, dispatcher.calls[0])
+	}, dispatcher.calls[0].Message)
 }
 
 func TestSendRecanonicalizesPrecomposedPersonChannelBeforeDurableWrite(t *testing.T) {
@@ -367,15 +370,17 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	require.Zero(t, cluster.sendRequests[0].ExpectedChannelEpoch)
 	require.Equal(t, uint64(11), cluster.sendRequests[1].ExpectedChannelEpoch)
 	require.Equal(t, uint64(3), cluster.sendRequests[1].ExpectedLeaderEpoch)
-	require.Equal(t, []channel.Message{{
-		MessageID:   201,
-		MessageSeq:  7,
-		ChannelID:   "u2@u1",
-		ChannelType: frame.ChannelTypePerson,
-		FromUID:     "u1",
-		ClientMsgNo: "m6",
-		Payload:     []byte("hi"),
-		ClientSeq:   21,
+	require.Equal(t, []deliveryEnvelopeRecord{{
+		Message: channel.Message{
+			MessageID:   201,
+			MessageSeq:  7,
+			ChannelID:   "u2@u1",
+			ChannelType: frame.ChannelTypePerson,
+			FromUID:     "u1",
+			ClientMsgNo: "m6",
+			Payload:     []byte("hi"),
+			ClientSeq:   21,
+		},
 	}}, dispatcher.calls)
 }
 
@@ -439,15 +444,17 @@ func TestSendRetriesOnceAfterBootstrappingMissingRuntimeMeta(t *testing.T) {
 	require.Zero(t, cluster.sendRequests[0].ExpectedChannelEpoch)
 	require.Equal(t, uint64(17), cluster.sendRequests[1].ExpectedChannelEpoch)
 	require.Equal(t, uint64(6), cluster.sendRequests[1].ExpectedLeaderEpoch)
-	require.Equal(t, []channel.Message{{
-		MessageID:   301,
-		MessageSeq:  4,
-		ChannelID:   "group-1",
-		ChannelType: frame.ChannelTypeGroup,
-		FromUID:     "u1",
-		ClientMsgNo: "bootstrap-1",
-		Payload:     []byte("hi group"),
-		ClientSeq:   33,
+	require.Equal(t, []deliveryEnvelopeRecord{{
+		Message: channel.Message{
+			MessageID:   301,
+			MessageSeq:  4,
+			ChannelID:   "group-1",
+			ChannelType: frame.ChannelTypeGroup,
+			FromUID:     "u1",
+			ClientMsgNo: "bootstrap-1",
+			Payload:     []byte("hi group"),
+			ClientSeq:   33,
+		},
 	}}, dispatcher.calls)
 }
 
@@ -734,16 +741,18 @@ func (d *recordingRemoteDelivery) DeliverRemote(_ context.Context, cmd RemoteDel
 }
 
 type recordingCommittedDispatcher struct {
-	calls []channel.Message
+	calls []deliveryEnvelopeRecord
 	err   error
 }
 
-func (d *recordingCommittedDispatcher) SubmitCommitted(_ context.Context, msg channel.Message) error {
-	copied := msg
-	copied.Payload = append([]byte(nil), msg.Payload...)
-	d.calls = append(d.calls, copied)
+func (d *recordingCommittedDispatcher) SubmitCommitted(_ context.Context, env deliveryruntime.CommittedEnvelope) error {
+	copied := env
+	copied.Payload = append([]byte(nil), env.Payload...)
+	d.calls = append(d.calls, deliveryEnvelopeRecord(copied))
 	return d.err
 }
+
+type deliveryEnvelopeRecord = deliveryruntime.CommittedEnvelope
 
 type failingRemoteDelivery struct {
 	err error

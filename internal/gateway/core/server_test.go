@@ -963,6 +963,90 @@ func TestIdleTimeout(t *testing.T) {
 	}
 }
 
+func TestOutboundTrafficDoesNotRefreshIdleTimeout(t *testing.T) {
+	handler := newTestHandler()
+	stopWrites := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			close(stopWrites)
+		})
+	}
+	t.Cleanup(stop)
+	handler.onOpen = func(ctx *gateway.Context) error {
+		go func() {
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stopWrites:
+					return
+				case <-ticker.C:
+					_ = ctx.WriteFrame(&frame.PingPacket{})
+				}
+			}
+		}()
+		return nil
+	}
+	handler.onClose = func(*gateway.Context) error {
+		stop()
+		return nil
+	}
+
+	proto := newScriptedProtocol("fake-proto")
+	proto.encodedBytes = []byte("x")
+
+	srv, transportFactory := newTestServer(t, handler, proto, gateway.SessionOptions{
+		IdleTimeout: 60 * time.Millisecond,
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Stop() })
+
+	conn := transportFactory.MustOpen("listener-a", 1)
+
+	waitFor(t, func() bool { return len(conn.Writes()) >= 2 })
+	waitFor(t, func() bool { return handler.closeCount() == 1 })
+	reasons := handler.closeReasons()
+	if got := reasons[len(reasons)-1]; got != gateway.CloseReasonIdleTimeout {
+		t.Fatalf("expected %q, got %q", gateway.CloseReasonIdleTimeout, got)
+	}
+}
+
+func TestInboundTrafficRefreshesIdleTimeout(t *testing.T) {
+	handler := newTestHandler()
+	proto := newScriptedProtocol("fake-proto")
+
+	srv, transportFactory := newTestServer(t, handler, proto, gateway.SessionOptions{
+		IdleTimeout: 80 * time.Millisecond,
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Stop() })
+
+	transportFactory.MustOpen("listener-a", 1)
+
+	time.Sleep(45 * time.Millisecond)
+	proto.pushDecode(decodeResult{
+		frames:   []frame.Frame{&frame.PingPacket{}},
+		consumed: 1,
+	})
+	transportFactory.MustData("listener-a", 1, []byte("p"))
+
+	time.Sleep(50 * time.Millisecond)
+	if got := handler.closeCount(); got != 0 {
+		t.Fatalf("expected connection to stay open after inbound refresh, got close count %d", got)
+	}
+
+	waitFor(t, func() bool { return handler.closeCount() == 1 })
+	reasons := handler.closeReasons()
+	if got := reasons[len(reasons)-1]; got != gateway.CloseReasonIdleTimeout {
+		t.Fatalf("expected %q, got %q", gateway.CloseReasonIdleTimeout, got)
+	}
+}
+
 func TestWriteTimeout(t *testing.T) {
 	handler := newTestHandler()
 	handler.onFrame = func(ctx *gateway.Context, f frame.Frame) error {

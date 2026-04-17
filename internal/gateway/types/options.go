@@ -43,7 +43,7 @@ func DefaultSessionOptions() SessionOptions {
 		WriteQueueSize:      64,
 		MaxInboundBytes:     1 << 20,
 		MaxOutboundBytes:    1 << 20,
-		IdleTimeout:         30 * time.Second,
+		IdleTimeout:         3 * time.Minute,
 		WriteTimeout:        10 * time.Second,
 		CloseOnHandlerError: boolPtr(true),
 	}

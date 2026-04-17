@@ -201,6 +201,7 @@ func TestChannelMetaSyncRefreshReturnsExistingAuthoritativeMetaWithoutBootstrap(
 		Leader:       2,
 		MinISR:       2,
 		Status:       uint8(channel.StatusActive),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 	}
 	source := &fakeChannelMetaSource{
 		get: map[channel.ChannelID]metadb.ChannelRuntimeMeta{id: meta},
@@ -220,7 +221,7 @@ func TestChannelMetaSyncRefreshReturnsExistingAuthoritativeMetaWithoutBootstrap(
 	require.Equal(t, uint64(1), got.Epoch)
 	require.Equal(t, []channel.Meta{got}, cluster.applied)
 	require.Empty(t, bootstrapStore.upserts)
-	require.Zero(t, bootstrapCluster.leaderCalls)
+	require.Equal(t, 1, bootstrapCluster.leaderCalls)
 }
 
 func TestChannelMetaSyncRefreshBootstrapsOnAuthoritativeMiss(t *testing.T) {
@@ -235,6 +236,7 @@ func TestChannelMetaSyncRefreshBootstrapsOnAuthoritativeMiss(t *testing.T) {
 		Leader:       2,
 		MinISR:       2,
 		Status:       uint8(channel.StatusActive),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 	}
 	source := &fakeChannelMetaSource{
 		getResults: []fakeChannelMetaGetResult{
@@ -243,6 +245,7 @@ func TestChannelMetaSyncRefreshBootstrapsOnAuthoritativeMiss(t *testing.T) {
 			{meta: authoritative},
 			{meta: authoritative},
 		},
+		get: map[channel.ChannelID]metadb.ChannelRuntimeMeta{id: authoritative},
 	}
 	bootstrapCluster := &fakeBootstrapCluster{slotID: 3, peers: []uint64{2, 7}, leader: 2}
 	cluster := &fakeChannelMetaCluster{}
@@ -274,6 +277,7 @@ func TestChannelMetaSyncRefreshAppliesAuthoritativeRereadInsteadOfBootstrapCandi
 		MinISR:       2,
 		Status:       uint8(channel.StatusActive),
 		Features:     uint64(channel.MessageSeqFormatU64),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 	}
 	source := &fakeChannelMetaSource{
 		getResults: []fakeChannelMetaGetResult{
@@ -282,6 +286,7 @@ func TestChannelMetaSyncRefreshAppliesAuthoritativeRereadInsteadOfBootstrapCandi
 			{meta: authoritative},
 			{meta: authoritative},
 		},
+		get: map[channel.ChannelID]metadb.ChannelRuntimeMeta{id: authoritative},
 	}
 	bootstrapCluster := &fakeBootstrapCluster{slotID: 5, peers: []uint64{2, 7, 8}, leader: 2}
 	cluster := &fakeChannelMetaCluster{}
@@ -298,10 +303,57 @@ func TestChannelMetaSyncRefreshAppliesAuthoritativeRereadInsteadOfBootstrapCandi
 	require.Equal(t, authoritative.LeaderEpoch, got.LeaderEpoch)
 	require.Equal(t, channel.NodeID(authoritative.Leader), got.Leader)
 	require.Equal(t, projectChannelMeta(authoritative), got)
-	require.Len(t, source.upserts, 1)
-	require.NotEqual(t, authoritative.Leader, source.upserts[0].Leader)
-	require.NotEqual(t, authoritative.ChannelEpoch, source.upserts[0].ChannelEpoch)
+	require.Len(t, source.upserts, 2)
+	require.NotEqual(t, authoritative.Leader, source.upserts[1].Leader)
+	require.NotEqual(t, authoritative.ChannelEpoch, source.upserts[1].ChannelEpoch)
 	require.Equal(t, []channel.Meta{projectChannelMeta(authoritative)}, cluster.applied)
+}
+
+func TestChannelMetaSyncRefreshRenewsExpiredLeaderLeaseBeforeApply(t *testing.T) {
+	now := time.UnixMilli(1_700_000_555_000).UTC()
+	id := channel.ChannelID{ID: "lease-refresh", Type: 1}
+	expired := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 5,
+		LeaderEpoch:  7,
+		Replicas:     []uint64{2, 3},
+		ISR:          []uint64{2, 3},
+		Leader:       2,
+		MinISR:       2,
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
+		LeaseUntilMS: now.Add(-time.Second).UnixMilli(),
+	}
+	renewed := expired
+	renewed.LeaseUntilMS = now.Add(channelMetaBootstrapLease).UnixMilli()
+	source := &fakeChannelMetaSource{
+		getResults: []fakeChannelMetaGetResult{
+			{meta: expired},
+			{meta: renewed},
+		},
+	}
+	cluster := &fakeChannelMetaCluster{}
+	syncer := &channelMetaSync{
+		source:  source,
+		cluster: cluster,
+		bootstrap: newChannelMetaBootstrapper(
+			&fakeBootstrapCluster{slotID: 9, peers: []uint64{2, 3}, leader: 2},
+			source,
+			2,
+			func() time.Time { return now },
+			wklog.NewNop(),
+		),
+		localNode: 2,
+	}
+
+	got, err := syncer.RefreshChannelMeta(context.Background(), id)
+
+	require.NoError(t, err)
+	require.Len(t, source.upserts, 1)
+	require.Equal(t, renewed.LeaseUntilMS, source.upserts[0].LeaseUntilMS)
+	require.Equal(t, projectChannelMeta(renewed), got)
+	require.Equal(t, []channel.Meta{projectChannelMeta(renewed)}, cluster.applied)
 }
 
 func TestChannelMetaSyncRefreshDoesNotApplyPartialMetadataWhenBootstrapFails(t *testing.T) {
@@ -407,6 +459,53 @@ func TestChannelMetaSyncSyncOnceClearsAppliedLocalOnHashSlotTableVersionChange(t
 	require.Equal(t, map[channel.ChannelKey]struct{}{
 		channelhandler.KeyFromChannelID(freshID): {},
 	}, cloneAppliedLocalSet(syncer.appliedLocal))
+}
+
+func TestChannelMetaSyncSyncOnceRenewsLocalLeaderLeaseBeforeExpiry(t *testing.T) {
+	now := time.UnixMilli(1_700_000_666_000).UTC()
+	id := channel.ChannelID{ID: "lease-sync", Type: 1}
+	expiring := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 3,
+		LeaderEpoch:  4,
+		Replicas:     []uint64{2, 3},
+		ISR:          []uint64{2, 3},
+		Leader:       2,
+		MinISR:       2,
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
+		LeaseUntilMS: now.Add(200 * time.Millisecond).UnixMilli(),
+	}
+	renewed := expiring
+	renewed.LeaseUntilMS = now.Add(channelMetaBootstrapLease).UnixMilli()
+	source := &fakeChannelMetaSource{
+		list: []metadb.ChannelRuntimeMeta{expiring},
+		get: map[channel.ChannelID]metadb.ChannelRuntimeMeta{
+			id: renewed,
+		},
+	}
+	cluster := &fakeChannelMetaCluster{}
+	syncer := &channelMetaSync{
+		source:  source,
+		cluster: cluster,
+		bootstrap: newChannelMetaBootstrapper(
+			&fakeBootstrapCluster{slotID: 10, peers: []uint64{2, 3}, leader: 2},
+			source,
+			2,
+			func() time.Time { return now },
+			wklog.NewNop(),
+		),
+		localNode:       2,
+		refreshInterval: time.Second,
+	}
+
+	err := syncer.syncOnce(context.Background())
+
+	require.NoError(t, err)
+	require.Len(t, source.upserts, 1)
+	require.Equal(t, renewed.LeaseUntilMS, source.upserts[0].LeaseUntilMS)
+	require.Equal(t, []channel.Meta{projectChannelMeta(renewed)}, cluster.applied)
 }
 
 func TestChannelMetaSyncSyncOnceRemovesChannelsNoLongerAssignedLocally(t *testing.T) {

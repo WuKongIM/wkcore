@@ -77,7 +77,7 @@ type sessionState struct {
 	requestContext       context.Context
 	cancelRequestContext context.CancelFunc
 
-	lastActivity atomic.Int64
+	lastReadActivity atomic.Int64
 }
 
 func NewServer(registry *Registry, opts *gatewaytypes.Options) (*Server, error) {
@@ -312,7 +312,7 @@ func (s *Server) onOpen(listener *listenerRuntime, conn transport.Conn) error {
 	if !state.requiresAuth() && listener.options.Protocol != "wsmux" {
 		state.setAuthenticated(true)
 	}
-	state.touchActivity()
+	state.touchReadActivity()
 
 	var sess session.Session
 	sess = session.New(session.Config{
@@ -376,7 +376,7 @@ func (s *Server) onData(listener *listenerRuntime, conn transport.Conn, data []b
 		return nil
 	}
 
-	state.touchActivity()
+	state.touchReadActivity()
 	state.inbound = append(state.inbound, data...)
 	if limit := s.options.DefaultSession.MaxInboundBytes; limit > 0 && len(state.inbound) > limit {
 		state.close(gatewaytypes.CloseReasonInboundOverflow, gatewaytypes.ErrInboundOverflow)
@@ -652,7 +652,6 @@ func (s *Server) startWriter(state *sessionState) {
 				state.close(reason, reportErr)
 				return
 			}
-			state.touchActivity()
 		}
 	}()
 }
@@ -690,7 +689,7 @@ func (s *Server) startIdleMonitor(state *sessionState) {
 				if state.isClosed() {
 					return
 				}
-				if time.Since(state.lastSeenActivity()) >= timeout {
+				if time.Since(state.lastSeenReadActivity()) >= timeout {
 					state.close(gatewaytypes.CloseReasonIdleTimeout, gatewaytypes.ErrIdleTimeout)
 					return
 				}
@@ -1012,19 +1011,19 @@ func (st *sessionState) closeReason() gatewaytypes.CloseReason {
 	return st.closeReasonValue
 }
 
-func (st *sessionState) touchActivity() {
+func (st *sessionState) touchReadActivity() {
 	if st == nil {
 		return
 	}
-	st.lastActivity.Store(time.Now().UnixNano())
+	st.lastReadActivity.Store(time.Now().UnixNano())
 }
 
-func (st *sessionState) lastSeenActivity() time.Time {
+func (st *sessionState) lastSeenReadActivity() time.Time {
 	if st == nil {
 		return time.Time{}
 	}
 
-	last := st.lastActivity.Load()
+	last := st.lastReadActivity.Load()
 	if last == 0 {
 		return time.Time{}
 	}

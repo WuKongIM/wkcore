@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/stretchr/testify/require"
 )
@@ -37,14 +38,7 @@ func TestManagerPromotesHighActivityChannelToDedicatedLane(t *testing.T) {
 	})
 
 	for i := 0; i < 20; i++ {
-		require.NoError(t, runtime.Submit(context.Background(), CommittedEnvelope{
-			ChannelID:   "g-hot",
-			ChannelType: frame.ChannelTypeGroup,
-			MessageID:   uint64(i + 1),
-			MessageSeq:  uint64(i + 1),
-			FromUID:     "u1",
-			Payload:     []byte("hot"),
-		}))
+		require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-hot", frame.ChannelTypeGroup, uint64(i+1), uint64(i+1), "hot")))
 	}
 
 	require.Equal(t, LaneDedicated, runtime.ActorLane("g-hot", frame.ChannelTypeGroup))
@@ -63,14 +57,7 @@ func TestManagerSubmitKeepsShardLockUntilActorIsLocked(t *testing.T) {
 	act.mu.Lock()
 	submitDone := make(chan error, 1)
 	go func() {
-		submitDone <- runtime.Submit(context.Background(), CommittedEnvelope{
-			ChannelID:   key.ChannelID,
-			ChannelType: key.ChannelType,
-			MessageID:   701,
-			MessageSeq:  1,
-			FromUID:     "u1",
-			Payload:     []byte("race"),
-		})
+		submitDone <- runtime.Submit(context.Background(), testEnvelopeFor(key.ChannelID, key.ChannelType, 701, 1, "race"))
 	}()
 
 	require.Eventually(t, func() bool {
@@ -263,15 +250,21 @@ func (p *recordingPusher) acceptedSessionIDs(messageID uint64) []uint64 {
 const testChannelID = "u1@u2"
 
 func testEnvelope(messageID, messageSeq uint64) CommittedEnvelope {
+	return testEnvelopeFor(testChannelID, frame.ChannelTypePerson, messageID, messageSeq, "hi")
+}
+
+func testEnvelopeFor(channelID string, channelType uint8, messageID, messageSeq uint64, payload string) CommittedEnvelope {
 	return CommittedEnvelope{
-		ChannelID:   testChannelID,
-		ChannelType: frame.ChannelTypePerson,
-		MessageID:   messageID,
-		MessageSeq:  messageSeq,
-		FromUID:     "u1",
-		ClientMsgNo: "m1",
-		Payload:     []byte("hi"),
-		ClientSeq:   9,
+		Message: channel.Message{
+			ChannelID:   channelID,
+			ChannelType: channelType,
+			MessageID:   messageID,
+			MessageSeq:  messageSeq,
+			FromUID:     "u1",
+			ClientMsgNo: "m1",
+			Payload:     []byte(payload),
+			ClientSeq:   9,
+		},
 	}
 }
 

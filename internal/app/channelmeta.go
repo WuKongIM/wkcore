@@ -121,6 +121,10 @@ func (s *channelMetaSync) RefreshChannelMeta(ctx context.Context, id channel.Cha
 			return channel.Meta{}, err
 		}
 	}
+	meta, err = s.reconcileChannelRuntimeMeta(ctx, meta)
+	if err != nil {
+		return channel.Meta{}, err
+	}
 	return s.apply(meta)
 }
 
@@ -213,6 +217,10 @@ func (s *channelMetaSync) syncOnce(ctx context.Context) error {
 		if !containsUint64(meta.Replicas, s.localNode) {
 			continue
 		}
+		meta, err = s.reconcileChannelRuntimeMeta(ctx, meta)
+		if err != nil {
+			return err
+		}
 		applied, err := s.apply(meta)
 		if err != nil {
 			return err
@@ -246,6 +254,24 @@ func (s *channelMetaSync) apply(meta metadb.ChannelRuntimeMeta) (channel.Meta, e
 	s.appliedLocal[rootMeta.Key] = struct{}{}
 	s.mu.Unlock()
 	return rootMeta, nil
+}
+
+func (s *channelMetaSync) reconcileChannelRuntimeMeta(ctx context.Context, meta metadb.ChannelRuntimeMeta) (metadb.ChannelRuntimeMeta, error) {
+	if s == nil || s.bootstrap == nil {
+		return meta, nil
+	}
+	reconciled, _, err := s.bootstrap.ReconcileChannelRuntimeMeta(ctx, meta, s.leaseRenewLeadTime())
+	if err != nil {
+		return metadb.ChannelRuntimeMeta{}, err
+	}
+	return reconciled, nil
+}
+
+func (s *channelMetaSync) leaseRenewLeadTime() time.Duration {
+	if s == nil || s.refreshInterval <= 0 {
+		return time.Second
+	}
+	return s.refreshInterval
 }
 
 func (s *channelMetaSync) observeHashSlotTableVersion() {

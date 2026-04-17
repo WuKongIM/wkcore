@@ -15,27 +15,33 @@ func TestSubmitCommittedDelegatesToRuntimeWithDurableMessage(t *testing.T) {
 	runtime := &recordingRuntime{}
 	app := New(Options{Runtime: runtime})
 
-	err := app.SubmitCommitted(context.Background(), channel.Message{
-		ChannelID:   "u1@u2",
-		ChannelType: frame.ChannelTypePerson,
-		MessageID:   101,
-		MessageSeq:  7,
-		FromUID:     "u1",
-		ClientMsgNo: "m1",
-		Payload:     []byte("hi"),
-		ClientSeq:   9,
+	err := app.SubmitCommitted(context.Background(), runtimedelivery.CommittedEnvelope{
+		Message: channel.Message{
+			ChannelID:   "u1@u2",
+			ChannelType: frame.ChannelTypePerson,
+			MessageID:   101,
+			MessageSeq:  7,
+			FromUID:     "u1",
+			ClientMsgNo: "m1",
+			Payload:     []byte("hi"),
+			ClientSeq:   9,
+		},
+		SenderSessionID: 33,
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, []channel.Message{{
-		ChannelID:   "u1@u2",
-		ChannelType: frame.ChannelTypePerson,
-		MessageID:   101,
-		MessageSeq:  7,
-		FromUID:     "u1",
-		ClientMsgNo: "m1",
-		Payload:     []byte("hi"),
-		ClientSeq:   9,
+	require.Equal(t, []runtimedelivery.CommittedEnvelope{{
+		Message: channel.Message{
+			ChannelID:   "u1@u2",
+			ChannelType: frame.ChannelTypePerson,
+			MessageID:   101,
+			MessageSeq:  7,
+			FromUID:     "u1",
+			ClientMsgNo: "m1",
+			Payload:     []byte("hi"),
+			ClientSeq:   9,
+		},
+		SenderSessionID: 33,
 	}}, runtime.submits)
 }
 
@@ -76,14 +82,14 @@ func TestSessionClosedDelegatesToRuntime(t *testing.T) {
 }
 
 type recordingRuntime struct {
-	submits []channel.Message
+	submits []runtimedelivery.CommittedEnvelope
 	acks    []runtimedelivery.RouteAck
 	closed  []runtimedelivery.SessionClosed
 }
 
-func (r *recordingRuntime) Submit(_ context.Context, msg channel.Message) error {
-	copied := msg
-	copied.Payload = append([]byte(nil), msg.Payload...)
+func (r *recordingRuntime) Submit(_ context.Context, env runtimedelivery.CommittedEnvelope) error {
+	copied := env
+	copied.Payload = append([]byte(nil), env.Payload...)
 	r.submits = append(r.submits, copied)
 	return nil
 }

@@ -250,6 +250,64 @@ func TestThreeNodeAppGatewaySendFromFollowerBootstrapsLeaderOnDemand(t *testing.
 	}
 }
 
+func TestThreeNodeAppGatewaySendFromFollowerAfterLeaseExpiryRecoversViaMetaSync(t *testing.T) {
+	harness := newThreeNodeAppHarness(t)
+	leaderID := harness.waitForStableLeader(t, 1)
+	leader := harness.apps[leaderID]
+	followerID := leaderID%3 + 1
+	require.NotEqual(t, leaderID, followerID)
+	follower := harness.apps[followerID]
+	recipientUID := "three-node-expired-lease-user"
+	channelID := deliveryusecase.EncodePersonChannel("sender-expired-lease", recipientUID)
+
+	id := channel.ChannelID{
+		ID:   channelID,
+		Type: frame.ChannelTypePerson,
+	}
+	initialLeaseUntilMS := time.Now().Add(200 * time.Millisecond).UnixMilli()
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 18,
+		LeaderEpoch:  9,
+		Replicas:     []uint64{1, 2, 3},
+		ISR:          []uint64{1, 2, 3},
+		Leader:       leader.cfg.Node.ID,
+		MinISR:       3,
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
+		LeaseUntilMS: initialLeaseUntilMS,
+	}
+	require.NoError(t, leader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
+
+	require.Eventually(t, func() bool {
+		got, err := leader.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
+		return err == nil && got.LeaseUntilMS > initialLeaseUntilMS
+	}, 5*time.Second, 50*time.Millisecond)
+
+	conn := connectAppWKProtoClient(t, follower, "sender-expired-lease")
+
+	sendAppWKProtoFrame(t, conn, &frame.SendPacket{
+		ChannelID:   recipientUID,
+		ChannelType: id.Type,
+		ClientSeq:   1,
+		ClientMsgNo: "three-node-expired-lease-1",
+		Payload:     []byte("hello after lease expiry"),
+	})
+
+	sendack, ok := readAppWKProtoFrameWithin(t, conn, multinodeAppReadTimeout).(*frame.SendackPacket)
+	require.True(t, ok)
+	require.Equal(t, frame.ReasonSuccess, sendack.ReasonCode)
+	require.NotZero(t, sendack.MessageSeq)
+	require.NotZero(t, sendack.MessageID)
+
+	for _, app := range harness.orderedApps() {
+		msg := waitForAppCommittedMessage(t, channelStoreForID(app.ChannelLogDB(), id), sendack.MessageSeq, 5*time.Second)
+		require.Equal(t, []byte("hello after lease expiry"), msg.Payload)
+		require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
+	}
+}
+
 func TestThreeNodeAppDurableSendReturnsBeforeRemoteAck(t *testing.T) {
 	harness := newThreeNodeAppHarness(t)
 	ownerID := harness.waitForStableLeader(t, 1)

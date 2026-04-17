@@ -78,6 +78,34 @@ func TestGatewayWKProtoHandlerAcknowledgesDurablePersonSend(t *testing.T) {
 	require.Equal(t, uint64(9), ack.MessageSeq)
 }
 
+func TestGatewayWKProtoHandlerRepliesPongToPing(t *testing.T) {
+	handler := newGatewayIntegrationHandler(&fakeMessageUsecase{}, nil)
+	gw, err := coregateway.New(coregateway.Options{
+		Handler: handler,
+		Authenticator: coregateway.NewWKProtoAuthenticator(coregateway.WKProtoAuthOptions{
+			TokenAuthOn: false,
+		}),
+		Listeners: []coregateway.ListenerOptions{
+			binding.TCPWKProto(gatewayTestListenerName, "127.0.0.1:0"),
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, gw.Start())
+	t.Cleanup(func() { _ = gw.Stop() })
+
+	conn := dialGateway(t, gw, gatewayTestListenerName)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	connack := connectWKProtoClient(t, conn, gatewayTestFromUID)
+	require.Equal(t, frame.ReasonSuccess, connack.ReasonCode)
+
+	sendWKProtoFrame(t, conn, &frame.PingPacket{})
+
+	reply := readWKProtoFrame(t, conn)
+	_, ok := reply.(*frame.PongPacket)
+	require.True(t, ok, "expected *frame.PongPacket, got %T", reply)
+}
+
 func TestGatewayVersion5ClientGetsUpgradeRequiredOnSend(t *testing.T) {
 	handler := newGatewayIntegrationHandler(&fakeMessageUsecase{sendErr: channel.ErrProtocolUpgradeRequired}, nil)
 	gw, err := coregateway.New(coregateway.Options{
