@@ -17,13 +17,18 @@ func TestChannelStoreAppendUsesCommitCoordinatorAcrossChannels(t *testing.T) {
 	before := fs.syncCount.Load()
 
 	results := make(chan appendResult, len(stores))
+	ready := make(chan struct{}, len(stores))
 	start := make(chan struct{})
 	for _, st := range stores {
 		go func(st *ChannelStore) {
+			ready <- struct{}{}
 			<-start
 			base, err := st.Append([]channel.Record{{Payload: []byte(st.id.ID), SizeBytes: len(st.id.ID)}})
 			results <- appendResult{base: base, err: err}
 		}(st)
+	}
+	for range stores {
+		<-ready
 	}
 	close(start)
 
@@ -48,10 +53,17 @@ func TestChannelStoreAppendBlocksUntilSyncCompletes(t *testing.T) {
 
 	commitStarted := make(chan commitRequest, 1)
 	releaseCommit := make(chan struct{})
-	installTestCommitCoordinator(t, engine, func(req commitRequest) {
+	t.Cleanup(func() {
+		closeOnce(releaseCommit)
+	})
+	installTestCommitCoordinator(t, engine, func(coordinator *commitCoordinator, req commitRequest) {
 		commitStarted <- req
-		<-releaseCommit
-		req.done <- commitAppendRequest(t, engine, req)
+		select {
+		case <-releaseCommit:
+			req.done <- commitAppendRequest(t, engine, req)
+		case <-coordinator.stopCh:
+			req.done <- channel.ErrInvalidArgument
+		}
 	})
 
 	done := make(chan appendResult, 1)
@@ -60,9 +72,8 @@ func TestChannelStoreAppendBlocksUntilSyncCompletes(t *testing.T) {
 		done <- appendResult{base: base, err: err}
 	}()
 
-	var req commitRequest
 	select {
-	case req = <-commitStarted:
+	case <-commitStarted:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for append to enter commit coordinator")
 	}
@@ -73,8 +84,7 @@ func TestChannelStoreAppendBlocksUntilSyncCompletes(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 
-	close(releaseCommit)
-	_ = req
+	closeOnce(releaseCommit)
 
 	select {
 	case result := <-done:
@@ -95,7 +105,10 @@ func TestChannelStoreAppendLEOStaysHiddenUntilPublishCompletes(t *testing.T) {
 
 	commitDone := make(chan struct{})
 	releasePublish := make(chan struct{})
-	installTestCommitCoordinator(t, engine, func(req commitRequest) {
+	t.Cleanup(func() {
+		closeOnce(releasePublish)
+	})
+	installTestCommitCoordinator(t, engine, func(coordinator *commitCoordinator, req commitRequest) {
 		batch := engine.db.NewBatch()
 		defer batch.Close()
 
@@ -108,7 +121,12 @@ func TestChannelStoreAppendLEOStaysHiddenUntilPublishCompletes(t *testing.T) {
 			return
 		}
 		close(commitDone)
-		<-releasePublish
+		select {
+		case <-releasePublish:
+		case <-coordinator.stopCh:
+			req.done <- channel.ErrInvalidArgument
+			return
+		}
 		if req.publish != nil {
 			req.done <- req.publish()
 			return
@@ -137,7 +155,7 @@ func TestChannelStoreAppendLEOStaysHiddenUntilPublishCompletes(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 
-	close(releasePublish)
+	closeOnce(releasePublish)
 
 	select {
 	case result := <-done:
@@ -167,13 +185,18 @@ func TestChannelStoreAppendBatchFailureFailsAllWaiters(t *testing.T) {
 	}
 
 	results := make(chan appendResult, len(stores))
+	ready := make(chan struct{}, len(stores))
 	start := make(chan struct{})
 	for _, st := range stores {
 		go func(st *ChannelStore) {
+			ready <- struct{}{}
 			<-start
 			base, err := st.Append([]channel.Record{{Payload: []byte(st.id.ID), SizeBytes: len(st.id.ID)}})
 			results <- appendResult{base: base, err: err}
 		}(st)
+	}
+	for range stores {
+		<-ready
 	}
 	close(start)
 
@@ -193,7 +216,7 @@ type appendResult struct {
 	err  error
 }
 
-func installTestCommitCoordinator(t *testing.T, engine *Engine, handle func(commitRequest)) {
+func installTestCommitCoordinator(t *testing.T, engine *Engine, handle func(*commitCoordinator, commitRequest)) {
 	t.Helper()
 
 	coordinator := &commitCoordinator{
@@ -214,7 +237,7 @@ func installTestCommitCoordinator(t *testing.T, engine *Engine, handle func(comm
 			case <-coordinator.stopCh:
 				return
 			case req := <-coordinator.requests:
-				handle(req)
+				handle(coordinator, req)
 			}
 		}
 	}()
@@ -236,4 +259,11 @@ func commitAppendRequest(t *testing.T, engine *Engine, req commitRequest) error 
 		return req.publish()
 	}
 	return nil
+}
+
+func closeOnce(ch chan struct{}) {
+	defer func() {
+		_ = recover()
+	}()
+	close(ch)
 }

@@ -21,9 +21,11 @@ func TestCommitCoordinatorBatchesMultipleGroupsIntoSinglePebbleSync(t *testing.T
 
 	baseCh := make(chan uint64, 2)
 	errCh := make(chan error, 2)
+	ready := make(chan struct{}, len(stores))
 	start := make(chan struct{})
 	for _, st := range stores {
 		go func(st *ChannelStore) {
+			ready <- struct{}{}
 			<-start
 			base, err := st.Append([]channel.Record{{Payload: []byte(st.id.ID), SizeBytes: len(st.id.ID)}})
 			if err == nil {
@@ -31,6 +33,9 @@ func TestCommitCoordinatorBatchesMultipleGroupsIntoSinglePebbleSync(t *testing.T
 			}
 			errCh <- err
 		}(st)
+	}
+	for range stores {
+		<-ready
 	}
 	close(start)
 
