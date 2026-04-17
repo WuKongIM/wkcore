@@ -8,7 +8,8 @@ import (
 
 func newTestChannelStore(tb testing.TB) *ChannelStore {
 	tb.Helper()
-	return openTestChannelStore(tb, channel.ChannelKey("channel/1/c1"), channel.ChannelID{ID: "c1", Type: 1})
+	key, id := testChannelStoreIdentity("c1")
+	return openTestChannelStore(tb, key, id)
 }
 
 func openTestEngine(tb testing.TB) *Engine {
@@ -29,6 +30,20 @@ func openTestEngine(tb testing.TB) *Engine {
 func openTestChannelStore(tb testing.TB, key channel.ChannelKey, id channel.ChannelID) *ChannelStore {
 	tb.Helper()
 	return openTestEngine(tb).ForChannel(key, id)
+}
+
+func openTestChannelStoresOnEngine(tb testing.TB, engine *Engine, names ...string) []*ChannelStore {
+	tb.Helper()
+
+	stores := make([]*ChannelStore, 0, len(names))
+	for _, name := range names {
+		stores = append(stores, engine.ForChannel(testChannelStoreIdentity(name)))
+	}
+	return stores
+}
+
+func testChannelStoreIdentity(name string) (channel.ChannelKey, channel.ChannelID) {
+	return channel.ChannelKey("channel/1/" + name), channel.ChannelID{ID: name, Type: 1}
 }
 
 func mustAppendRecords(t *testing.T, st *ChannelStore, payloads []string) {

@@ -14,33 +14,34 @@ import (
 
 func TestCommitCoordinatorBatchesMultipleGroupsIntoSinglePebbleSync(t *testing.T) {
 	engine, fs := openCountingCommitCoordinatorTestEngine(t)
-	coordinator := engine.commitCoordinator()
-	coordinator.flushWindow = 5 * time.Millisecond
+	stores := openTestChannelStoresOnEngine(t, engine, "group-1", "group-2")
+	engine.commitCoordinator().flushWindow = 5 * time.Millisecond
 
 	before := fs.syncCount.Load()
 
+	baseCh := make(chan uint64, 2)
 	errCh := make(chan error, 2)
 	start := make(chan struct{})
-	for i, channelKey := range []channel.ChannelKey{"group-1", "group-2"} {
-		go func(channelKey channel.ChannelKey, index int) {
+	for _, st := range stores {
+		go func(st *ChannelStore) {
 			<-start
-			errCh <- coordinator.submit(commitRequest{
-				channelKey: channelKey,
-				build: func(batch *pebble.Batch) error {
-					return batch.Set(
-						encodeCheckpointKey(channelKey),
-						encodeCheckpoint(channel.Checkpoint{Epoch: uint64(index + 1), HW: uint64(index + 1)}),
-						pebble.NoSync,
-					)
-				},
-			})
-		}(channelKey, i)
+			base, err := st.Append([]channel.Record{{Payload: []byte(st.id.ID), SizeBytes: len(st.id.ID)}})
+			if err == nil {
+				baseCh <- base
+			}
+			errCh <- err
+		}(st)
 	}
 	close(start)
 
 	for range 2 {
 		if err := <-errCh; err != nil {
-			t.Fatalf("submit() error = %v", err)
+			t.Fatalf("Append() error = %v", err)
+		}
+	}
+	for range 2 {
+		if base := <-baseCh; base != 0 {
+			t.Fatalf("Append() base = %d, want 0", base)
 		}
 	}
 
