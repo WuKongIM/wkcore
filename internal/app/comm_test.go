@@ -260,6 +260,38 @@ func newThreeNodeAppHarnessWithOptions(t *testing.T, slotCount uint32, slotRepli
 	return harness
 }
 
+func applySendPathTuning(t *testing.T, cfg *Config) {
+	t.Helper()
+
+	setClusterConfigDurationField(t, &cfg.Cluster, "FollowerReplicationRetryInterval", 250*time.Millisecond)
+	setClusterConfigDurationField(t, &cfg.Cluster, "AppendGroupCommitMaxWait", 2*time.Millisecond)
+	setClusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxRecords", 128)
+	setClusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxBytes", 256*1024)
+	cfg.Cluster.DataPlanePoolSize = 8
+	cfg.Cluster.DataPlaneMaxFetchInflight = 16
+	cfg.Cluster.DataPlaneMaxPendingFetch = 16
+}
+
+func TestThreeNodeAppHarnessUsesSendPathTuning(t *testing.T) {
+	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(cfg *Config) {
+		applySendPathTuning(t, cfg)
+	})
+
+	leaderApp := harness.apps[1]
+	require.NotNil(t, leaderApp)
+	require.Equal(t, 250*time.Millisecond, appISRFollowerReplicationRetryInterval(t, leaderApp))
+	maxWait, maxRecords, maxBytes := appReplicaAppendGroupCommitConfig(t, leaderApp)
+	require.Equal(t, 2*time.Millisecond, maxWait)
+	require.Equal(t, 128, maxRecords)
+	require.Equal(t, 256*1024, maxBytes)
+
+	for nodeID, spec := range harness.specs {
+		require.Equal(t, 8, spec.cfg.Cluster.DataPlanePoolSize, "node %d pool size", nodeID)
+		require.Equal(t, 16, spec.cfg.Cluster.DataPlaneMaxFetchInflight, "node %d fetch inflight", nodeID)
+		require.Equal(t, 16, spec.cfg.Cluster.DataPlaneMaxPendingFetch, "node %d pending fetch", nodeID)
+	}
+}
+
 func (h *threeNodeAppHarness) runningApps() []*App {
 	apps := make([]*App, 0, len(h.apps))
 	for _, nodeID := range []uint64{1, 2, 3} {

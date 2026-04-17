@@ -19,8 +19,8 @@ import (
 	"testing"
 	"time"
 
-	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
+	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
@@ -41,6 +41,12 @@ const (
 	sendStressSeedEnv              = "WK_SEND_STRESS_SEED"
 	sendStressWarmupAckTimeout     = 12 * time.Second
 	sendStressThroughputInflight   = 32
+	sendStressAcceptanceDuration   = 15 * time.Second
+	sendStressAcceptanceWorkers    = 16
+	sendStressAcceptanceSenders    = 32
+	sendStressAcceptanceInflight   = 64
+	sendStressAcceptanceAckTimeout = 20 * time.Second
+	sendStressAcceptanceMinISR     = 2
 )
 
 type sendStressMode string
@@ -256,6 +262,20 @@ func loadSendStressConfig(t *testing.T) sendStressConfig {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+func sendStressAcceptancePreset() sendStressConfig {
+	return sendStressConfig{
+		Mode:                 sendStressModeThroughput,
+		Duration:             sendStressAcceptanceDuration,
+		Workers:              sendStressAcceptanceWorkers,
+		Senders:              sendStressAcceptanceSenders,
+		MessagesPerWorker:    50,
+		DialTimeout:          3 * time.Second,
+		AckTimeout:           sendStressAcceptanceAckTimeout,
+		MaxInflightPerWorker: sendStressAcceptanceInflight,
+		Seed:                 20260408,
+	}
 }
 
 func validateSendStressConfig(cfg sendStressConfig) error {
@@ -505,41 +525,44 @@ func TestSendStressConfigDefaultsAndOverrides(t *testing.T) {
 		return
 	}
 
+	acceptance := sendStressAcceptancePreset()
 	clearSendStressConfigEnv(t)
 	defaultCfg := loadSendStressConfig(t)
-	defaultWorkers := max(4, runtime.GOMAXPROCS(0))
 	require.False(t, defaultCfg.Enabled)
-	require.Equal(t, sendStressModeLatency, defaultCfg.Mode)
-	require.Equal(t, 5*time.Second, defaultCfg.Duration)
-	require.Equal(t, defaultWorkers, defaultCfg.Workers)
-	require.Equal(t, max(8, defaultWorkers), defaultCfg.Senders)
+	require.Equal(t, acceptance.Mode, defaultCfg.Mode)
+	require.Equal(t, acceptance.Duration, defaultCfg.Duration)
+	require.Equal(t, acceptance.Workers, defaultCfg.Workers)
+	require.Equal(t, acceptance.Senders, defaultCfg.Senders)
 	require.Equal(t, 50, defaultCfg.MessagesPerWorker)
-	require.Equal(t, 1, defaultCfg.MaxInflightPerWorker)
+	require.Equal(t, acceptance.MaxInflightPerWorker, defaultCfg.MaxInflightPerWorker)
 	require.Equal(t, 3*time.Second, defaultCfg.DialTimeout)
-	require.Equal(t, 5*time.Second, defaultCfg.AckTimeout)
+	require.Equal(t, acceptance.AckTimeout, defaultCfg.AckTimeout)
 
-	t.Setenv("WK_SEND_STRESS", "1")
-	t.Setenv("WK_SEND_STRESS_MODE", "throughput")
-	t.Setenv("WK_SEND_STRESS_DURATION", "1500ms")
-	t.Setenv("WK_SEND_STRESS_WORKERS", "7")
-	t.Setenv("WK_SEND_STRESS_SENDERS", "11")
-	t.Setenv("WK_SEND_STRESS_MESSAGES_PER_WORKER", "13")
-	t.Setenv("WK_SEND_STRESS_MAX_INFLIGHT_PER_WORKER", "9")
-	t.Setenv("WK_SEND_STRESS_DIAL_TIMEOUT", "2s")
-	t.Setenv("WK_SEND_STRESS_ACK_TIMEOUT", "1800ms")
-	t.Setenv("WK_SEND_STRESS_SEED", "42")
+	t.Run("acceptance preset overrides", func(t *testing.T) {
+		clearSendStressConfigEnv(t)
+		t.Setenv(sendStressEnv, "1")
+		t.Setenv(sendStressModeEnv, string(acceptance.Mode))
+		t.Setenv(sendStressDurationEnv, acceptance.Duration.String())
+		t.Setenv(sendStressWorkersEnv, strconv.Itoa(acceptance.Workers))
+		t.Setenv(sendStressSendersEnv, strconv.Itoa(acceptance.Senders))
+		t.Setenv(sendStressMessagesPerWorkerEnv, strconv.Itoa(acceptance.MessagesPerWorker))
+		t.Setenv(sendStressMaxInflightEnv, strconv.Itoa(acceptance.MaxInflightPerWorker))
+		t.Setenv(sendStressDialTimeoutEnv, acceptance.DialTimeout.String())
+		t.Setenv(sendStressAckTimeoutEnv, acceptance.AckTimeout.String())
+		t.Setenv(sendStressSeedEnv, strconv.FormatInt(acceptance.Seed, 10))
 
-	cfg := loadSendStressConfig(t)
-	require.True(t, cfg.Enabled)
-	require.Equal(t, sendStressModeThroughput, cfg.Mode)
-	require.Equal(t, 1500*time.Millisecond, cfg.Duration)
-	require.Equal(t, 7, cfg.Workers)
-	require.Equal(t, 11, cfg.Senders)
-	require.Equal(t, 13, cfg.MessagesPerWorker)
-	require.Equal(t, 9, cfg.MaxInflightPerWorker)
-	require.Equal(t, 2*time.Second, cfg.DialTimeout)
-	require.Equal(t, 1800*time.Millisecond, cfg.AckTimeout)
-	require.EqualValues(t, 42, cfg.Seed)
+		cfg := loadSendStressConfig(t)
+		require.True(t, cfg.Enabled)
+		require.Equal(t, acceptance.Mode, cfg.Mode)
+		require.Equal(t, acceptance.Duration, cfg.Duration)
+		require.Equal(t, acceptance.Workers, cfg.Workers)
+		require.Equal(t, acceptance.Senders, cfg.Senders)
+		require.Equal(t, acceptance.MessagesPerWorker, cfg.MessagesPerWorker)
+		require.Equal(t, acceptance.MaxInflightPerWorker, cfg.MaxInflightPerWorker)
+		require.Equal(t, acceptance.DialTimeout, cfg.DialTimeout)
+		require.Equal(t, acceptance.AckTimeout, cfg.AckTimeout)
+		require.EqualValues(t, acceptance.Seed, cfg.Seed)
+	})
 
 	enabled, ok, err := parseSendStressEnabled("")
 	require.NoError(t, err)
@@ -940,7 +963,7 @@ func preloadSendStressChannels(t *testing.T, harness *threeNodeAppHarness, leade
 			Replicas:     []uint64{1, 2, 3},
 			ISR:          []uint64{1, 2, 3},
 			Leader:       leaderID,
-			MinISR:       3,
+			MinISR:       sendStressAcceptanceMinISR,
 			Status:       uint8(channel.StatusActive),
 			Features:     uint64(channel.MessageSeqFormatLegacyU32),
 			LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),

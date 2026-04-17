@@ -3,12 +3,37 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
+	app "github.com/WuKongIM/WuKongIM/internal/app"
 	"github.com/stretchr/testify/require"
 )
+
+func clusterConfigDurationField(t *testing.T, cfg *app.ClusterConfig, name string) time.Duration {
+	t.Helper()
+
+	field := reflect.ValueOf(cfg).Elem().FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("ClusterConfig is missing field %s", name)
+	}
+	value := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
+	return time.Duration(value.Int())
+}
+
+func clusterConfigIntField(t *testing.T, cfg *app.ClusterConfig, name string) int {
+	t.Helper()
+
+	field := reflect.ValueOf(cfg).Elem().FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("ClusterConfig is missing field %s", name)
+	}
+	value := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
+	return int(value.Int())
+}
 
 func writeConf(t *testing.T, dir, name string, lines ...string) string {
 	t.Helper()
@@ -176,6 +201,51 @@ func TestLoadConfigParsesExternalRouteAddresses(t *testing.T) {
 	require.Equal(t, "im.example.com:15100", cfg.API.ExternalTCPAddr)
 	require.Equal(t, "ws://im.example.com:15200", cfg.API.ExternalWSAddr)
 	require.Equal(t, "wss://im.example.com:15300", cfg.API.ExternalWSSAddr)
+}
+
+func TestLoadConfigParsesSendPathTuning(t *testing.T) {
+	dir := t.TempDir()
+	basePath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_CLUSTER_SLOT_COUNT=1",
+		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
+	)
+
+	t.Run("defaults", func(t *testing.T) {
+		cfg, err := loadConfig(basePath)
+		require.NoError(t, err)
+
+		require.Equal(t, 1*time.Second, clusterConfigDurationField(t, &cfg.Cluster, "FollowerReplicationRetryInterval"))
+		require.Equal(t, 1*time.Millisecond, clusterConfigDurationField(t, &cfg.Cluster, "AppendGroupCommitMaxWait"))
+		require.Equal(t, 64, clusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxRecords"))
+		require.Equal(t, 64*1024, clusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxBytes"))
+		require.Equal(t, 1, cfg.Cluster.DataPlanePoolSize)
+		require.Equal(t, 2, cfg.Cluster.DataPlaneMaxFetchInflight)
+		require.Equal(t, 2, cfg.Cluster.DataPlaneMaxPendingFetch)
+	})
+
+	t.Run("explicit overrides", func(t *testing.T) {
+		t.Setenv("WK_CLUSTER_FOLLOWER_REPLICATION_RETRY_INTERVAL", "250ms")
+		t.Setenv("WK_CLUSTER_APPEND_GROUP_COMMIT_MAX_WAIT", "2ms")
+		t.Setenv("WK_CLUSTER_APPEND_GROUP_COMMIT_MAX_RECORDS", "128")
+		t.Setenv("WK_CLUSTER_APPEND_GROUP_COMMIT_MAX_BYTES", "262144")
+		t.Setenv("WK_CLUSTER_DATA_PLANE_POOL_SIZE", "8")
+		t.Setenv("WK_CLUSTER_DATA_PLANE_MAX_FETCH_INFLIGHT", "16")
+		t.Setenv("WK_CLUSTER_DATA_PLANE_MAX_PENDING_FETCH", "16")
+
+		cfg, err := loadConfig(basePath)
+		require.NoError(t, err)
+
+		require.Equal(t, 250*time.Millisecond, clusterConfigDurationField(t, &cfg.Cluster, "FollowerReplicationRetryInterval"))
+		require.Equal(t, 2*time.Millisecond, clusterConfigDurationField(t, &cfg.Cluster, "AppendGroupCommitMaxWait"))
+		require.Equal(t, 128, clusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxRecords"))
+		require.Equal(t, 256*1024, clusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxBytes"))
+		require.Equal(t, 8, cfg.Cluster.DataPlanePoolSize)
+		require.Equal(t, 16, cfg.Cluster.DataPlaneMaxFetchInflight)
+		require.Equal(t, 16, cfg.Cluster.DataPlaneMaxPendingFetch)
+	})
 }
 
 func TestLoadConfigUsesDefaultSearchPathsWhenFlagPathIsEmpty(t *testing.T) {

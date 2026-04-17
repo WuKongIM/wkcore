@@ -11,6 +11,8 @@ import (
 	"unsafe"
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	channelruntime "github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
@@ -117,6 +119,29 @@ func TestNewConfiguresIndependentDataPlaneLimits(t *testing.T) {
 	})
 
 	require.Equal(t, 7, appISRMaxFetchInflightPeerLimit(t, app))
+}
+
+func TestNewConfiguresSendPathTuning(t *testing.T) {
+	cfg := testConfig(t)
+	setClusterConfigDurationField(t, &cfg.Cluster, "FollowerReplicationRetryInterval", 250*time.Millisecond)
+	setClusterConfigDurationField(t, &cfg.Cluster, "AppendGroupCommitMaxWait", 2*time.Millisecond)
+	setClusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxRecords", 128)
+	setClusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxBytes", 256*1024)
+	cfg.Cluster.DataPlanePoolSize = 8
+	cfg.Cluster.DataPlaneMaxFetchInflight = 16
+	cfg.Cluster.DataPlaneMaxPendingFetch = 16
+
+	app, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, app.Stop())
+	})
+
+	require.Equal(t, 250*time.Millisecond, appISRFollowerReplicationRetryInterval(t, app))
+	maxWait, maxRecords, maxBytes := appReplicaAppendGroupCommitConfig(t, app)
+	require.Equal(t, 2*time.Millisecond, maxWait)
+	require.Equal(t, 128, maxRecords)
+	require.Equal(t, 256*1024, maxBytes)
 }
 
 func TestStartChannelMetaSyncUsesExplicitDataPlaneSettings(t *testing.T) {
@@ -809,6 +834,95 @@ func setClusterConfigIntField(t *testing.T, cfg *ClusterConfig, name string, val
 	}
 	ptr := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
 	ptr.SetInt(int64(value))
+}
+
+func setClusterConfigDurationField(t *testing.T, cfg *ClusterConfig, name string, value time.Duration) {
+	t.Helper()
+
+	field := reflect.ValueOf(cfg).Elem().FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("ClusterConfig is missing field %s", name)
+	}
+	ptr := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
+	ptr.SetInt(int64(value))
+}
+
+func appISRFollowerReplicationRetryInterval(t *testing.T, app *App) time.Duration {
+	t.Helper()
+
+	rt := reflect.ValueOf(app.isrRuntime)
+	if rt.Kind() != reflect.Pointer || rt.IsNil() {
+		t.Fatalf("isrRuntime is %s, want non-nil pointer", rt.Kind())
+	}
+	cfgField := rt.Elem().FieldByName("cfg")
+	if !cfgField.IsValid() {
+		t.Fatal("isr runtime missing cfg field")
+	}
+	cfg := reflect.NewAt(cfgField.Type(), unsafe.Pointer(cfgField.UnsafeAddr())).Elem()
+	interval := cfg.FieldByName("FollowerReplicationRetryInterval")
+	if !interval.IsValid() {
+		t.Fatal("isr runtime config missing FollowerReplicationRetryInterval field")
+	}
+	return time.Duration(interval.Int())
+}
+
+func appReplicaAppendGroupCommitConfig(t *testing.T, app *App) (time.Duration, int, int) {
+	t.Helper()
+
+	rt := reflect.ValueOf(app.isrRuntime)
+	if rt.Kind() != reflect.Pointer || rt.IsNil() {
+		t.Fatalf("isrRuntime is %s, want non-nil pointer", rt.Kind())
+	}
+	cfgField := rt.Elem().FieldByName("replicaFactory")
+	if !cfgField.IsValid() {
+		t.Fatal("isr runtime missing replicaFactory field")
+	}
+	factory, ok := reflect.NewAt(cfgField.Type(), unsafe.Pointer(cfgField.UnsafeAddr())).Elem().Interface().(channelruntime.ReplicaFactory)
+	if !ok {
+		t.Fatalf("isr runtime replicaFactory has unexpected type %T", reflect.NewAt(cfgField.Type(), unsafe.Pointer(cfgField.UnsafeAddr())).Elem().Interface())
+	}
+
+	replica, err := factory.New(channelruntime.ChannelConfig{
+		ChannelKey: channel.ChannelKey("send-path-replica"),
+		Meta: channel.Meta{
+			ID: channel.ChannelID{
+				ID:   "send-path-replica",
+				Type: 1,
+			},
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, replica.Close())
+	})
+
+	value := reflect.ValueOf(replica)
+	if value.Kind() == reflect.Interface {
+		value = value.Elem()
+	}
+	if value.Kind() != reflect.Pointer || value.IsNil() {
+		t.Fatalf("replica is %s, want non-nil pointer", value.Kind())
+	}
+	commit := value.Elem().FieldByName("appendGroupCommit")
+	if !commit.IsValid() {
+		t.Fatal("replica missing appendGroupCommit field")
+	}
+	commit = reflect.NewAt(commit.Type(), unsafe.Pointer(commit.UnsafeAddr())).Elem()
+
+	maxWait := commit.FieldByName("maxWait")
+	if !maxWait.IsValid() {
+		t.Fatal("replica appendGroupCommit missing maxWait field")
+	}
+	maxRecords := commit.FieldByName("maxRecords")
+	if !maxRecords.IsValid() {
+		t.Fatal("replica appendGroupCommit missing maxRecords field")
+	}
+	maxBytes := commit.FieldByName("maxBytes")
+	if !maxBytes.IsValid() {
+		t.Fatal("replica appendGroupCommit missing maxBytes field")
+	}
+
+	return time.Duration(maxWait.Int()), int(maxRecords.Int()), int(maxBytes.Int())
 }
 
 func appDataPlanePoolSize(t *testing.T, app *App) int {

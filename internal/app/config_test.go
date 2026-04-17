@@ -1,8 +1,10 @@
 package app
 
 import (
+	"reflect"
 	"testing"
 	"time"
+	"unsafe"
 
 	accessapi "github.com/WuKongIM/WuKongIM/internal/access/api"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
@@ -11,6 +13,28 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/internal/gateway/binding"
 )
+
+func clusterConfigDurationField(t *testing.T, cfg *ClusterConfig, name string) time.Duration {
+	t.Helper()
+
+	field := reflect.ValueOf(cfg).Elem().FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("ClusterConfig is missing field %s", name)
+	}
+	value := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
+	return time.Duration(value.Int())
+}
+
+func clusterConfigIntField(t *testing.T, cfg *ClusterConfig, name string) int {
+	t.Helper()
+
+	field := reflect.ValueOf(cfg).Elem().FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("ClusterConfig is missing field %s", name)
+	}
+	value := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
+	return int(value.Int())
+}
 
 func TestConfigValidateRequiresNodeAndClusterIdentity(t *testing.T) {
 	t.Run("missing node id", func(t *testing.T) {
@@ -218,6 +242,41 @@ func TestConfigPreservesExplicitDataPlaneRPCTimeout(t *testing.T) {
 
 	require.NoError(t, cfg.ApplyDefaultsAndValidate())
 	require.Equal(t, 250*time.Millisecond, cfg.Cluster.DataPlaneRPCTimeout)
+}
+
+func TestConfigDefaultsSendPathTuning(t *testing.T) {
+	cfg := validConfig()
+
+	require.NoError(t, cfg.ApplyDefaultsAndValidate())
+
+	require.Equal(t, 1*time.Second, clusterConfigDurationField(t, &cfg.Cluster, "FollowerReplicationRetryInterval"))
+	require.Equal(t, 1*time.Millisecond, clusterConfigDurationField(t, &cfg.Cluster, "AppendGroupCommitMaxWait"))
+	require.Equal(t, 64, clusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxRecords"))
+	require.Equal(t, 64*1024, clusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxBytes"))
+	require.Equal(t, 4, cfg.Cluster.DataPlanePoolSize)
+	require.Equal(t, 4, cfg.Cluster.DataPlaneMaxFetchInflight)
+	require.Equal(t, 4, cfg.Cluster.DataPlaneMaxPendingFetch)
+}
+
+func TestConfigPreservesExplicitSendPathTuning(t *testing.T) {
+	cfg := validConfig()
+	setClusterConfigDurationField(t, &cfg.Cluster, "FollowerReplicationRetryInterval", 250*time.Millisecond)
+	setClusterConfigDurationField(t, &cfg.Cluster, "AppendGroupCommitMaxWait", 2*time.Millisecond)
+	setClusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxRecords", 128)
+	setClusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxBytes", 256*1024)
+	cfg.Cluster.DataPlanePoolSize = 8
+	cfg.Cluster.DataPlaneMaxFetchInflight = 16
+	cfg.Cluster.DataPlaneMaxPendingFetch = 16
+
+	require.NoError(t, cfg.ApplyDefaultsAndValidate())
+
+	require.Equal(t, 250*time.Millisecond, clusterConfigDurationField(t, &cfg.Cluster, "FollowerReplicationRetryInterval"))
+	require.Equal(t, 2*time.Millisecond, clusterConfigDurationField(t, &cfg.Cluster, "AppendGroupCommitMaxWait"))
+	require.Equal(t, 128, clusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxRecords"))
+	require.Equal(t, 256*1024, clusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxBytes"))
+	require.Equal(t, 8, cfg.Cluster.DataPlanePoolSize)
+	require.Equal(t, 16, cfg.Cluster.DataPlaneMaxFetchInflight)
+	require.Equal(t, 16, cfg.Cluster.DataPlaneMaxPendingFetch)
 }
 
 func TestConfigDefaultsChannelBootstrapMinISR(t *testing.T) {
