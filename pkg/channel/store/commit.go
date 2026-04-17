@@ -127,7 +127,15 @@ func (c *commitCoordinator) run() {
 				batch.completeAll(channel.ErrInvalidArgument)
 				continue
 			}
-			batch.commit(c.db, c.commit)
+			if err := batch.commit(c.db, c.commit); err != nil {
+				batch.completeAll(err)
+				continue
+			}
+			if c.closing() {
+				batch.completeAll(channel.ErrInvalidArgument)
+				continue
+			}
+			batch.publish()
 		}
 	}
 }
@@ -188,10 +196,9 @@ type commitBatch struct {
 	closed   bool
 }
 
-func (b commitBatch) commit(db *pebble.DB, commit func(*pebble.Batch) error) {
+func (b commitBatch) commit(db *pebble.DB, commit func(*pebble.Batch) error) error {
 	if db == nil || commit == nil {
-		b.completeAll(channel.ErrInvalidArgument)
-		return
+		return channel.ErrInvalidArgument
 	}
 
 	writeBatch := db.NewBatch()
@@ -199,19 +206,16 @@ func (b commitBatch) commit(db *pebble.DB, commit func(*pebble.Batch) error) {
 
 	for _, req := range b.requests {
 		if req.build == nil {
-			b.completeAll(channel.ErrInvalidArgument)
-			return
+			return channel.ErrInvalidArgument
 		}
 		if err := req.build(writeBatch); err != nil {
-			b.completeAll(err)
-			return
+			return err
 		}
 	}
-	if err := commit(writeBatch); err != nil {
-		b.completeAll(err)
-		return
-	}
+	return commit(writeBatch)
+}
 
+func (b commitBatch) publish() {
 	for _, req := range b.requests {
 		var err error
 		if req.publish != nil {

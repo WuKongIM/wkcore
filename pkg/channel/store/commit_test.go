@@ -228,6 +228,81 @@ func TestCommitCoordinatorSubmitRejectsAfterCloseStarts(t *testing.T) {
 	}
 }
 
+func TestCommitCoordinatorDoesNotPublishIfCloseStartsDuringSync(t *testing.T) {
+	engine, _ := openCountingCommitCoordinatorTestEngine(t)
+	coordinator := engine.commitCoordinator()
+	coordinator.flushWindow = 0
+
+	commitStarted := make(chan struct{})
+	releaseCommit := make(chan struct{})
+	closeDone := make(chan struct{})
+	publishCalled := make(chan struct{}, 1)
+	done := make(chan error, 1)
+
+	coordinator.commit = func(*pebble.Batch) error {
+		close(commitStarted)
+		<-releaseCommit
+		return nil
+	}
+
+	go func() {
+		done <- coordinator.submit(commitRequest{
+			channelKey: "group-1",
+			build: func(batch *pebble.Batch) error {
+				return batch.Set(
+					encodeCheckpointKey("group-1"),
+					encodeCheckpoint(channel.Checkpoint{Epoch: 3, HW: 1}),
+					pebble.NoSync,
+				)
+			},
+			publish: func() error {
+				publishCalled <- struct{}{}
+				return nil
+			},
+		})
+	}()
+
+	select {
+	case <-commitStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for sync to start")
+	}
+
+	go func() {
+		coordinator.close()
+		close(closeDone)
+	}()
+
+	select {
+	case <-coordinator.stopCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for coordinator shutdown to start")
+	}
+
+	close(releaseCommit)
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, channel.ErrInvalidArgument) {
+			t.Fatalf("submit() error = %v, want invalid argument when close starts during sync", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for submit to finish after close")
+	}
+
+	select {
+	case <-publishCalled:
+		t.Fatal("publish callback ran after close started during sync")
+	default:
+	}
+
+	select {
+	case <-closeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for coordinator close")
+	}
+}
+
 func openCountingCommitCoordinatorTestEngine(tb testing.TB) (*Engine, *countingFS) {
 	tb.Helper()
 
