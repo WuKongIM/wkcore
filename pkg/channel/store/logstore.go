@@ -15,6 +15,17 @@ type LogRecord struct {
 	Payload []byte
 }
 
+type pendingLogAppend struct {
+	base    uint64
+	nextLEO uint64
+	entries []logBatchEntry
+}
+
+type logBatchEntry struct {
+	key   []byte
+	value []byte
+}
+
 func (s *ChannelStore) validate() error {
 	if s == nil || s.engine == nil || s.engine.db == nil || s.key == "" {
 		return channel.ErrInvalidArgument
@@ -38,42 +49,92 @@ func (s *ChannelStore) appendRecordsWithCommit(records []channel.Record, commitO
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	s.mu.Lock()
-	base, err := s.leoLocked()
+	pending, err := s.prepareAppendLocked(records)
 	if err != nil {
-		s.mu.Unlock()
 		return 0, err
 	}
-	if len(records) == 0 {
-		s.mu.Unlock()
-		return base, nil
+	if len(pending.entries) == 0 {
+		return pending.base, nil
 	}
-	s.writeInProgress.Store(true)
-	s.mu.Unlock()
-	defer s.writeInProgress.Store(false)
+
+	if commitOpts == pebble.Sync && recordCommit {
+		if err := s.appendWithCoordinatorLocked(pending); err != nil {
+			s.failPendingWrite()
+			return 0, err
+		}
+		return pending.base, nil
+	}
 
 	batch := s.engine.db.NewBatch()
 	defer batch.Close()
 
-	for i, record := range records {
-		key := encodeLogRecordKey(s.key, base+uint64(i))
-		value := append([]byte(nil), record.Payload...)
-		if err := batch.Set(key, value, pebble.NoSync); err != nil {
-			return 0, err
-		}
+	if err := pending.build(batch); err != nil {
+		s.failPendingWrite()
+		return 0, err
 	}
 	if err := batch.Commit(commitOpts); err != nil {
+		s.failPendingWrite()
 		return 0, err
 	}
 	if recordCommit {
-		s.recordDurableCommit()
+		s.publishDurableWrite(pending.nextLEO)
+		return pending.base, nil
 	}
+	s.publishWrite(pending.nextLEO)
+	return pending.base, nil
+}
+
+func (s *ChannelStore) prepareAppendLocked(records []channel.Record) (pendingLogAppend, error) {
 	s.mu.Lock()
-	next := base + uint64(len(records))
-	s.leo.Store(next)
-	s.loaded.Store(true)
-	s.mu.Unlock()
-	return base, nil
+	defer s.mu.Unlock()
+
+	base, err := s.leoLocked()
+	if err != nil {
+		return pendingLogAppend{}, err
+	}
+	if len(records) == 0 {
+		return pendingLogAppend{base: base}, nil
+	}
+
+	pending := pendingLogAppend{
+		base:    base,
+		nextLEO: base + uint64(len(records)),
+		entries: make([]logBatchEntry, 0, len(records)),
+	}
+	for i, record := range records {
+		pending.entries = append(pending.entries, logBatchEntry{
+			key:   encodeLogRecordKey(s.key, base+uint64(i)),
+			value: append([]byte(nil), record.Payload...),
+		})
+	}
+	s.writeInProgress.Store(true)
+	return pending, nil
+}
+
+func (s *ChannelStore) appendWithCoordinatorLocked(pending pendingLogAppend) error {
+	coordinator := s.commitCoordinator()
+	if coordinator == nil {
+		return channel.ErrInvalidArgument
+	}
+	return coordinator.submit(commitRequest{
+		channelKey: s.key,
+		build: func(writeBatch *pebble.Batch) error {
+			return pending.build(writeBatch)
+		},
+		publish: func() error {
+			s.publishDurableWrite(pending.nextLEO)
+			return nil
+		},
+	})
+}
+
+func (p pendingLogAppend) build(writeBatch *pebble.Batch) error {
+	for _, entry := range p.entries {
+		if err := writeBatch.Set(entry.key, entry.value, pebble.NoSync); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *ChannelStore) Read(from uint64, maxBytes int) ([]channel.Record, error) {

@@ -61,6 +61,8 @@ func (c *commitCoordinator) submit(req commitRequest) error {
 	}
 
 	select {
+	case <-c.stopCh:
+		return channel.ErrInvalidArgument
 	case <-c.doneCh:
 		return channel.ErrInvalidArgument
 	case c.requests <- req:
@@ -93,6 +95,10 @@ func (c *commitCoordinator) run() {
 			return
 		case req := <-c.requests:
 			batch := c.collectBatch(req)
+			if batch.closed {
+				batch.completeAll(channel.ErrInvalidArgument)
+				continue
+			}
 			batch.commit(c.db, c.commit)
 		}
 	}
@@ -120,6 +126,7 @@ func (c *commitCoordinator) collectBatch(first commitRequest) commitBatch {
 		case <-timer.C:
 			return batch
 		case <-c.stopCh:
+			batch.closed = true
 			return batch
 		}
 	}
@@ -127,6 +134,7 @@ func (c *commitCoordinator) collectBatch(first commitRequest) commitBatch {
 
 type commitBatch struct {
 	requests []commitRequest
+	closed   bool
 }
 
 func (b commitBatch) commit(db *pebble.DB, commit func(*pebble.Batch) error) {
@@ -200,7 +208,7 @@ func (s *ChannelStore) applyFetchedRecords(records []channel.Record, committed [
 	}
 	s.writeInProgress.Store(true)
 	s.mu.Unlock()
-	defer s.writeInProgress.Store(false)
+	defer s.failPendingWrite()
 
 	nextLEO := base + uint64(len(records))
 	if coordinator := s.commitCoordinator(); coordinator != nil {
@@ -210,11 +218,7 @@ func (s *ChannelStore) applyFetchedRecords(records []channel.Record, committed [
 				return s.writeApplyFetchedRecords(writeBatch, base, records, committed, checkpoint)
 			},
 			publish: func() error {
-				s.recordDurableCommit()
-				s.mu.Lock()
-				s.leo.Store(nextLEO)
-				s.loaded.Store(true)
-				s.mu.Unlock()
+				s.publishDurableWrite(nextLEO)
 				return nil
 			},
 		})
@@ -233,11 +237,7 @@ func (s *ChannelStore) applyFetchedRecords(records []channel.Record, committed [
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return 0, err
 	}
-	s.recordDurableCommit()
-	s.mu.Lock()
-	s.leo.Store(nextLEO)
-	s.loaded.Store(true)
-	s.mu.Unlock()
+	s.publishDurableWrite(nextLEO)
 	return nextLEO, nil
 }
 
