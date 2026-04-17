@@ -140,6 +140,98 @@ func TestAppStartWiresMessageSendThroughDurableChannelLog(t *testing.T) {
 	require.Equal(t, []byte("hello durable"), fetch.Messages[0].Payload)
 }
 
+func TestAppStartBootstrapsMissingRuntimeMetaOnFirstSend(t *testing.T) {
+	cfg := testConfig(t)
+
+	app, err := New(cfg)
+	require.NoError(t, err)
+
+	require.NoError(t, app.Start())
+	t.Cleanup(func() {
+		require.NoError(t, app.Stop())
+	})
+	require.Eventually(t, func() bool {
+		_, err := app.Cluster().LeaderOf(1)
+		return err == nil
+	}, 3*time.Second, 50*time.Millisecond)
+
+	id := channel.ChannelID{
+		ID:   deliveryusecase.EncodePersonChannel("sender", "bootstrap-user"),
+		Type: frame.ChannelTypePerson,
+	}
+	_, err = app.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
+	require.ErrorIs(t, err, metadb.ErrNotFound)
+
+	result, err := app.Message().Send(context.Background(), message.SendCommand{
+		FromUID:     "sender",
+		ChannelID:   "bootstrap-user",
+		ChannelType: frame.ChannelTypePerson,
+		ClientMsgNo: "bootstrap-first-send",
+		Payload:     []byte("hello bootstrap"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, frame.ReasonSuccess, result.Reason)
+	require.NotZero(t, result.MessageID)
+	require.Equal(t, uint64(1), result.MessageSeq)
+
+	meta, err := app.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
+	require.NoError(t, err)
+	require.Equal(t, id.ID, meta.ChannelID)
+	require.Equal(t, int64(id.Type), meta.ChannelType)
+	require.Equal(t, []uint64{cfg.Node.ID}, meta.Replicas)
+	require.Equal(t, []uint64{cfg.Node.ID}, meta.ISR)
+	require.Equal(t, cfg.Node.ID, meta.Leader)
+
+	fetch, err := app.ChannelLog().Fetch(context.Background(), channel.FetchRequest{
+		ChannelID: id,
+		FromSeq:   1,
+		Limit:     10,
+		MaxBytes:  1024,
+	})
+	require.NoError(t, err)
+	require.Len(t, fetch.Messages, 1)
+	require.Equal(t, uint64(1), fetch.Messages[0].MessageSeq)
+	require.Equal(t, []byte("hello bootstrap"), fetch.Messages[0].Payload)
+}
+
+func TestAppRuntimeMetaReadMissDoesNotBootstrap(t *testing.T) {
+	cfg := testConfig(t)
+
+	app, err := New(cfg)
+	require.NoError(t, err)
+
+	require.NoError(t, app.Start())
+	t.Cleanup(func() {
+		require.NoError(t, app.Stop())
+	})
+	require.Eventually(t, func() bool {
+		_, err := app.Cluster().LeaderOf(1)
+		return err == nil
+	}, 3*time.Second, 50*time.Millisecond)
+
+	id := channel.ChannelID{
+		ID:   "read-miss-group",
+		Type: frame.ChannelTypeGroup,
+	}
+	key := channelhandler.KeyFromChannelID(id)
+
+	_, err = app.ChannelLog().Status(id)
+	require.ErrorIs(t, err, channel.ErrStaleMeta)
+	_, ok := app.channelLog.MetaSnapshot(key)
+	require.False(t, ok)
+
+	_, err = app.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
+	require.ErrorIs(t, err, metadb.ErrNotFound)
+
+	_, err = app.ChannelLog().Status(id)
+	require.ErrorIs(t, err, channel.ErrStaleMeta)
+	_, ok = app.channelLog.MetaSnapshot(key)
+	require.False(t, ok)
+
+	_, err = app.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
+	require.ErrorIs(t, err, metadb.ErrNotFound)
+}
+
 func TestAppSendReturnsBeforeRealtimeAckArrives(t *testing.T) {
 	cfg := testConfig(t)
 	channelID := deliveryusecase.EncodePersonChannel("u1", "u2")

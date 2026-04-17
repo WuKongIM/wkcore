@@ -43,6 +43,7 @@ type channelMetaCluster interface {
 type channelMetaSync struct {
 	source          channelMetaSource
 	cluster         channelMetaCluster
+	bootstrap       *channelMetaBootstrapper
 	localNode       uint64
 	refreshInterval time.Duration
 
@@ -113,9 +114,24 @@ func (s *channelMetaSync) RefreshChannelMeta(ctx context.Context, id channel.Cha
 	s.observeHashSlotTableVersion()
 	meta, err := s.source.GetChannelRuntimeMeta(ctx, id.ID, int64(id.Type))
 	if err != nil {
-		return channel.Meta{}, err
+		if errors.Is(err, metadb.ErrNotFound) {
+			meta, err = s.ensureChannelRuntimeMeta(ctx, id)
+		}
+		if err != nil {
+			return channel.Meta{}, err
+		}
 	}
 	return s.apply(meta)
+}
+
+func (s *channelMetaSync) ensureChannelRuntimeMeta(ctx context.Context, id channel.ChannelID) (metadb.ChannelRuntimeMeta, error) {
+	if s == nil || s.bootstrap == nil {
+		return metadb.ChannelRuntimeMeta{}, metadb.ErrNotFound
+	}
+	if _, _, err := s.bootstrap.EnsureChannelRuntimeMeta(ctx, id); err != nil {
+		return metadb.ChannelRuntimeMeta{}, err
+	}
+	return s.source.GetChannelRuntimeMeta(ctx, id.ID, int64(id.Type))
 }
 
 func (s *channelMetaSync) Start() error {
