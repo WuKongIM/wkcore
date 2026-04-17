@@ -96,6 +96,7 @@ func (s *ChannelStore) prepareAppendLocked(records []channel.Record) (pendingLog
 		return pendingLogAppend{base: base}, nil
 	}
 
+	s.writeInProgress.Store(true)
 	pending := pendingLogAppend{
 		base:    base,
 		nextLEO: base + uint64(len(records)),
@@ -107,7 +108,6 @@ func (s *ChannelStore) prepareAppendLocked(records []channel.Record) (pendingLog
 			value: append([]byte(nil), record.Payload...),
 		})
 	}
-	s.writeInProgress.Store(true)
 	return pending, nil
 }
 
