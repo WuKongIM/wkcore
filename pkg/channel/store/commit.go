@@ -84,11 +84,20 @@ func (c *commitCoordinator) submit(req commitRequest) error {
 		c.submitWG.Done()
 	}
 
+	return c.awaitRequestResult(req.done)
+}
+
+func (c *commitCoordinator) awaitRequestResult(done <-chan error) error {
 	select {
-	case err := <-req.done:
+	case err := <-done:
 		return err
 	case <-c.doneCh:
-		return channel.ErrInvalidArgument
+		select {
+		case err := <-done:
+			return err
+		default:
+			return channel.ErrInvalidArgument
+		}
 	}
 }
 
@@ -148,6 +157,9 @@ func (c *commitCoordinator) collectBatch(first commitRequest) commitBatch {
 				return batch
 			}
 			select {
+			case <-c.stopAcceptCh:
+				batch.closed = true
+				return batch
 			case req := <-c.requests:
 				batch.requests = append(batch.requests, req)
 			default:

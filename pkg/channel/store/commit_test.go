@@ -230,6 +230,26 @@ func TestCommitCoordinatorSubmitRejectsAfterCloseStarts(t *testing.T) {
 	}
 }
 
+func TestCommitCoordinatorAwaitRequestResultPrefersPublishedResultAfterDoneCloses(t *testing.T) {
+	coordinator := &commitCoordinator{doneCh: make(chan struct{})}
+	reqDone := make(chan error, 1)
+	reqDone <- nil
+	close(coordinator.doneCh)
+
+	if err := coordinator.awaitRequestResult(reqDone); err != nil {
+		t.Fatalf("awaitRequestResult() error = %v, want nil", err)
+	}
+}
+
+func TestCommitCoordinatorAwaitRequestResultReturnsShutdownErrorWithoutPublishedResult(t *testing.T) {
+	coordinator := &commitCoordinator{doneCh: make(chan struct{})}
+	close(coordinator.doneCh)
+
+	if err := coordinator.awaitRequestResult(make(chan error, 1)); !errors.Is(err, channel.ErrInvalidArgument) {
+		t.Fatalf("awaitRequestResult() error = %v, want invalid argument", err)
+	}
+}
+
 func TestCommitCoordinatorPublishesIfCloseStartsDuringSync(t *testing.T) {
 	engine, _ := openCountingCommitCoordinatorTestEngine(t)
 	coordinator := engine.commitCoordinator()
