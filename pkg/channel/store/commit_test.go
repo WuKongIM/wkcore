@@ -303,6 +303,72 @@ func TestCommitCoordinatorDoesNotPublishIfCloseStartsDuringSync(t *testing.T) {
 	}
 }
 
+func TestCommitCoordinatorDoesNotStartCloseWhilePublishInFlight(t *testing.T) {
+	engine, _ := openCountingCommitCoordinatorTestEngine(t)
+	coordinator := engine.commitCoordinator()
+	coordinator.flushWindow = 0
+
+	publishStarted := make(chan struct{})
+	releasePublish := make(chan struct{})
+	closeDone := make(chan struct{})
+	done := make(chan error, 1)
+	t.Cleanup(func() {
+		closeOnce(releasePublish)
+	})
+
+	go func() {
+		done <- coordinator.submit(commitRequest{
+			channelKey: "group-1",
+			build: func(batch *pebble.Batch) error {
+				return batch.Set(
+					encodeCheckpointKey("group-1"),
+					encodeCheckpoint(channel.Checkpoint{Epoch: 3, HW: 1}),
+					pebble.NoSync,
+				)
+			},
+			publish: func() error {
+				close(publishStarted)
+				<-releasePublish
+				return nil
+			},
+		})
+	}()
+
+	select {
+	case <-publishStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for publish to start")
+	}
+
+	go func() {
+		coordinator.close()
+		close(closeDone)
+	}()
+
+	select {
+	case <-coordinator.stopCh:
+		t.Fatal("close started while publish was still in flight")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	closeOnce(releasePublish)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("submit() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for submit after publish release")
+	}
+
+	select {
+	case <-closeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for coordinator close after publish release")
+	}
+}
+
 func openCountingCommitCoordinatorTestEngine(tb testing.TB) (*Engine, *countingFS) {
 	tb.Helper()
 

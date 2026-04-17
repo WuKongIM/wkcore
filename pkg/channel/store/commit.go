@@ -131,11 +131,10 @@ func (c *commitCoordinator) run() {
 				batch.completeAll(err)
 				continue
 			}
-			if c.closing() {
-				batch.completeAll(channel.ErrInvalidArgument)
+			if err := c.publishBatch(batch); err != nil {
+				batch.completeAll(err)
 				continue
 			}
-			batch.publish()
 		}
 	}
 }
@@ -189,6 +188,17 @@ func (c *commitCoordinator) failPendingRequests(err error) {
 			return
 		}
 	}
+}
+
+func (c *commitCoordinator) publishBatch(batch commitBatch) error {
+	c.submitMu.Lock()
+	defer c.submitMu.Unlock()
+
+	if c.isClosing {
+		return channel.ErrInvalidArgument
+	}
+	batch.publish()
+	return nil
 }
 
 type commitBatch struct {
