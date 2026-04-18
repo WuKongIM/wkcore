@@ -174,6 +174,20 @@ The system must determine the highest safe prefix using majority-visible replica
 - safe tail that was quorum-durable but not checkpointed locally
 - unsafe tail that only existed on a minority or stale leader
 
+The source of truth for reconstruction is:
+
+- the highest prefix whose offsets are confirmed by a quorum of replicas for the active epoch lineage
+- constrained by epoch-divergence rules so a stale leader cannot re-expose minority-only tail data
+
+One acceptable planning-level pseudocode definition is:
+
+```text
+candidateCommitHW =
+  highest offset O such that
+  quorum replicas can prove possession of prefix <= O
+  and no epoch-divergence rule invalidates that prefix
+```
+
 ## Leadership and Serving Rules
 
 ### Follower Startup
@@ -187,6 +201,21 @@ A newly elected leader must not serve committed reads or complete appends from r
 ### Safety Rule
 
 No node may expose `CommitHW` beyond what can be justified by quorum-visible replicated state for the active epoch.
+
+## Startup and Serving State Table
+
+| State | Meaning | Append | Committed Read / Seq Read | Fetch `CommittedSeq` / Status | Leadership Behavior |
+|-------|---------|--------|----------------------------|-------------------------------|--------------------|
+| `Recovering` | local store loaded, quorum frontier not reconstructed | reject | reject or serve nothing committed | report provisional / not-ready semantics only | cannot become serving leader |
+| `CommitReady=false` | node has joined runtime but committed frontier is not yet trustworthy | reject new client appends | do not expose data above reconstructed safe lower bound | do not advertise runtime committed frontier as final | leader election may complete, but serving must stay gated |
+| `Ready` | committed frontier reconstructed and safe | allow | use `CommitHW` | expose `CommitHW` | normal serving allowed |
+
+### API Behavior While `CommitReady=false`
+
+- append APIs must fail fast rather than guessing committed state
+- committed-read APIs must not derive committed visibility from local `CheckpointHW`
+- fetch/status/meta APIs must either expose an explicit not-ready condition or cap visibility to the safe reconstructed lower bound chosen by the implementation
+- leadership transitions must not permit a newly elected leader to acknowledge writes before `CommitReady=true`
 
 ## Read Path Changes
 
@@ -258,6 +287,27 @@ Primary changes are expected in:
 - `pkg/channel/store/checkpoint.go`
 
 Secondary integration changes may be needed in higher-level send and app tests, but the core semantic shift should remain inside replica, store, and committed-read boundaries.
+
+## Affected Call Sites to Audit
+
+The first implementation plan must explicitly audit and update checkpoint-derived committed-state call sites, including at minimum:
+
+- `pkg/channel/replica/progress.go`
+- `pkg/channel/replica/recovery.go`
+- `pkg/channel/replica/replica.go`
+- `pkg/channel/replica/fetch.go`
+- `pkg/channel/handler/seq_read.go`
+- `pkg/channel/handler/fetch.go`
+- `pkg/channel/handler/meta.go`
+- `pkg/channel/store/checkpoint.go`
+- `pkg/channel/store/commit.go`
+- `pkg/channel/store/idempotency.go`
+
+Reason:
+
+- `handler` surfaces expose committed-read and committed-sequence semantics
+- `store/commit.go` and `store/idempotency.go` currently mix checkpoint state with committed reconstruction and replay logic
+- leaving any of these on old checkpoint semantics would create split-brain committed visibility during the refactor
 
 ## Risks
 
