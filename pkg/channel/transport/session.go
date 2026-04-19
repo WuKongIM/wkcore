@@ -53,6 +53,7 @@ type peerSession struct {
 
 	batchFlushScheduled    bool
 	batchEagerFlushPending bool
+	batchFlushGeneration   uint64
 	batchQueuedBytes       int64
 	batchFetchQueue        []queuedFetchRequest
 }
@@ -117,9 +118,12 @@ func (s *peerSession) TryBatch(env runtime.Envelope) bool {
 	})
 	s.batchQueuedBytes += int64(len(body))
 	shouldSchedule := !s.batchFlushScheduled
+	var batchGeneration uint64
 	if shouldSchedule {
 		s.batchFlushScheduled = true
+		s.batchFlushGeneration++
 	}
+	batchGeneration = s.batchFlushGeneration
 	shouldEagerFlush := (len(s.batchFetchQueue) >= eagerFetchBatchCountThreshold || s.batchQueuedBytes >= eagerFetchBatchBytesThreshold) && !s.batchEagerFlushPending
 	if shouldEagerFlush {
 		s.batchEagerFlushPending = true
@@ -128,19 +132,27 @@ func (s *peerSession) TryBatch(env runtime.Envelope) bool {
 
 	if shouldSchedule {
 		scheduleFetchBatchFlush(defaultFetchBatchFlushWindow, func() {
-			_ = s.Flush()
+			_ = s.flushScheduledBatch(batchGeneration)
 		})
 	}
 	if shouldEagerFlush {
 		runEagerFetchBatchFlush(func() {
-			_ = s.Flush()
+			_ = s.flushScheduledBatch(batchGeneration)
 		})
 	}
 	return true
 }
 
 func (s *peerSession) Flush() error {
-	batch := s.drainBatchQueue()
+	batch := s.drainBatchQueueAnyGeneration()
+	if len(batch) == 0 {
+		return nil
+	}
+	return s.flushBatch(batch)
+}
+
+func (s *peerSession) flushScheduledBatch(generation uint64) error {
+	batch := s.drainBatchQueueGeneration(generation)
 	if len(batch) == 0 {
 		return nil
 	}
@@ -471,14 +483,24 @@ func (s *peerSession) deliverReconcileProbeResponse(requestID uint64, resp runti
 	})
 }
 
-func (s *peerSession) drainBatchQueue() []queuedFetchRequest {
+func (s *peerSession) drainBatchQueueAnyGeneration() []queuedFetchRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.drainBatchQueueLocked()
+	return s.drainBatchQueueLocked(0, false)
 }
 
-func (s *peerSession) drainBatchQueueLocked() []queuedFetchRequest {
+func (s *peerSession) drainBatchQueueGeneration(generation uint64) []queuedFetchRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.drainBatchQueueLocked(generation, true)
+}
+
+func (s *peerSession) drainBatchQueueLocked(generation uint64, matchGeneration bool) []queuedFetchRequest {
+	if matchGeneration && s.batchFlushGeneration != generation {
+		return nil
+	}
 	if len(s.batchFetchQueue) == 0 {
 		s.batchFlushScheduled = false
 		s.batchEagerFlushPending = false

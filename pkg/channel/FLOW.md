@@ -175,4 +175,4 @@ Idempotency (0x14): prefix + key + fromUID + msgNo — 幂等条目
 - **Cross-channel durable batching**: `store/commit.go` 使用 200µs 窗口跨频道合并 Pebble durable 写入；Leader 的 synced Append 和 Follower 的 ApplyFetch 都走同一个 coordinator。单频道的 `writeMu` 仍然串行，且 sync 完成前不会发布新的 LEO。
 - **Checkpoint 不再阻塞 sendack**: leader 在 quorum commit 后先完成 Append waiter，Checkpoint 持久化走后台 coalescing；若 checkpoint 写盘长期失败，当前实现还缺少显式 health / metrics 暴露。
 - **Transport RPC 分片**: Fetch / ReconcileProbe 都按 FNV-64a(ChannelKey) 路由到固定 RPC 流，保证同一频道有序，并复用 warmed pool slot。见 `transport/session.go`。
-- **Fetch 批量刷批策略**: 默认保留 200µs 定时窗口；队列到 8 条或累计编码体到 32 KiB 时立即刷批；批量 RPC 失败或返回缺项时，先按 4 条分块再试，只有最终 singleton 或 chunk RPC 本身失败后才退到单条 `Fetch`。
+- **Fetch 批量刷批策略**: 默认保留 200µs 定时窗口；队列到 8 条或累计编码体到 32 KiB 时立即刷批；每轮刷批都带 generation，旧 timer / eager callback 不会误冲掉后续新队列；批量 RPC 失败或返回缺项时，先按 4 条分块再试，只有最终 singleton 或 chunk RPC 本身失败后才退到单条 `Fetch`。
