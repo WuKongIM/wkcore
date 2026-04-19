@@ -98,6 +98,29 @@ func TestAppendWaitsUntilMinISRReplicasAcknowledgeViaFetch(t *testing.T) {
 	require.Equal(t, uint64(1), res.NextCommitHW)
 }
 
+func TestAppendWaitsUntilMinISRTwoReplicasAcknowledge(t *testing.T) {
+	env := newThreeReplicaClusterWithMinISR(t, 2)
+	done := make(chan channel.CommitResult, 1)
+
+	go func() {
+		res, err := env.leader.Append(context.Background(), []channel.Record{{Payload: []byte("x"), SizeBytes: 1}})
+		if err == nil {
+			done <- res
+		}
+	}()
+	waitForLogAppend(t, env.leader.log.(*fakeLogStore), 1)
+
+	select {
+	case <-done:
+		t.Fatal("append returned before a follower satisfied MinISR=2")
+	default:
+	}
+
+	env.replicateOnce(t, env.follower2)
+	res := <-done
+	require.Equal(t, uint64(1), res.NextCommitHW)
+}
+
 func TestLeaderLeaseExpiryFencesAppend(t *testing.T) {
 	env := newTestEnv(t)
 	meta := activeMeta(7, 1)

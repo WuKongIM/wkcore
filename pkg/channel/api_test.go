@@ -138,6 +138,75 @@ func TestNewBuildsClusterWithRuntimeHandlerAndTransport(t *testing.T) {
 	}
 }
 
+func TestChannelAPIFetchReportsRuntimeCommittedSeq(t *testing.T) {
+	engine, err := channelstore.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	defer func() {
+		if err := engine.Close(); err != nil {
+			t.Fatalf("engine.Close() error = %v", err)
+		}
+	}()
+
+	rt := newStubHandlerBackedRuntime(engine)
+	cluster := mustBuildRuntimeBackedCluster(t, engine, rt)
+	t.Cleanup(func() {
+		if err := cluster.Close(); err != nil {
+			t.Fatalf("cluster.Close() error = %v", err)
+		}
+	})
+
+	id := channel.ChannelID{ID: "runtime-commit", Type: 1}
+	meta := channel.Meta{
+		ID:          id,
+		Epoch:       1,
+		LeaderEpoch: 1,
+		Leader:      1,
+		Replicas:    []channel.NodeID{1},
+		ISR:         []channel.NodeID{1},
+		MinISR:      1,
+		Status:      channel.StatusActive,
+		Features:    channel.Features{MessageSeqFormat: channel.MessageSeqFormatU64},
+	}
+	if err := cluster.ApplyMeta(meta); err != nil {
+		t.Fatalf("ApplyMeta() error = %v", err)
+	}
+
+	_, err = cluster.Append(context.Background(), channel.AppendRequest{
+		ChannelID:             id,
+		SupportsMessageSeqU64: true,
+		Message: channel.Message{
+			FromUID: "alice",
+			Payload: []byte("hello"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	st := engine.ForChannel(encodedTestChannelKey(id), id)
+	if _, err := st.LoadCheckpoint(); !errors.Is(err, channel.ErrEmptyState) {
+		t.Fatalf("LoadCheckpoint() error = %v, want ErrEmptyState", err)
+	}
+
+	result, err := cluster.Fetch(context.Background(), channel.FetchRequest{
+		ChannelID: id,
+		FromSeq:   1,
+		Limit:     10,
+		MaxBytes:  1024,
+	})
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if result.CommittedSeq != 1 {
+		t.Fatalf("Fetch().CommittedSeq = %d, want 1", result.CommittedSeq)
+	}
+	if len(result.Messages) != 1 || string(result.Messages[0].Payload) != "hello" {
+		t.Fatalf("Fetch().Messages = %+v, want one committed runtime-backed message", result.Messages)
+	}
+}
+
 func TestApplyMetaRollsBackHandlerStateWhenRuntimeMutationFails(t *testing.T) {
 	meta := channel.Meta{
 		ID:          channel.ChannelID{ID: "rollback", Type: 1},
@@ -694,6 +763,112 @@ func (r *stubRuntimeControl) RemoveChannel(channel.ChannelKey) error {
 func (r *stubRuntimeControl) Close() error {
 	r.closeCalls++
 	return nil
+}
+
+type stubHandlerBackedRuntime struct {
+	store    *channelstore.Engine
+	channels map[channel.ChannelKey]*stubHandlerBackedChannel
+}
+
+func newStubHandlerBackedRuntime(store *channelstore.Engine) *stubHandlerBackedRuntime {
+	return &stubHandlerBackedRuntime{
+		store:    store,
+		channels: make(map[channel.ChannelKey]*stubHandlerBackedChannel),
+	}
+}
+
+func (r *stubHandlerBackedRuntime) UpsertMeta(meta channel.Meta) error {
+	key := encodedTestChannelKey(meta.ID)
+	handle, ok := r.channels[key]
+	if !ok {
+		st := r.store.ForChannel(key, meta.ID)
+		handle = &stubHandlerBackedChannel{
+			id:    key,
+			meta:  meta,
+			store: st,
+			status: channel.ReplicaState{
+				ChannelKey:  key,
+				Role:        channel.ReplicaRoleLeader,
+				Leader:      meta.Leader,
+				Epoch:       meta.Epoch,
+				CommitReady: true,
+			},
+		}
+		handle.appendFn = func(_ context.Context, records []channel.Record) (channel.CommitResult, error) {
+			base, err := st.Append(records)
+			if err != nil {
+				return channel.CommitResult{}, err
+			}
+			handle.status.HW = base + uint64(len(records))
+			handle.status.LEO = handle.status.HW
+			return channel.CommitResult{BaseOffset: base, NextCommitHW: handle.status.HW, RecordCount: len(records)}, nil
+		}
+		r.channels[key] = handle
+		return nil
+	}
+	handle.meta = meta
+	handle.status.Leader = meta.Leader
+	handle.status.Epoch = meta.Epoch
+	return nil
+}
+
+func (r *stubHandlerBackedRuntime) RemoveChannel(key channel.ChannelKey) error {
+	delete(r.channels, key)
+	return nil
+}
+
+func (r *stubHandlerBackedRuntime) Close() error { return nil }
+
+func (r *stubHandlerBackedRuntime) Channel(key channel.ChannelKey) (channel.HandlerChannel, bool) {
+	handle, ok := r.channels[key]
+	return handle, ok
+}
+
+type stubHandlerBackedChannel struct {
+	id       channel.ChannelKey
+	meta     channel.Meta
+	store    *channelstore.ChannelStore
+	status   channel.ReplicaState
+	appendFn func(context.Context, []channel.Record) (channel.CommitResult, error)
+}
+
+func (h *stubHandlerBackedChannel) ID() channel.ChannelKey       { return h.id }
+func (h *stubHandlerBackedChannel) Meta() channel.Meta           { return h.meta }
+func (h *stubHandlerBackedChannel) Status() channel.ReplicaState { return h.status }
+func (h *stubHandlerBackedChannel) Append(ctx context.Context, records []channel.Record) (channel.CommitResult, error) {
+	return h.appendFn(ctx, records)
+}
+
+func mustBuildRuntimeBackedCluster(t *testing.T, engine *channelstore.Engine, rt *stubHandlerBackedRuntime) channel.Cluster {
+	t.Helper()
+
+	got, err := channel.New(channel.Config{
+		LocalNode:       1,
+		Store:           engine,
+		GenerationStore: &channelTestGenerationStore{},
+		MessageIDs:      &channelTestMessageIDs{},
+		Transport: channel.TransportConfig{
+			Build: func(channel.TransportBuildConfig) (any, error) {
+				return &stubTransportBuildValue{}, nil
+			},
+			BindFetchService: bindStubTransportFetchService,
+		},
+		Runtime: channel.RuntimeConfig{
+			Build: func(channel.RuntimeBuildConfig) (channel.Runtime, channel.HandlerRuntime, error) {
+				return rt, rt, nil
+			},
+		},
+		Handler: channel.HandlerConfig{
+			Build: buildTestHandler,
+		},
+		Now: func() time.Time {
+			return time.Unix(1700000000, 0)
+		},
+	})
+	if err != nil {
+		t.Fatalf("channel.New() error = %v", err)
+	}
+	return got
 }
 
 type sequencedRuntimeControl struct {

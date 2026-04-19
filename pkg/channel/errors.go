@@ -9,6 +9,7 @@ var (
 	ErrConflictingMeta         = errors.New("channel: conflicting metadata")
 	ErrStaleMeta               = errors.New("channel: stale metadata")
 	ErrNotLeader               = errors.New("channel: not leader")
+	ErrNotReady                = errors.New("channel: not ready")
 	ErrLeaseExpired            = errors.New("channel: lease expired")
 	ErrInsufficientISR         = errors.New("channel: insufficient isr")
 	ErrTombstoned              = errors.New("channel: tombstoned")

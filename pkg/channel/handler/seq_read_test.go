@@ -8,7 +8,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/channel/store"
 )
 
-func TestLoadMsgReturnsCommittedMessageOnly(t *testing.T) {
+func TestLoadMsgUsesExplicitCommittedHW(t *testing.T) {
 	id := core.ChannelID{ID: "c1", Type: 1}
 	engine := openTestEngine(t)
 	st := engine.ForChannel(KeyFromChannelID(id), id)
@@ -17,13 +17,9 @@ func TestLoadMsgReturnsCommittedMessageOnly(t *testing.T) {
 		core.Message{MessageID: 12, ChannelID: id.ID, ChannelType: id.Type, FromUID: "u1", ClientMsgNo: "m2", Payload: []byte("two")},
 		core.Message{MessageID: 13, ChannelID: id.ID, ChannelType: id.Type, FromUID: "u1", ClientMsgNo: "m3", Payload: []byte("three")},
 	)
-	if err := st.StoreCheckpoint(core.Checkpoint{Epoch: 1, HW: 2}); err != nil {
-		t.Fatalf("StoreCheckpoint() error = %v", err)
-	}
-
-	msg, err := LoadMsg(st, 2)
+	msg, err := LoadMsg(st, 2, 2)
 	if err != nil {
-		t.Fatalf("LoadMsg(2) error = %v", err)
+		t.Fatalf("LoadMsg(2, 2) error = %v", err)
 	}
 	if string(msg.Payload) != "two" {
 		t.Fatalf("Payload = %q, want %q", msg.Payload, "two")
@@ -32,13 +28,13 @@ func TestLoadMsgReturnsCommittedMessageOnly(t *testing.T) {
 		t.Fatalf("MessageSeq = %d, want 2", msg.MessageSeq)
 	}
 
-	_, err = LoadMsg(st, 3)
+	_, err = LoadMsg(st, 2, 3)
 	if !errors.Is(err, core.ErrMessageNotFound) {
 		t.Fatalf("expected ErrMessageNotFound, got %v", err)
 	}
 }
 
-func TestLoadNextRangeMsgsCapsByCommittedHW(t *testing.T) {
+func TestLoadNextRangeMsgsCapsByExplicitCommittedHW(t *testing.T) {
 	id := core.ChannelID{ID: "c1", Type: 1}
 	engine := openTestEngine(t)
 	st := engine.ForChannel(KeyFromChannelID(id), id)
@@ -47,11 +43,7 @@ func TestLoadNextRangeMsgsCapsByCommittedHW(t *testing.T) {
 		core.Message{MessageID: 12, ChannelID: id.ID, ChannelType: id.Type, Payload: []byte("two")},
 		core.Message{MessageID: 13, ChannelID: id.ID, ChannelType: id.Type, Payload: []byte("three")},
 	)
-	if err := st.StoreCheckpoint(core.Checkpoint{Epoch: 1, HW: 2}); err != nil {
-		t.Fatalf("StoreCheckpoint() error = %v", err)
-	}
-
-	msgs, err := LoadNextRangeMsgs(st, 1, 0, 10)
+	msgs, err := LoadNextRangeMsgs(st, 2, 1, 0, 10)
 	if err != nil {
 		t.Fatalf("LoadNextRangeMsgs() error = %v", err)
 	}
@@ -78,11 +70,7 @@ func TestLoadNextRangeMsgsUnlimitedReadsAcrossBatches(t *testing.T) {
 		})
 	}
 	mustAppendEncodedMessages(t, st, messages...)
-	if err := st.StoreCheckpoint(core.Checkpoint{Epoch: 1, HW: uint64(len(messages))}); err != nil {
-		t.Fatalf("StoreCheckpoint() error = %v", err)
-	}
-
-	msgs, err := LoadNextRangeMsgs(st, 1, 0, 0)
+	msgs, err := LoadNextRangeMsgs(st, uint64(len(messages)), 1, 0, 0)
 	if err != nil {
 		t.Fatalf("LoadNextRangeMsgs() error = %v", err)
 	}

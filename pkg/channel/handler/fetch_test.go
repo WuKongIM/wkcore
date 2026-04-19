@@ -58,6 +58,31 @@ func TestFetchRejectsInvalidBudget(t *testing.T) {
 	}
 }
 
+func TestFetchReturnsNotReadyWhenCommitHWIsProvisional(t *testing.T) {
+	id := core.ChannelID{ID: "c1", Type: 1}
+	svc, rt, engine := newAppendService(t, id)
+	st := engine.ForChannel(KeyFromChannelID(id), id)
+
+	mustAppendEncodedMessages(t, st,
+		core.Message{MessageID: 11, ChannelID: id.ID, ChannelType: id.Type, Payload: []byte("one")},
+		core.Message{MessageID: 12, ChannelID: id.ID, ChannelType: id.Type, Payload: []byte("two")},
+	)
+	handle := rt.channels[KeyFromChannelID(id)]
+	handle.status.HW = 2
+	handle.status.CheckpointHW = 1
+	handle.status.CommitReady = false
+
+	_, err := svc.Fetch(context.Background(), core.FetchRequest{
+		ChannelID: id,
+		FromSeq:   1,
+		Limit:     10,
+		MaxBytes:  1024,
+	})
+	if err != core.ErrNotReady {
+		t.Fatalf("expected ErrNotReady, got %v", err)
+	}
+}
+
 func mustAppendEncodedMessages(t *testing.T, st interface {
 	Append([]core.Record) (uint64, error)
 }, messages ...core.Message) {

@@ -73,7 +73,7 @@ func TestAppManagedSlotStartupAllowsSubsetAssignmentsPerNode(t *testing.T) {
 	}, 10*time.Second, 50*time.Millisecond)
 }
 
-func TestThreeNodeAppGatewaySendUsesDurableCommit(t *testing.T) {
+func TestThreeNodeAppGatewaySendUsesDurableCommitWithMinISR2(t *testing.T) {
 	harness := newThreeNodeAppHarness(t)
 	leaderID := harness.waitForStableLeader(t, 1)
 	leader := harness.apps[leaderID]
@@ -92,7 +92,7 @@ func TestThreeNodeAppGatewaySendUsesDurableCommit(t *testing.T) {
 		Replicas:     []uint64{1, 2, 3},
 		ISR:          []uint64{1, 2, 3},
 		Leader:       leader.cfg.Node.ID,
-		MinISR:       3,
+		MinISR:       2,
 		Status:       uint8(channel.StatusActive),
 		Features:     uint64(channel.MessageSeqFormatLegacyU32),
 		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
@@ -104,20 +104,7 @@ func TestThreeNodeAppGatewaySendUsesDurableCommit(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	conn, err := net.Dial("tcp", leader.Gateway().ListenerAddr("tcp-wkproto"))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
-
-	sendAppWKProtoFrame(t, conn, &frame.ConnectPacket{
-		Version:         frame.LatestVersion,
-		UID:             "sender",
-		DeviceID:        "sender-device",
-		DeviceFlag:      frame.APP,
-		ClientTimestamp: time.Now().UnixMilli(),
-	})
-	connack, ok := readAppWKProtoFrameWithin(t, conn, multinodeAppReadTimeout).(*frame.ConnackPacket)
-	require.True(t, ok)
-	require.Equal(t, frame.ReasonSuccess, connack.ReasonCode)
+	conn := connectAppWKProtoClient(t, leader, "sender")
 
 	sendAppWKProtoFrame(t, conn, &frame.SendPacket{
 		ChannelID:   recipientUID,
@@ -132,12 +119,24 @@ func TestThreeNodeAppGatewaySendUsesDurableCommit(t *testing.T) {
 	require.Equal(t, frame.ReasonSuccess, sendack.ReasonCode)
 	require.NotZero(t, sendack.MessageSeq)
 	require.NotZero(t, sendack.MessageID)
+	require.NoError(t, conn.Close())
 
-	for _, app := range harness.orderedApps() {
-		msg := waitForAppCommittedMessage(t, channelStoreForID(app.ChannelLogDB(), id), sendack.MessageSeq, 5*time.Second)
+	harness.stopNode(t, leaderID)
+	newLeaderID := harness.waitForLeaderChange(t, 1, leaderID)
+	require.NotZero(t, newLeaderID)
+
+	for _, app := range harness.runningApps() {
+		msg := waitForAppCommittedMessage(t, app, id, sendack.MessageSeq, 5*time.Second)
 		require.Equal(t, []byte("hello durable gateway"), msg.Payload)
 		require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
 	}
+
+	harness.restartNode(t, leaderID)
+	harness.waitForStableLeader(t, 1)
+
+	msg := waitForAppCommittedMessage(t, harness.apps[leaderID], id, sendack.MessageSeq, 5*time.Second)
+	require.Equal(t, []byte("hello durable gateway"), msg.Payload)
+	require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
 }
 
 func TestThreeNodeAppGatewaySendFromFollowerForwardsDurableAppendToLeader(t *testing.T) {
@@ -190,7 +189,7 @@ func TestThreeNodeAppGatewaySendFromFollowerForwardsDurableAppendToLeader(t *tes
 	require.NotZero(t, sendack.MessageID)
 
 	for _, app := range harness.orderedApps() {
-		msg := waitForAppCommittedMessage(t, channelStoreForID(app.ChannelLogDB(), id), sendack.MessageSeq, 5*time.Second)
+		msg := waitForAppCommittedMessage(t, app, id, sendack.MessageSeq, 5*time.Second)
 		require.Equal(t, []byte("hello durable follower"), msg.Payload)
 		require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
 	}
@@ -244,7 +243,7 @@ func TestThreeNodeAppGatewaySendFromFollowerBootstrapsLeaderOnDemand(t *testing.
 	require.NotZero(t, sendack.MessageID)
 
 	for _, app := range harness.orderedApps() {
-		msg := waitForAppCommittedMessage(t, channelStoreForID(app.ChannelLogDB(), id), sendack.MessageSeq, 5*time.Second)
+		msg := waitForAppCommittedMessage(t, app, id, sendack.MessageSeq, 5*time.Second)
 		require.Equal(t, []byte("hello durable on demand"), msg.Payload)
 		require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
 	}
@@ -302,7 +301,7 @@ func TestThreeNodeAppGatewaySendFromFollowerAfterLeaseExpiryRecoversViaMetaSync(
 	require.NotZero(t, sendack.MessageID)
 
 	for _, app := range harness.orderedApps() {
-		msg := waitForAppCommittedMessage(t, channelStoreForID(app.ChannelLogDB(), id), sendack.MessageSeq, 5*time.Second)
+		msg := waitForAppCommittedMessage(t, app, id, sendack.MessageSeq, 5*time.Second)
 		require.Equal(t, []byte("hello after lease expiry"), msg.Payload)
 		require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
 	}
@@ -510,12 +509,14 @@ func TestThreeNodeAppHotGroupDoesNotBlockNormalGroupDelivery(t *testing.T) {
 
 	for i := 0; i < 20; i++ {
 		require.NoError(t, owner.deliveryRuntime.Submit(context.Background(), deliveryruntime.CommittedEnvelope{
-			ChannelID:   hotID.ID,
-			ChannelType: hotID.Type,
-			MessageID:   uint64(i + 1),
-			MessageSeq:  uint64(i + 1),
-			FromUID:     "hot-sender",
-			Payload:     []byte("hot"),
+			Message: channel.Message{
+				ChannelID:   hotID.ID,
+				ChannelType: hotID.Type,
+				MessageID:   uint64(i + 1),
+				MessageSeq:  uint64(i + 1),
+				FromUID:     "hot-sender",
+				Payload:     []byte("hot"),
+			},
 		}))
 	}
 	require.Eventually(t, func() bool {
@@ -636,7 +637,7 @@ func TestThreeNodeAppSendAckSurvivesLeaderCrash(t *testing.T) {
 	require.NotZero(t, newLeaderID)
 
 	for _, app := range harness.runningApps() {
-		msg := waitForAppCommittedMessage(t, channelStoreForID(app.ChannelLogDB(), id), sendack.MessageSeq, 5*time.Second)
+		msg := waitForAppCommittedMessage(t, app, id, sendack.MessageSeq, 5*time.Second)
 		require.Equal(t, []byte("survive leader crash"), msg.Payload)
 		require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
 	}
@@ -644,7 +645,7 @@ func TestThreeNodeAppSendAckSurvivesLeaderCrash(t *testing.T) {
 	harness.restartNode(t, leaderID)
 	harness.waitForStableLeader(t, 1)
 
-	msg := waitForAppCommittedMessage(t, channelStoreForID(harness.apps[leaderID].ChannelLogDB(), id), sendack.MessageSeq, 5*time.Second)
+	msg := waitForAppCommittedMessage(t, harness.apps[leaderID], id, sendack.MessageSeq, 5*time.Second)
 	require.Equal(t, []byte("survive leader crash"), msg.Payload)
 	require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
 }
@@ -732,7 +733,7 @@ func TestThreeNodeAppRollingRestartPreservesWriteAvailability(t *testing.T) {
 
 	for _, item := range sent {
 		for _, app := range harness.orderedApps() {
-			msg := waitForAppCommittedMessage(t, channelStoreForID(app.ChannelLogDB(), id), item.seq, 5*time.Second)
+			msg := waitForAppCommittedMessage(t, app, id, item.seq, 5*time.Second)
 			require.Equal(t, item.payload, msg.Payload)
 			require.Equal(t, item.seq, msg.MessageSeq)
 		}

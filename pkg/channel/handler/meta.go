@@ -95,6 +95,9 @@ func (s *service) Status(id channel.ChannelID) (channel.ChannelRuntimeStatus, er
 		return channel.ChannelRuntimeStatus{}, channel.ErrStaleMeta
 	}
 	state := group.Status()
+	if !state.CommitReady {
+		return channel.ChannelRuntimeStatus{}, channel.ErrNotReady
+	}
 	return channel.ChannelRuntimeStatus{
 		Key:          key,
 		ID:           meta.ID,

@@ -9,15 +9,11 @@ import (
 
 const seqReadChunkLimit = 256
 
-func LoadMsg(st *store.ChannelStore, seq uint64) (channel.Message, error) {
-	if seq == 0 {
+func LoadMsg(st *store.ChannelStore, committedHW, seq uint64) (channel.Message, error) {
+	if committedHW == 0 || seq == 0 {
 		return channel.Message{}, channel.ErrInvalidArgument
 	}
-	hw, err := committedHW(st)
-	if err != nil {
-		return channel.Message{}, err
-	}
-	if seq > hw {
+	if seq > committedHW {
 		return channel.Message{}, channel.ErrMessageNotFound
 	}
 	records, err := st.ReadOffsets(seq-1, 1, math.MaxInt)
@@ -34,21 +30,17 @@ func LoadMsg(st *store.ChannelStore, seq uint64) (channel.Message, error) {
 	return msg, nil
 }
 
-func LoadNextRangeMsgs(st *store.ChannelStore, startSeq, endSeq uint64, limit int) ([]channel.Message, error) {
+func LoadNextRangeMsgs(st *store.ChannelStore, committedHW, startSeq, endSeq uint64, limit int) ([]channel.Message, error) {
 	if limit < 0 {
 		return nil, channel.ErrInvalidArgument
 	}
 	if startSeq == 0 {
 		startSeq = 1
 	}
-	hw, err := committedHW(st)
-	if err != nil {
-		return nil, err
-	}
-	if hw == 0 || startSeq > hw {
+	if committedHW == 0 || startSeq > committedHW {
 		return nil, nil
 	}
-	maxSeq := hw
+	maxSeq := committedHW
 	if endSeq != 0 && endSeq < maxSeq {
 		maxSeq = endSeq
 	}
@@ -58,22 +50,18 @@ func LoadNextRangeMsgs(st *store.ChannelStore, startSeq, endSeq uint64, limit in
 	return loadRangeMsgs(st, startSeq, maxSeq, limit)
 }
 
-func LoadPrevRangeMsgs(st *store.ChannelStore, startSeq, endSeq uint64, limit int) ([]channel.Message, error) {
+func LoadPrevRangeMsgs(st *store.ChannelStore, committedHW, startSeq, endSeq uint64, limit int) ([]channel.Message, error) {
 	if startSeq == 0 || limit < 0 {
 		return nil, channel.ErrInvalidArgument
 	}
 	if endSeq != 0 && endSeq > startSeq {
 		return nil, channel.ErrInvalidArgument
 	}
-	hw, err := committedHW(st)
-	if err != nil {
-		return nil, err
-	}
-	if hw == 0 {
+	if committedHW == 0 {
 		return nil, nil
 	}
-	if startSeq > hw {
-		startSeq = hw
+	if startSeq > committedHW {
+		startSeq = committedHW
 	}
 	maxSeq := startSeq
 	minSeq := uint64(1)
@@ -93,17 +81,6 @@ func LoadPrevRangeMsgs(st *store.ChannelStore, startSeq, endSeq uint64, limit in
 		return nil, nil
 	}
 	return loadRangeMsgs(st, minSeq, maxSeq, limit)
-}
-
-func committedHW(st *store.ChannelStore) (uint64, error) {
-	checkpoint, err := st.LoadCheckpoint()
-	if err == channel.ErrEmptyState {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	return checkpoint.HW, nil
 }
 
 func loadRangeMsgs(st *store.ChannelStore, startSeq, endSeq uint64, limit int) ([]channel.Message, error) {

@@ -56,3 +56,10 @@ func TestEngineForChannelPanicsOnMismatchedChannelID(t *testing.T) {
 		engine.ForChannel(key, channel.ChannelID{ID: "c2", Type: 1})
 	})
 }
+
+func TestDefaultPebbleOptionsUseWALMinSyncInterval(t *testing.T) {
+	opts := defaultPebbleOptions()
+	require.NotNil(t, opts)
+	require.NotNil(t, opts.WALMinSyncInterval)
+	require.Equal(t, defaultChannelWALMinSyncInterval, opts.WALMinSyncInterval())
+}

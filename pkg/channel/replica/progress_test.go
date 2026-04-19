@@ -63,3 +63,43 @@ func TestStatusIsUpdatedAfterFollowerAckAdvancesHW(t *testing.T) {
 	require.Equal(t, uint64(1), state.HW)
 	require.Equal(t, uint64(1), state.LEO)
 }
+
+func TestStatusReportsCommitAndCheckpointWatermarksSeparately(t *testing.T) {
+	t.Run("not ready", func(t *testing.T) {
+		env := newTestEnv(t)
+		r := newReplicaFromEnv(t, env)
+
+		r.mu.Lock()
+		r.state.HW = 5
+		r.state.LEO = 5
+		setReplicaStateOptionalUint64Field(t, &r.state, "CheckpointHW", 3)
+		setReplicaStateOptionalBoolField(t, &r.state, "CommitReady", false)
+		r.publishStateLocked()
+		r.mu.Unlock()
+
+		st := r.Status()
+		require.Equal(t, uint64(5), st.HW)
+		require.Equal(t, uint64(5), st.LEO)
+		requireReplicaStateUint64Field(t, st, "CheckpointHW", 3)
+		requireReplicaStateBoolField(t, st, "CommitReady", false)
+	})
+
+	t.Run("ready", func(t *testing.T) {
+		env := newTestEnv(t)
+		r := newReplicaFromEnv(t, env)
+
+		r.mu.Lock()
+		r.state.HW = 5
+		r.state.LEO = 5
+		setReplicaStateOptionalUint64Field(t, &r.state, "CheckpointHW", 5)
+		setReplicaStateOptionalBoolField(t, &r.state, "CommitReady", true)
+		r.publishStateLocked()
+		r.mu.Unlock()
+
+		st := r.Status()
+		require.Equal(t, uint64(5), st.HW)
+		require.Equal(t, uint64(5), st.LEO)
+		requireReplicaStateUint64Field(t, st, "CheckpointHW", 5)
+		requireReplicaStateBoolField(t, st, "CommitReady", true)
+	})
+}

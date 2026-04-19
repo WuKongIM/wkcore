@@ -26,7 +26,28 @@ func (s *ChannelStore) StoreCheckpoint(checkpoint channel.Checkpoint) error {
 	if err := s.validate(); err != nil {
 		return err
 	}
-	if err := s.engine.db.Set(encodeCheckpointKey(s.key), encodeCheckpoint(checkpoint), pebble.Sync); err != nil {
+
+	coordinator := s.checkpointCoordinator()
+	if coordinator != nil {
+		return coordinator.submit(commitRequest{
+			channelKey: s.key,
+			build: func(writeBatch *pebble.Batch) error {
+				return s.writeCheckpoint(writeBatch, checkpoint)
+			},
+			publish: func() error {
+				s.recordDurableCommit()
+				return nil
+			},
+		})
+	}
+
+	writeBatch := s.engine.db.NewBatch()
+	defer writeBatch.Close()
+
+	if err := s.writeCheckpoint(writeBatch, checkpoint); err != nil {
+		return err
+	}
+	if err := writeBatch.Commit(pebble.Sync); err != nil {
 		return err
 	}
 	s.recordDurableCommit()

@@ -2,7 +2,6 @@ package store
 
 import (
 	"encoding/binary"
-	"errors"
 	"io"
 	"sync"
 	"time"
@@ -339,10 +338,7 @@ func (s *ChannelStore) writeApplyFetchedRecords(writeBatch *pebble.Batch, base u
 }
 
 func (s *ChannelStore) readCommittedBatchForApplyFetch(base uint64, req channel.ApplyFetchStoreRequest) ([]appliedMessage, error) {
-	prevHW, err := s.loadCheckpointHW()
-	if err != nil {
-		return nil, err
-	}
+	prevHW := req.PreviousCommittedHW
 	if req.Checkpoint == nil || req.Checkpoint.HW <= prevHW {
 		return nil, nil
 	}
@@ -383,17 +379,6 @@ func (s *ChannelStore) readCommittedBatchForApplyFetch(base uint64, req channel.
 		}
 	}
 	return batch, nil
-}
-
-func (s *ChannelStore) loadCheckpointHW() (uint64, error) {
-	checkpoint, err := s.LoadCheckpoint()
-	if errors.Is(err, channel.ErrEmptyState) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	return checkpoint.HW, nil
 }
 
 func appliedMessageFromLogRecord(channelID channel.ChannelID, record LogRecord) (appliedMessage, bool, error) {

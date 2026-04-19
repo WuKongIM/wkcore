@@ -46,6 +46,7 @@ type replica struct {
 	applyFetch  ApplyFetchStore
 	history     EpochHistoryStore
 	snapshots   SnapshotApplier
+	probeSource ReconcileProbeSource
 	now         func() time.Time
 
 	meta         channel.Meta
@@ -60,9 +61,18 @@ type replica struct {
 	appendGroupCommit appendGroupCommitConfig
 	appendPending     []*appendRequest
 	appendSignal      chan struct{}
+	advanceSignal     chan struct{}
+	checkpointSignal  chan struct{}
 	stopCh            chan struct{}
 	collectorDone     chan struct{}
+	advanceDone       chan struct{}
+	checkpointDone    chan struct{}
 	closeOnce         sync.Once
+
+	pendingCheckpoint channel.Checkpoint
+	checkpointQueued  bool
+	checkpointInFlight bool
+	reconcilePending  map[channel.NodeID]struct{}
 }
 
 func NewReplica(cfg ReplicaConfig) (Replica, error) {
@@ -92,17 +102,23 @@ func NewReplica(cfg ReplicaConfig) (Replica, error) {
 		applyFetch:  cfg.ApplyFetchStore,
 		history:     cfg.EpochHistoryStore,
 		snapshots:   cfg.SnapshotApplier,
+		probeSource: cfg.ReconcileProbeSource,
 		now:         cfg.Now,
 		appendGroupCommit: appendGroupCommitConfig{
 			maxWait:    effectiveAppendGroupCommitMaxWait(cfg.AppendGroupCommitMaxWait),
 			maxRecords: effectiveAppendGroupCommitMaxRecords(cfg.AppendGroupCommitMaxRecords),
 			maxBytes:   effectiveAppendGroupCommitMaxBytes(cfg.AppendGroupCommitMaxBytes),
 		},
-		appendSignal:  make(chan struct{}, 1),
-		stopCh:        make(chan struct{}),
-		collectorDone: make(chan struct{}),
+		appendSignal:     make(chan struct{}, 1),
+		advanceSignal:    make(chan struct{}, 1),
+		checkpointSignal: make(chan struct{}, 1),
+		stopCh:           make(chan struct{}),
+		collectorDone:    make(chan struct{}),
+		advanceDone:      make(chan struct{}),
+		checkpointDone:   make(chan struct{}),
 		state: channel.ReplicaState{
-			Role: channel.ReplicaRoleFollower,
+			Role:        channel.ReplicaRoleFollower,
+			CommitReady: true,
 		},
 	}
 	r.publishStateLocked()
@@ -110,6 +126,8 @@ func NewReplica(cfg ReplicaConfig) (Replica, error) {
 		return nil, err
 	}
 	r.startAppendCollector()
+	r.startAdvancePublisher()
+	r.startCheckpointPublisher()
 	return r, nil
 }
 
@@ -146,48 +164,56 @@ func (r *replica) ApplyMeta(meta channel.Meta) error {
 	if err := r.applyMetaLocked(meta); err != nil {
 		return err
 	}
+	if r.state.Role == channel.ReplicaRoleLeader || r.state.Role == channel.ReplicaRoleFencedLeader {
+		r.beginLeaderReconcileLocked()
+	}
 	r.publishStateLocked()
 	return nil
 }
 
 func (r *replica) BecomeLeader(meta channel.Meta) error {
 	r.appendMu.Lock()
-	defer r.appendMu.Unlock()
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.state.Role == channel.ReplicaRoleTombstoned {
+		r.mu.Unlock()
+		r.appendMu.Unlock()
 		return channel.ErrTombstoned
 	}
 	if !r.recovered {
+		r.mu.Unlock()
+		r.appendMu.Unlock()
 		return channel.ErrCorruptState
 	}
 
 	normalized, err := normalizeMeta(meta)
 	if err != nil {
+		r.mu.Unlock()
+		r.appendMu.Unlock()
 		return err
 	}
 	if normalized.Leader != r.localNode {
+		r.mu.Unlock()
+		r.appendMu.Unlock()
 		return channel.ErrInvalidMeta
 	}
 	if err := r.validateMetaLocked(normalized); err != nil {
+		r.mu.Unlock()
+		r.appendMu.Unlock()
 		return err
 	}
 
-	recoveryCutoff := r.state.HW
 	leo := r.log.LEO()
-	if leo < recoveryCutoff {
+	if leo < r.state.HW {
+		r.mu.Unlock()
+		r.appendMu.Unlock()
 		return channel.ErrCorruptState
-	}
-	if leo > recoveryCutoff {
-		if err := r.truncateLogToLocked(recoveryCutoff); err != nil {
-			return err
-		}
-		leo = recoveryCutoff
 	}
 
 	if len(r.epochHistory) == 0 || r.epochHistory[len(r.epochHistory)-1].Epoch != normalized.Epoch {
 		point := channel.EpochPoint{Epoch: normalized.Epoch, StartOffset: leo}
 		if err := r.appendEpochPointLocked(point); err != nil {
+			r.mu.Unlock()
+			r.appendMu.Unlock()
 			return err
 		}
 	}
@@ -196,14 +222,28 @@ func (r *replica) BecomeLeader(meta channel.Meta) error {
 	r.state.Role = channel.ReplicaRoleLeader
 	r.state.LEO = leo
 	r.state.OffsetEpoch = offsetEpochForLEO(r.epochHistory, leo)
-	r.seedLeaderProgressLocked(normalized.ISR, leo, recoveryCutoff)
+	r.seedLeaderProgressLocked(normalized.ISR, leo, r.state.HW)
+	r.beginLeaderReconcileLocked()
+	needsLocalReconcile := !r.state.CommitReady && len(r.reconcilePending) == 0
 	if !r.now().Before(normalized.LeaseUntil) {
 		r.state.Role = channel.ReplicaRoleFencedLeader
 		r.publishStateLocked()
+		r.mu.Unlock()
+		r.appendMu.Unlock()
 		return channel.ErrLeaseExpired
 	}
 	r.publishStateLocked()
-	return nil
+	probeSource := r.probeSource
+	needsReconcile := !r.state.CommitReady && probeSource != nil
+	r.mu.Unlock()
+	r.appendMu.Unlock()
+	if needsLocalReconcile {
+		return r.runLocalLeaderReconcile()
+	}
+	if !needsReconcile {
+		return nil
+	}
+	return r.runConfiguredLeaderReconcile(context.Background(), normalized, probeSource)
 }
 
 func (r *replica) BecomeFollower(meta channel.Meta) error {
@@ -222,6 +262,7 @@ func (r *replica) BecomeFollower(meta channel.Meta) error {
 		return err
 	}
 	r.state.Role = channel.ReplicaRoleFollower
+	r.reconcilePending = nil
 	r.failOutstandingAppendWorkLocked(channel.ErrNotLeader)
 	r.publishStateLocked()
 	return nil
@@ -234,6 +275,7 @@ func (r *replica) Tombstone() error {
 	defer r.mu.Unlock()
 
 	r.state.Role = channel.ReplicaRoleTombstoned
+	r.reconcilePending = nil
 	r.failOutstandingAppendWorkLocked(channel.ErrTombstoned)
 	r.publishStateLocked()
 	return nil
@@ -257,6 +299,12 @@ func (r *replica) Close() error {
 	})
 	if r.collectorDone != nil {
 		<-r.collectorDone
+	}
+	if r.advanceDone != nil {
+		<-r.advanceDone
+	}
+	if r.checkpointDone != nil {
+		<-r.checkpointDone
 	}
 	return nil
 }

@@ -3,7 +3,6 @@ package transport
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"sync"
 	"time"
 
@@ -169,7 +168,7 @@ func (t *Transport) handleFetchBatchRPC(ctx context.Context, body []byte) ([]byt
 	return encodeFetchBatchResponse(resp)
 }
 
-func (t *Transport) handleProgressAckRPC(_ context.Context, body []byte) ([]byte, error) {
+func (t *Transport) handleProgressAckRPC(ctx context.Context, body []byte) ([]byte, error) {
 	ack, err := decodeProgressAck(body)
 	if err != nil {
 		return nil, err
@@ -231,35 +230,6 @@ func (t *Transport) boundReconcileProbeService() (runtime.ReconcileProbeService,
 	return service, nil
 }
 
-func (t *Transport) waitForLeaderHW(ctx context.Context, ack runtime.ProgressAckEnvelope) uint64 {
-	t.mu.RLock()
-	source := t.statusSource
-	t.mu.RUnlock()
-	if source == nil {
-		return 0
-	}
-
-	leaderHW, committed := currentLeaderHW(source, ack)
-	if committed || ack.MatchOffset == 0 {
-		return leaderHW
-	}
-
-	ticker := time.NewTicker(2 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return leaderHW
-		case <-ticker.C:
-			leaderHW, committed = currentLeaderHW(source, ack)
-			if committed {
-				return leaderHW
-			}
-		}
-	}
-}
-
 func currentLeaderHW(source channel.HandlerRuntime, ack runtime.ProgressAckEnvelope) (uint64, bool) {
 	if source == nil {
 		return 0, false
@@ -269,19 +239,11 @@ func currentLeaderHW(source channel.HandlerRuntime, ack runtime.ProgressAckEnvel
 		return 0, false
 	}
 	state := handle.Status()
-	if !replicaStateCommitReady(state) {
+	if !state.CommitReady {
 		return 0, false
 	}
 	if state.Epoch != ack.Epoch {
 		return state.HW, false
 	}
 	return state.HW, state.HW >= ack.MatchOffset
-}
-
-func replicaStateCommitReady(state channel.ReplicaState) bool {
-	field := reflect.ValueOf(state).FieldByName("CommitReady")
-	if !field.IsValid() || field.Kind() != reflect.Bool {
-		return true
-	}
-	return field.Bool()
 }

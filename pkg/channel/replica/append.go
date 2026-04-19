@@ -25,6 +25,10 @@ func (r *replica) Append(ctx context.Context, batch []channel.Record) (channel.C
 		r.mu.Unlock()
 		return channel.CommitResult{}, channel.ErrNotLeader
 	}
+	if !r.state.CommitReady {
+		r.mu.Unlock()
+		return channel.CommitResult{}, channel.ErrNotReady
+	}
 	if !r.now().Before(r.meta.LeaseUntil) {
 		r.state.Role = channel.ReplicaRoleFencedLeader
 		r.publishStateLocked()
@@ -195,7 +199,6 @@ func (r *replica) flushAppendBatch(batch []*appendRequest) {
 		r.completeAppendRequests(active, err)
 		return
 	}
-	addedWaiters := make([]*appendWaiter, 0, len(active))
 	nextLEO := base
 	for _, req := range active {
 		target := nextLEO + uint64(len(req.batch))
@@ -209,7 +212,6 @@ func (r *replica) flushAppendBatch(batch []*appendRequest) {
 		req.waiter.result.BaseOffset = nextLEO
 		req.waiter.result.RecordCount = len(req.batch)
 		r.waiters = append(r.waiters, req.waiter)
-		addedWaiters = append(addedWaiters, req.waiter)
 		nextLEO = target
 	}
 	r.state.LEO = nextLEO
@@ -217,16 +219,7 @@ func (r *replica) flushAppendBatch(batch []*appendRequest) {
 	r.setReplicaProgressLocked(r.localNode, nextLEO)
 	r.publishStateLocked()
 	r.mu.Unlock()
-
-	if err := r.advanceHW(); err != nil {
-		r.mu.Lock()
-		for _, waiter := range addedWaiters {
-			r.removeWaiterLocked(waiter)
-		}
-		r.mu.Unlock()
-		r.completeAppendWaiters(addedWaiters, err)
-		return
-	}
+	r.signalAdvanceHW()
 }
 
 func (r *replica) buildActiveAppendBatch(batch []*appendRequest) ([]*appendRequest, *pooledRecordBuffer) {
@@ -266,6 +259,9 @@ func (r *replica) appendableLocked() error {
 	}
 	if r.state.Role != channel.ReplicaRoleLeader {
 		return channel.ErrNotLeader
+	}
+	if !r.state.CommitReady {
+		return channel.ErrNotReady
 	}
 	if !r.now().Before(r.meta.LeaseUntil) {
 		r.state.Role = channel.ReplicaRoleFencedLeader

@@ -438,6 +438,7 @@ func (f *pressureReplicaFactory) New(cfg ChannelConfig) (replica.Replica, error)
 			Role:       core.ReplicaRoleLeader,
 			Epoch:      cfg.Meta.Epoch,
 			Leader:     cfg.Meta.Leader,
+			CommitReady: true,
 		},
 	}
 	f.replicas[cfg.ChannelKey] = replica
@@ -502,6 +503,10 @@ func (r *pressureReplica) ApplyFetch(_ context.Context, _ core.ReplicaApplyFetch
 }
 
 func (r *pressureReplica) ApplyProgressAck(_ context.Context, _ core.ReplicaProgressAckRequest) error {
+	return nil
+}
+
+func (r *pressureReplica) ApplyReconcileProof(_ context.Context, _ core.ReplicaReconcileProof) error {
 	return nil
 }
 

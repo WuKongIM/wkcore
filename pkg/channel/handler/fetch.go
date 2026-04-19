@@ -34,6 +34,9 @@ func (s *service) Fetch(_ context.Context, req channel.FetchRequest) (channel.Fe
 		return channel.FetchResult{}, channel.ErrStaleMeta
 	}
 	state := group.Status()
+	if !state.CommitReady {
+		return channel.FetchResult{}, channel.ErrNotReady
+	}
 	committedSeq := state.HW
 	startSeq := req.FromSeq
 	if startSeq == 0 {

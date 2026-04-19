@@ -68,3 +68,17 @@ func TestStatusReturnsRuntimeAndMetaValues(t *testing.T) {
 		t.Fatalf("commit status = %+v", status)
 	}
 }
+
+func TestStatusReturnsNotReadyWhenCommitHWIsProvisional(t *testing.T) {
+	id := core.ChannelID{ID: "c1", Type: 1}
+	svc, rt, _ := newAppendService(t, id)
+	handle := rt.channels[KeyFromChannelID(id)]
+	handle.status.HW = 12
+	handle.status.CheckpointHW = 3
+	handle.status.CommitReady = false
+
+	_, err := svc.Status(id)
+	if !errors.Is(err, core.ErrNotReady) {
+		t.Fatalf("expected ErrNotReady, got %v", err)
+	}
+}

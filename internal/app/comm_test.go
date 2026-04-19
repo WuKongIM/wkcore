@@ -473,6 +473,7 @@ func connectMultinodeWKProtoClient(t *testing.T, app *App, uid, deviceID string)
 	connack, ok := readAppWKProtoFrameWithin(t, conn, multinodeAppReadTimeout).(*frame.ConnackPacket)
 	require.True(t, ok)
 	require.Equal(t, frame.ReasonSuccess, connack.ReasonCode)
+	require.NoError(t, appWKProtoClientForConn(t, conn).ApplyConnack(connack))
 	return conn
 }
 
@@ -493,9 +494,18 @@ func waitForAppCommittedMessage(t *testing.T, app *App, id channel.ChannelID, se
 	t.Helper()
 
 	store := channelStoreForID(app.ChannelLogDB(), id)
+	key := channelhandler.KeyFromChannelID(id)
 	var msg channel.Message
 	require.Eventually(t, func() bool {
-		loaded, err := channelhandler.LoadMsg(store, seq)
+		handle, ok := app.ISRRuntime().Channel(key)
+		if !ok {
+			return false
+		}
+		state := handle.Status()
+		if !state.CommitReady || seq > state.HW {
+			return false
+		}
+		loaded, err := channelhandler.LoadMsg(store, state.HW, seq)
 		if err != nil {
 			return false
 		}

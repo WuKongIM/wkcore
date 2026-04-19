@@ -51,6 +51,46 @@ func TestChannelStoreApplyFetchPersistsCommittedIdempotencyForExistingAndNewReco
 	require.Equal(t, uint64(1), current.Offset)
 }
 
+func TestCommitCommittedUsesExplicitPreviousCommitHW(t *testing.T) {
+	id := channel.ChannelID{ID: "c1", Type: 1}
+	st := openTestChannelStore(t, channel.ChannelKey("channel/1/c1"), id)
+
+	_, err := st.Append([]channel.Record{{
+		Payload:   mustEncodeApplyFetchMessagePayload(t, 11, "u1", "m1", "one"),
+		SizeBytes: 1,
+	}})
+	require.NoError(t, err)
+
+	_, err = st.StoreApplyFetch(channel.ApplyFetchStoreRequest{
+		PreviousCommittedHW: 1,
+		Records: []channel.Record{{
+			Payload:   mustEncodeApplyFetchMessagePayload(t, 12, "u1", "m2", "two"),
+			SizeBytes: 1,
+		}},
+		Checkpoint: &channel.Checkpoint{Epoch: 3, HW: 2},
+	})
+	require.NoError(t, err)
+
+	_, ok, err := st.GetIdempotency(channel.IdempotencyKey{
+		ChannelID:   id,
+		FromUID:     "u1",
+		ClientMsgNo: "m1",
+	})
+	require.NoError(t, err)
+	require.False(t, ok, "records below explicit previous committed HW must not be replayed from checkpoint lag")
+
+	current, ok, err := st.GetIdempotency(channel.IdempotencyKey{
+		ChannelID:   id,
+		FromUID:     "u1",
+		ClientMsgNo: "m2",
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, uint64(12), current.MessageID)
+	require.Equal(t, uint64(2), current.MessageSeq)
+	require.Equal(t, uint64(1), current.Offset)
+}
+
 func mustEncodeApplyFetchMessagePayload(t *testing.T, messageID uint64, fromUID, clientMsgNo, body string) []byte {
 	t.Helper()
 

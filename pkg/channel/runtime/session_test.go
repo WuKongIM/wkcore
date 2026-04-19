@@ -151,7 +151,7 @@ func TestSessionReplicationRequestUsesReplicaOffsetEpochInsteadOfChannelMetaEpoc
 	}
 }
 
-func TestSessionReplicationRequestUsesPeerSessionBatchingWhenAccepted(t *testing.T) {
+func TestSessionReplicationRequestDoesNotForceImmediateFlushWhenPeerSessionAcceptsBatch(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(2711, 4, 1, []core.NodeID{1, 2}))
 
@@ -174,8 +174,8 @@ func TestSessionReplicationRequestUsesPeerSessionBatchingWhenAccepted(t *testing
 	if got := session.batchCount(); got != 1 {
 		t.Fatalf("expected one batched fetch request, got %d", got)
 	}
-	if got := session.flushCount(); got == 0 {
-		t.Fatalf("expected batched fetch request to be flushed, got %d flushes", got)
+	if got := session.flushCount(); got != 0 {
+		t.Fatalf("expected runtime to leave batch flushing to peer session window, got %d flushes", got)
 	}
 	if session.batched[0].Kind != MessageKindFetchRequest {
 		t.Fatalf("batched kind = %v, want fetch request", session.batched[0].Kind)
@@ -1111,6 +1111,74 @@ func TestSessionFetchResponseReentrantQueuedPeerDrainDoesNotDeadlock(t *testing.
 	}
 }
 
+func TestSessionAsyncBatchedFlushDrainsDeferredSyncWork(t *testing.T) {
+	env := newSessionTestEnv(t)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2504, 4, 2, []core.NodeID{1, 2}))
+
+	env.factory.replicas[0].state.LEO = 9
+	session := env.sessions.session(2)
+	session.setTryBatch(true)
+	session.afterFlush = func() {
+		env.transport.deliver(Envelope{
+			Peer:       2,
+			ChannelKey: testChannelKey(2504),
+			Generation: 1,
+			Epoch:      4,
+			RequestID:  1,
+			Kind:       MessageKindFetchResponse,
+			Sync:       true,
+			FetchResponse: &FetchResponseEnvelope{
+				LeaderHW: 9,
+				Records:  []core.Record{{Payload: []byte("ok"), SizeBytes: 2}},
+			},
+		})
+	}
+
+	if err := env.runtime.sendEnvelope(Envelope{
+		Peer:       2,
+		ChannelKey: testChannelKey(2504),
+		Epoch:      4,
+		Generation: 1,
+		RequestID:  1,
+		Kind:       MessageKindFetchRequest,
+		FetchRequest: &FetchRequestEnvelope{
+			ChannelKey:  testChannelKey(2504),
+			Epoch:       4,
+			Generation:  1,
+			ReplicaID:   1,
+			FetchOffset: 9,
+			OffsetEpoch: 4,
+			MaxBytes:    defaultFetchMaxBytes,
+		},
+	}); err != nil {
+		t.Fatalf("sendEnvelope() error = %v", err)
+	}
+
+	if got := session.sendCount(); got != 0 {
+		t.Fatalf("expected batched fetch request to avoid direct send, got %d sends", got)
+	}
+	if got := session.batchCount(); got != 1 {
+		t.Fatalf("expected one queued batched fetch request, got %d", got)
+	}
+
+	if err := session.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
+	session.mu.Lock()
+	sent := append([]Envelope(nil), session.sent...)
+	session.mu.Unlock()
+	if len(sent) != 1 {
+		t.Fatalf("expected async batch flush to send deferred progress ack, got %d sends", len(sent))
+	}
+	if sent[0].Kind != MessageKindProgressAck {
+		t.Fatalf("first outbound kind = %v, want progress ack", sent[0].Kind)
+	}
+	if got := session.batchCount(); got != 2 {
+		t.Fatalf("expected follow-up fetch to be re-batched after async flush, got %d batched envelopes", got)
+	}
+}
+
 func TestSessionNonEmptyFetchResponseQueuesImmediateFollowerRefetch(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.FollowerReplicationRetryInterval = time.Hour
@@ -1199,6 +1267,37 @@ func TestSessionLeaderAppliesProgressAckWithoutWaitingForNextFetch(t *testing.T)
 	if replica.fetchCalls != 0 {
 		t.Fatalf("progress ack should not require follow-up fetch, got %d fetch calls", replica.fetchCalls)
 	}
+}
+
+func TestRuntimeStartsLeaderReconcileProbeWhenCommitNotReady(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.AutoRunScheduler = true
+	})
+	env.factory.initialCommitReady = false
+	mustEnsureLocal(t, env.runtime, testMetaLocal(256, 4, 1, []core.NodeID{1, 2}))
+
+	replica := env.factory.replicas[0]
+	state := replica.Status()
+	if state.Role != core.ReplicaRoleLeader {
+		t.Fatalf("state.Role = %v, want leader", state.Role)
+	}
+	if state.CommitReady {
+		t.Fatal("expected provisional leader state to remain not commit-ready before reconcile")
+	}
+
+	env.runtime.runScheduler()
+
+	requireProbe := func() bool {
+		return env.sessions.createdFor(2) > 0
+	}
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if requireProbe() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("expected runtime to start a leader reconcile probe while commit-ready is false")
 }
 
 func TestSessionFetchFailureEnvelopeReleasesInflightAndRetriesReplication(t *testing.T) {
@@ -1451,12 +1550,13 @@ func (s *sessionGenerationStore) Store(channelKey core.ChannelKey, generation ui
 }
 
 type sessionReplicaFactory struct {
-	mu       sync.Mutex
-	replicas []*sessionReplica
+	mu                 sync.Mutex
+	replicas           []*sessionReplica
+	initialCommitReady bool
 }
 
 func newSessionReplicaFactory() *sessionReplicaFactory {
-	return &sessionReplicaFactory{}
+	return &sessionReplicaFactory{initialCommitReady: true}
 }
 
 func (f *sessionReplicaFactory) New(cfg ChannelConfig) (replica.Replica, error) {
@@ -1469,6 +1569,7 @@ func (f *sessionReplicaFactory) New(cfg ChannelConfig) (replica.Replica, error) 
 			Epoch:       cfg.Meta.Epoch,
 			OffsetEpoch: cfg.Meta.Epoch,
 			Leader:      cfg.Meta.Leader,
+			CommitReady: f.initialCommitReady,
 		},
 	}
 	f.replicas = append(f.replicas, replica)
@@ -1566,6 +1667,12 @@ func (r *sessionReplica) ApplyProgressAck(ctx context.Context, req core.ReplicaP
 	r.lastProgressAck = req
 	return r.applyProgressAckErr
 }
+func (r *sessionReplica) ApplyReconcileProof(ctx context.Context, proof core.ReplicaReconcileProof) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.state.OffsetEpoch = proof.OffsetEpoch
+	return nil
+}
 func (r *sessionReplica) Status() core.ReplicaState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1650,6 +1757,7 @@ type trackingPeerSession struct {
 	flushErr     error
 	backpressure BackpressureState
 	afterSend    func()
+	afterFlush   func()
 	tryBatch     bool
 }
 
@@ -1688,9 +1796,14 @@ func (s *trackingPeerSession) TryBatch(env Envelope) bool {
 
 func (s *trackingPeerSession) Flush() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.flushes++
-	return s.flushErr
+	afterFlush := s.afterFlush
+	err := s.flushErr
+	s.mu.Unlock()
+	if afterFlush != nil {
+		afterFlush()
+	}
+	return err
 }
 
 func (s *trackingPeerSession) Backpressure() BackpressureState {

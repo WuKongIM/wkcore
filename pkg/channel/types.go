@@ -137,8 +137,9 @@ type IdempotencyEntry struct {
 }
 
 type ApplyFetchStoreRequest struct {
-	Records    []Record
-	Checkpoint *Checkpoint
+	PreviousCommittedHW uint64
+	Records             []Record
+	Checkpoint          *Checkpoint
 }
 
 type ReplicaRole uint8
@@ -158,6 +159,8 @@ type ReplicaState struct {
 	Leader         NodeID
 	LogStartOffset uint64
 	HW             uint64
+	CheckpointHW   uint64
+	CommitReady    bool
 	LEO            uint64
 }
 
@@ -204,4 +207,13 @@ type ReplicaProgressAckRequest struct {
 	Epoch       uint64
 	ReplicaID   NodeID
 	MatchOffset uint64
+}
+
+type ReplicaReconcileProof struct {
+	ChannelKey   ChannelKey
+	Epoch        uint64
+	ReplicaID    NodeID
+	OffsetEpoch  uint64
+	LogEndOffset uint64
+	CheckpointHW uint64
 }

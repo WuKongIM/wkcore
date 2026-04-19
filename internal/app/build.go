@@ -733,6 +733,9 @@ func loadLatestConversationMessage(ctx context.Context, cluster interface {
 		return channel.Message{}, false, channel.ErrStaleMeta
 	}
 	status, err := cluster.Status(key)
+	if errors.Is(err, channel.ErrNotReady) {
+		return channel.Message{}, false, nil
+	}
 	if err != nil {
 		return channel.Message{}, false, err
 	}
@@ -746,6 +749,9 @@ func loadLatestConversationMessage(ctx context.Context, cluster interface {
 		Limit:     1,
 		MaxBytes:  maxBytes,
 	})
+	if errors.Is(err, channel.ErrNotReady) {
+		return channel.Message{}, false, nil
+	}
 	if err != nil {
 		return channel.Message{}, false, err
 	}
@@ -763,6 +769,9 @@ func loadRecentConversationMessages(ctx context.Context, cluster interface {
 		return nil, nil
 	}
 	status, err := cluster.Status(key)
+	if errors.Is(err, channel.ErrNotReady) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -780,6 +789,9 @@ func loadRecentConversationMessages(ctx context.Context, cluster interface {
 		Limit:     limit,
 		MaxBytes:  maxBytes,
 	})
+	if errors.Is(err, channel.ErrNotReady) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -3,11 +3,13 @@ package replica
 import (
 	"context"
 	"slices"
+	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 )
 
 const smallISRProgressBufferSize = 8
+const checkpointRetryDelay = 10 * time.Millisecond
 
 func (r *replica) seedLeaderProgressLocked(isr []channel.NodeID, leaderLEO, committedHW uint64) {
 	r.progress = make(map[channel.NodeID]uint64, len(isr))
@@ -27,34 +29,61 @@ func (r *replica) setReplicaProgressLocked(replicaID channel.NodeID, matchOffset
 	r.progress[replicaID] = matchOffset
 }
 
-func (r *replica) advanceHW() error {
+func (r *replica) startAdvancePublisher() {
+	go func() {
+		defer close(r.advanceDone)
+		for {
+			select {
+			case <-r.advanceSignal:
+				for {
+					advanced, candidate, err := r.advanceHWOnce()
+					if err != nil {
+						r.failWaitersUpTo(candidate, err)
+						break
+					}
+					if !advanced {
+						break
+					}
+				}
+			case <-r.stopCh:
+				return
+			}
+		}
+	}()
+}
+
+func (r *replica) signalAdvanceHW() {
+	select {
+	case r.advanceSignal <- struct{}{}:
+	default:
+	}
+}
+
+func (r *replica) advanceHWOnce() (bool, uint64, error) {
 	r.advanceMu.Lock()
 	defer r.advanceMu.Unlock()
 
 	r.mu.Lock()
 	checkpoint, candidate, err := r.nextHWCheckpointLocked()
-	r.mu.Unlock()
 	if err != nil || checkpoint == nil {
-		return err
+		r.mu.Unlock()
+		return checkpoint != nil, candidate, err
 	}
-
-	if err := r.checkpoints.Store(*checkpoint); err != nil {
-		return err
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	if candidate <= r.state.HW {
-		return nil
+		r.mu.Unlock()
+		return true, candidate, nil
 	}
 	if candidate > r.state.LEO {
-		return channel.ErrCorruptState
+		r.mu.Unlock()
+		return true, candidate, channel.ErrCorruptState
 	}
 
 	r.state.HW = candidate
 	r.notifyReadyWaitersLocked()
+	r.scheduleCheckpointLocked(*checkpoint)
 	r.publishStateLocked()
-	return nil
+	r.mu.Unlock()
+	return true, candidate, nil
 }
 
 func (r *replica) nextHWCheckpointLocked() (*channel.Checkpoint, uint64, error) {
@@ -109,6 +138,121 @@ func (r *replica) notifyReadyWaitersLocked() {
 		remaining = append(remaining, waiter)
 	}
 	r.waiters = remaining
+}
+
+func (r *replica) scheduleCheckpointLocked(checkpoint channel.Checkpoint) {
+	if checkpoint.HW <= r.state.CheckpointHW {
+		return
+	}
+	if (r.checkpointQueued || r.checkpointInFlight) && checkpoint.HW <= r.pendingCheckpoint.HW {
+		return
+	}
+	r.pendingCheckpoint = checkpoint
+	r.checkpointQueued = true
+	r.signalCheckpoint()
+}
+
+func (r *replica) startCheckpointPublisher() {
+	go func() {
+		defer close(r.checkpointDone)
+		for {
+			select {
+			case <-r.checkpointSignal:
+				for {
+					checkpoint, ok := r.nextPendingCheckpoint()
+					if !ok {
+						break
+					}
+					err := r.checkpoints.Store(checkpoint)
+					if r.finishPendingCheckpoint(checkpoint, err) {
+						r.scheduleCheckpointRetry()
+						break
+					}
+				}
+			case <-r.stopCh:
+				return
+			}
+		}
+	}()
+}
+
+func (r *replica) signalCheckpoint() {
+	select {
+	case r.checkpointSignal <- struct{}{}:
+	default:
+	}
+}
+
+func (r *replica) scheduleCheckpointRetry() {
+	go func() {
+		timer := time.NewTimer(checkpointRetryDelay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			r.signalCheckpoint()
+		case <-r.stopCh:
+		}
+	}()
+}
+
+func (r *replica) nextPendingCheckpoint() (channel.Checkpoint, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.checkpointQueued || r.checkpointInFlight {
+		return channel.Checkpoint{}, false
+	}
+	checkpoint := r.pendingCheckpoint
+	r.checkpointInFlight = true
+	return checkpoint, true
+}
+
+func (r *replica) finishPendingCheckpoint(checkpoint channel.Checkpoint, err error) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.checkpointInFlight = false
+	if err != nil {
+		r.checkpointQueued = r.pendingCheckpoint.HW > r.state.CheckpointHW
+		r.state.CommitReady = false
+		r.publishStateLocked()
+		return r.checkpointQueued
+	}
+
+	if checkpoint.HW > r.state.CheckpointHW {
+		r.state.CheckpointHW = checkpoint.HW
+	}
+	r.checkpointQueued = r.pendingCheckpoint.HW > r.state.CheckpointHW
+	if !r.state.CommitReady && len(r.reconcilePending) == 0 && !r.checkpointQueued && r.state.CheckpointHW >= r.state.HW {
+		r.state.CommitReady = true
+	}
+	r.publishStateLocked()
+	return false
+}
+
+func (r *replica) failWaitersUpTo(target uint64, err error) {
+	if target == 0 || err == nil {
+		return
+	}
+
+	r.mu.Lock()
+	if len(r.waiters) == 0 {
+		r.mu.Unlock()
+		return
+	}
+
+	ready := make([]*appendWaiter, 0, len(r.waiters))
+	remaining := r.waiters[:0]
+	for _, waiter := range r.waiters {
+		if waiter.target <= target {
+			ready = append(ready, waiter)
+			continue
+		}
+		remaining = append(remaining, waiter)
+	}
+	r.waiters = remaining
+	r.mu.Unlock()
+
+	r.completeAppendWaiters(ready, err)
 }
 
 func (r *replica) divergenceStateLocked(fetchOffset, offsetEpoch, leaderLEO uint64) (uint64, *uint64) {
@@ -174,5 +318,6 @@ func (r *replica) ApplyProgressAck(_ context.Context, req channel.ReplicaProgres
 	r.publishStateLocked()
 	r.mu.Unlock()
 
-	return r.advanceHW()
+	r.signalAdvanceHW()
+	return nil
 }

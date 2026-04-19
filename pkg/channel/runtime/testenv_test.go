@@ -199,7 +199,7 @@ func (f *fakeReplicaFactory) New(cfg ChannelConfig) (replica.Replica, error) {
 	defer f.mu.Unlock()
 
 	r := &fakeReplica{
-		state:           core.ReplicaState{ChannelKey: cfg.ChannelKey, Epoch: cfg.Meta.Epoch, Leader: cfg.Meta.Leader, Role: core.ReplicaRoleFollower},
+		state:           core.ReplicaState{ChannelKey: cfg.ChannelKey, Epoch: cfg.Meta.Epoch, Leader: cfg.Meta.Leader, Role: core.ReplicaRoleFollower, CommitReady: true},
 		tombstoneErr:    f.tombstoneErrors[cfg.ChannelKey],
 		becomeLeaderErr: f.becomeLeaderErrors[cfg.ChannelKey],
 	}
@@ -284,6 +284,10 @@ func (r *fakeReplica) ApplyFetch(context.Context, core.ReplicaApplyFetchRequest)
 }
 
 func (r *fakeReplica) ApplyProgressAck(context.Context, core.ReplicaProgressAckRequest) error {
+	return nil
+}
+
+func (r *fakeReplica) ApplyReconcileProof(context.Context, core.ReplicaReconcileProof) error {
 	return nil
 }
 

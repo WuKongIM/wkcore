@@ -56,7 +56,7 @@ func (r *runtime) processReplication(key core.ChannelKey) {
 			break
 		}
 		state := ch.Status()
-		err := r.sendEnvelope(Envelope{
+		env := Envelope{
 			Peer:       peer,
 			ChannelKey: key,
 			Epoch:      state.Epoch,
@@ -72,7 +72,18 @@ func (r *runtime) processReplication(key core.ChannelKey) {
 				OffsetEpoch: state.OffsetEpoch,
 				MaxBytes:    defaultFetchMaxBytes,
 			},
-		})
+		}
+		if state.Role == core.ReplicaRoleLeader && !state.CommitReady {
+			env.Kind = MessageKindReconcileProbeRequest
+			env.FetchRequest = nil
+			env.ReconcileProbeRequest = &ReconcileProbeRequestEnvelope{
+				ChannelKey: key,
+				Epoch:      state.Epoch,
+				Generation: ch.gen,
+				ReplicaID:  r.cfg.LocalNode,
+			}
+		}
+		err := r.sendEnvelope(env)
 		if err == nil {
 			r.clearReplicationRetry(key, peer)
 			continue

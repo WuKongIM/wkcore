@@ -33,6 +33,7 @@ type runtime struct {
 	snapshots                   snapshotState
 	snapshotThrottle            snapshotThrottle
 	requestID                   atomic.Uint64
+	sendCoordActive             atomic.Int32
 	replicationRetryMu          sync.Mutex
 	replicationRetry            map[core.ChannelKey]map[core.NodeID]*replicationRetryState
 	backpressureRetry           map[core.NodeID]*backpressureRetryState
@@ -82,19 +83,19 @@ func New(cfg Config) (Runtime, error) {
 	}
 
 	r := &runtime{
-		cfg:               cfg,
-		tombstones:        newTombstoneManager(),
-		replicaFactory:    cfg.ReplicaFactory,
-		generationStore:   cfg.GenerationStore,
-		scheduler:         newScheduler(),
-		sessions:          newPeerSessionCache(),
-		peerRequests:      newPeerRequestState(),
-		snapshotThrottle:  newSnapshotThrottle(cfg.Limits.MaxRecoveryBytesPerSecond, time.Sleep),
-		replicationRetry:  make(map[core.ChannelKey]map[core.NodeID]*replicationRetryState),
-		backpressureRetry: make(map[core.NodeID]*backpressureRetryState),
+		cfg:                    cfg,
+		tombstones:             newTombstoneManager(),
+		replicaFactory:         cfg.ReplicaFactory,
+		generationStore:        cfg.GenerationStore,
+		scheduler:              newScheduler(),
+		sessions:               newPeerSessionCache(),
+		peerRequests:           newPeerRequestState(),
+		snapshotThrottle:       newSnapshotThrottle(cfg.Limits.MaxRecoveryBytesPerSecond, time.Sleep),
+		replicationRetry:       make(map[core.ChannelKey]map[core.NodeID]*replicationRetryState),
+		backpressureRetry:      make(map[core.NodeID]*backpressureRetryState),
 		syncDeferredPeerDrains: make(map[core.NodeID]struct{}),
-		cleanupStop:       make(chan struct{}),
-		cleanupDone:       make(chan struct{}),
+		cleanupStop:            make(chan struct{}),
+		cleanupDone:            make(chan struct{}),
 	}
 	for i := range r.shards {
 		r.shards[i].channels = make(map[core.ChannelKey]*channel)
@@ -156,6 +157,10 @@ func (r *runtime) EnsureChannel(meta core.Meta) error {
 
 	if meta.Leader != r.cfg.LocalNode {
 		r.retryReplication(meta.Key, meta.Leader, true)
+	} else if status := ch.Status(); !status.CommitReady {
+		for _, peer := range r.activeReplicationPeers(meta) {
+			r.retryReplication(meta.Key, peer, true)
+		}
 	}
 	return nil
 }
@@ -222,6 +227,10 @@ func (r *runtime) ApplyMeta(meta core.Meta) error {
 	stopTimers(r.clearStaleReplicationRetries(meta.Key, meta))
 	if meta.Leader != r.cfg.LocalNode {
 		r.retryReplication(meta.Key, meta.Leader, true)
+	} else if status := ch.Status(); !status.CommitReady {
+		for _, peer := range r.activeReplicationPeers(meta) {
+			r.retryReplication(meta.Key, peer, true)
+		}
 	}
 	return nil
 }
@@ -434,7 +443,14 @@ func shouldSkipReplicaApplyMeta(ch *channel, localNode core.NodeID, next core.Me
 }
 
 func metaEqual(a, b core.Meta) bool {
-	if a.Key != b.Key || a.Epoch != b.Epoch || a.Leader != b.Leader || a.MinISR != b.MinISR || !a.LeaseUntil.Equal(b.LeaseUntil) {
+	if a.Key != b.Key ||
+		a.Epoch != b.Epoch ||
+		a.LeaderEpoch != b.LeaderEpoch ||
+		a.Leader != b.Leader ||
+		a.MinISR != b.MinISR ||
+		a.Status != b.Status ||
+		a.Features != b.Features ||
+		!a.LeaseUntil.Equal(b.LeaseUntil) {
 		return false
 	}
 	if len(a.Replicas) != len(b.Replicas) || len(a.ISR) != len(b.ISR) {

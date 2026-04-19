@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -97,4 +98,31 @@ func TestConversationFactsResponseJSONDecodesLegacyBatchEntryKeyFields(t *testin
 	require.Equal(t, channel.ChannelID{ID: "g1", Type: 2}, resp.Entries[0].Key.channelID())
 	require.Len(t, resp.Entries[0].Messages, 1)
 	require.Equal(t, uint64(9), resp.Entries[0].Messages[0].MessageSeq)
+}
+
+func TestLoadLatestConversationMessageTreatsNotReadyAsEmpty(t *testing.T) {
+	msg, ok, err := loadLatestConversationMessage(context.Background(), notReadyConversationFactsLog{}, channel.ChannelID{ID: "g1", Type: 2}, 1024)
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Equal(t, channel.Message{}, msg)
+}
+
+func TestLoadRecentConversationMessagesTreatsNotReadyAsEmpty(t *testing.T) {
+	msgs, err := loadRecentConversationMessages(context.Background(), notReadyConversationFactsLog{}, channel.ChannelID{ID: "g1", Type: 2}, 10, 1024)
+	require.NoError(t, err)
+	require.Nil(t, msgs)
+}
+
+type notReadyConversationFactsLog struct{}
+
+func (notReadyConversationFactsLog) Status(channel.ChannelID) (channel.ChannelRuntimeStatus, error) {
+	return channel.ChannelRuntimeStatus{}, channel.ErrNotReady
+}
+
+func (notReadyConversationFactsLog) Fetch(context.Context, channel.FetchRequest) (channel.FetchResult, error) {
+	return channel.FetchResult{}, channel.ErrNotReady
+}
+
+func (notReadyConversationFactsLog) Append(context.Context, channel.AppendRequest) (channel.AppendResult, error) {
+	return channel.AppendResult{}, channel.ErrNotReady
 }

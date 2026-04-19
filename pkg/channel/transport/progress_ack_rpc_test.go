@@ -49,8 +49,6 @@ func (c *statusOnlyChannel) Append(context.Context, []channel.Record) (channel.C
 }
 
 func TestHandleProgressAckRPCDoesNotAdvertiseFinalLeaderHWWhileCommitNotReady(t *testing.T) {
-	_, hasCommitReady := reflect.TypeOf(channel.ReplicaState{}).FieldByName("CommitReady")
-
 	makeTransport := func(status channel.ReplicaState) (*Transport, error) {
 		client := wktransport.NewClient(wktransport.NewPool(staticDiscovery{
 			addrs: map[uint64]string{},
@@ -99,9 +97,6 @@ func TestHandleProgressAckRPCDoesNotAdvertiseFinalLeaderHWWhileCommitNotReady(t 
 	}
 
 	t.Run("not ready", func(t *testing.T) {
-		if !hasCommitReady {
-			t.Skip("ReplicaState.CommitReady is unavailable on this branch")
-		}
 		status := channel.ReplicaState{
 			Epoch: 3,
 			HW:    8,

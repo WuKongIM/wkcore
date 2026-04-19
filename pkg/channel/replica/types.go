@@ -34,6 +34,10 @@ type EpochHistoryStore interface {
 	TruncateTo(leo uint64) error
 }
 
+type ReconcileProbeSource interface {
+	ProbeQuorum(ctx context.Context, meta channel.Meta, local channel.ReplicaState) ([]channel.ReplicaReconcileProof, error)
+}
+
 type ReplicaConfig struct {
 	LocalNode                   channel.NodeID
 	LogStore                    LogStore
@@ -41,6 +45,7 @@ type ReplicaConfig struct {
 	ApplyFetchStore             ApplyFetchStore
 	EpochHistoryStore           EpochHistoryStore
 	SnapshotApplier             SnapshotApplier
+	ReconcileProbeSource        ReconcileProbeSource
 	Now                         func() time.Time
 	AppendGroupCommitMaxWait    time.Duration
 	AppendGroupCommitMaxRecords int
@@ -58,5 +63,6 @@ type Replica interface {
 	Fetch(ctx context.Context, req channel.ReplicaFetchRequest) (channel.ReplicaFetchResult, error)
 	ApplyFetch(ctx context.Context, req channel.ReplicaApplyFetchRequest) error
 	ApplyProgressAck(ctx context.Context, req channel.ReplicaProgressAckRequest) error
+	ApplyReconcileProof(ctx context.Context, proof channel.ReplicaReconcileProof) error
 	Status() channel.ReplicaState
 }

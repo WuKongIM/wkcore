@@ -38,19 +38,13 @@ func (r *replica) recoverFromStores() error {
 		return fmt.Errorf("%w: epoch history start %d > leo %d", channel.ErrCorruptState, history[len(history)-1].StartOffset, leo)
 	}
 
-	if leo > checkpoint.HW {
-		if err := r.truncateLogToLocked(checkpoint.HW); err != nil {
-			return err
-		}
-		leo = checkpoint.HW
-		history = trimEpochHistoryToLEO(history, leo)
-	}
-
 	r.state.Role = channel.ReplicaRoleFollower
 	r.state.Epoch = checkpoint.Epoch
 	r.state.OffsetEpoch = offsetEpochForLEO(history, leo)
 	r.state.LogStartOffset = checkpoint.LogStartOffset
 	r.state.HW = checkpoint.HW
+	r.state.CheckpointHW = checkpoint.HW
+	r.state.CommitReady = leo == checkpoint.HW
 	r.state.LEO = leo
 	r.epochHistory = append([]channel.EpochPoint(nil), history...)
 	r.recovered = true
@@ -153,6 +147,8 @@ func (r *replica) InstallSnapshot(ctx context.Context, snap channel.Snapshot) er
 	r.state.OffsetEpoch = offsetEpochForLEO(r.epochHistory, leo)
 	r.state.LogStartOffset = snap.EndOffset
 	r.state.HW = snap.EndOffset
+	r.state.CheckpointHW = snap.EndOffset
+	r.state.CommitReady = true
 	r.state.LEO = leo
 	r.publishStateLocked()
 	return nil

@@ -225,9 +225,9 @@ func (s *peerRequestState) queueLocked(peer core.NodeID) *peerEnvelopeQueue {
 }
 
 func (q *peerEnvelopeQueue) enqueue(env Envelope) {
-	if env.Kind == MessageKindFetchRequest {
+	if env.Kind == MessageKindFetchRequest || env.Kind == MessageKindReconcileProbeRequest {
 		for i := q.head; i < len(q.items); i++ {
-			if q.items[i].Kind == MessageKindFetchRequest && q.items[i].ChannelKey == env.ChannelKey {
+			if q.items[i].Kind == env.Kind && q.items[i].ChannelKey == env.ChannelKey {
 				q.items[i] = env
 				return
 			}
@@ -299,7 +299,11 @@ func (r *runtime) sendEnvelope(env Envelope) error {
 		r.beforePeerSessionHook(env)
 	}
 	r.sendCoordMu.Lock()
-	defer r.sendCoordMu.Unlock()
+	r.sendCoordActive.Add(1)
+	defer func() {
+		r.sendCoordActive.Add(-1)
+		r.sendCoordMu.Unlock()
+	}()
 
 	err := r.sendEnvelopeLocked(env)
 	r.drainDeferredSyncWorkLocked()
@@ -314,14 +318,14 @@ func (r *runtime) sendEnvelopeLocked(env Envelope) error {
 		return ErrChannelNotFound
 	}
 	if r.shouldDropOutboundEnvelope(env) {
-		if env.Kind == MessageKindFetchRequest {
+		if env.Kind == MessageKindFetchRequest || env.Kind == MessageKindReconcileProbeRequest {
 			r.clearReplicationRetry(env.ChannelKey, env.Peer)
 		}
 		return nil
 	}
 	env = r.refreshFetchEnvelope(env)
 	if r.shouldDropOutboundEnvelope(env) {
-		if env.Kind == MessageKindFetchRequest {
+		if env.Kind == MessageKindFetchRequest || env.Kind == MessageKindReconcileProbeRequest {
 			r.clearReplicationRetry(env.ChannelKey, env.Peer)
 		}
 		return nil
@@ -329,7 +333,7 @@ func (r *runtime) sendEnvelopeLocked(env Envelope) error {
 	if r.afterOutboundValidationHook != nil {
 		r.afterOutboundValidationHook(env)
 	}
-	trackInflight := env.Kind == MessageKindFetchRequest
+	trackInflight := env.Kind == MessageKindFetchRequest || env.Kind == MessageKindReconcileProbeRequest
 
 	session := r.peerSession(env.Peer)
 	if state := session.Backpressure(); state.Level == BackpressureHard {
@@ -349,13 +353,6 @@ func (r *runtime) sendEnvelopeLocked(env Envelope) error {
 	}
 
 	if env.Kind == MessageKindFetchRequest && session.TryBatch(env) {
-		if err := session.Flush(); err != nil {
-			if trackInflight {
-				r.peerRequests.release(env.Peer)
-				r.peerRequests.releaseChannel(env.ChannelKey, env.Peer)
-			}
-			return err
-		}
 		return nil
 	}
 	if err := session.Send(env); err != nil {
@@ -443,6 +440,27 @@ func (r *runtime) drainDeferredSyncWorkLocked() {
 	}
 }
 
+func (r *runtime) hasDeferredSyncWork() bool {
+	r.syncDeliveryMu.Lock()
+	defer r.syncDeliveryMu.Unlock()
+
+	return len(r.syncDeferredSends) > 0 || len(r.syncDeferredPeerDrains) > 0
+}
+
+func (r *runtime) drainDeferredSyncWorkIfIdle() {
+	if r.sendCoordActive.Load() > 0 || !r.hasDeferredSyncWork() {
+		return
+	}
+
+	r.sendCoordMu.Lock()
+	r.sendCoordActive.Add(1)
+	defer func() {
+		r.sendCoordActive.Add(-1)
+		r.sendCoordMu.Unlock()
+	}()
+	r.drainDeferredSyncWorkLocked()
+}
+
 func (r *runtime) sendOrDeferEnvelope(env Envelope, onError func(error)) {
 	if r.syncDeliveryActive() {
 		r.deferSyncEnvelope(env, onError)
@@ -463,7 +481,7 @@ func (r *runtime) shouldDropOutboundEnvelope(env Envelope) bool {
 		return true
 	}
 	switch env.Kind {
-	case MessageKindFetchRequest, MessageKindProgressAck:
+	case MessageKindFetchRequest, MessageKindProgressAck, MessageKindReconcileProbeRequest:
 		return !r.isReplicationPeerValid(ch.metaSnapshot(), env.Peer)
 	}
 	return false
@@ -530,7 +548,7 @@ func (r *runtime) drainPeerQueueLocked(peer core.NodeID) {
 		r.retryReplication(env.ChannelKey, env.Peer, true)
 		return
 	}
-	if env.Kind == MessageKindFetchRequest {
+	if env.Kind == MessageKindFetchRequest || env.Kind == MessageKindReconcileProbeRequest {
 		r.clearReplicationRetry(env.ChannelKey, env.Peer)
 	}
 }
@@ -545,7 +563,10 @@ func (r *runtime) handleEnvelope(env Envelope) {
 	}
 	if env.Sync {
 		r.beginSyncDelivery()
-		defer r.endSyncDelivery()
+		defer func() {
+			r.endSyncDelivery()
+			r.drainDeferredSyncWorkIfIdle()
+		}()
 	}
 	var (
 		ch        *channel
@@ -555,11 +576,11 @@ func (r *runtime) handleEnvelope(env Envelope) {
 	active, ok := r.lookupChannel(env.ChannelKey)
 	if ok && active.gen == env.Generation {
 		ch = active
-	} else if env.Kind == MessageKindFetchResponse && r.tombstones.contains(env.ChannelKey, env.Generation) {
+	} else if (env.Kind == MessageKindFetchResponse || env.Kind == MessageKindReconcileProbeResponse) && r.tombstones.contains(env.ChannelKey, env.Generation) {
 		knownDrop = true
 	}
 
-	if env.Kind == MessageKindFetchResponse && knownDrop {
+	if (env.Kind == MessageKindFetchResponse || env.Kind == MessageKindReconcileProbeResponse) && knownDrop {
 		if r.releaseInflightForEnvelope(env) {
 			r.drainPeerQueueOrDefer(env.Peer)
 		}
@@ -577,10 +598,15 @@ func (r *runtime) handleEnvelope(env Envelope) {
 	}
 
 	if ch == nil {
+		if env.Kind == MessageKindReconcileProbeResponse {
+			if r.releaseInflightForEnvelope(env) {
+				r.drainPeerQueueOrDefer(env.Peer)
+			}
+		}
 		return
 	}
 
-	if env.Kind == MessageKindFetchResponse {
+	if env.Kind == MessageKindFetchResponse || env.Kind == MessageKindReconcileProbeResponse {
 		if r.deliverEnvelope(ch, env) {
 			if r.releaseInflightForEnvelope(env) {
 				r.drainPeerQueueOrDefer(env.Peer)
@@ -712,6 +738,15 @@ func (r *runtime) deliverEnvelope(ch *channel, env Envelope) bool {
 			return false
 		}
 		return r.applyProgressAckEnvelope(ch, *env.ProgressAck) == nil
+	case MessageKindReconcileProbeResponse:
+		state := ch.Status()
+		if env.Epoch != state.Epoch {
+			return true
+		}
+		if env.ReconcileProbeResponse == nil {
+			return false
+		}
+		return r.applyReconcileProbeResponseEnvelope(ch, *env.ReconcileProbeResponse) == nil
 	}
 	return true
 }
@@ -793,6 +828,17 @@ func (r *runtime) applyProgressAckEnvelope(ch *channel, env ProgressAckEnvelope)
 	})
 }
 
+func (r *runtime) applyReconcileProbeResponseEnvelope(ch *channel, env ReconcileProbeResponseEnvelope) error {
+	return ch.replica.ApplyReconcileProof(context.Background(), core.ReplicaReconcileProof{
+		ChannelKey:   env.ChannelKey,
+		Epoch:        env.Epoch,
+		ReplicaID:    env.ReplicaID,
+		OffsetEpoch:  env.OffsetEpoch,
+		LogEndOffset: env.LogEndOffset,
+		CheckpointHW: env.CheckpointHW,
+	})
+}
+
 func (r *runtime) ServeFetch(ctx context.Context, req FetchRequestEnvelope) (FetchResponseEnvelope, error) {
 	ch, ok := r.lookupChannel(req.ChannelKey)
 	if !ok {
@@ -826,6 +872,32 @@ func (r *runtime) ServeFetch(ctx context.Context, req FetchRequestEnvelope) (Fet
 		TruncateTo: result.TruncateTo,
 		LeaderHW:   result.HW,
 		Records:    result.Records,
+	}, nil
+}
+
+func (r *runtime) ServeReconcileProbe(_ context.Context, req ReconcileProbeRequestEnvelope) (ReconcileProbeResponseEnvelope, error) {
+	ch, ok := r.lookupChannel(req.ChannelKey)
+	if !ok {
+		return ReconcileProbeResponseEnvelope{}, ErrChannelNotFound
+	}
+	if ch.gen != req.Generation {
+		return ReconcileProbeResponseEnvelope{}, ErrGenerationMismatch
+	}
+
+	meta := ch.metaSnapshot()
+	if req.Epoch != meta.Epoch {
+		return ReconcileProbeResponseEnvelope{}, core.ErrStaleMeta
+	}
+
+	state := ch.Status()
+	return ReconcileProbeResponseEnvelope{
+		ChannelKey:   req.ChannelKey,
+		Epoch:        state.Epoch,
+		Generation:   req.Generation,
+		ReplicaID:    r.cfg.LocalNode,
+		OffsetEpoch:  state.OffsetEpoch,
+		LogEndOffset: state.LEO,
+		CheckpointHW: state.CheckpointHW,
 	}, nil
 }
 

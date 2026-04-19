@@ -64,3 +64,10 @@ func (s *ChannelStore) commitCoordinator() *commitCoordinator {
 	}
 	return s.engine.commitCoordinator()
 }
+
+func (s *ChannelStore) checkpointCoordinator() *commitCoordinator {
+	if s == nil || s.engine == nil {
+		return nil
+	}
+	return s.engine.checkpointCoordinator()
+}

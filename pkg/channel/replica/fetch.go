@@ -50,16 +50,14 @@ func (r *replica) Fetch(_ context.Context, req channel.ReplicaFetchRequest) (cha
 	r.setReplicaProgressLocked(req.ReplicaID, matchOffset)
 	result := channel.ReplicaFetchResult{
 		Epoch: r.state.Epoch,
-		HW:    r.state.HW,
+		HW:    visibleCommittedHW(r.state),
 	}
 	r.publishStateLocked()
 	r.mu.Unlock()
 
 	if needsAdvance {
-		if err := r.advanceHW(); err != nil {
-			return channel.ReplicaFetchResult{}, err
-		}
-		result.HW = r.Status().HW
+		r.signalAdvanceHW()
+		result.HW = visibleCommittedHW(r.Status())
 	}
 	if truncateTo != nil {
 		result.TruncateTo = truncateTo
@@ -75,4 +73,14 @@ func (r *replica) Fetch(_ context.Context, req channel.ReplicaFetchRequest) (cha
 	}
 	result.Records = records
 	return result, nil
+}
+
+func visibleCommittedHW(state channel.ReplicaState) uint64 {
+	if state.CommitReady {
+		return state.HW
+	}
+	if state.CheckpointHW < state.HW {
+		return state.CheckpointHW
+	}
+	return state.HW
 }

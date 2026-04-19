@@ -38,7 +38,8 @@ func TestApplyFetchPersistsCommittedIdempotency(t *testing.T) {
 		t.Fatalf("Append() error = %v", err)
 	}
 	_, err = ApplyFetch(st, core.ApplyFetchStoreRequest{
-		Records: []core.Record{{Payload: payload2, SizeBytes: len(payload2)}},
+		PreviousCommittedHW: 0,
+		Records:             []core.Record{{Payload: payload2, SizeBytes: len(payload2)}},
 		Checkpoint: &core.Checkpoint{
 			Epoch: 1,
 			HW:    2,

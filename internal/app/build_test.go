@@ -121,6 +121,19 @@ func TestDeliveryShardCountForParallelismUsesBoundedFanout(t *testing.T) {
 	require.Equal(t, 16, deliveryShardCountForParallelism(64))
 }
 
+func TestLoadLatestConversationMessageTreatsNotReadyAsEmpty(t *testing.T) {
+	msg, ok, err := loadLatestConversationMessage(context.Background(), notReadyConversationFactsCluster{}, channel.ChannelID{ID: "g1", Type: 2}, 1024)
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Equal(t, channel.Message{}, msg)
+}
+
+func TestLoadRecentConversationMessagesTreatsNotReadyAsEmpty(t *testing.T) {
+	msgs, err := loadRecentConversationMessages(context.Background(), notReadyConversationFactsCluster{}, channel.ChannelID{ID: "g1", Type: 2}, 10, 1024)
+	require.NoError(t, err)
+	require.Nil(t, msgs)
+}
+
 type staleConversationFactsCluster struct{}
 
 func (staleConversationFactsCluster) Status(channel.ChannelID) (channel.ChannelRuntimeStatus, error) {
@@ -129,6 +142,16 @@ func (staleConversationFactsCluster) Status(channel.ChannelID) (channel.ChannelR
 
 func (staleConversationFactsCluster) Fetch(context.Context, channel.FetchRequest) (channel.FetchResult, error) {
 	return channel.FetchResult{}, channel.ErrStaleMeta
+}
+
+type notReadyConversationFactsCluster struct{}
+
+func (notReadyConversationFactsCluster) Status(channel.ChannelID) (channel.ChannelRuntimeStatus, error) {
+	return channel.ChannelRuntimeStatus{}, channel.ErrNotReady
+}
+
+func (notReadyConversationFactsCluster) Fetch(context.Context, channel.FetchRequest) (channel.FetchResult, error) {
+	return channel.FetchResult{}, channel.ErrNotReady
 }
 
 type staticConversationFactsMetas struct {

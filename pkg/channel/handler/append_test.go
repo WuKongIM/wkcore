@@ -17,8 +17,9 @@ func TestAppendUsesRuntimeKeyAndReturnsMessageSeq(t *testing.T) {
 	handle := &fakeChannelHandle{
 		id: key,
 		status: core.ReplicaState{
-			ChannelKey: key,
-			Role:       core.ReplicaRoleLeader,
+			ChannelKey:  key,
+			Role:        core.ReplicaRoleLeader,
+			CommitReady: true,
 		},
 	}
 	handle.appendFn = func(_ context.Context, records []core.Record) (core.CommitResult, error) {
@@ -233,8 +234,9 @@ func newAppendService(t *testing.T, id core.ChannelID) (Service, *fakeRuntime, *
 	handle := &fakeChannelHandle{
 		id: key,
 		status: core.ReplicaState{
-			ChannelKey: key,
-			Role:       core.ReplicaRoleLeader,
+			ChannelKey:  key,
+			Role:        core.ReplicaRoleLeader,
+			CommitReady: true,
 		},
 	}
 	handle.appendFn = func(_ context.Context, records []core.Record) (core.CommitResult, error) {

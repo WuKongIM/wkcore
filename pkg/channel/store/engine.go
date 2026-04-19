@@ -2,20 +2,32 @@ package store
 
 import (
 	"sync"
+	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/cockroachdb/pebble/v2"
 )
+
+const defaultChannelWALMinSyncInterval = 2 * time.Millisecond
+
+func defaultPebbleOptions() *pebble.Options {
+	return &pebble.Options{
+		WALMinSyncInterval: func() time.Duration {
+			return defaultChannelWALMinSyncInterval
+		},
+	}
+}
 
 type Engine struct {
 	mu          sync.Mutex
 	db          *pebble.DB
 	stores      map[channel.ChannelKey]*ChannelStore
 	coordinator *commitCoordinator
+	checkpoint  *commitCoordinator
 }
 
 func Open(path string) (*Engine, error) {
-	pdb, err := pebble.Open(path, &pebble.Options{})
+	pdb, err := pebble.Open(path, defaultPebbleOptions())
 	if err != nil {
 		return nil, err
 	}
@@ -36,12 +48,17 @@ func (e *Engine) Close() error {
 	}
 	pdb := e.db
 	coordinator := e.coordinator
+	checkpoint := e.checkpoint
 	e.db = nil
 	e.stores = nil
 	e.coordinator = nil
+	e.checkpoint = nil
 	e.mu.Unlock()
 	if coordinator != nil {
 		coordinator.close()
+	}
+	if checkpoint != nil {
+		checkpoint.close()
 	}
 	return pdb.Close()
 }
@@ -84,4 +101,40 @@ func (e *Engine) commitCoordinator() *commitCoordinator {
 		e.coordinator = newCommitCoordinator(e.db)
 	}
 	return e.coordinator
+}
+
+func (e *Engine) checkpointCoordinator() *commitCoordinator {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.db == nil {
+		return nil
+	}
+	if e.checkpoint == nil {
+		e.checkpoint = newCommitCoordinator(e.db)
+	}
+	return e.checkpoint
+}
+
+func (e *Engine) checkpointCoordinatorForStore() *commitCoordinator {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.db == nil {
+		return nil
+	}
+	if e.checkpoint != nil {
+		return e.checkpoint
+	}
+	for _, st := range e.stores {
+		if st != nil && st.writeInProgress.Load() {
+			e.checkpoint = newCommitCoordinator(e.db)
+			return e.checkpoint
+		}
+	}
+	return nil
 }

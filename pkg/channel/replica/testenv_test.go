@@ -3,6 +3,7 @@ package replica
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -245,7 +246,50 @@ type testEnv struct {
 	snapshots   *fakeSnapshotApplier
 	applyFetch  *fakeApplyFetchStore
 	clock       *manualClock
-	replica     *replica
+	// peerProgress captures the quorum-visible offsets future recovery reconcile
+	// should use when deciding whether tail above CheckpointHW is safe to keep.
+	peerProgress map[channel.NodeID]uint64
+	peerProofs   map[channel.NodeID]channel.ReplicaReconcileProof
+	replica      *replica
+}
+
+type fakeReconcileProbeSource struct {
+	env *testEnv
+}
+
+func (f fakeReconcileProbeSource) ProbeQuorum(_ context.Context, meta channel.Meta, _ channel.ReplicaState) ([]channel.ReplicaReconcileProof, error) {
+	proofs := make([]channel.ReplicaReconcileProof, 0, len(meta.ISR))
+	for _, id := range meta.ISR {
+		if id == 0 || id == f.env.localNode {
+			continue
+		}
+		if proof, ok := f.env.peerProofs[id]; ok {
+			if proof.ChannelKey == "" {
+				proof.ChannelKey = meta.Key
+			}
+			if proof.Epoch == 0 {
+				proof.Epoch = meta.Epoch
+			}
+			if proof.ReplicaID == 0 {
+				proof.ReplicaID = id
+			}
+			proofs = append(proofs, proof)
+			continue
+		}
+		offset, ok := f.env.peerProgress[id]
+		if !ok {
+			continue
+		}
+		proofs = append(proofs, channel.ReplicaReconcileProof{
+			ChannelKey:   meta.Key,
+			Epoch:        meta.Epoch,
+			ReplicaID:    id,
+			OffsetEpoch:  meta.Epoch,
+			LogEndOffset: offset,
+			CheckpointHW: offset,
+		})
+	}
+	return proofs, nil
 }
 
 func newTestEnv(t testing.TB) *testEnv {
@@ -273,6 +317,9 @@ func (e *testEnv) config() ReplicaConfig {
 	if e.applyFetch != nil {
 		cfg.ApplyFetchStore = e.applyFetch
 	}
+	if len(e.peerProgress) > 0 || len(e.peerProofs) > 0 {
+		cfg.ReconcileProbeSource = fakeReconcileProbeSource{env: e}
+	}
 	return cfg
 }
 
@@ -288,6 +335,62 @@ func newReplicaFromEnv(t testing.TB, env *testEnv) *replica {
 	}
 	env.replica = r
 	return r
+}
+
+func requireReplicaStateBoolField(tb testing.TB, state channel.ReplicaState, field string, want bool) {
+	tb.Helper()
+
+	got := reflect.ValueOf(state).FieldByName(field)
+	if !got.IsValid() {
+		tb.Fatalf("ReplicaState.%s missing; dual-watermark contract not implemented", field)
+	}
+	if got.Kind() != reflect.Bool {
+		tb.Fatalf("ReplicaState.%s kind = %s, want bool", field, got.Kind())
+	}
+	if actual := got.Bool(); actual != want {
+		tb.Fatalf("ReplicaState.%s = %v, want %v", field, actual, want)
+	}
+}
+
+func requireReplicaStateUint64Field(tb testing.TB, state channel.ReplicaState, field string, want uint64) {
+	tb.Helper()
+
+	got := reflect.ValueOf(state).FieldByName(field)
+	if !got.IsValid() {
+		tb.Fatalf("ReplicaState.%s missing; dual-watermark contract not implemented", field)
+	}
+	if got.Kind() != reflect.Uint64 {
+		tb.Fatalf("ReplicaState.%s kind = %s, want uint64", field, got.Kind())
+	}
+	if actual := got.Uint(); actual != want {
+		tb.Fatalf("ReplicaState.%s = %d, want %d", field, actual, want)
+	}
+}
+
+func setReplicaStateOptionalBoolField(tb testing.TB, state *channel.ReplicaState, field string, want bool) {
+	tb.Helper()
+
+	got := reflect.ValueOf(state).Elem().FieldByName(field)
+	if !got.IsValid() {
+		return
+	}
+	if got.Kind() != reflect.Bool {
+		tb.Fatalf("ReplicaState.%s kind = %s, want bool", field, got.Kind())
+	}
+	got.SetBool(want)
+}
+
+func setReplicaStateOptionalUint64Field(tb testing.TB, state *channel.ReplicaState, field string, want uint64) {
+	tb.Helper()
+
+	got := reflect.ValueOf(state).Elem().FieldByName(field)
+	if !got.IsValid() {
+		return
+	}
+	if got.Kind() != reflect.Uint64 {
+		tb.Fatalf("ReplicaState.%s kind = %s, want uint64", field, got.Kind())
+	}
+	got.SetUint(want)
 }
 
 func newTestReplica(t testing.TB) *replica {
@@ -320,7 +423,6 @@ func newRecoveredLeaderEnv(t testing.TB) *testEnv {
 	env.checkpoints.checkpoint = channel.Checkpoint{Epoch: 6, LogStartOffset: 0, HW: 4}
 	env.history.loadErr = nil
 	env.history.points = []channel.EpochPoint{{Epoch: 6, StartOffset: 0}}
-	env.replica = newReplicaFromEnv(t, env)
 	return env
 }
 
@@ -392,8 +494,12 @@ type threeReplicaCluster struct {
 }
 
 func newThreeReplicaCluster(t testing.TB) *threeReplicaCluster {
+	return newThreeReplicaClusterWithMinISR(t, 3)
+}
+
+func newThreeReplicaClusterWithMinISR(t testing.TB, minISR int) *threeReplicaCluster {
 	t.Helper()
-	meta := activeMetaWithMinISR(7, 1, 3)
+	meta := activeMetaWithMinISR(7, 1, minISR)
 
 	leaderEnv := newTestEnv(t)
 	leaderEnv.replica = newReplicaFromEnv(t, leaderEnv)
@@ -467,7 +573,10 @@ func cloneSnapshot(snap channel.Snapshot) channel.Snapshot {
 }
 
 func cloneApplyFetchStoreRequest(req channel.ApplyFetchStoreRequest) channel.ApplyFetchStoreRequest {
-	cloned := channel.ApplyFetchStoreRequest{Records: make([]channel.Record, 0, len(req.Records))}
+	cloned := channel.ApplyFetchStoreRequest{
+		PreviousCommittedHW: req.PreviousCommittedHW,
+		Records:             make([]channel.Record, 0, len(req.Records)),
+	}
 	for _, record := range req.Records {
 		cloned.Records = append(cloned.Records, cloneRecord(record))
 	}

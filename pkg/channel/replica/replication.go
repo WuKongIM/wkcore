@@ -76,8 +76,9 @@ func (r *replica) ApplyFetch(_ context.Context, req channel.ReplicaApplyFetchReq
 
 			r.mu.Unlock()
 			storedLEO, err := r.applyFetch.StoreApplyFetch(channel.ApplyFetchStoreRequest{
-				Records:    req.Records,
-				Checkpoint: checkpoint,
+				PreviousCommittedHW: r.state.HW,
+				Records:             req.Records,
+				Checkpoint:          checkpoint,
 			})
 			if err != nil {
 				return err
@@ -90,7 +91,9 @@ func (r *replica) ApplyFetch(_ context.Context, req channel.ReplicaApplyFetchReq
 			r.state.LEO = storedLEO
 			if checkpoint != nil {
 				r.state.HW = checkpoint.HW
+				r.state.CheckpointHW = checkpoint.HW
 			}
+			r.state.CommitReady = true
 			r.state.OffsetEpoch = offsetEpochForLEO(r.epochHistory, storedLEO)
 			r.publishStateLocked()
 			r.mu.Unlock()
@@ -118,6 +121,7 @@ func (r *replica) ApplyFetch(_ context.Context, req channel.ReplicaApplyFetchReq
 	}
 	if nextHW == r.state.HW {
 		r.state.LEO = leo
+		r.state.CommitReady = true
 		r.state.OffsetEpoch = offsetEpochForLEO(r.epochHistory, leo)
 		r.publishStateLocked()
 		r.mu.Unlock()
@@ -136,6 +140,8 @@ func (r *replica) ApplyFetch(_ context.Context, req channel.ReplicaApplyFetchReq
 
 	r.state.LEO = leo
 	r.state.HW = nextHW
+	r.state.CheckpointHW = nextHW
+	r.state.CommitReady = true
 	r.state.OffsetEpoch = offsetEpochForLEO(r.epochHistory, leo)
 	r.publishStateLocked()
 	r.mu.Unlock()

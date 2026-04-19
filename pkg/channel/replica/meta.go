@@ -20,7 +20,12 @@ func (r *replica) validateMetaLocked(normalized channel.Meta) error {
 		return channel.ErrInvalidMeta
 	case normalized.Epoch < r.state.Epoch:
 		return channel.ErrStaleMeta
-	case normalized.Epoch == r.state.Epoch && r.state.Leader != 0 && normalized.Leader != r.state.Leader:
+	case normalized.Epoch == r.state.Epoch && normalized.LeaderEpoch < r.meta.LeaderEpoch:
+		return channel.ErrStaleMeta
+	case normalized.Epoch == r.state.Epoch &&
+		normalized.LeaderEpoch == r.meta.LeaderEpoch &&
+		r.state.Leader != 0 &&
+		normalized.Leader != r.state.Leader:
 		return channel.ErrStaleMeta
 	}
 	return nil
