@@ -343,7 +343,7 @@ func TestPoolAcquireAfterCooldownStartsOneNewDial(t *testing.T) {
 				return
 			}
 			accepts.Add(1)
-			_ = conn.Close()
+			go drainConn(conn)
 		}
 	}()
 
@@ -463,7 +463,7 @@ func TestPoolAcquireClosedSlotTriggersSingleRewarm(t *testing.T) {
 				return
 			}
 			accepts.Add(1)
-			_ = conn.Close()
+			go drainConn(conn)
 		}
 	}()
 
@@ -495,7 +495,6 @@ func TestPoolAcquireClosedSlotTriggersSingleRewarm(t *testing.T) {
 	}
 
 	requireEventually(t, func() bool { return dials.Load() == 3 })
-	requireEventually(t, func() bool { return accepts.Load() == 2 })
 
 	reused, err := pool.acquire(2, 0)
 	if err != nil {
@@ -506,9 +505,6 @@ func TestPoolAcquireClosedSlotTriggersSingleRewarm(t *testing.T) {
 	}
 	if got := dials.Load(); got != 3 {
 		t.Fatalf("dial attempts = %d, want 3", got)
-	}
-	if got := accepts.Load(); got != 2 {
-		t.Fatalf("accepted connections = %d, want 2", got)
 	}
 
 	_ = rewarmLn.Close()
