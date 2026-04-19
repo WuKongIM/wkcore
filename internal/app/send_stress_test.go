@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"os"
@@ -69,6 +70,16 @@ type sendStressLatencySummary struct {
 	P95   time.Duration
 	P99   time.Duration
 	Max   time.Duration
+}
+
+type sendStressObservedMetrics struct {
+	Label                string
+	QPS                  float64
+	P50                  time.Duration
+	P95                  time.Duration
+	P99                  time.Duration
+	VerificationCount    int
+	VerificationFailures int
 }
 
 type sendStressTarget struct {
@@ -486,6 +497,50 @@ func percentileSendStressDuration(sorted []time.Duration, pct float64) time.Dura
 	return sorted[index]
 }
 
+const (
+	sendStressBaselineLogPath   = "/tmp/send-stress-postfix.log"
+	sendStressBaselineCPUPath   = "tmp/profiles/send-stress-postfix.cpu.out"
+	sendStressBaselineBlockPath = "tmp/profiles/send-stress-postfix.block.out"
+)
+
+var sendStressTransport5000Baseline = sendStressObservedMetrics{
+	Label:                "2026-04-19-send-stress-postfix",
+	QPS:                  4210.29,
+	P50:                  476435459 * time.Nanosecond,
+	P95:                  962106917 * time.Nanosecond,
+	P99:                  1109378583 * time.Nanosecond,
+	VerificationFailures: 0,
+}
+
+func compareSendStressBaseline(observed sendStressObservedMetrics) string {
+	guardrailStatus := "fail"
+	if observed.P95 <= time.Duration(float64(sendStressTransport5000Baseline.P95)*1.15) {
+		guardrailStatus = "pass"
+	}
+	return fmt.Sprintf(
+		"baseline=%s baseline_qps=%.2f baseline_p50=%s baseline_p95=%s baseline_p99=%s qps_delta=%+.2f%% p50_delta=%+.2f%% p95_delta=%+.2f%% p99_delta=%+.2f%% verification_count=%d verification_failures=%d p95_guardrail=%s",
+		sendStressTransport5000Baseline.Label,
+		sendStressTransport5000Baseline.QPS,
+		sendStressTransport5000Baseline.P50,
+		sendStressTransport5000Baseline.P95,
+		sendStressTransport5000Baseline.P99,
+		percentDelta(observed.QPS, sendStressTransport5000Baseline.QPS),
+		percentDelta(float64(observed.P50), float64(sendStressTransport5000Baseline.P50)),
+		percentDelta(float64(observed.P95), float64(sendStressTransport5000Baseline.P95)),
+		percentDelta(float64(observed.P99), float64(sendStressTransport5000Baseline.P99)),
+		observed.VerificationCount,
+		observed.VerificationFailures,
+		guardrailStatus,
+	)
+}
+
+func percentDelta(observed, baseline float64) float64 {
+	if baseline == 0 {
+		return 0
+	}
+	return (observed - baseline) * 100 / baseline
+}
+
 func sendStressActiveTargetCount(cfg sendStressConfig, totalTargets int) int {
 	if totalTargets <= 0 {
 		return 0
@@ -632,6 +687,30 @@ func TestSelectSendStressThreeNodeRunPreservesExplicitEnvSelection(t *testing.T)
 	require.Equal(t, 3, selection.minISR)
 }
 
+func TestSelectSendStressThreeNodeRunUsesAcceptancePresetWhenExplicitEnvMatchesPreset(t *testing.T) {
+	clearSendStressConfigEnv(t)
+	preset := sendStressAcceptancePreset()
+
+	t.Setenv(sendStressEnv, "1")
+	t.Setenv(sendStressModeEnv, string(preset.Benchmark.Mode))
+	t.Setenv(sendStressDurationEnv, preset.Benchmark.Duration.String())
+	t.Setenv(sendStressWorkersEnv, strconv.Itoa(preset.Benchmark.Workers))
+	t.Setenv(sendStressSendersEnv, strconv.Itoa(preset.Benchmark.Senders))
+	t.Setenv(sendStressMessagesPerWorkerEnv, strconv.Itoa(preset.Benchmark.MessagesPerWorker))
+	t.Setenv(sendStressMaxInflightEnv, strconv.Itoa(preset.Benchmark.MaxInflightPerWorker))
+	t.Setenv(sendStressDialTimeoutEnv, preset.Benchmark.DialTimeout.String())
+	t.Setenv(sendStressAckTimeoutEnv, preset.Benchmark.AckTimeout.String())
+	t.Setenv(sendStressSeedEnv, strconv.FormatInt(preset.Benchmark.Seed, 10))
+
+	selection := selectSendStressThreeNodeRun(t)
+
+	require.True(t, selection.useAcceptancePreset)
+	require.Equal(t, preset.MinISR, selection.minISR)
+	expected := preset.Benchmark
+	expected.Enabled = true
+	require.Equal(t, expected, selection.cfg)
+}
+
 func TestSendStressConfigDefaultsToLatencyMode(t *testing.T) {
 	clearSendStressConfigEnv(t)
 
@@ -692,6 +771,24 @@ func TestSendStressLatencySummaryPercentiles(t *testing.T) {
 	require.Equal(t, 90*time.Millisecond, summary.P95)
 	require.Equal(t, 90*time.Millisecond, summary.P99)
 	require.Equal(t, 90*time.Millisecond, summary.Max)
+}
+
+func TestSendStressBenchmarkComparisonUsesPinnedTransportBaseline(t *testing.T) {
+	got := compareSendStressBaseline(sendStressObservedMetrics{
+		QPS:                  5005.5,
+		P50:                  430 * time.Millisecond,
+		P95:                  980 * time.Millisecond,
+		P99:                  1100 * time.Millisecond,
+		VerificationCount:    1600,
+		VerificationFailures: 0,
+	})
+	require.Contains(t, got, "baseline_qps=4210.29")
+	require.Contains(t, got, "baseline_p50=476.435459ms")
+	require.Contains(t, got, "baseline_p99=1.109378583s")
+	require.Contains(t, got, "qps_delta=+18.89%")
+	require.Contains(t, got, "verification_count=1600")
+	require.Contains(t, got, "verification_failures=0")
+	require.Contains(t, got, "p95_guardrail=pass")
 }
 
 func TestSendStressActiveTargetCountUsesAllSendersInThroughputMode(t *testing.T) {
@@ -817,7 +914,7 @@ func TestRunSendStressWorkersThroughputModeCapsInflightPerWorker(t *testing.T) {
 	serverErr := make(chan error, 1)
 	var maxInflight atomic.Int64
 	go func() {
-		serverErr <- runScriptedSendStressAckServer(serverConn, cfg.MessagesPerWorker, serverStarted, releaseAcks, &maxInflight)
+		serverErr <- runContinuousSendStressAckServerWithRelease(serverConn, serverStarted, releaseAcks, &maxInflight)
 	}()
 
 	done := make(chan struct{})
@@ -828,7 +925,7 @@ func TestRunSendStressWorkersThroughputModeCapsInflightPerWorker(t *testing.T) {
 		runErr   error
 	)
 	go func() {
-		outcome, records, failures, runErr = runSendStressWorkerThroughput(client, 0, cfg, time.Now().Add(5*time.Second))
+		outcome, records, failures, runErr = runSendStressWorkerThroughput(client, 0, cfg, time.Now().Add(50*time.Millisecond))
 		close(done)
 	}()
 
@@ -843,7 +940,7 @@ func TestRunSendStressWorkersThroughputModeCapsInflightPerWorker(t *testing.T) {
 	select {
 	case <-serverStarted:
 		t.Fatal("worker exceeded max inflight before acknowledgements were released")
-	case <-time.After(150 * time.Millisecond):
+	case <-time.After(50 * time.Millisecond):
 	}
 
 	close(releaseAcks)
@@ -855,13 +952,58 @@ func TestRunSendStressWorkersThroughputModeCapsInflightPerWorker(t *testing.T) {
 	}
 
 	require.NoError(t, runErr)
+	require.NoError(t, clientConn.Close())
 	require.NoError(t, <-serverErr)
 	require.Empty(t, failures)
-	require.Len(t, records, cfg.MessagesPerWorker)
-	require.EqualValues(t, cfg.MessagesPerWorker, outcome.Total)
-	require.EqualValues(t, cfg.MessagesPerWorker, outcome.Success)
+	require.NotEmpty(t, records)
+	require.Greater(t, outcome.Total, uint64(cfg.MaxInflightPerWorker))
+	require.Greater(t, outcome.Success, uint64(cfg.MaxInflightPerWorker))
 	require.Zero(t, outcome.Failed)
 	require.LessOrEqual(t, maxInflight.Load(), int64(cfg.MaxInflightPerWorker))
+}
+
+func TestRunSendStressWorkerThroughputUsesDurationInsteadOfMessageBudget(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+	})
+
+	cfg := sendStressConfig{
+		Mode:                 sendStressModeThroughput,
+		MaxInflightPerWorker: 1,
+		MessagesPerWorker:    1,
+		AckTimeout:           time.Second,
+		Seed:                 7,
+	}
+	client := sendStressWorkerClient{
+		target: sendStressTarget{
+			SenderUID:     "sender",
+			RecipientUID:  "recipient",
+			ChannelID:     "channel",
+			ChannelType:   frame.ChannelTypePerson,
+			OwnerNodeID:   1,
+			ConnectNodeID: 1,
+		},
+		conn:    clientConn,
+		reader:  newSendStressFrameReader(clientConn),
+		writeMu: &sync.Mutex{},
+	}
+
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- runContinuousSendStressAckServer(serverConn)
+	}()
+
+	outcome, records, failures, err := runSendStressWorkerThroughput(client, 0, cfg, time.Now().Add(250*time.Millisecond))
+	require.NoError(t, err)
+	require.Empty(t, failures)
+	require.Greater(t, outcome.Total, uint64(cfg.MessagesPerWorker))
+	require.Greater(t, outcome.Success, uint64(cfg.MessagesPerWorker))
+	require.Len(t, records, cfg.MessagesPerWorker)
+
+	require.NoError(t, clientConn.Close())
+	require.NoError(t, <-serverErr)
 }
 
 func TestSendStressThreeNode(t *testing.T) {
@@ -882,8 +1024,12 @@ func TestSendStressThreeNode(t *testing.T) {
 
 	targets := preloadSendStressChannels(t, harness, leader, cfg, selection.minISR)
 	assertSendStressAcceptanceMinISR(t, harness, leader, targets, selection.minISR)
-	outcome, records, failures := runSendStressWorkers(t, harness, targets, cfg)
+	outcome, observed, records, failures := runSendStressWorkers(t, harness, targets, cfg)
 	verifySendStressCommittedRecords(t, harness, records)
+	if cfg.Mode == sendStressModeThroughput {
+		t.Logf("send stress baseline artifacts: log=%s cpu=%s block=%s", sendStressBaselineLogPath, sendStressBaselineCPUPath, sendStressBaselineBlockPath)
+		t.Logf("%s", compareSendStressBaseline(observed))
+	}
 
 	t.Logf("send stress results: total=%d success=%d failed=%d error_rate=%.2f%%", outcome.Total, outcome.Success, outcome.Failed, outcome.ErrorRate())
 	if len(failures) > 0 {
@@ -893,7 +1039,12 @@ func TestSendStressThreeNode(t *testing.T) {
 	require.NotZero(t, outcome.Total)
 	require.Equal(t, outcome.Total, outcome.Success)
 	require.Zero(t, outcome.Failed)
-	require.Len(t, records, int(outcome.Success))
+	if cfg.Mode == sendStressModeThroughput {
+		require.NotEmpty(t, records)
+		require.LessOrEqual(t, len(records), int(outcome.Success))
+	} else {
+		require.Len(t, records, int(outcome.Success))
+	}
 }
 
 func selectSendStressThreeNodeRun(t *testing.T) sendStressThreeNodeRunSelection {
@@ -903,9 +1054,11 @@ func selectSendStressThreeNodeRun(t *testing.T) sendStressThreeNodeRunSelection 
 	cfg := loadSendStressConfig(t)
 	requireSendStressEnabled(t, cfg)
 
-	if !sendStressThreeNodeHasExplicitTuningEnv() {
-		cfg = preset.Benchmark
-		cfg.Enabled = true
+	expectedAcceptance := preset.Benchmark
+	expectedAcceptance.Enabled = true
+
+	if !sendStressThreeNodeHasExplicitTuningEnv() || cfg == expectedAcceptance {
+		cfg = expectedAcceptance
 		return sendStressThreeNodeRunSelection{
 			cfg:                 cfg,
 			preset:              preset,
@@ -1003,12 +1156,12 @@ func assertSendStressAcceptanceMinISR(t *testing.T, harness *threeNodeAppHarness
 	for _, target := range targets {
 		meta, err := leader.Store().GetChannelRuntimeMeta(context.Background(), target.ChannelID, int64(target.ChannelType))
 		require.NoError(t, err)
-		require.Equal(t, minISR, meta.MinISR, "leader store should preserve MinISR for %s", target.ChannelID)
+		require.EqualValues(t, minISR, meta.MinISR, "leader store should preserve MinISR for %s", target.ChannelID)
 
 		for _, app := range harness.appsWithLeaderFirst(leader.cfg.Node.ID) {
 			meta, err := app.Store().GetChannelRuntimeMeta(context.Background(), target.ChannelID, int64(target.ChannelType))
 			require.NoError(t, err)
-			require.Equal(t, minISR, meta.MinISR, "app %d should preserve MinISR for %s", app.cfg.Node.ID, target.ChannelID)
+			require.EqualValues(t, minISR, meta.MinISR, "app %d should preserve MinISR for %s", app.cfg.Node.ID, target.ChannelID)
 		}
 	}
 }
@@ -1103,7 +1256,7 @@ func preloadSendStressChannels(t *testing.T, harness *threeNodeAppHarness, leade
 	return targets
 }
 
-func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []sendStressTarget, cfg sendStressConfig) (sendStressOutcome, []sendStressRecord, []string) {
+func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []sendStressTarget, cfg sendStressConfig) (sendStressOutcome, sendStressObservedMetrics, []sendStressRecord, []string) {
 	t.Helper()
 	require.NotNil(t, harness)
 	require.NotEmpty(t, targets)
@@ -1204,6 +1357,14 @@ func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []
 	if elapsed > 0 {
 		qps = float64(outcome.Success) / elapsed.Seconds()
 	}
+	observed := sendStressObservedMetrics{
+		QPS:                  qps,
+		P50:                  latencySummary.P50,
+		P95:                  latencySummary.P95,
+		P99:                  latencySummary.P99,
+		VerificationCount:    len(records),
+		VerificationFailures: len(failures),
+	}
 	t.Logf(
 		"send stress metrics: mode=%s max_inflight=%d duration=%s workers=%d senders=%d total=%d success=%d failed=%d qps=%.2f p50=%s p95=%s p99=%s max=%s verification_count=%d verification_failures=%d",
 		cfg.Mode,
@@ -1219,14 +1380,14 @@ func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []
 		latencySummary.P95,
 		latencySummary.P99,
 		latencySummary.Max,
-		len(records),
-		0,
+		observed.VerificationCount,
+		observed.VerificationFailures,
 	)
 	if len(failures) > 0 {
 		t.Logf("send stress failure samples: %s", strings.Join(failures, " | "))
 	}
 
-	return outcome, records, failures
+	return outcome, observed, records, failures
 }
 
 func runSendStressWorkerLatency(client sendStressWorkerClient, worker int, cfg sendStressConfig, deadline time.Time) (sendStressOutcome, []sendStressRecord, []string) {
@@ -1271,7 +1432,9 @@ func runSendStressWorkerThroughput(client sendStressWorkerClient, worker int, cf
 		defer mu.Unlock()
 		if result.ok {
 			outcome.Success++
-			records = append(records, result.record)
+			if len(records) < cfg.MessagesPerWorker {
+				records = append(records, result.record)
+			}
 			return
 		}
 		outcome.Failed++
@@ -1297,7 +1460,7 @@ func runSendStressWorkerThroughput(client sendStressWorkerClient, worker int, cf
 	}()
 
 	nextClientSeq := uint64(2)
-	for iteration := 0; iteration < cfg.MessagesPerWorker; iteration++ {
+	for iteration := 0; ; iteration++ {
 		if time.Now().After(deadline) {
 			break
 		}
@@ -1499,7 +1662,7 @@ func verifySendStressCommittedRecords(t *testing.T, harness *threeNodeAppHarness
 		owner := harness.apps[record.OwnerNodeID]
 		require.NotNil(t, owner, "owner node %d is not running", record.OwnerNodeID)
 
-		ownerMsg := waitForAppCommittedMessage(t, channelStoreForID(owner.ChannelLogDB(), id), record.MessageSeq, 5*time.Second)
+		ownerMsg := waitForAppCommittedMessage(t, owner, id, record.MessageSeq, 5*time.Second)
 		require.Equalf(t, record.Payload, ownerMsg.Payload, "owner mismatch worker=%d iteration=%d sender=%s recipient=%s connect_node=%d message_seq=%d message_id=%d client_seq=%d client_msg_no=%s frames_before_ack=%v owner_from=%s owner_client_msg_no=%s owner_payload=%q", record.Worker, record.Iteration, record.SenderUID, record.RecipientUID, record.ConnectNodeID, record.MessageSeq, record.MessageID, record.ClientSeq, record.ClientMsgNo, record.FramesBeforeAck, ownerMsg.FromUID, ownerMsg.ClientMsgNo, string(ownerMsg.Payload))
 		require.Equalf(t, record.SenderUID, ownerMsg.FromUID, "owner sender mismatch worker=%d iteration=%d message_seq=%d client_msg_no=%s frames_before_ack=%v owner_from=%s owner_payload=%q", record.Worker, record.Iteration, record.MessageSeq, record.ClientMsgNo, record.FramesBeforeAck, ownerMsg.FromUID, string(ownerMsg.Payload))
 		require.Equalf(t, record.ClientMsgNo, ownerMsg.ClientMsgNo, "owner client_msg_no mismatch worker=%d iteration=%d message_seq=%d client_msg_no=%s frames_before_ack=%v owner_client_msg_no=%s owner_payload=%q", record.Worker, record.Iteration, record.MessageSeq, record.ClientMsgNo, record.FramesBeforeAck, ownerMsg.ClientMsgNo, string(ownerMsg.Payload))
@@ -1507,7 +1670,7 @@ func verifySendStressCommittedRecords(t *testing.T, harness *threeNodeAppHarness
 		require.Equalf(t, record.ChannelType, ownerMsg.ChannelType, "owner channel type mismatch worker=%d iteration=%d message_seq=%d client_msg_no=%s", record.Worker, record.Iteration, record.MessageSeq, record.ClientMsgNo)
 
 		for _, app := range harness.orderedApps() {
-			msg := waitForAppCommittedMessage(t, channelStoreForID(app.ChannelLogDB(), id), record.MessageSeq, 5*time.Second)
+			msg := waitForAppCommittedMessage(t, app, id, record.MessageSeq, 5*time.Second)
 			require.Equalf(t, record.Payload, msg.Payload, "replica mismatch node=%d worker=%d iteration=%d sender=%s recipient=%s connect_node=%d message_seq=%d message_id=%d client_seq=%d client_msg_no=%s frames_before_ack=%v replica_from=%s replica_client_msg_no=%s replica_payload=%q", app.cfg.Node.ID, record.Worker, record.Iteration, record.SenderUID, record.RecipientUID, record.ConnectNodeID, record.MessageSeq, record.MessageID, record.ClientSeq, record.ClientMsgNo, record.FramesBeforeAck, msg.FromUID, msg.ClientMsgNo, string(msg.Payload))
 			require.Equalf(t, record.SenderUID, msg.FromUID, "replica sender mismatch node=%d worker=%d iteration=%d message_seq=%d client_msg_no=%s", app.cfg.Node.ID, record.Worker, record.Iteration, record.MessageSeq, record.ClientMsgNo)
 			require.Equalf(t, record.ClientMsgNo, msg.ClientMsgNo, "replica client_msg_no mismatch node=%d worker=%d iteration=%d message_seq=%d client_msg_no=%s replica_client_msg_no=%s", app.cfg.Node.ID, record.Worker, record.Iteration, record.MessageSeq, record.ClientMsgNo, msg.ClientMsgNo)
@@ -1724,7 +1887,12 @@ func runScriptedSendStressAckServer(conn net.Conn, expected int, started chan<- 
 					}
 				}
 			}
-			started <- struct{}{}
+			if !releaseObserved.Load() {
+				select {
+				case started <- struct{}{}:
+				default:
+				}
+			}
 			acks <- ackEnvelope{
 				packet: &frame.SendackPacket{
 					ClientSeq:   send.ClientSeq,
@@ -1770,6 +1938,146 @@ func runScriptedSendStressAckServer(conn net.Conn, expected int, started chan<- 
 			}
 			if released {
 				if err := writeSendStressFrame(conn, env.packet, 5*time.Second); err != nil {
+					return err
+				}
+				currentInflight.Add(-1)
+				continue
+			}
+			pending = append(pending, env)
+		case <-releaseCh:
+			releaseObserved.Store(true)
+			released = true
+			releaseCh = nil
+			if err := flushPending(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func runContinuousSendStressAckServer(conn net.Conn) error {
+	for {
+		f, err := readSendStressFrameWithin(conn, 5*time.Second)
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				continue
+			}
+			return err
+		}
+		send, ok := f.(*frame.SendPacket)
+		if !ok {
+			return fmt.Errorf("expected *frame.SendPacket, got %T", f)
+		}
+		if err := writeSendStressFrame(conn, &frame.SendackPacket{
+			ClientSeq:   send.ClientSeq,
+			ClientMsgNo: send.ClientMsgNo,
+			ReasonCode:  frame.ReasonSuccess,
+			MessageID:   int64(1000 + send.ClientSeq),
+			MessageSeq:  send.ClientSeq,
+		}, time.Second); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+func runContinuousSendStressAckServerWithRelease(conn net.Conn, started chan<- struct{}, releaseAcks <-chan struct{}, maxInflightBeforeRelease *atomic.Int64) error {
+	type ackEnvelope struct {
+		packet *frame.SendackPacket
+	}
+
+	acks := make(chan ackEnvelope, 64)
+	readerErrCh := make(chan error, 1)
+	var currentInflight atomic.Int64
+	var releaseObserved atomic.Bool
+
+	go func() {
+		defer close(acks)
+		for {
+			f, err := readSendStressFrameWithin(conn, 5*time.Second)
+			if err != nil {
+				if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+					readerErrCh <- nil
+					return
+				}
+				var netErr net.Error
+				if errors.As(err, &netErr) && netErr.Timeout() {
+					continue
+				}
+				readerErrCh <- err
+				return
+			}
+			send, ok := f.(*frame.SendPacket)
+			if !ok {
+				readerErrCh <- fmt.Errorf("expected *frame.SendPacket, got %T", f)
+				return
+			}
+			inflight := currentInflight.Add(1)
+			if maxInflightBeforeRelease != nil && !releaseObserved.Load() {
+				for {
+					prev := maxInflightBeforeRelease.Load()
+					if inflight <= prev || maxInflightBeforeRelease.CompareAndSwap(prev, inflight) {
+						break
+					}
+				}
+			}
+			started <- struct{}{}
+			acks <- ackEnvelope{
+				packet: &frame.SendackPacket{
+					ClientSeq:   send.ClientSeq,
+					ClientMsgNo: send.ClientMsgNo,
+					ReasonCode:  frame.ReasonSuccess,
+					MessageID:   int64(1000 + send.ClientSeq),
+					MessageSeq:  send.ClientSeq,
+				},
+			}
+		}
+	}()
+
+	pending := make([]ackEnvelope, 0, 8)
+	released := false
+	flushPending := func() error {
+		for len(pending) > 0 {
+			env := pending[0]
+			pending = pending[1:]
+			if err := writeSendStressFrame(conn, env.packet, 5*time.Second); err != nil {
+				if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+					return nil
+				}
+				return err
+			}
+			currentInflight.Add(-1)
+		}
+		return nil
+	}
+
+	releaseCh := releaseAcks
+	for {
+		select {
+		case env, ok := <-acks:
+			if !ok {
+				if !released && releaseCh != nil {
+					<-releaseCh
+					releaseObserved.Store(true)
+					released = true
+					releaseCh = nil
+				}
+				if err := flushPending(); err != nil {
+					return err
+				}
+				return <-readerErrCh
+			}
+			if released {
+				if err := writeSendStressFrame(conn, env.packet, 5*time.Second); err != nil {
+					if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+						return nil
+					}
 					return err
 				}
 				currentInflight.Add(-1)
