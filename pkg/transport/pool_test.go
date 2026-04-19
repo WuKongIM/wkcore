@@ -249,13 +249,21 @@ func TestPoolReusesConnectionForSameShard(t *testing.T) {
 }
 
 func TestPoolAcquireConcurrentColdSlotSharesSingleDialAndError(t *testing.T) {
-	addr := reserveTCPAddr(t)
+	var dials atomic.Int32
+	var extraDial atomic.Bool
 	pool := NewPool(PoolConfig{
-		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: addr}},
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: "dial-counter-test"}},
 		Size:        1,
 		DialTimeout: 20 * time.Millisecond,
-		QueueSizes:  [numPriorities]int{4, 4, 4},
-		DefaultPri:  PriorityRaft,
+		Dial: func(network, addr string, timeout time.Duration) (net.Conn, error) {
+			if dials.Add(1) > 1 {
+				extraDial.Store(true)
+			}
+			time.Sleep(30 * time.Millisecond)
+			return nil, errors.New("boom")
+		},
+		QueueSizes: [numPriorities]int{4, 4, 4},
+		DefaultPri: PriorityRaft,
 	})
 	defer pool.Close()
 
@@ -275,22 +283,6 @@ func TestPoolAcquireConcurrentColdSlotSharesSingleDialAndError(t *testing.T) {
 		t.Fatal("first acquire unexpectedly succeeded")
 	}
 
-	ln := mustListenOnAddr(t, addr)
-	defer ln.Close()
-
-	var accepts atomic.Int32
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			accepts.Add(1)
-			time.Sleep(200 * time.Millisecond)
-			_ = conn.Close()
-		}
-	}()
-
 	for i := 1; i < 8; i++ {
 		err := <-resultCh
 		if err == nil {
@@ -300,36 +292,52 @@ func TestPoolAcquireConcurrentColdSlotSharesSingleDialAndError(t *testing.T) {
 			t.Fatalf("acquire %d error = %v, want %v", i, err, firstErr)
 		}
 	}
-	if accepts.Load() != 0 {
-		t.Fatalf("listener accepted %d connections, want 0", accepts.Load())
+	if extraDial.Load() {
+		t.Fatal("saw more than one dial attempt")
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("dial attempts = %d, want 1", got)
 	}
 }
 
 func TestPoolAcquireReturnsCachedDialFailureDuringCooldown(t *testing.T) {
-	addr := reserveTCPAddr(t)
+	var dials atomic.Int32
 	pool := NewPool(PoolConfig{
-		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: addr}},
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: "cooldown-test"}},
 		Size:        1,
 		DialTimeout: 20 * time.Millisecond,
-		QueueSizes:  [numPriorities]int{4, 4, 4},
-		DefaultPri:  PriorityRaft,
+		Dial: func(network, addr string, timeout time.Duration) (net.Conn, error) {
+			dials.Add(1)
+			return nil, errors.New("boom")
+		},
+		QueueSizes: [numPriorities]int{4, 4, 4},
+		DefaultPri: PriorityRaft,
 	})
 	defer pool.Close()
 
 	firstErr := mustAcquireError(t, pool, 2, 0)
 
-	ln := mustListenOnAddr(t, addr)
+	secondErr := mustAcquireError(t, pool, 2, 0)
+	if secondErr.Error() != firstErr.Error() {
+		t.Fatalf("second acquire error = %v, want cached %v", secondErr, firstErr)
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("dial attempts = %d, want 1", got)
+	}
+}
+
+func TestPoolAcquireAfterCooldownStartsOneNewDial(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ln.Close()
 
+	addr := ln.Addr().String()
+	var dials atomic.Int32
 	var accepts atomic.Int32
-	stopAccept := make(chan struct{})
 	go func() {
 		for {
-			select {
-			case <-stopAccept:
-				return
-			default:
-			}
 			conn, err := ln.Accept()
 			if err != nil {
 				return
@@ -338,25 +346,20 @@ func TestPoolAcquireReturnsCachedDialFailureDuringCooldown(t *testing.T) {
 			_ = conn.Close()
 		}
 	}()
-	defer close(stopAccept)
 
-	secondErr := mustAcquireError(t, pool, 2, 0)
-	if secondErr.Error() != firstErr.Error() {
-		t.Fatalf("second acquire error = %v, want cached %v", secondErr, firstErr)
-	}
-	if accepts.Load() != 0 {
-		t.Fatalf("listener accepted %d connections during cooldown, want 0", accepts.Load())
-	}
-}
-
-func TestPoolAcquireAfterCooldownStartsOneNewDial(t *testing.T) {
-	addr := reserveTCPAddr(t)
 	pool := NewPool(PoolConfig{
 		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: addr}},
 		Size:        1,
 		DialTimeout: 20 * time.Millisecond,
-		QueueSizes:  [numPriorities]int{4, 4, 4},
-		DefaultPri:  PriorityRaft,
+		Dial: func(network, addr string, timeout time.Duration) (net.Conn, error) {
+			attempt := dials.Add(1)
+			if attempt == 1 {
+				return nil, errors.New("boom")
+			}
+			return net.DialTimeout(network, addr, timeout)
+		},
+		QueueSizes: [numPriorities]int{4, 4, 4},
+		DefaultPri: PriorityRaft,
 	})
 	defer pool.Close()
 
@@ -364,55 +367,48 @@ func TestPoolAcquireAfterCooldownStartsOneNewDial(t *testing.T) {
 	time.Sleep(75 * time.Millisecond)
 
 	resultCh := make(chan error, 8)
+	connCh := make(chan *MuxConn, 8)
 	start := make(chan struct{})
 	for i := 0; i < 8; i++ {
 		go func() {
 			<-start
-			_, err := pool.acquire(2, 0)
+			mc, err := pool.acquire(2, 0)
+			if err == nil {
+				connCh <- mc
+			}
 			resultCh <- err
 		}()
 	}
 
-	ln := mustListenOnAddr(t, addr)
-	defer ln.Close()
-
-	var accepts atomic.Int32
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			accepts.Add(1)
-			time.Sleep(200 * time.Millisecond)
-			_ = conn.Close()
-		}
-	}()
-
 	close(start)
 
+	var firstConn *MuxConn
 	for i := 0; i < 8; i++ {
 		if err := <-resultCh; err != nil {
 			t.Fatalf("acquire %d error = %v, want success after cooldown", i, err)
 		}
+		mc := <-connCh
+		if firstConn == nil {
+			firstConn = mc
+			continue
+		}
+		if mc != firstConn {
+			t.Fatalf("acquire %d returned different connection", i)
+		}
 	}
+	requireEventually(t, func() bool { return dials.Load() == 2 })
 	requireEventually(t, func() bool { return accepts.Load() == 1 })
 }
 
 func TestPoolAcquireClosedSlotTriggersSingleRewarm(t *testing.T) {
-	addr := reserveTCPAddr(t)
-	pool := NewPool(PoolConfig{
-		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: addr}},
-		Size:        1,
-		DialTimeout: 20 * time.Millisecond,
-		QueueSizes:  [numPriorities]int{4, 4, 4},
-		DefaultPri:  PriorityRaft,
-	})
-	defer pool.Close()
-
-	ln := mustListenOnAddr(t, addr)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
 	defer ln.Close()
 
+	var dials atomic.Int32
 	var accepts atomic.Int32
 	go func() {
 		for {
@@ -424,6 +420,19 @@ func TestPoolAcquireClosedSlotTriggersSingleRewarm(t *testing.T) {
 			_ = conn.Close()
 		}
 	}()
+
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: addr}},
+		Size:        1,
+		DialTimeout: 20 * time.Millisecond,
+		Dial: func(network, addr string, timeout time.Duration) (net.Conn, error) {
+			dials.Add(1)
+			return net.DialTimeout(network, addr, timeout)
+		},
+		QueueSizes: [numPriorities]int{4, 4, 4},
+		DefaultPri: PriorityRaft,
+	})
+	defer pool.Close()
 
 	mc, err := pool.acquire(2, 0)
 	if err != nil {
@@ -434,25 +443,20 @@ func TestPoolAcquireClosedSlotTriggersSingleRewarm(t *testing.T) {
 	}
 	mc.Close()
 
-	closeErrCh := make(chan error, 8)
-	start := make(chan struct{})
-	for i := 0; i < 8; i++ {
-		go func() {
-			<-start
-			_, err := pool.acquire(2, 0)
-			closeErrCh <- err
-		}()
-	}
-
-	close(start)
-	firstErr := <-closeErrCh
+	firstErr := mustAcquireError(t, pool, 2, 0)
 	if firstErr == nil {
 		t.Fatal("first closed-slot acquire unexpectedly succeeded")
 	}
 
-	rewarmLn := mustListenOnAddr(t, addr)
-	defer rewarmLn.Close()
+	time.Sleep(75 * time.Millisecond)
+
+	rewarmLn, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewarmDone := make(chan struct{})
 	go func() {
+		defer close(rewarmDone)
 		for {
 			conn, err := rewarmLn.Accept()
 			if err != nil {
@@ -463,12 +467,52 @@ func TestPoolAcquireClosedSlotTriggersSingleRewarm(t *testing.T) {
 		}
 	}()
 
-	for i := 1; i < 8; i++ {
-		err := <-closeErrCh
-		if err == nil {
-			t.Fatalf("acquire %d succeeded, want rewarm failure or shared result", i)
+	results := make(chan error, 8)
+	conns := make(chan *MuxConn, 8)
+	for i := 0; i < 8; i++ {
+		go func() {
+			mc, err := pool.acquire(2, 0)
+			if err == nil {
+				conns <- mc
+			}
+			results <- err
+		}()
+	}
+
+	var firstRewarmConn *MuxConn
+	for i := 0; i < 8; i++ {
+		if err := <-results; err != nil {
+			t.Fatalf("rewarm acquire %d error = %v, want success", i, err)
+		}
+		mc := <-conns
+		if firstRewarmConn == nil {
+			firstRewarmConn = mc
+			continue
+		}
+		if mc != firstRewarmConn {
+			t.Fatalf("rewarm acquire %d returned a different connection", i)
 		}
 	}
+
+	requireEventually(t, func() bool { return dials.Load() == 3 })
+	requireEventually(t, func() bool { return accepts.Load() == 2 })
+
+	reused, err := pool.acquire(2, 0)
+	if err != nil {
+		t.Fatalf("post-rewarm acquire error = %v", err)
+	}
+	if reused != firstRewarmConn {
+		t.Fatalf("post-rewarm acquire returned a different connection")
+	}
+	if got := dials.Load(); got != 3 {
+		t.Fatalf("dial attempts = %d, want 3", got)
+	}
+	if got := accepts.Load(); got != 2 {
+		t.Fatalf("accepted connections = %d, want 2", got)
+	}
+
+	_ = rewarmLn.Close()
+	<-rewarmDone
 }
 
 func TestPoolCloseFailsPendingRPC(t *testing.T) {
