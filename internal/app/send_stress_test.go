@@ -782,13 +782,7 @@ func TestSendStressBenchmarkComparisonUsesPinnedTransportBaseline(t *testing.T) 
 		VerificationCount:    1600,
 		VerificationFailures: 0,
 	})
-	require.Contains(t, got, "baseline_qps=4210.29")
-	require.Contains(t, got, "baseline_p50=476.435459ms")
-	require.Contains(t, got, "baseline_p99=1.109378583s")
-	require.Contains(t, got, "qps_delta=+18.89%")
-	require.Contains(t, got, "verification_count=1600")
-	require.Contains(t, got, "verification_failures=0")
-	require.Contains(t, got, "p95_guardrail=pass")
+	require.Equal(t, "baseline=2026-04-19-send-stress-postfix baseline_qps=4210.29 baseline_p50=476.435459ms baseline_p95=962.106917ms baseline_p99=1.109378583s qps_delta=+18.89% p50_delta=-9.75% p95_delta=+1.86% p99_delta=-0.85% verification_count=1600 verification_failures=0 p95_guardrail=pass", got)
 }
 
 func TestSendStressActiveTargetCountUsesAllSendersInThroughputMode(t *testing.T) {
@@ -1000,7 +994,8 @@ func TestRunSendStressWorkerThroughputUsesDurationInsteadOfMessageBudget(t *test
 	require.Empty(t, failures)
 	require.Greater(t, outcome.Total, uint64(cfg.MessagesPerWorker))
 	require.Greater(t, outcome.Success, uint64(cfg.MessagesPerWorker))
-	require.Len(t, records, cfg.MessagesPerWorker)
+	require.Equal(t, int(outcome.Success), len(records))
+	require.Greater(t, len(records), cfg.MessagesPerWorker)
 
 	require.NoError(t, clientConn.Close())
 	require.NoError(t, <-serverErr)
@@ -1039,12 +1034,7 @@ func TestSendStressThreeNode(t *testing.T) {
 	require.NotZero(t, outcome.Total)
 	require.Equal(t, outcome.Total, outcome.Success)
 	require.Zero(t, outcome.Failed)
-	if cfg.Mode == sendStressModeThroughput {
-		require.NotEmpty(t, records)
-		require.LessOrEqual(t, len(records), int(outcome.Success))
-	} else {
-		require.Len(t, records, int(outcome.Success))
-	}
+	require.Len(t, records, int(outcome.Success))
 }
 
 func selectSendStressThreeNodeRun(t *testing.T) sendStressThreeNodeRunSelection {
@@ -1432,9 +1422,7 @@ func runSendStressWorkerThroughput(client sendStressWorkerClient, worker int, cf
 		defer mu.Unlock()
 		if result.ok {
 			outcome.Success++
-			if len(records) < cfg.MessagesPerWorker {
-				records = append(records, result.record)
-			}
+			records = append(records, result.record)
 			return
 		}
 		outcome.Failed++
