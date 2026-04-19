@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -696,6 +697,160 @@ func TestPeerSessionTryBatchQueuesMultipleFetchRequests(t *testing.T) {
 	}
 }
 
+func TestPeerSessionTryBatchFlushesAtCountThreshold(t *testing.T) {
+	prevSchedule := scheduleFetchBatchFlush
+	prevEager := runEagerFetchBatchFlush
+	scheduleFetchBatchFlush = func(delay time.Duration, fn func()) {}
+	runEagerFetchBatchFlush = func(fn func()) { fn() }
+	t.Cleanup(func() {
+		scheduleFetchBatchFlush = prevSchedule
+		runEagerFetchBatchFlush = prevEager
+	})
+
+	server := transport.NewServer()
+	mux := transport.NewRPCMux()
+
+	batchStarted := make(chan int, 1)
+	mux.Handle(RPCServiceFetchBatch, func(ctx context.Context, body []byte) ([]byte, error) {
+		req, err := decodeFetchBatchRequest(body)
+		if err != nil {
+			return nil, err
+		}
+		select {
+		case batchStarted <- len(req.Items):
+		default:
+		}
+
+		resp := runtime.FetchBatchResponseEnvelope{
+			Items: make([]runtime.FetchBatchResponseItem, 0, len(req.Items)),
+		}
+		for _, item := range req.Items {
+			resp.Items = append(resp.Items, runtime.FetchBatchResponseItem{
+				RequestID: item.RequestID,
+				Response: &runtime.FetchResponseEnvelope{
+					ChannelKey: item.Request.ChannelKey,
+					Epoch:      item.Request.Epoch,
+					Generation: item.Request.Generation,
+					LeaderHW:   item.Request.FetchOffset,
+				},
+			})
+		}
+		return encodeFetchBatchResponse(resp)
+	})
+	server.HandleRPCMux(mux)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("server.Start() error = %v", err)
+	}
+	defer server.Stop()
+
+	client := transport.NewClient(transport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{2: server.Listener().Addr().String()},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter := newAdapterWithTestTimeout(t, client, time.Second)
+	session := adapter.SessionManager().Session(2).(*peerSession)
+
+	for i := 0; i < 8; i++ {
+		req := fetchRequestEnvelopeWithRequestIDForTest(fmt.Sprintf("g-threshold-%d", i), uint64(i+1))
+		if !session.TryBatch(req) {
+			t.Fatalf("TryBatch(%d) returned false", i)
+		}
+	}
+
+	session.mu.Lock()
+	queued := len(session.batchFetchQueue)
+	session.mu.Unlock()
+	if queued != 0 {
+		t.Fatalf("queued batch fetch requests after count threshold = %d, want 0", queued)
+	}
+
+	select {
+	case items := <-batchStarted:
+		if items != 8 {
+			t.Fatalf("batch item count = %d, want 8", items)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for eager batch flush at count threshold")
+	}
+}
+
+func TestPeerSessionTryBatchFlushesAtByteThreshold(t *testing.T) {
+	prevSchedule := scheduleFetchBatchFlush
+	prevEager := runEagerFetchBatchFlush
+	scheduleFetchBatchFlush = func(delay time.Duration, fn func()) {}
+	runEagerFetchBatchFlush = func(fn func()) { fn() }
+	t.Cleanup(func() {
+		scheduleFetchBatchFlush = prevSchedule
+		runEagerFetchBatchFlush = prevEager
+	})
+
+	server := transport.NewServer()
+	mux := transport.NewRPCMux()
+
+	batchStarted := make(chan int, 1)
+	mux.Handle(RPCServiceFetchBatch, func(ctx context.Context, body []byte) ([]byte, error) {
+		req, err := decodeFetchBatchRequest(body)
+		if err != nil {
+			return nil, err
+		}
+		select {
+		case batchStarted <- len(req.Items):
+		default:
+		}
+
+		resp := runtime.FetchBatchResponseEnvelope{
+			Items: make([]runtime.FetchBatchResponseItem, 0, len(req.Items)),
+		}
+		for _, item := range req.Items {
+			resp.Items = append(resp.Items, runtime.FetchBatchResponseItem{
+				RequestID: item.RequestID,
+				Response: &runtime.FetchResponseEnvelope{
+					ChannelKey: item.Request.ChannelKey,
+					Epoch:      item.Request.Epoch,
+					Generation: item.Request.Generation,
+					LeaderHW:   item.Request.FetchOffset,
+				},
+			})
+		}
+		return encodeFetchBatchResponse(resp)
+	})
+	server.HandleRPCMux(mux)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("server.Start() error = %v", err)
+	}
+	defer server.Stop()
+
+	client := transport.NewClient(transport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{2: server.Listener().Addr().String()},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter := newAdapterWithTestTimeout(t, client, time.Second)
+	session := adapter.SessionManager().Session(2).(*peerSession)
+
+	largeKey := "g-byte-threshold-" + strings.Repeat("x", 33*1024)
+	if !session.TryBatch(fetchRequestEnvelopeWithRequestIDForTest(largeKey, 1)) {
+		t.Fatal("expected large fetch request to be queued for batching")
+	}
+
+	session.mu.Lock()
+	queued := len(session.batchFetchQueue)
+	session.mu.Unlock()
+	if queued != 0 {
+		t.Fatalf("queued batch fetch requests after byte threshold = %d, want 0", queued)
+	}
+
+	select {
+	case items := <-batchStarted:
+		if items != 1 {
+			t.Fatalf("batch item count = %d, want 1", items)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for eager batch flush at byte threshold")
+	}
+}
+
 func TestPeerSessionFlushSendsSingleFetchBatchRPC(t *testing.T) {
 	server := transport.NewServer()
 	mux := transport.NewRPCMux()
@@ -784,6 +939,100 @@ func TestPeerSessionFlushSendsSingleFetchBatchRPC(t *testing.T) {
 	if gotBatchItems != 2 {
 		t.Fatalf("batch item count = %d, want 2", gotBatchItems)
 	}
+}
+
+func TestPeerSessionAutoFlushWindowSendsSingleFetchBatchRPC(t *testing.T) {
+	server := transport.NewServer()
+	mux := transport.NewRPCMux()
+
+	var (
+		mu          sync.Mutex
+		batchCalls  int
+		singleCalls int
+		batchItems  int
+	)
+
+	mux.Handle(RPCServiceFetch, func(ctx context.Context, body []byte) ([]byte, error) {
+		mu.Lock()
+		singleCalls++
+		mu.Unlock()
+		return encodeFetchResponse(runtime.FetchResponseEnvelope{
+			ChannelKey: "g-single",
+			Epoch:      3,
+			Generation: 7,
+			LeaderHW:   9,
+		})
+	})
+	mux.Handle(RPCServiceFetchBatch, func(ctx context.Context, body []byte) ([]byte, error) {
+		req, err := decodeFetchBatchRequest(body)
+		if err != nil {
+			return nil, err
+		}
+
+		mu.Lock()
+		batchCalls++
+		batchItems = len(req.Items)
+		mu.Unlock()
+
+		resp := runtime.FetchBatchResponseEnvelope{
+			Items: make([]runtime.FetchBatchResponseItem, 0, len(req.Items)),
+		}
+		for _, item := range req.Items {
+			resp.Items = append(resp.Items, runtime.FetchBatchResponseItem{
+				RequestID: item.RequestID,
+				Response: &runtime.FetchResponseEnvelope{
+					ChannelKey: item.Request.ChannelKey,
+					Epoch:      item.Request.Epoch,
+					Generation: item.Request.Generation,
+					LeaderHW:   item.Request.FetchOffset,
+				},
+			})
+		}
+		return encodeFetchBatchResponse(resp)
+	})
+	server.HandleRPCMux(mux)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("server.Start() error = %v", err)
+	}
+	defer server.Stop()
+
+	client := transport.NewClient(transport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{2: server.Listener().Addr().String()},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter := newAdapterWithTestTimeout(t, client, time.Second)
+	session := adapter.SessionManager().Session(2)
+	if !session.TryBatch(fetchRequestEnvelopeForTest("g-auto-batch-1")) {
+		t.Fatal("expected first fetch request to be queued for batching")
+	}
+	if !session.TryBatch(fetchRequestEnvelopeForTest("g-auto-batch-2")) {
+		t.Fatal("expected second fetch request to be queued for batching")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		gotBatchCalls := batchCalls
+		gotSingleCalls := singleCalls
+		gotBatchItems := batchItems
+		mu.Unlock()
+
+		if gotBatchCalls == 1 {
+			if gotSingleCalls != 0 {
+				t.Fatalf("single fetch rpc calls = %d, want 0", gotSingleCalls)
+			}
+			if gotBatchItems != 2 {
+				t.Fatalf("batch item count = %d, want 2", gotBatchItems)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	t.Fatalf("auto flush did not send expected batch rpc: batchCalls=%d singleCalls=%d batchItems=%d", batchCalls, singleCalls, batchItems)
 }
 
 func TestBatchedFetchResponseFansOutResultsPerGroup(t *testing.T) {
@@ -916,7 +1165,318 @@ func TestPeerSessionFlushBatchFailureDeliversFetchFailureEnvelope(t *testing.T) 
 	}
 }
 
+func TestPeerSessionFlushBatchFailureRetriesSubBatchesBeforeSingles(t *testing.T) {
+	prevSchedule := scheduleFetchBatchFlush
+	prevEager := runEagerFetchBatchFlush
+	scheduleFetchBatchFlush = func(delay time.Duration, fn func()) {}
+	runEagerFetchBatchFlush = func(fn func()) {}
+	t.Cleanup(func() {
+		scheduleFetchBatchFlush = prevSchedule
+		runEagerFetchBatchFlush = prevEager
+	})
+
+	server := transport.NewServer()
+	mux := transport.NewRPCMux()
+
+	var (
+		mu          sync.Mutex
+		batchSizes  []int
+		singleCalls int
+	)
+
+	mux.Handle(RPCServiceFetchBatch, func(ctx context.Context, body []byte) ([]byte, error) {
+		req, err := decodeFetchBatchRequest(body)
+		if err != nil {
+			return nil, err
+		}
+
+		mu.Lock()
+		batchSizes = append(batchSizes, len(req.Items))
+		mu.Unlock()
+
+		if len(req.Items) > 4 {
+			return nil, errors.New("batch too large")
+		}
+
+		resp := runtime.FetchBatchResponseEnvelope{
+			Items: make([]runtime.FetchBatchResponseItem, 0, len(req.Items)),
+		}
+		for _, item := range req.Items {
+			resp.Items = append(resp.Items, runtime.FetchBatchResponseItem{
+				RequestID: item.RequestID,
+				Response: &runtime.FetchResponseEnvelope{
+					ChannelKey: item.Request.ChannelKey,
+					Epoch:      item.Request.Epoch,
+					Generation: item.Request.Generation,
+					LeaderHW:   item.Request.FetchOffset,
+				},
+			})
+		}
+		return encodeFetchBatchResponse(resp)
+	})
+	mux.Handle(RPCServiceFetch, func(ctx context.Context, body []byte) ([]byte, error) {
+		mu.Lock()
+		singleCalls++
+		mu.Unlock()
+		return encodeFetchResponse(runtime.FetchResponseEnvelope{
+			ChannelKey: "g-fallback-single",
+			Epoch:      3,
+			Generation: 7,
+			LeaderHW:   9,
+		})
+	})
+	server.HandleRPCMux(mux)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("server.Start() error = %v", err)
+	}
+	defer server.Stop()
+
+	client := transport.NewClient(transport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{2: server.Listener().Addr().String()},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter := newAdapterWithTestTimeout(t, client, time.Second)
+	session := adapter.SessionManager().Session(2)
+	for i := 0; i < 8; i++ {
+		req := fetchRequestEnvelopeWithRequestIDForTest(fmt.Sprintf("g-fallback-%d", i), uint64(i+1))
+		if !session.TryBatch(req) {
+			t.Fatalf("TryBatch(%d) returned false", i)
+		}
+	}
+
+	if err := session.Flush(); err != nil {
+		t.Fatalf("session.Flush() error = %v", err)
+	}
+
+	mu.Lock()
+	gotBatchSizes := append([]int(nil), batchSizes...)
+	gotSingleCalls := singleCalls
+	mu.Unlock()
+
+	if gotSingleCalls != 0 {
+		t.Fatalf("single fetch rpc calls = %d, want 0", gotSingleCalls)
+	}
+	if fmt.Sprint(gotBatchSizes) != fmt.Sprint([]int{8, 4, 4}) {
+		t.Fatalf("batch sizes = %v, want [8 4 4]", gotBatchSizes)
+	}
+}
+
+func TestPeerSessionMissingBatchItemsRetrySubBatchesBeforeSingles(t *testing.T) {
+	prevSchedule := scheduleFetchBatchFlush
+	prevEager := runEagerFetchBatchFlush
+	scheduleFetchBatchFlush = func(delay time.Duration, fn func()) {}
+	runEagerFetchBatchFlush = func(fn func()) {}
+	t.Cleanup(func() {
+		scheduleFetchBatchFlush = prevSchedule
+		runEagerFetchBatchFlush = prevEager
+	})
+
+	server := transport.NewServer()
+	mux := transport.NewRPCMux()
+
+	var (
+		mu          sync.Mutex
+		batchSizes  []int
+		singleCalls int
+	)
+
+	mux.Handle(RPCServiceFetchBatch, func(ctx context.Context, body []byte) ([]byte, error) {
+		req, err := decodeFetchBatchRequest(body)
+		if err != nil {
+			return nil, err
+		}
+
+		mu.Lock()
+		batchSizes = append(batchSizes, len(req.Items))
+		mu.Unlock()
+
+		resp := runtime.FetchBatchResponseEnvelope{
+			Items: make([]runtime.FetchBatchResponseItem, 0, len(req.Items)),
+		}
+		if len(req.Items) == 8 {
+			for _, item := range req.Items[:4] {
+				resp.Items = append(resp.Items, runtime.FetchBatchResponseItem{
+					RequestID: item.RequestID,
+					Response: &runtime.FetchResponseEnvelope{
+						ChannelKey: item.Request.ChannelKey,
+						Epoch:      item.Request.Epoch,
+						Generation: item.Request.Generation,
+						LeaderHW:   item.Request.FetchOffset,
+					},
+				})
+			}
+			return encodeFetchBatchResponse(resp)
+		}
+
+		for _, item := range req.Items {
+			resp.Items = append(resp.Items, runtime.FetchBatchResponseItem{
+				RequestID: item.RequestID,
+				Response: &runtime.FetchResponseEnvelope{
+					ChannelKey: item.Request.ChannelKey,
+					Epoch:      item.Request.Epoch,
+					Generation: item.Request.Generation,
+					LeaderHW:   item.Request.FetchOffset,
+				},
+			})
+		}
+		return encodeFetchBatchResponse(resp)
+	})
+	mux.Handle(RPCServiceFetch, func(ctx context.Context, body []byte) ([]byte, error) {
+		mu.Lock()
+		singleCalls++
+		mu.Unlock()
+		return encodeFetchResponse(runtime.FetchResponseEnvelope{
+			ChannelKey: "g-missing-single",
+			Epoch:      3,
+			Generation: 7,
+			LeaderHW:   9,
+		})
+	})
+	server.HandleRPCMux(mux)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("server.Start() error = %v", err)
+	}
+	defer server.Stop()
+
+	client := transport.NewClient(transport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{2: server.Listener().Addr().String()},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter := newAdapterWithTestTimeout(t, client, time.Second)
+	session := adapter.SessionManager().Session(2)
+	for i := 0; i < 8; i++ {
+		req := fetchRequestEnvelopeWithRequestIDForTest(fmt.Sprintf("g-missing-%d", i), uint64(i+1))
+		if !session.TryBatch(req) {
+			t.Fatalf("TryBatch(%d) returned false", i)
+		}
+	}
+
+	if err := session.Flush(); err != nil {
+		t.Fatalf("session.Flush() error = %v", err)
+	}
+
+	mu.Lock()
+	gotBatchSizes := append([]int(nil), batchSizes...)
+	gotSingleCalls := singleCalls
+	mu.Unlock()
+
+	if gotSingleCalls != 0 {
+		t.Fatalf("single fetch rpc calls = %d, want 0", gotSingleCalls)
+	}
+	if fmt.Sprint(gotBatchSizes) != fmt.Sprint([]int{8, 4}) {
+		t.Fatalf("batch sizes = %v, want [8 4]", gotBatchSizes)
+	}
+}
+
+func TestPeerSessionReconcileProbeSharesFetchShardConnection(t *testing.T) {
+	server := transport.NewServer()
+	mux := transport.NewRPCMux()
+	mux.Handle(RPCServiceFetch, func(ctx context.Context, body []byte) ([]byte, error) {
+		req, err := decodeFetchRequest(body)
+		if err != nil {
+			return nil, err
+		}
+		return encodeFetchResponse(runtime.FetchResponseEnvelope{
+			ChannelKey: req.ChannelKey,
+			Epoch:      req.Epoch,
+			Generation: req.Generation,
+			LeaderHW:   req.FetchOffset,
+		})
+	})
+	mux.Handle(RPCServiceReconcileProbe, func(ctx context.Context, body []byte) ([]byte, error) {
+		req, err := decodeReconcileProbeRequest(body)
+		if err != nil {
+			return nil, err
+		}
+		return encodeReconcileProbeResponse(runtime.ReconcileProbeResponseEnvelope{
+			ChannelKey:   req.ChannelKey,
+			Epoch:        req.Epoch,
+			Generation:   req.Generation,
+			ReplicaID:    req.ReplicaID,
+			LogEndOffset: 11,
+		})
+	})
+	server.HandleRPCMux(mux)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("server.Start() error = %v", err)
+	}
+	defer server.Stop()
+
+	pool := transport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{2: server.Listener().Addr().String()},
+	}, 2, time.Second)
+	client := transport.NewClient(pool)
+	defer client.Stop()
+
+	adapter := newAdapterWithTestTimeout(t, client, time.Second)
+	session := adapter.SessionManager().Session(2)
+	channelKey := channelKeyForShard(t, 1, 2)
+
+	if err := session.Send(fetchRequestEnvelopeForTest(string(channelKey))); err != nil {
+		t.Fatalf("session.Send(fetch) error = %v", err)
+	}
+	if err := session.Send(runtime.Envelope{
+		Peer:       2,
+		ChannelKey: channelKey,
+		Epoch:      3,
+		Generation: 7,
+		RequestID:  2,
+		Kind:       runtime.MessageKindReconcileProbeRequest,
+		ReconcileProbeRequest: &runtime.ReconcileProbeRequestEnvelope{
+			ChannelKey: channelKey,
+			Epoch:      3,
+			Generation: 7,
+			ReplicaID:  1,
+		},
+	}); err != nil {
+		t.Fatalf("session.Send(reconcile probe) error = %v", err)
+	}
+
+	stats := pool.Stats()
+	if len(stats) != 1 {
+		t.Fatalf("pool stats peers = %d, want 1", len(stats))
+	}
+	if stats[0].Active != 1 {
+		t.Fatalf("pool active connections = %d, want 1", stats[0].Active)
+	}
+}
+
+func TestPeerSessionBackpressureRemainsHardAtQueuedLimitAfterEagerFlush(t *testing.T) {
+	client := transport.NewClient(transport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter := newAdapterWithTestTimeout(t, client, time.Second)
+	session := adapter.SessionManager().Session(2).(*peerSession)
+
+	session.mu.Lock()
+	session.pendingRequests = 1
+	session.batchQueuedBytes = 128
+	session.batchFetchQueue = make([]queuedFetchRequest, session.maxQueuedFetchRequests())
+	session.mu.Unlock()
+
+	state := session.Backpressure()
+	if state.Level != runtime.BackpressureHard {
+		t.Fatalf("Backpressure().Level = %v, want hard", state.Level)
+	}
+	if state.PendingRequests != session.maxQueuedFetchRequests()+1 {
+		t.Fatalf("PendingRequests = %d, want %d", state.PendingRequests, session.maxQueuedFetchRequests()+1)
+	}
+}
+
 func TestPeerSessionBackpressureIncludesQueuedBatchRequests(t *testing.T) {
+	prevSchedule := scheduleFetchBatchFlush
+	prevEager := runEagerFetchBatchFlush
+	scheduleFetchBatchFlush = func(delay time.Duration, fn func()) {}
+	runEagerFetchBatchFlush = func(fn func()) {}
+	t.Cleanup(func() {
+		scheduleFetchBatchFlush = prevSchedule
+		runEagerFetchBatchFlush = prevEager
+	})
+
 	client := transport.NewClient(transport.NewPool(staticDiscovery{
 		addrs: map[uint64]string{},
 	}, 1, time.Second))
@@ -984,13 +1544,17 @@ func newAdapterWithTestTimeout(t *testing.T, client *transport.Client, timeout t
 }
 
 func fetchRequestEnvelopeForTest(channelKey string) runtime.Envelope {
+	return fetchRequestEnvelopeWithRequestIDForTest(channelKey, 1)
+}
+
+func fetchRequestEnvelopeWithRequestIDForTest(channelKey string, requestID uint64) runtime.Envelope {
 	key := channel.ChannelKey(channelKey)
 	return runtime.Envelope{
 		Peer:       2,
 		ChannelKey: key,
 		Epoch:      3,
 		Generation: 7,
-		RequestID:  1,
+		RequestID:  requestID,
 		Kind:       runtime.MessageKindFetchRequest,
 		FetchRequest: &runtime.FetchRequestEnvelope{
 			ChannelKey:  key,

@@ -3,7 +3,10 @@ package transport
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
@@ -12,7 +15,25 @@ import (
 
 const defaultFetchBatchFlushWindow = 200 * time.Microsecond
 
+const eagerFetchBatchCountThreshold = 8
+
+const eagerFetchBatchBytesThreshold = 32 * 1024
+
+const fetchBatchFallbackChunkSize = 4
+
 const maxQueuedFetchRequestsPerPendingRPC = 32
+
+var fetchBatchDebugEnabled = os.Getenv("WK_SEND_STRESS_BATCH_DEBUG") == "1"
+
+var fetchBatchDebugLogs atomic.Int32
+
+var scheduleFetchBatchFlush = func(delay time.Duration, fn func()) {
+	time.AfterFunc(delay, fn)
+}
+
+var runEagerFetchBatchFlush = func(fn func()) {
+	go fn()
+}
 
 type sessionManager struct {
 	adapter *Transport
@@ -30,9 +51,10 @@ type peerSession struct {
 	pendingBytes    int64
 	closed          bool
 
-	batchFlushScheduled bool
-	batchQueuedBytes    int64
-	batchFetchQueue     []queuedFetchRequest
+	batchFlushScheduled    bool
+	batchEagerFlushPending bool
+	batchQueuedBytes       int64
+	batchFetchQueue        []queuedFetchRequest
 }
 
 type queuedFetchRequest struct {
@@ -68,6 +90,8 @@ func (s *peerSession) Send(env runtime.Envelope) error {
 		return s.sendFetchRequest(env)
 	case runtime.MessageKindProgressAck:
 		return s.sendProgressAck(env)
+	case runtime.MessageKindReconcileProbeRequest:
+		return s.sendReconcileProbe(env)
 	default:
 		return fmt.Errorf("channeltransport: unsupported envelope kind %d", env.Kind)
 	}
@@ -96,10 +120,19 @@ func (s *peerSession) TryBatch(env runtime.Envelope) bool {
 	if shouldSchedule {
 		s.batchFlushScheduled = true
 	}
+	shouldEagerFlush := (len(s.batchFetchQueue) >= eagerFetchBatchCountThreshold || s.batchQueuedBytes >= eagerFetchBatchBytesThreshold) && !s.batchEagerFlushPending
+	if shouldEagerFlush {
+		s.batchEagerFlushPending = true
+	}
 	s.mu.Unlock()
 
 	if shouldSchedule {
-		time.AfterFunc(defaultFetchBatchFlushWindow, func() {
+		scheduleFetchBatchFlush(defaultFetchBatchFlushWindow, func() {
+			_ = s.Flush()
+		})
+	}
+	if shouldEagerFlush {
+		runEagerFetchBatchFlush(func() {
 			_ = s.Flush()
 		})
 	}
@@ -197,28 +230,28 @@ func (s *peerSession) sendFetchBatch(batch []queuedFetchRequest) (runtime.FetchB
 }
 
 func (s *peerSession) flushBatch(batch []queuedFetchRequest) error {
-	batchResp, err := s.sendFetchBatch(batch)
-	if err != nil {
-		var firstErr error
-		for _, item := range batch {
-			env := item.env
-			if sendErr := s.sendFetchRequest(env); sendErr != nil {
-				if firstErr == nil {
-					firstErr = sendErr
-				}
-				s.deliverFetchFailure(env, sendErr)
-			}
-		}
-		return firstErr
+	if len(batch) == 0 {
+		return nil
 	}
 
+	batchResp, err := s.sendFetchBatch(batch)
+	if err != nil {
+		if fetchBatchDebugEnabled && fetchBatchDebugLogs.Add(1) <= 12 {
+			log.Printf("channeltransport: fetch batch fallback peer=%d batch=%d err=%v", s.peer, len(batch), err)
+		}
+		return s.retryBatchChunks(batch)
+	}
+	return s.deliverBatchResponse(batch, batchResp)
+}
+
+func (s *peerSession) deliverBatchResponse(batch []queuedFetchRequest, batchResp runtime.FetchBatchResponseEnvelope) error {
 	originalByRequestID := make(map[uint64]queuedFetchRequest, len(batch))
 	for _, item := range batch {
 		originalByRequestID[item.env.RequestID] = item
 	}
 	delivered := make(map[uint64]struct{}, len(batchResp.Items))
 
-	var firstErr error
+	retryBatch := make([]queuedFetchRequest, 0)
 	for _, item := range batchResp.Items {
 		queued, ok := originalByRequestID[item.RequestID]
 		if !ok {
@@ -228,12 +261,7 @@ func (s *peerSession) flushBatch(batch []queuedFetchRequest) error {
 		delivered[item.RequestID] = struct{}{}
 
 		if item.Error != "" || item.Response == nil {
-			if sendErr := s.sendFetchRequest(env); sendErr != nil {
-				if firstErr == nil {
-					firstErr = sendErr
-				}
-				s.deliverFetchFailure(env, sendErr)
-			}
+			retryBatch = append(retryBatch, queued)
 			continue
 		}
 		s.deliverFetchResponse(env.RequestID, *item.Response)
@@ -243,15 +271,92 @@ func (s *peerSession) flushBatch(batch []queuedFetchRequest) error {
 		if _, ok := delivered[requestID]; ok {
 			continue
 		}
-		env := queued.env
-		if sendErr := s.sendFetchRequest(env); sendErr != nil {
-			if firstErr == nil {
-				firstErr = sendErr
-			}
-			s.deliverFetchFailure(env, sendErr)
+		retryBatch = append(retryBatch, queued)
+	}
+	if len(retryBatch) == 0 {
+		return nil
+	}
+	return s.retryBatchChunks(retryBatch)
+}
+
+func (s *peerSession) retryBatchChunks(batch []queuedFetchRequest) error {
+	var firstErr error
+	for start := 0; start < len(batch); start += fetchBatchFallbackChunkSize {
+		end := start + fetchBatchFallbackChunkSize
+		if end > len(batch) {
+			end = len(batch)
+		}
+		chunk := batch[start:end]
+		var err error
+		if len(chunk) == 1 {
+			err = s.sendSingleFetch(chunk[0])
+		} else {
+			err = s.flushBatchChunk(chunk)
+		}
+		if firstErr == nil && err != nil {
+			firstErr = err
 		}
 	}
 	return firstErr
+}
+
+func (s *peerSession) flushBatchChunk(chunk []queuedFetchRequest) error {
+	batchResp, err := s.sendFetchBatch(chunk)
+	if err != nil {
+		if fetchBatchDebugEnabled && fetchBatchDebugLogs.Add(1) <= 12 {
+			log.Printf("channeltransport: fetch chunk fallback peer=%d batch=%d err=%v", s.peer, len(chunk), err)
+		}
+		return s.retrySingles(chunk)
+	}
+	return s.deliverChunkResponse(chunk, batchResp)
+}
+
+func (s *peerSession) deliverChunkResponse(chunk []queuedFetchRequest, batchResp runtime.FetchBatchResponseEnvelope) error {
+	originalByRequestID := make(map[uint64]queuedFetchRequest, len(chunk))
+	for _, item := range chunk {
+		originalByRequestID[item.env.RequestID] = item
+	}
+	delivered := make(map[uint64]struct{}, len(batchResp.Items))
+	retryBatch := make([]queuedFetchRequest, 0)
+
+	for _, item := range batchResp.Items {
+		queued, ok := originalByRequestID[item.RequestID]
+		if !ok {
+			continue
+		}
+		delivered[item.RequestID] = struct{}{}
+		if item.Error != "" || item.Response == nil {
+			retryBatch = append(retryBatch, queued)
+			continue
+		}
+		s.deliverFetchResponse(queued.env.RequestID, *item.Response)
+	}
+
+	for requestID, queued := range originalByRequestID {
+		if _, ok := delivered[requestID]; ok {
+			continue
+		}
+		retryBatch = append(retryBatch, queued)
+	}
+	return s.retrySingles(retryBatch)
+}
+
+func (s *peerSession) retrySingles(batch []queuedFetchRequest) error {
+	var firstErr error
+	for _, item := range batch {
+		if err := s.sendSingleFetch(item); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (s *peerSession) sendSingleFetch(item queuedFetchRequest) error {
+	if err := s.sendFetchRequest(item.env); err != nil {
+		s.deliverFetchFailure(item.env, err)
+		return err
+	}
+	return nil
 }
 
 func (s *peerSession) sendProgressAck(env runtime.Envelope) error {
@@ -289,6 +394,41 @@ func (s *peerSession) sendProgressAck(env runtime.Envelope) error {
 	return nil
 }
 
+func (s *peerSession) sendReconcileProbe(env runtime.Envelope) error {
+	if env.ReconcileProbeRequest == nil {
+		return fmt.Errorf("channeltransport: missing reconcile probe payload")
+	}
+
+	body, err := encodeReconcileProbeRequest(*env.ReconcileProbeRequest)
+	if err != nil {
+		return err
+	}
+	pendingBytes := int64(len(body))
+	s.trackPending(pendingBytes)
+	pendingReleased := false
+	defer func() {
+		if !pendingReleased {
+			s.releasePending(pendingBytes)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), s.adapter.rpcTimeout)
+	defer cancel()
+
+	respBody, err := s.adapter.client.RPCService(ctx, uint64(s.peer), fetchRPCShardKey(env.ChannelKey), RPCServiceReconcileProbe, body)
+	if err != nil {
+		return err
+	}
+	resp, err := decodeReconcileProbeResponse(respBody)
+	if err != nil {
+		return err
+	}
+	s.releasePending(pendingBytes)
+	pendingReleased = true
+	s.deliverReconcileProbeResponse(env.RequestID, resp)
+	return nil
+}
+
 func (s *peerSession) deliverFetchResponse(requestID uint64, resp runtime.FetchResponseEnvelope) {
 	s.adapter.deliver(runtime.Envelope{
 		Peer:          s.peer,
@@ -318,18 +458,37 @@ func (s *peerSession) deliverFetchFailure(env runtime.Envelope, err error) {
 	s.adapter.deliver(failed)
 }
 
+func (s *peerSession) deliverReconcileProbeResponse(requestID uint64, resp runtime.ReconcileProbeResponseEnvelope) {
+	s.adapter.deliver(runtime.Envelope{
+		Peer:                   s.peer,
+		ChannelKey:             resp.ChannelKey,
+		Epoch:                  resp.Epoch,
+		Generation:             resp.Generation,
+		RequestID:              requestID,
+		Kind:                   runtime.MessageKindReconcileProbeResponse,
+		Sync:                   true,
+		ReconcileProbeResponse: &resp,
+	})
+}
+
 func (s *peerSession) drainBatchQueue() []queuedFetchRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.drainBatchQueueLocked()
+}
+
+func (s *peerSession) drainBatchQueueLocked() []queuedFetchRequest {
 	if len(s.batchFetchQueue) == 0 {
 		s.batchFlushScheduled = false
+		s.batchEagerFlushPending = false
 		return nil
 	}
 	batch := append([]queuedFetchRequest(nil), s.batchFetchQueue...)
 	s.batchFetchQueue = s.batchFetchQueue[:0]
 	s.batchQueuedBytes = 0
 	s.batchFlushScheduled = false
+	s.batchEagerFlushPending = false
 	return batch
 }
 
@@ -356,6 +515,7 @@ func (s *peerSession) Close() error {
 	s.batchFetchQueue = nil
 	s.batchQueuedBytes = 0
 	s.batchFlushScheduled = false
+	s.batchEagerFlushPending = false
 	s.mu.Unlock()
 	return nil
 }

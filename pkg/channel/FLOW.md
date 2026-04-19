@@ -13,7 +13,7 @@
 | `replica/` | `replica.NewReplica()` → `Replica` | 副本状态机：Group Commit 追加、HW 推进、分歧检测、角色转换、恢复 |
 | `runtime/` | `runtime.Build()` → `Runtime` | 频道生命周期管理、复制调度（三优先级）、多级背压、墓碑清理 |
 | `store/` | `store.NewEngine()` → `Engine` | Pebble KV：日志、检查点、Epoch 历史、幂等表持久化 |
-| `transport/` | `transport.Build()` | Fetch / ProgressAck RPC、PeerSession 批量合并（200µs/32个） |
+| `transport/` | `transport.Build()` | Fetch / ProgressAck / ReconcileProbe RPC、PeerSession 批量合并（200µs 定时刷批，8 条或 32 KiB 立即刷批，失败后按 4 条分块回退） |
 
 ## 3. 对外接口
 
@@ -37,9 +37,9 @@ type Cluster interface {
 |------|------|------|
 | `Meta` | types.go | 频道元数据：Key, Epoch, Leader, Replicas, ISR, MinISR, LeaseUntil, Status |
 | `Message` | types.go | 消息：MessageID, MessageSeq, FromUID, ClientMsgNo, Payload |
-| `ReplicaState` | types.go | 副本状态：Role(Leader/Follower/Fenced/Tombstoned), HW, LEO, Epoch |
+| `ReplicaState` | types.go | 副本状态：Role、运行时 CommitHW(`HW`)、持久化 CheckpointHW、`CommitReady`、LEO、Epoch |
 | `AppendRequest` | types.go | 追加请求：ChannelID, Message, ExpectedChannelEpoch, ExpectedLeaderEpoch |
-| `Checkpoint` | types.go | 检查点：Epoch + LogStartOffset + HW（恢复用） |
+| `Checkpoint` | types.go | 检查点：Epoch + LogStartOffset + HW；用于冷恢复下界与 reconcile 后的持久化提交水位 |
 
 ## 5. 核心流程
 
@@ -57,10 +57,13 @@ Handler 层:
   ⑤ 编码 DurableMessage(45B头+变长字段+Payload) → handler/codec.go:encodeMessage
 
 Replica 层 (replica/append.go):
+  ⑥ 先检查 leader 是否 `CommitReady=true`；若刚启动/刚完成 leader transfer 但尚未完成 reconcile，则直接返回 ErrNotReady
   ⑥ Group Commit 收集 (1ms窗口/64条/64KB) → collectAppendBatch
-  ⑦ 批量 fsync 到 LogStore → flushAppendBatch
-  ⑧ 注册 Waiter (目标HW = LEO + recordCount)
-  ⑨ 等待 HW ≥ 目标 → 返回 CommitResult
+  ⑦ Leader LogStore 在单 channel `writeMu` 下先 prepare 记录，再把 synced append 提交给 `store/commit.go`
+     的跨频道 coordinator，用 200µs 窗口合并 Pebble Sync；sync 完成前不发布新的 LEO
+  ⑧ sync 成功后执行 publish：更新 durable commit 计数、发布 LEO，并注册 Waiter (目标 CommitHW = LEO + recordCount)
+  ⑨ `progress.go:advanceHW` 取 ISR 中第 MinISR 高的 MatchOffset，满足 quorum 后先推进运行时 `HW(CommitHW)`、完成 Waiter / sendack
+  ⑩ Checkpoint 持久化由后台 publisher 异步 coalescing；写盘成功后才推进 `CheckpointHW`
 ```
 
 ### 5.2 消息获取（Fetch）
@@ -71,9 +74,10 @@ Replica 层 (replica/append.go):
   ① 校验 Limit > 0, MaxBytes > 0
   ② 加载 Meta，检查频道状态非 Deleting/Deleted
   ③ 从 Runtime 获取 HandlerChannel → runtime.Channel(key)
-  ④ 读取 LogRecord（仅 HW 以内已提交数据）→ handler/seq_read.go:LoadNextRangeMsgs
-  ⑤ 解码 DurableMessage → Message → handler/codec.go:decodeMessageRecord
-  ⑥ 返回 Messages + NextSeq + CommittedSeq
+  ④ 若 `CommitReady=false`，直接返回 ErrNotReady，不再从 Checkpoint 猜 committed frontier
+  ⑤ handler/fetch.go 直接按运行时 CommitHW 裁剪 store.Read 结果，不再通过 `LoadCheckpoint()` 推导 committed frontier
+  ⑥ 解码 DurableMessage → Message → handler/codec.go:decodeMessageRecord
+  ⑦ 返回 Messages + NextSeq + CommittedSeq
 ```
 
 ### 5.3 副本复制（Replication）
@@ -81,19 +85,29 @@ Replica 层 (replica/append.go):
 发起: `runtime/replicator.go` | 接收: `replica/replication.go:ApplyFetch`
 
 ```
-Leader 侧:
+正常 Fetch 复制:
   ① 新数据写入 → Runtime 检测需要复制 → 调度器排入 Follower 任务
   ② 构建 FetchRequest{ChannelKey, Epoch, FetchOffset, MaxBytes}
-  ③ Transport 批量合并 (200µs窗口) → transport/session.go → 发送到 Follower
+  ③ Transport 对 Fetch 做 200µs 定时合并；队列达到 8 条或 32 KiB 时立即刷批，批量失败/缺项时先按 4 条分块重试，再退化到单条 RPC → transport/session.go → 发送到 Follower
 
 Follower 侧:
   ④ replica/fetch.go:Fetch → 从日志读取记录，检测分歧(Epoch History)
-  ⑤ 返回 FetchResponse{Records, LeaderHW, TruncateTo}
+  ⑤ 返回 FetchResponse{Records, LeaderHW, TruncateTo}；其中 `LeaderHW` 使用 `visibleCommittedHW`，
+     `CommitReady=false` 时只暴露保守 frontier（通常不超过 `CheckpointHW`）
 
 Leader 处理响应:
   ⑥ replica/replication.go:ApplyFetch → 更新 Progress Map
   ⑦ replica/progress.go:advanceHW → 取 ISR 中第 MinISR 高的 MatchOffset
-  ⑧ 通知 Waiter → 消息提交完成
+  ⑧ 推进运行时 CommitHW，通知 Waiter → 消息提交完成
+```
+
+```
+Reconcile Probe（启动 / leader transfer 后的 provisional 收敛）:
+  ① leader promotion 或 recover 后若 `CommitReady=false`，runtime 触发 peer probe
+  ② transport/session.go 发送 ReconcileProbe RPC，收集 follower 的 {OffsetEpoch, LogEndOffset, CheckpointHW}
+  ③ replica/reconcile.go 基于 epoch lineage + quorum proofs 计算 quorum-safe prefix
+  ④ 保留 quorum-safe tail，必要时截断 minority-only suffix
+  ⑤ 持久化新的 Checkpoint，推进 `CheckpointHW`，最后把 `CommitReady` 置为 true
 ```
 
 ### 5.4 角色转换
@@ -103,13 +117,15 @@ Leader 处理响应:
 ```
 BecomeLeader (replica.go:153):
   ① 验证 Meta.Leader 是本节点
-  ② 截断 HW 后未提交日志 → history.go:truncateLogToLocked
-  ③ 追加 EpochPoint → history.go:appendEpochPointLocked
-  ④ 初始化 Progress: 本节点=LEO, 其他ISR=HW → progress.go:seedLeaderProgressLocked
-  ⑤ 检查 Lease → 过期则 FencedLeader
+  ② 追加 EpochPoint → history.go:appendEpochPointLocked
+  ③ 初始化 Progress: 本节点=LEO, 其他ISR=当前安全 committed frontier → progress.go:seedLeaderProgressLocked
+  ④ 若本地恢复结果仍是 provisional，则允许完成 leader promotion，但保持 `CommitReady=false`
+  ⑤ Runtime 触发 reconcile；只有 `CommitReady=true` 后 leader 才接受新的 Append
+  ⑥ 检查 Lease → 过期则 FencedLeader
 
 BecomeFollower (replica.go:209):
-  ① 应用新 Meta → 失败所有待处理 Append (failOutstandingAppendWorkLocked)
+  ① 应用新 Meta（支持同 channel epoch 下、更高 LeaderEpoch 的 leader transfer）
+  ② 失败所有待处理 Append (failOutstandingAppendWorkLocked)
 
 Tombstone (replica.go:230):
   ① 标记 Tombstoned → 拒绝所有后续操作
@@ -122,9 +138,10 @@ Tombstone (replica.go:230):
 ```
   ① 加载 Checkpoint{Epoch, LogStartOffset, HW} → store/checkpoint.go
   ② 加载 Epoch History → store/history.go
-  ③ 校验一致性 (HW ≤ LEO, Epoch 匹配)
-  ④ LEO > HW → 截断日志到 HW（丢弃未提交数据）
-  ⑤ 标记 recovered = true
+  ③ 校验一致性 (CheckpointHW ≤ LEO, Epoch 匹配)
+  ④ 启动时不再立即把 `LEO > CheckpointHW` 的尾巴截断掉；先保留 local tail，发布 `CommitReady=false`
+  ⑤ 若后续 probe 证明尾巴是 quorum-safe，就保留并提升 CommitHW；若只存在于 minority/stale leader，则在 reconcile 中截断
+  ⑥ reconcile 成功后持久化 fresh checkpoint，推进 `CheckpointHW`，再标记 recovered / `CommitReady=true`
   → Runtime.EnsureChannel(meta) → ApplyMeta → BecomeLeader/BecomeFollower
 ```
 
@@ -152,7 +169,10 @@ Idempotency (0x14): prefix + key + fromUID + msgNo — 幂等条目
 - **per-channel 互斥锁**: `channel.go:lockApplyMeta` 使用引用计数的 per-key 锁，保证同一频道的 ApplyMeta 串行执行。Handler → Runtime 失败时会 RestoreMeta 回滚。
 - **幂等 PayloadHash 校验**: 仅 ClientMsgNo 相同不够，必须校验 FNV-64a PayloadHash 一致，否则返回 `ErrIdempotencyConflict`。见 `handler/append.go`。
 - **Group Commit 窗口**: 默认 1ms/64条/64KB，配置在 `replica/replica.go:effectiveAppendGroupCommit*`。调大会增加延迟但提高吞吐。
-- **HW 推进不可回退**: HW 只能前进不能后退。`progress.go:advanceHW` 会检查 newHW ≥ currentHW。
+- **双水位不要混用**: `HW` 是运行时 CommitHW，驱动 sendack / committed reads / fetch；`CheckpointHW` 是冷恢复安全下界；`CommitReady` 决定 leader 是否已经完成 quorum-safe 收敛。live read path 不能再把 `LoadCheckpoint()` 当作 committed source of truth。
+- **HW 推进不可回退**: 运行时 `HW(CommitHW)` 只能前进不能后退。`progress.go:advanceHW` 会检查 newHW ≥ currentHW。
 - **Lease 过期自动降级**: Leader Lease 过期后自动变为 FencedLeader，拒绝所有写入但不影响读取。见 `replica/append.go:appendableLocked`。
-- **ApplyFetch Coordinator**: `store/commit.go` 使用 200µs 窗口跨频道合并 Pebble 写入，减少写放大。单频道的 writeMu 仍然串行。
-- **Transport RPC 分片**: FetchRequest 按 FNV-64a(ChannelKey) 路由到固定 RPC 流，保证同一频道有序。见 `transport/session.go`。
+- **Cross-channel durable batching**: `store/commit.go` 使用 200µs 窗口跨频道合并 Pebble durable 写入；Leader 的 synced Append 和 Follower 的 ApplyFetch 都走同一个 coordinator。单频道的 `writeMu` 仍然串行，且 sync 完成前不会发布新的 LEO。
+- **Checkpoint 不再阻塞 sendack**: leader 在 quorum commit 后先完成 Append waiter，Checkpoint 持久化走后台 coalescing；若 checkpoint 写盘长期失败，当前实现还缺少显式 health / metrics 暴露。
+- **Transport RPC 分片**: Fetch / ReconcileProbe 都按 FNV-64a(ChannelKey) 路由到固定 RPC 流，保证同一频道有序，并复用 warmed pool slot。见 `transport/session.go`。
+- **Fetch 批量刷批策略**: 默认保留 200µs 定时窗口；队列到 8 条或累计编码体到 32 KiB 时立即刷批；批量 RPC 失败或返回缺项时，先按 4 条分块再试，只有最终 singleton 或 chunk RPC 本身失败后才退到单条 `Fetch`。
