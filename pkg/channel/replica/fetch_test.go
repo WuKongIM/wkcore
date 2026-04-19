@@ -118,3 +118,38 @@ func TestFetchReturnsProvisionalCommittedHWWhenCommitNotReady(t *testing.T) {
 		})
 	}
 }
+
+func TestFetchDoesNotExposeRecordsBeyondPublishedLeaderLEO(t *testing.T) {
+	leaderEnv := newFetchEnvWithHistory(t)
+
+	// Simulate synced records already visible in the store before the leader has
+	// published a matching runtime LEO snapshot.
+	leaderEnv.log.records = append(
+		leaderEnv.log.records,
+		channel.Record{Payload: []byte("r6"), SizeBytes: 1},
+		channel.Record{Payload: []byte("r7"), SizeBytes: 1},
+	)
+	leaderEnv.log.leo = 8
+	leaderEnv.replica.state.LEO = 6
+	leaderEnv.replica.publishStateLocked()
+
+	result, err := leaderEnv.replica.Fetch(context.Background(), channel.ReplicaFetchRequest{
+		ChannelKey:  "group-10",
+		Epoch:       7,
+		ReplicaID:   2,
+		FetchOffset: 5,
+		OffsetEpoch: 0,
+		MaxBytes:    1024,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Records, 1)
+
+	matchOffset := uint64(5 + len(result.Records))
+	require.Equal(t, uint64(6), matchOffset)
+	require.NoError(t, leaderEnv.replica.ApplyProgressAck(context.Background(), channel.ReplicaProgressAckRequest{
+		ChannelKey:  "group-10",
+		Epoch:       7,
+		ReplicaID:   2,
+		MatchOffset: matchOffset,
+	}))
+}

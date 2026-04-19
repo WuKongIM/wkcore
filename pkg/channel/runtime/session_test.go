@@ -1273,6 +1273,92 @@ func TestSessionSyntheticProgressAckFetchResponseDoesNotDrainQueuedSameGroupFetc
 	}
 }
 
+func TestSessionSyntheticProgressAckFetchResponseIgnoresRegressiveLeaderHW(t *testing.T) {
+	env := newSessionTestEnv(t)
+	key := testChannelKey(2512)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2512, 4, 2, []core.NodeID{1, 2}))
+
+	replica := env.factory.replicas[0]
+	replica.mu.Lock()
+	replica.state.HW = 10
+	replica.state.LEO = 12
+	replica.state.CommitReady = true
+	replica.mu.Unlock()
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		Epoch:      4,
+		RequestID:  0,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 9,
+		},
+	})
+
+	if got := replica.applyFetchCalls; got != 0 {
+		t.Fatalf("regressive synthetic leader hw should be ignored, got %d apply calls", got)
+	}
+}
+
+func TestSessionRealEmptyFetchResponseWithRegressiveLeaderHWReportsProgressAndRetries(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.AutoRunScheduler = true
+		cfg.FollowerReplicationRetryInterval = 20 * time.Millisecond
+	})
+	key := testChannelKey(2513)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2513, 4, 2, []core.NodeID{1, 2}))
+
+	session := env.sessions.session(2)
+	env.runtime.runScheduler()
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected initial follower fetch request, got %d sends", got)
+	}
+
+	replica := env.factory.replicas[0]
+	replica.mu.Lock()
+	replica.state.HW = 10
+	replica.state.LEO = 12
+	replica.state.CommitReady = true
+	replica.mu.Unlock()
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		Epoch:      4,
+		RequestID:  session.sent[0].RequestID,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 9,
+		},
+	})
+
+	if got := replica.applyFetchCalls; got != 1 {
+		t.Fatalf("real empty fetch response should still reach ApplyFetch, got %d apply calls", got)
+	}
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("expected stale real empty fetch response to send progress ack immediately, got %d sends", got)
+	}
+	if session.last.Kind != MessageKindProgressAck {
+		t.Fatalf("last kind = %v, want progress ack", session.last.Kind)
+	}
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := session.sendCount(); got >= 3 {
+			if session.last.Kind != MessageKindFetchRequest {
+				t.Fatalf("last kind after retry = %v, want fetch request", session.last.Kind)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	t.Fatalf("expected stale real empty fetch response to trigger delayed follower re-fetch, got %d sends", session.sendCount())
+}
+
 func TestSessionProgressAckEnvelopeRequiresMatchingGeneration(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(253, 4, 1, []core.NodeID{1, 2}))

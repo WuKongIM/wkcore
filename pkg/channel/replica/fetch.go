@@ -71,6 +71,12 @@ func (r *replica) Fetch(_ context.Context, req channel.ReplicaFetchRequest) (cha
 	if err != nil {
 		return channel.ReplicaFetchResult{}, err
 	}
+	maxVisibleRecords := leaderLEO - req.FetchOffset
+	if uint64(len(records)) > maxVisibleRecords {
+		// Fetch snapshots published runtime LEO, so avoid leaking newer durable
+		// records that have not been published into replica state yet.
+		records = records[:int(maxVisibleRecords)]
+	}
 	result.Records = records
 	return result, nil
 }
