@@ -23,6 +23,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/gateway/testkit"
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	channelhandler "github.com/WuKongIM/WuKongIM/pkg/channel/handler"
 	codec "github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
@@ -42,6 +43,7 @@ const (
 	sendStressSeedEnv              = "WK_SEND_STRESS_SEED"
 	sendStressWarmupAckTimeout     = 12 * time.Second
 	sendStressThroughputInflight   = 32
+	sendStressReplicaVerifyTimeout = 20 * time.Second
 )
 
 type sendStressMode string
@@ -91,6 +93,13 @@ type sendStressTarget struct {
 	ConnectNodeID uint64
 }
 
+func (t sendStressTarget) sendPacketChannelID() string {
+	if t.ChannelType == frame.ChannelTypeGroup {
+		return t.ChannelID
+	}
+	return t.RecipientUID
+}
+
 type sendStressRecord struct {
 	Worker          int
 	Iteration       int
@@ -113,6 +122,38 @@ type sendStressOutcome struct {
 	Total   uint64
 	Success uint64
 	Failed  uint64
+}
+
+type sendStressScenario string
+
+const (
+	sendStressScenarioMultiTarget      sendStressScenario = "multi-target"
+	sendStressScenarioSingleHotChannel sendStressScenario = "single-hot-channel"
+)
+
+func (s sendStressScenario) String() string {
+	if s == "" {
+		return string(sendStressScenarioMultiTarget)
+	}
+	return string(s)
+}
+
+type sendStressArtifactSet struct {
+	Label     string
+	LogPath   string
+	CPUPath   string
+	BlockPath string
+}
+
+type sendStressTargetKey struct {
+	ChannelID   string
+	ChannelType uint8
+}
+
+type sendStressVerificationPlan struct {
+	ChannelID     channel.ChannelID
+	OrderedSeqs   []uint64
+	ExpectedBySeq map[uint64]sendStressRecord
 }
 
 type sendStressWorkerClient struct {
@@ -534,6 +575,25 @@ func compareSendStressBaseline(observed sendStressObservedMetrics) string {
 	)
 }
 
+func sendStressArtifactsForScenario(scenario sendStressScenario) sendStressArtifactSet {
+	switch scenario {
+	case sendStressScenarioSingleHotChannel:
+		return sendStressArtifactSet{
+			Label:     "2026-04-19-send-stress-single-hot-channel",
+			LogPath:   "/tmp/send-stress-single-hot-channel.log",
+			CPUPath:   "tmp/profiles/send-stress-single-hot-channel.cpu.out",
+			BlockPath: "tmp/profiles/send-stress-single-hot-channel.block.out",
+		}
+	default:
+		return sendStressArtifactSet{
+			Label:     "2026-04-19-send-stress-postfix",
+			LogPath:   sendStressBaselineLogPath,
+			CPUPath:   sendStressBaselineCPUPath,
+			BlockPath: sendStressBaselineBlockPath,
+		}
+	}
+}
+
 func percentDelta(observed, baseline float64) float64 {
 	if baseline == 0 {
 		return 0
@@ -552,6 +612,20 @@ func sendStressActiveTargetCount(cfg sendStressConfig, totalTargets int) int {
 		return 0
 	}
 	return min(cfg.Workers, totalTargets)
+}
+
+func sendStressUniqueTargetCount(targets []sendStressTarget) int {
+	if len(targets) == 0 {
+		return 0
+	}
+	unique := make(map[sendStressTargetKey]struct{}, len(targets))
+	for _, target := range targets {
+		unique[sendStressTargetKey{
+			ChannelID:   target.ChannelID,
+			ChannelType: target.ChannelType,
+		}] = struct{}{}
+	}
+	return len(unique)
 }
 
 func TestSendStressConfigDefaultsAndOverrides(t *testing.T) {
@@ -791,6 +865,130 @@ func TestSendStressActiveTargetCountUsesAllSendersInThroughputMode(t *testing.T)
 	require.Equal(t, 16, sendStressActiveTargetCount(sendStressConfig{Mode: sendStressModeLatency, Workers: 32}, 16))
 }
 
+func TestSendStressTargetSendPacketChannelIDUsesRecipientForPersonAndChannelForGroup(t *testing.T) {
+	personTarget := sendStressTarget{
+		SenderUID:    "sender-a",
+		RecipientUID: "recipient-a",
+		ChannelID:    "sender-a-recipient-a",
+		ChannelType:  frame.ChannelTypePerson,
+	}
+	groupTarget := sendStressTarget{
+		SenderUID:    "sender-b",
+		RecipientUID: "group-member",
+		ChannelID:    "group-fixed",
+		ChannelType:  frame.ChannelTypeGroup,
+	}
+
+	require.Equal(t, "recipient-a", personTarget.sendPacketChannelID())
+	require.Equal(t, "group-fixed", groupTarget.sendPacketChannelID())
+}
+
+func TestSendStressUniqueTargetCountCollapsesHotChannelTargets(t *testing.T) {
+	targets := []sendStressTarget{
+		{ChannelID: "group-fixed", ChannelType: frame.ChannelTypeGroup},
+		{ChannelID: "group-fixed", ChannelType: frame.ChannelTypeGroup},
+		{ChannelID: "group-fixed", ChannelType: frame.ChannelTypeGroup},
+	}
+
+	require.Equal(t, 1, sendStressUniqueTargetCount(targets))
+}
+
+func TestSendStressArtifactsAreScenarioSpecific(t *testing.T) {
+	multi := sendStressArtifactsForScenario(sendStressScenarioMultiTarget)
+	hot := sendStressArtifactsForScenario(sendStressScenarioSingleHotChannel)
+
+	require.Equal(t, "2026-04-19-send-stress-postfix", multi.Label)
+	require.Equal(t, "/tmp/send-stress-postfix.log", multi.LogPath)
+	require.Equal(t, "tmp/profiles/send-stress-postfix.cpu.out", multi.CPUPath)
+	require.Equal(t, "tmp/profiles/send-stress-postfix.block.out", multi.BlockPath)
+
+	require.Equal(t, "2026-04-19-send-stress-single-hot-channel", hot.Label)
+	require.Equal(t, "/tmp/send-stress-single-hot-channel.log", hot.LogPath)
+	require.Equal(t, "tmp/profiles/send-stress-single-hot-channel.cpu.out", hot.CPUPath)
+	require.Equal(t, "tmp/profiles/send-stress-single-hot-channel.block.out", hot.BlockPath)
+}
+
+func TestBuildSendStressVerificationPlanRejectsDuplicateMessageSeq(t *testing.T) {
+	_, err := buildSendStressVerificationPlan([]sendStressRecord{
+		{ChannelID: "group-fixed", ChannelType: frame.ChannelTypeGroup, MessageSeq: 7},
+		{ChannelID: "group-fixed", ChannelType: frame.ChannelTypeGroup, MessageSeq: 7},
+	})
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "duplicate message_seq")
+}
+
+func TestSendStressReplicaRangeMismatchReportsReplicaDetails(t *testing.T) {
+	plan, err := buildSendStressVerificationPlan([]sendStressRecord{
+		{
+			Worker:        4,
+			Iteration:     19,
+			SenderUID:     "stress-sender-004",
+			RecipientUID:  "stress-group-member-004",
+			ChannelID:     "stress-hot-group-channel",
+			ChannelType:   frame.ChannelTypeGroup,
+			ClientSeq:     88,
+			ClientMsgNo:   "msg-88",
+			Payload:       []byte("expected payload"),
+			MessageID:     321,
+			MessageSeq:    6059,
+			ConnectNodeID: 3,
+		},
+	})
+	require.NoError(t, err)
+
+	mismatch := sendStressReplicaRangeMismatch(2, plan, map[uint64]channel.Message{
+		6059: {
+			MessageSeq:  6059,
+			ChannelID:   "stress-hot-group-channel",
+			ChannelType: frame.ChannelTypeGroup,
+			FromUID:     "stress-sender-002",
+			ClientMsgNo: "msg-55",
+			Payload:     []byte("other payload"),
+		},
+	}, 6059)
+
+	require.Contains(t, mismatch, "node=2")
+	require.Contains(t, mismatch, "message_seq=6059")
+	require.Contains(t, mismatch, "replica_from=stress-sender-002")
+	require.Contains(t, mismatch, "client_msg_no=msg-88")
+}
+
+func TestSendStressReplicaRangeMismatchDetectsReplicaMessageIDDifferences(t *testing.T) {
+	plan, err := buildSendStressVerificationPlan([]sendStressRecord{
+		{
+			Worker:        9,
+			Iteration:     42,
+			SenderUID:     "stress-sender-009",
+			RecipientUID:  "stress-group-member-009",
+			ChannelID:     "stress-hot-group-channel",
+			ChannelType:   frame.ChannelTypeGroup,
+			ClientSeq:     123,
+			ClientMsgNo:   "msg-123",
+			Payload:       []byte("same payload"),
+			MessageID:     777001,
+			MessageSeq:    9102,
+			ConnectNodeID: 2,
+		},
+	})
+	require.NoError(t, err)
+
+	mismatch := sendStressReplicaRangeMismatch(3, plan, map[uint64]channel.Message{
+		9102: {
+			MessageID:   777002,
+			MessageSeq:  9102,
+			ChannelID:   "stress-hot-group-channel",
+			ChannelType: frame.ChannelTypeGroup,
+			FromUID:     "stress-sender-009",
+			ClientMsgNo: "msg-123",
+			Payload:     []byte("same payload"),
+		},
+	}, 9102)
+
+	require.Contains(t, mismatch, "message_id=777001")
+	require.Contains(t, mismatch, "replica_message_id=777002")
+}
+
 func TestSendStressOutcomeErrorRate(t *testing.T) {
 	outcome := sendStressOutcome{Total: 10, Success: 8, Failed: 2}
 	require.InDelta(t, 20.0, outcome.ErrorRate(), 0.001)
@@ -1017,9 +1215,9 @@ func TestSendStressThreeNode(t *testing.T) {
 	leaderID := harness.waitForStableLeader(t, 1)
 	leader := harness.apps[leaderID]
 
-	targets := preloadSendStressChannels(t, harness, leader, cfg, selection.minISR)
+	targets := preloadSendStressTargets(t, harness, leader, cfg, selection.minISR, sendStressScenarioMultiTarget)
 	assertSendStressAcceptanceMinISR(t, harness, leader, targets, selection.minISR)
-	outcome, observed, records, failures := runSendStressWorkers(t, harness, targets, cfg)
+	outcome, observed, records, failures := runSendStressWorkers(t, harness, targets, cfg, sendStressScenarioMultiTarget)
 	verifySendStressCommittedRecords(t, harness, records)
 	if cfg.Mode == sendStressModeThroughput {
 		t.Logf("send stress baseline artifacts: log=%s cpu=%s block=%s", sendStressBaselineLogPath, sendStressBaselineCPUPath, sendStressBaselineBlockPath)
@@ -1029,6 +1227,44 @@ func TestSendStressThreeNode(t *testing.T) {
 	t.Logf("send stress results: total=%d success=%d failed=%d error_rate=%.2f%%", outcome.Total, outcome.Success, outcome.Failed, outcome.ErrorRate())
 	if len(failures) > 0 {
 		t.Logf("send stress failures: %s", strings.Join(failures, " | "))
+	}
+
+	require.NotZero(t, outcome.Total)
+	require.Equal(t, outcome.Total, outcome.Success)
+	require.Zero(t, outcome.Failed)
+	require.Len(t, records, int(outcome.Success))
+}
+
+func TestSendStressSingleHotChannelThreeNode(t *testing.T) {
+	selection := selectSendStressThreeNodeRun(t)
+	cfg := selection.cfg
+	preset := selection.preset
+
+	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(appCfg *Config) {
+		if selection.useAcceptancePreset {
+			applySendPathTuning(t, appCfg, preset)
+		}
+		if cfg.Mode == sendStressModeThroughput {
+			appCfg.Gateway.DefaultSession.AsyncSendDispatch = true
+		}
+	})
+	leaderID := harness.waitForStableLeader(t, 1)
+	leader := harness.apps[leaderID]
+
+	targets := preloadSendStressTargets(t, harness, leader, cfg, selection.minISR, sendStressScenarioSingleHotChannel)
+	require.Equal(t, 1, sendStressUniqueTargetCount(targets))
+	assertSendStressAcceptanceMinISR(t, harness, leader, targets, selection.minISR)
+	outcome, observed, records, failures := runSendStressWorkers(t, harness, targets, cfg, sendStressScenarioSingleHotChannel)
+	verifySendStressCommittedRecordsForScenario(t, harness, records, sendStressScenarioSingleHotChannel)
+	if cfg.Mode == sendStressModeThroughput {
+		artifacts := sendStressArtifactsForScenario(sendStressScenarioSingleHotChannel)
+		t.Logf("send stress hot-channel artifacts: label=%s log=%s cpu=%s block=%s", artifacts.Label, artifacts.LogPath, artifacts.CPUPath, artifacts.BlockPath)
+		t.Logf("%s", compareSendStressBaseline(observed))
+	}
+
+	t.Logf("send stress hot-channel results: total=%d success=%d failed=%d error_rate=%.2f%%", outcome.Total, outcome.Success, outcome.Failed, outcome.ErrorRate())
+	if len(failures) > 0 {
+		t.Logf("send stress hot-channel failures: %s", strings.Join(failures, " | "))
 	}
 
 	require.NotZero(t, outcome.Total)
@@ -1199,6 +1435,10 @@ func filterSendStressEnv(env []string) []string {
 }
 
 func preloadSendStressChannels(t *testing.T, harness *threeNodeAppHarness, leader *App, cfg sendStressConfig, minISR int) []sendStressTarget {
+	return preloadSendStressTargets(t, harness, leader, cfg, minISR, sendStressScenarioMultiTarget)
+}
+
+func preloadSendStressTargets(t *testing.T, harness *threeNodeAppHarness, leader *App, cfg sendStressConfig, minISR int, scenario sendStressScenario) []sendStressTarget {
 	t.Helper()
 	require.NotNil(t, harness)
 	require.NotNil(t, leader)
@@ -1206,12 +1446,49 @@ func preloadSendStressChannels(t *testing.T, harness *threeNodeAppHarness, leade
 
 	leaderID := leader.cfg.Node.ID
 	targets := make([]sendStressTarget, 0, cfg.Senders)
-	for idx := 0; idx < cfg.Senders; idx++ {
-		senderUID := fmt.Sprintf("stress-sender-%03d", idx)
-		recipientUID := fmt.Sprintf("stress-recipient-%03d", idx)
-		channelID := deliveryusecase.EncodePersonChannel(senderUID, recipientUID)
-		channelType := frame.ChannelTypePerson
-		channelEpoch := uint64(1000 + idx)
+	switch scenario {
+	case "", sendStressScenarioMultiTarget:
+		for idx := 0; idx < cfg.Senders; idx++ {
+			senderUID := fmt.Sprintf("stress-sender-%03d", idx)
+			recipientUID := fmt.Sprintf("stress-recipient-%03d", idx)
+			channelID := deliveryusecase.EncodePersonChannel(senderUID, recipientUID)
+			channelType := frame.ChannelTypePerson
+			channelEpoch := uint64(1000 + idx)
+
+			meta := metadb.ChannelRuntimeMeta{
+				ChannelID:    channelID,
+				ChannelType:  int64(channelType),
+				ChannelEpoch: channelEpoch,
+				LeaderEpoch:  channelEpoch,
+				Replicas:     []uint64{1, 2, 3},
+				ISR:          []uint64{1, 2, 3},
+				Leader:       leaderID,
+				MinISR:       int64(minISR),
+				Status:       uint8(channel.StatusActive),
+				Features:     uint64(channel.MessageSeqFormatLegacyU32),
+				LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
+			}
+			require.NoError(t, leader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
+
+			id := channel.ChannelID{ID: channelID, Type: channelType}
+			for _, app := range harness.appsWithLeaderFirst(leaderID) {
+				_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), id)
+				require.NoError(t, err)
+			}
+
+			targets = append(targets, sendStressTarget{
+				SenderUID:     senderUID,
+				RecipientUID:  recipientUID,
+				ChannelID:     channelID,
+				ChannelType:   channelType,
+				OwnerNodeID:   leaderID,
+				ConnectNodeID: leaderID,
+			})
+		}
+	case sendStressScenarioSingleHotChannel:
+		channelID := "stress-hot-group-channel"
+		channelType := frame.ChannelTypeGroup
+		channelEpoch := uint64(5000)
 
 		meta := metadb.ChannelRuntimeMeta{
 			ChannelID:    channelID,
@@ -1234,25 +1511,32 @@ func preloadSendStressChannels(t *testing.T, harness *threeNodeAppHarness, leade
 			require.NoError(t, err)
 		}
 
-		targets = append(targets, sendStressTarget{
-			SenderUID:     senderUID,
-			RecipientUID:  recipientUID,
-			ChannelID:     channelID,
-			ChannelType:   channelType,
-			OwnerNodeID:   leaderID,
-			ConnectNodeID: leaderID,
-		})
+		for idx := 0; idx < cfg.Senders; idx++ {
+			senderUID := fmt.Sprintf("stress-sender-%03d", idx)
+			recipientUID := fmt.Sprintf("stress-group-member-%03d", idx)
+			targets = append(targets, sendStressTarget{
+				SenderUID:     senderUID,
+				RecipientUID:  recipientUID,
+				ChannelID:     channelID,
+				ChannelType:   channelType,
+				OwnerNodeID:   leaderID,
+				ConnectNodeID: leaderID,
+			})
+		}
+	default:
+		t.Fatalf("unknown send stress scenario %q", scenario)
 	}
 	return targets
 }
 
-func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []sendStressTarget, cfg sendStressConfig) (sendStressOutcome, sendStressObservedMetrics, []sendStressRecord, []string) {
+func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []sendStressTarget, cfg sendStressConfig, scenario sendStressScenario) (sendStressOutcome, sendStressObservedMetrics, []sendStressRecord, []string) {
 	t.Helper()
 	require.NotNil(t, harness)
 	require.NotEmpty(t, targets)
 	require.NotZero(t, cfg.Workers)
 
 	activeTargetCount := sendStressActiveTargetCount(cfg, len(targets))
+	uniqueTargetCount := sendStressUniqueTargetCount(targets)
 	require.Positive(t, activeTargetCount)
 
 	clients := make([]sendStressWorkerClient, 0, activeTargetCount)
@@ -1358,12 +1642,15 @@ func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []
 		VerificationFailures: int(verificationFailures.Load()),
 	}
 	t.Logf(
-		"send stress metrics: mode=%s max_inflight=%d duration=%s workers=%d senders=%d total=%d success=%d failed=%d qps=%.2f p50=%s p95=%s p99=%s max=%s verification_count=%d verification_failures=%d",
+		"send stress metrics: scenario=%s mode=%s max_inflight=%d duration=%s workers=%d senders=%d active_target_count=%d unique_target_count=%d total=%d success=%d failed=%d qps=%.2f p50=%s p95=%s p99=%s max=%s verification_count=%d verification_failures=%d",
+		scenario,
 		cfg.Mode,
 		cfg.MaxInflightPerWorker,
 		elapsed,
 		cfg.Workers,
 		cfg.Senders,
+		activeTargetCount,
+		uniqueTargetCount,
 		outcome.Total,
 		outcome.Success,
 		outcome.Failed,
@@ -1380,6 +1667,142 @@ func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []
 	}
 
 	return outcome, observed, records, failures
+}
+
+func verifySendStressCommittedRecordsForScenario(t *testing.T, harness *threeNodeAppHarness, records []sendStressRecord, scenario sendStressScenario) {
+	t.Helper()
+	switch scenario {
+	case sendStressScenarioSingleHotChannel:
+		verifySendStressCommittedRecordsHotChannel(t, harness, records)
+	default:
+		verifySendStressCommittedRecords(t, harness, records)
+	}
+}
+
+func verifySendStressCommittedRecordsHotChannel(t *testing.T, harness *threeNodeAppHarness, records []sendStressRecord) {
+	t.Helper()
+	require.NotNil(t, harness)
+
+	plan, err := buildSendStressVerificationPlan(records)
+	require.NoError(t, err)
+
+	for _, app := range harness.orderedApps() {
+		require.NotNil(t, app, "replica is not running")
+		failure := waitForSendStressReplicaRangeMatch(app, plan, sendStressReplicaVerifyTimeout)
+		require.Emptyf(t, failure, "send stress durable verification node=%d failed: %s", app.cfg.Node.ID, failure)
+	}
+
+	t.Logf("send stress durable verification: verification_count=%d verification_failures=%d", len(plan.OrderedSeqs), 0)
+}
+
+func buildSendStressVerificationPlan(records []sendStressRecord) (sendStressVerificationPlan, error) {
+	if len(records) == 0 {
+		return sendStressVerificationPlan{}, nil
+	}
+
+	plan := sendStressVerificationPlan{
+		ChannelID: channel.ChannelID{
+			ID:   records[0].ChannelID,
+			Type: records[0].ChannelType,
+		},
+		OrderedSeqs:   make([]uint64, 0, len(records)),
+		ExpectedBySeq: make(map[uint64]sendStressRecord, len(records)),
+	}
+	for _, record := range records {
+		if record.ChannelID != plan.ChannelID.ID || record.ChannelType != plan.ChannelID.Type {
+			return sendStressVerificationPlan{}, fmt.Errorf("mixed verification channels: %s/%d != %s/%d", record.ChannelID, record.ChannelType, plan.ChannelID.ID, plan.ChannelID.Type)
+		}
+		if _, exists := plan.ExpectedBySeq[record.MessageSeq]; exists {
+			return sendStressVerificationPlan{}, fmt.Errorf("duplicate message_seq=%d for channel=%s/%d", record.MessageSeq, record.ChannelID, record.ChannelType)
+		}
+		plan.OrderedSeqs = append(plan.OrderedSeqs, record.MessageSeq)
+		plan.ExpectedBySeq[record.MessageSeq] = record
+	}
+	sort.Slice(plan.OrderedSeqs, func(i, j int) bool {
+		return plan.OrderedSeqs[i] < plan.OrderedSeqs[j]
+	})
+	return plan, nil
+}
+
+func loadSendStressReplicaMessages(app *App, plan sendStressVerificationPlan) (map[uint64]channel.Message, uint64, error) {
+	if len(plan.OrderedSeqs) == 0 {
+		return map[uint64]channel.Message{}, 0, nil
+	}
+	if app == nil {
+		return nil, 0, fmt.Errorf("replica is not running")
+	}
+
+	key := channelhandler.KeyFromChannelID(plan.ChannelID)
+	handle, ok := app.ISRRuntime().Channel(key)
+	if !ok {
+		return nil, 0, fmt.Errorf("channel=%s/%d node=%d missing runtime", plan.ChannelID.ID, plan.ChannelID.Type, app.cfg.Node.ID)
+	}
+
+	state := handle.Status()
+	maxSeq := plan.OrderedSeqs[len(plan.OrderedSeqs)-1]
+	if !state.CommitReady {
+		return nil, state.HW, fmt.Errorf("channel=%s/%d node=%d not commit ready", plan.ChannelID.ID, plan.ChannelID.Type, app.cfg.Node.ID)
+	}
+	if state.HW < maxSeq {
+		return nil, state.HW, fmt.Errorf("channel=%s/%d node=%d committed_hw=%d below max_seq=%d", plan.ChannelID.ID, plan.ChannelID.Type, app.cfg.Node.ID, state.HW, maxSeq)
+	}
+
+	store := channelStoreForID(app.ChannelLogDB(), plan.ChannelID)
+	msgs, err := channelhandler.LoadNextRangeMsgs(store, state.HW, plan.OrderedSeqs[0], maxSeq, 0)
+	if err != nil {
+		return nil, state.HW, err
+	}
+
+	loaded := make(map[uint64]channel.Message, len(msgs))
+	for _, msg := range msgs {
+		loaded[msg.MessageSeq] = msg
+	}
+	return loaded, state.HW, nil
+}
+
+func waitForSendStressReplicaRangeMatch(app *App, plan sendStressVerificationPlan, timeout time.Duration) string {
+	if len(plan.OrderedSeqs) == 0 {
+		return ""
+	}
+
+	deadline := time.Now().Add(timeout)
+	lastFailure := "replica verification timed out before any read"
+	for {
+		loaded, committedHW, err := loadSendStressReplicaMessages(app, plan)
+		if err != nil {
+			lastFailure = err.Error()
+		} else {
+			lastFailure = sendStressReplicaRangeMismatch(app.cfg.Node.ID, plan, loaded, committedHW)
+			if lastFailure == "" {
+				return ""
+			}
+		}
+		if time.Now().After(deadline) {
+			return lastFailure
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func sendStressReplicaRangeMismatch(nodeID uint64, plan sendStressVerificationPlan, loaded map[uint64]channel.Message, committedHW uint64) string {
+	for _, seq := range plan.OrderedSeqs {
+		record := plan.ExpectedBySeq[seq]
+		msg, ok := loaded[seq]
+		if !ok {
+			return fmt.Sprintf("replica missing node=%d worker=%d iteration=%d sender=%s recipient=%s connect_node=%d message_seq=%d message_id=%d client_seq=%d client_msg_no=%s committed_hw=%d", nodeID, record.Worker, record.Iteration, record.SenderUID, record.RecipientUID, record.ConnectNodeID, record.MessageSeq, record.MessageID, record.ClientSeq, record.ClientMsgNo, committedHW)
+		}
+		if bytes.Equal(record.Payload, msg.Payload) &&
+			record.SenderUID == msg.FromUID &&
+			record.ClientMsgNo == msg.ClientMsgNo &&
+			record.ChannelID == msg.ChannelID &&
+			record.ChannelType == msg.ChannelType &&
+			record.MessageID == int64(msg.MessageID) &&
+			record.MessageSeq == msg.MessageSeq {
+			continue
+		}
+		return fmt.Sprintf("replica mismatch node=%d worker=%d iteration=%d sender=%s recipient=%s connect_node=%d message_seq=%d message_id=%d client_seq=%d client_msg_no=%s committed_hw=%d frames_before_ack=%v replica_from=%s replica_client_msg_no=%s replica_payload=%q replica_channel=%s replica_channel_type=%d replica_message_id=%d", nodeID, record.Worker, record.Iteration, record.SenderUID, record.RecipientUID, record.ConnectNodeID, record.MessageSeq, record.MessageID, record.ClientSeq, record.ClientMsgNo, committedHW, record.FramesBeforeAck, msg.FromUID, msg.ClientMsgNo, string(msg.Payload), msg.ChannelID, msg.ChannelType, msg.MessageID)
+	}
+	return ""
 }
 
 func runSendStressWorkerLatency(client sendStressWorkerClient, worker int, cfg sendStressConfig, deadline time.Time) (sendStressOutcome, []sendStressRecord, []string) {
@@ -1474,7 +1897,7 @@ func runSendStressWorkerThroughput(client sendStressWorkerClient, worker int, cf
 		clientMsgNo := fmt.Sprintf("send-stress-%d-%s-%02d-%d", worker, client.target.SenderUID, iteration, cfg.Seed)
 		payload := []byte(fmt.Sprintf("send-stress payload worker=%d sender=%s recipient=%s iteration=%d seed=%d", worker, client.target.SenderUID, client.target.RecipientUID, iteration, cfg.Seed))
 		packet := &frame.SendPacket{
-			ChannelID:   client.target.RecipientUID,
+			ChannelID:   client.target.sendPacketChannelID(),
 			ChannelType: client.target.ChannelType,
 			ClientSeq:   clientSeq,
 			ClientMsgNo: clientMsgNo,
@@ -1596,7 +2019,7 @@ func warmupSendStressClients(t *testing.T, clients []sendStressWorkerClient, cfg
 
 func executeSendStressAttempt(client sendStressWorkerClient, worker int, phase string, iteration int, clientSeq uint64, clientMsgNo string, payload []byte, ackTimeout time.Duration) (sendStressRecord, string, bool) {
 	packet := &frame.SendPacket{
-		ChannelID:   client.target.RecipientUID,
+		ChannelID:   client.target.sendPacketChannelID(),
 		ChannelType: client.target.ChannelType,
 		ClientSeq:   clientSeq,
 		ClientMsgNo: clientMsgNo,
