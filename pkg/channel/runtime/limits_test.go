@@ -37,6 +37,7 @@ func TestLimitsFetchResponseDrainsQueuedReplicationForPeer(t *testing.T) {
 	env.runtime.enqueueReplication(testChannelKey(71), 2)
 	env.runtime.enqueueReplication(testChannelKey(72), 2)
 	env.runtime.runScheduler()
+	session := env.sessions.session(2)
 	if got := env.runtime.queuedPeerRequests(2); got != 1 {
 		t.Fatalf("expected queued request before response, got %d", got)
 	}
@@ -46,6 +47,7 @@ func TestLimitsFetchResponseDrainsQueuedReplicationForPeer(t *testing.T) {
 		ChannelKey: testChannelKey(71),
 		Generation: 1,
 		Epoch:      3,
+		RequestID:  session.sent[0].RequestID,
 		Kind:       MessageKindFetchResponse,
 		FetchResponse: &FetchResponseEnvelope{
 			LeaderHW: 9,
@@ -53,7 +55,7 @@ func TestLimitsFetchResponseDrainsQueuedReplicationForPeer(t *testing.T) {
 		},
 	})
 
-	if got := env.sessions.session(2).sendCount(); got != 2 {
+	if got := session.sendCount(); got != 2 {
 		t.Fatalf("expected queued send to drain after response, got %d sends", got)
 	}
 	if got := env.runtime.queuedPeerRequests(2); got != 0 {
@@ -126,6 +128,7 @@ func TestLimitsDrainPeerQueueSendErrorRequeuesReplication(t *testing.T) {
 		ChannelKey: testChannelKey(84),
 		Generation: 1,
 		Epoch:      3,
+		RequestID:  session.sent[0].RequestID,
 		Kind:       MessageKindFetchResponse,
 		FetchResponse: &FetchResponseEnvelope{
 			LeaderHW: 9,
@@ -168,6 +171,44 @@ func TestLimitsUnknownFetchResponseDoesNotReleasePeerInflight(t *testing.T) {
 	}
 	if got := env.runtime.queuedPeerRequests(2); got != 1 {
 		t.Fatalf("unknown response should not drain queue, got %d queued", got)
+	}
+}
+
+func TestLimitsZeroRequestIDFetchResponseDoesNotReleaseInflight(t *testing.T) {
+	state := newPeerRequestState()
+	key := testChannelKey(777)
+
+	if !state.tryAcquireChannel(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		RequestID:  7,
+		Kind:       MessageKindFetchRequest,
+	}) {
+		t.Fatal("expected initial channel inflight reservation")
+	}
+	if !state.tryAcquire(2, 1) {
+		t.Fatal("expected peer inflight reservation")
+	}
+
+	released := state.releaseInflightForEnvelope(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		RequestID:  0,
+		Kind:       MessageKindFetchResponse,
+	})
+	if released {
+		t.Fatal("zero request id fetch response must not release inflight reservation")
+	}
+	if state.tryAcquireChannel(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		RequestID:  8,
+		Kind:       MessageKindFetchRequest,
+	}) {
+		t.Fatal("same channel should stay blocked while the real fetch request is still in flight")
 	}
 }
 

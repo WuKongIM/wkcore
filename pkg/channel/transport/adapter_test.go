@@ -602,6 +602,9 @@ func TestPeerSessionSendProgressAckAppliesLeaderHWFromRPCResponse(t *testing.T) 
 		if got.Kind != runtime.MessageKindFetchResponse {
 			t.Fatalf("Kind = %v, want fetch response", got.Kind)
 		}
+		if got.RequestID != 0 {
+			t.Fatalf("RequestID = %d, want synthetic zero request id", got.RequestID)
+		}
 		if got.FetchResponse == nil || got.FetchResponse.LeaderHW != 11 {
 			t.Fatalf("FetchResponse = %+v", got.FetchResponse)
 		}

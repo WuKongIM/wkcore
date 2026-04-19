@@ -337,6 +337,7 @@ func TestSessionConcurrentPeerInflightStillSerializesSameGroupReplication(t *tes
 		ChannelKey: testChannelKey(274),
 		Generation: 1,
 		Epoch:      4,
+		RequestID:  session.sent[0].RequestID,
 		Kind:       MessageKindFetchResponse,
 		FetchResponse: &FetchResponseEnvelope{
 			LeaderHW: 7,
@@ -1196,6 +1197,7 @@ func TestSessionNonEmptyFetchResponseQueuesImmediateFollowerRefetch(t *testing.T
 		ChannelKey: testChannelKey(251),
 		Generation: 1,
 		Epoch:      4,
+		RequestID:  session.sent[0].RequestID,
 		Kind:       MessageKindFetchResponse,
 		FetchResponse: &FetchResponseEnvelope{
 			LeaderHW: 1,
@@ -1211,6 +1213,63 @@ func TestSessionNonEmptyFetchResponseQueuesImmediateFollowerRefetch(t *testing.T
 	}
 	if session.last.ChannelKey != testChannelKey(251) {
 		t.Fatalf("last group = %q, want %q", session.last.ChannelKey, testChannelKey(251))
+	}
+}
+
+func TestSessionSyntheticProgressAckFetchResponseDoesNotDrainQueuedSameGroupFetch(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Limits.MaxFetchInflightPeer = 2
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+	key := testChannelKey(2511)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2511, 4, 2, []core.NodeID{1, 2}))
+
+	session := env.sessions.session(2)
+	env.runtime.runScheduler()
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected initial follower fetch request, got %d sends", got)
+	}
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		Epoch:      4,
+		RequestID:  session.sent[0].RequestID,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 1,
+			Records:  []core.Record{{Payload: []byte("ok"), SizeBytes: 2}},
+		},
+	})
+
+	if got := session.sendCount(); got != 3 {
+		t.Fatalf("expected progress ack plus immediate follower re-fetch after apply, got %d sends", got)
+	}
+
+	env.runtime.enqueueReplication(key, 2)
+	env.runtime.runScheduler()
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("expected same-group fetch to stay queued behind in-flight fetch, got %d", got)
+	}
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		ChannelKey: key,
+		Generation: 1,
+		Epoch:      4,
+		RequestID:  0,
+		Kind:       MessageKindFetchResponse,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 1,
+		},
+	})
+
+	if got := session.sendCount(); got != 3 {
+		t.Fatalf("synthetic progress-ack fetch response must not drain queued same-group fetch, got %d sends", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("synthetic progress-ack fetch response must keep queued same-group fetch blocked, got %d", got)
 	}
 }
 
@@ -1318,6 +1377,7 @@ func TestSessionFetchFailureEnvelopeReleasesInflightAndRetriesReplication(t *tes
 		ChannelKey: testChannelKey(255),
 		Generation: 1,
 		Epoch:      4,
+		RequestID:  session.sent[0].RequestID,
 		Kind:       MessageKindFetchFailure,
 	})
 
@@ -1350,6 +1410,7 @@ func TestSessionEmptyFetchResponseUsesRetryIntervalBeforeFollowerRefetch(t *test
 		ChannelKey: testChannelKey(252),
 		Generation: 1,
 		Epoch:      4,
+		RequestID:  session.sent[0].RequestID,
 		Kind:       MessageKindFetchResponse,
 		FetchResponse: &FetchResponseEnvelope{
 			LeaderHW: 1,

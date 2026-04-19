@@ -195,7 +195,7 @@ func (s *peerRequestState) releaseInflightForEnvelope(env Envelope) bool {
 	if reservation.generation != 0 && env.Generation != 0 && reservation.generation != env.Generation {
 		return false
 	}
-	if reservation.requestID != 0 && env.RequestID != 0 && reservation.requestID != env.RequestID {
+	if reservation.requestID != env.RequestID {
 		return false
 	}
 	delete(s.groups, key)
