@@ -248,6 +248,229 @@ func TestPoolReusesConnectionForSameShard(t *testing.T) {
 	requireEventually(t, func() bool { return accepted.Load() == 1 })
 }
 
+func TestPoolAcquireConcurrentColdSlotSharesSingleDialAndError(t *testing.T) {
+	addr := reserveTCPAddr(t)
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: addr}},
+		Size:        1,
+		DialTimeout: 20 * time.Millisecond,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRaft,
+	})
+	defer pool.Close()
+
+	resultCh := make(chan error, 8)
+	start := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		go func() {
+			<-start
+			_, err := pool.acquire(2, 0)
+			resultCh <- err
+		}()
+	}
+
+	close(start)
+	firstErr := <-resultCh
+	if firstErr == nil {
+		t.Fatal("first acquire unexpectedly succeeded")
+	}
+
+	ln := mustListenOnAddr(t, addr)
+	defer ln.Close()
+
+	var accepts atomic.Int32
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepts.Add(1)
+			time.Sleep(200 * time.Millisecond)
+			_ = conn.Close()
+		}
+	}()
+
+	for i := 1; i < 8; i++ {
+		err := <-resultCh
+		if err == nil {
+			t.Fatalf("acquire %d succeeded, want cached failure", i)
+		}
+		if err.Error() != firstErr.Error() {
+			t.Fatalf("acquire %d error = %v, want %v", i, err, firstErr)
+		}
+	}
+	if accepts.Load() != 0 {
+		t.Fatalf("listener accepted %d connections, want 0", accepts.Load())
+	}
+}
+
+func TestPoolAcquireReturnsCachedDialFailureDuringCooldown(t *testing.T) {
+	addr := reserveTCPAddr(t)
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: addr}},
+		Size:        1,
+		DialTimeout: 20 * time.Millisecond,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRaft,
+	})
+	defer pool.Close()
+
+	firstErr := mustAcquireError(t, pool, 2, 0)
+
+	ln := mustListenOnAddr(t, addr)
+	defer ln.Close()
+
+	var accepts atomic.Int32
+	stopAccept := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stopAccept:
+				return
+			default:
+			}
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepts.Add(1)
+			_ = conn.Close()
+		}
+	}()
+	defer close(stopAccept)
+
+	secondErr := mustAcquireError(t, pool, 2, 0)
+	if secondErr.Error() != firstErr.Error() {
+		t.Fatalf("second acquire error = %v, want cached %v", secondErr, firstErr)
+	}
+	if accepts.Load() != 0 {
+		t.Fatalf("listener accepted %d connections during cooldown, want 0", accepts.Load())
+	}
+}
+
+func TestPoolAcquireAfterCooldownStartsOneNewDial(t *testing.T) {
+	addr := reserveTCPAddr(t)
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: addr}},
+		Size:        1,
+		DialTimeout: 20 * time.Millisecond,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRaft,
+	})
+	defer pool.Close()
+
+	_ = mustAcquireError(t, pool, 2, 0)
+	time.Sleep(75 * time.Millisecond)
+
+	resultCh := make(chan error, 8)
+	start := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		go func() {
+			<-start
+			_, err := pool.acquire(2, 0)
+			resultCh <- err
+		}()
+	}
+
+	ln := mustListenOnAddr(t, addr)
+	defer ln.Close()
+
+	var accepts atomic.Int32
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepts.Add(1)
+			time.Sleep(200 * time.Millisecond)
+			_ = conn.Close()
+		}
+	}()
+
+	close(start)
+
+	for i := 0; i < 8; i++ {
+		if err := <-resultCh; err != nil {
+			t.Fatalf("acquire %d error = %v, want success after cooldown", i, err)
+		}
+	}
+	requireEventually(t, func() bool { return accepts.Load() == 1 })
+}
+
+func TestPoolAcquireClosedSlotTriggersSingleRewarm(t *testing.T) {
+	addr := reserveTCPAddr(t)
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: addr}},
+		Size:        1,
+		DialTimeout: 20 * time.Millisecond,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRaft,
+	})
+	defer pool.Close()
+
+	ln := mustListenOnAddr(t, addr)
+	defer ln.Close()
+
+	var accepts atomic.Int32
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepts.Add(1)
+			_ = conn.Close()
+		}
+	}()
+
+	mc, err := pool.acquire(2, 0)
+	if err != nil {
+		t.Fatalf("initial acquire error = %v", err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	mc.Close()
+
+	closeErrCh := make(chan error, 8)
+	start := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		go func() {
+			<-start
+			_, err := pool.acquire(2, 0)
+			closeErrCh <- err
+		}()
+	}
+
+	close(start)
+	firstErr := <-closeErrCh
+	if firstErr == nil {
+		t.Fatal("first closed-slot acquire unexpectedly succeeded")
+	}
+
+	rewarmLn := mustListenOnAddr(t, addr)
+	defer rewarmLn.Close()
+	go func() {
+		for {
+			conn, err := rewarmLn.Accept()
+			if err != nil {
+				return
+			}
+			accepts.Add(1)
+			_ = conn.Close()
+		}
+	}()
+
+	for i := 1; i < 8; i++ {
+		err := <-closeErrCh
+		if err == nil {
+			t.Fatalf("acquire %d succeeded, want rewarm failure or shared result", i)
+		}
+	}
+}
+
 func TestPoolCloseFailsPendingRPC(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -340,4 +563,35 @@ func requireEventually(t *testing.T, fn func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("condition not satisfied before timeout")
+}
+
+func reserveTCPAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return addr
+}
+
+func mustListenOnAddr(t *testing.T, addr string) net.Listener {
+	t.Helper()
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ln
+}
+
+func mustAcquireError(t *testing.T, pool *Pool, nodeID NodeID, shardKey uint64) error {
+	t.Helper()
+	_, err := pool.acquire(nodeID, shardKey)
+	if err == nil {
+		t.Fatal("acquire unexpectedly succeeded")
+	}
+	return err
 }
