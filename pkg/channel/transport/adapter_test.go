@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1671,18 +1672,20 @@ func TestPeerSessionBackpressureRemainsHardAtQueuedLimitAfterEagerFlush(t *testi
 	prevSchedule := scheduleFetchBatchFlush
 	prevEager := runEagerFetchBatchFlush
 	scheduleFetchBatchFlush = func(delay time.Duration, fn func()) {}
-	eagerStarted := make(chan struct{}, 1)
-	eagerRelease := make(chan struct{})
-	var eagerOnce sync.Once
+	eagerDrained := make(chan struct{}, 1)
+	blockLaterEager := make(chan struct{})
+	var eagerCalls atomic.Int32
 	runEagerFetchBatchFlush = func(fn func()) {
 		go func() {
-			eagerStarted <- struct{}{}
-			<-eagerRelease
+			if eagerCalls.Add(1) > 1 {
+				<-blockLaterEager
+			}
 			fn()
+			eagerDrained <- struct{}{}
 		}()
 	}
 	t.Cleanup(func() {
-		eagerOnce.Do(func() { close(eagerRelease) })
+		close(blockLaterEager)
 		scheduleFetchBatchFlush = prevSchedule
 		runEagerFetchBatchFlush = prevEager
 	})
@@ -1703,9 +1706,16 @@ func TestPeerSessionBackpressureRemainsHardAtQueuedLimitAfterEagerFlush(t *testi
 	}
 
 	select {
-	case <-eagerStarted:
+	case <-eagerDrained:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for eager flush trigger")
+		t.Fatal("timeout waiting for eager flush drain")
+	}
+
+	session.mu.Lock()
+	firstQueueDepth := len(session.batchFetchQueue)
+	session.mu.Unlock()
+	if firstQueueDepth != 0 {
+		t.Fatalf("queue depth after eager flush = %d, want 0", firstQueueDepth)
 	}
 
 	for i := 0; i < session.maxQueuedFetchRequests(); i++ {
@@ -1722,8 +1732,6 @@ func TestPeerSessionBackpressureRemainsHardAtQueuedLimitAfterEagerFlush(t *testi
 	if state.PendingRequests < session.maxQueuedFetchRequests() {
 		t.Fatalf("PendingRequests = %d, want at least %d", state.PendingRequests, session.maxQueuedFetchRequests())
 	}
-
-	eagerOnce.Do(func() { close(eagerRelease) })
 }
 
 func TestPeerSessionBackpressureIncludesQueuedBatchRequests(t *testing.T) {
