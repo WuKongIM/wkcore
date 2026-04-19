@@ -1282,6 +1282,7 @@ func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []
 	var total atomic.Uint64
 	var success atomic.Uint64
 	var failed atomic.Uint64
+	var verificationFailures atomic.Uint64
 	var mu sync.Mutex
 	records := make([]sendStressRecord, 0, activeTargetCount*cfg.MessagesPerWorker)
 	latencies := make([]time.Duration, 0, activeTargetCount*cfg.MessagesPerWorker)
@@ -1330,6 +1331,7 @@ func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []
 			}
 			mu.Unlock()
 			for _, failure := range workerFailures {
+				verificationFailures.Add(1)
 				appendFailure("%s", failure)
 			}
 		}()
@@ -1353,7 +1355,7 @@ func runSendStressWorkers(t *testing.T, harness *threeNodeAppHarness, targets []
 		P95:                  latencySummary.P95,
 		P99:                  latencySummary.P99,
 		VerificationCount:    len(records),
-		VerificationFailures: len(failures),
+		VerificationFailures: int(verificationFailures.Load()),
 	}
 	t.Logf(
 		"send stress metrics: mode=%s max_inflight=%d duration=%s workers=%d senders=%d total=%d success=%d failed=%d qps=%.2f p50=%s p95=%s p99=%s max=%s verification_count=%d verification_failures=%d",
