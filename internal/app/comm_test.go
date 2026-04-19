@@ -489,9 +489,10 @@ func readAppWKProtoFrameWithin(t *testing.T, conn net.Conn, timeout time.Duratio
 	return f
 }
 
-func waitForAppCommittedMessage(t *testing.T, store *channelstore.ChannelStore, seq uint64, timeout time.Duration) channel.Message {
+func waitForAppCommittedMessage(t *testing.T, app *App, id channel.ChannelID, seq uint64, timeout time.Duration) channel.Message {
 	t.Helper()
 
+	store := channelStoreForID(app.ChannelLogDB(), id)
 	var msg channel.Message
 	require.Eventually(t, func() bool {
 		loaded, err := channelhandler.LoadMsg(store, seq)

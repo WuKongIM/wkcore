@@ -30,6 +30,8 @@ const (
 	MessageKindFetchResponse
 	MessageKindFetchFailure
 	MessageKindProgressAck
+	MessageKindReconcileProbeRequest
+	MessageKindReconcileProbeResponse
 	MessageKindTruncate
 	MessageKindSnapshotChunk
 	MessageKindAck
@@ -59,9 +61,11 @@ type Envelope struct {
 	Sync       bool
 	Payload    []byte
 
-	FetchRequest  *FetchRequestEnvelope
-	FetchResponse *FetchResponseEnvelope
-	ProgressAck   *ProgressAckEnvelope
+	FetchRequest           *FetchRequestEnvelope
+	FetchResponse          *FetchResponseEnvelope
+	ProgressAck            *ProgressAckEnvelope
+	ReconcileProbeRequest  *ReconcileProbeRequestEnvelope
+	ReconcileProbeResponse *ReconcileProbeResponseEnvelope
 }
 
 type FetchRequestEnvelope struct {
@@ -110,6 +114,23 @@ type ProgressAckEnvelope struct {
 	MatchOffset uint64
 }
 
+type ReconcileProbeRequestEnvelope struct {
+	ChannelKey core.ChannelKey
+	Epoch      uint64
+	Generation uint64
+	ReplicaID  core.NodeID
+}
+
+type ReconcileProbeResponseEnvelope struct {
+	ChannelKey   core.ChannelKey
+	Epoch        uint64
+	Generation   uint64
+	ReplicaID    core.NodeID
+	OffsetEpoch  uint64
+	LogEndOffset uint64
+	CheckpointHW uint64
+}
+
 type Limits struct {
 	MaxChannels               int
 	MaxFetchInflightPeer      int
@@ -128,6 +149,10 @@ type Runtime interface {
 
 type FetchService interface {
 	ServeFetch(ctx context.Context, req FetchRequestEnvelope) (FetchResponseEnvelope, error)
+}
+
+type ReconcileProbeService interface {
+	ServeReconcileProbe(ctx context.Context, req ReconcileProbeRequestEnvelope) (ReconcileProbeResponseEnvelope, error)
 }
 
 type ChannelHandle = core.HandlerChannel

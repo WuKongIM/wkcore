@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -29,11 +30,12 @@ type Transport struct {
 	rpcTimeout time.Duration
 	maxPending int
 
-	mu           sync.RWMutex
-	handler      func(runtime.Envelope)
-	fetchService runtime.FetchService
-	statusSource channel.HandlerRuntime
-	closeOnce    sync.Once
+	mu               sync.RWMutex
+	handler          func(runtime.Envelope)
+	fetchService     runtime.FetchService
+	reconcileService runtime.ReconcileProbeService
+	statusSource     channel.HandlerRuntime
+	closeOnce        sync.Once
 
 	sessions *sessionManager
 }
@@ -69,10 +71,14 @@ func New(opts Options) (*Transport, error) {
 	if source, ok := opts.FetchService.(channel.HandlerRuntime); ok {
 		transport.statusSource = source
 	}
+	if service, ok := opts.FetchService.(runtime.ReconcileProbeService); ok {
+		transport.reconcileService = service
+	}
 	transport.sessions = newSessionManager(transport)
 	opts.RPCMux.Handle(RPCServiceFetch, transport.handleRPC)
 	opts.RPCMux.Handle(RPCServiceFetchBatch, transport.handleFetchBatchRPC)
 	opts.RPCMux.Handle(RPCServiceProgressAck, transport.handleProgressAckRPC)
+	opts.RPCMux.Handle(RPCServiceReconcileProbe, transport.handleReconcileProbeRPC)
 	return transport, nil
 }
 
@@ -84,6 +90,7 @@ func (t *Transport) Close() error {
 		t.rpcMux.Unhandle(RPCServiceFetch)
 		t.rpcMux.Unhandle(RPCServiceFetchBatch)
 		t.rpcMux.Unhandle(RPCServiceProgressAck)
+		t.rpcMux.Unhandle(RPCServiceReconcileProbe)
 	})
 	return nil
 }
@@ -93,6 +100,11 @@ func (t *Transport) BindFetchService(service runtime.FetchService) {
 	t.fetchService = service
 	if source, ok := service.(channel.HandlerRuntime); ok {
 		t.statusSource = source
+	}
+	if probeService, ok := service.(runtime.ReconcileProbeService); ok {
+		t.reconcileService = probeService
+	} else {
+		t.reconcileService = nil
 	}
 	t.mu.Unlock()
 }
@@ -157,7 +169,7 @@ func (t *Transport) handleFetchBatchRPC(ctx context.Context, body []byte) ([]byt
 	return encodeFetchBatchResponse(resp)
 }
 
-func (t *Transport) handleProgressAckRPC(ctx context.Context, body []byte) ([]byte, error) {
+func (t *Transport) handleProgressAckRPC(_ context.Context, body []byte) ([]byte, error) {
 	ack, err := decodeProgressAck(body)
 	if err != nil {
 		return nil, err
@@ -170,8 +182,24 @@ func (t *Transport) handleProgressAckRPC(ctx context.Context, body []byte) ([]by
 		Kind:        runtime.MessageKindProgressAck,
 		ProgressAck: &ack,
 	})
-	leaderHW := t.waitForLeaderHW(ctx, ack)
+	leaderHW, _ := currentLeaderHW(t.statusSource, ack)
 	return encodeProgressAckResponse(progressAckResponseEnvelope{LeaderHW: leaderHW})
+}
+
+func (t *Transport) handleReconcileProbeRPC(ctx context.Context, body []byte) ([]byte, error) {
+	req, err := decodeReconcileProbeRequest(body)
+	if err != nil {
+		return nil, err
+	}
+	service, err := t.boundReconcileProbeService()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := service.ServeReconcileProbe(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return encodeReconcileProbeResponse(resp)
 }
 
 func (t *Transport) deliver(env runtime.Envelope) {
@@ -189,6 +217,16 @@ func (t *Transport) boundFetchService() (runtime.FetchService, error) {
 	t.mu.RUnlock()
 	if service == nil {
 		return nil, fmt.Errorf("channeltransport: fetch service must be bound")
+	}
+	return service, nil
+}
+
+func (t *Transport) boundReconcileProbeService() (runtime.ReconcileProbeService, error) {
+	t.mu.RLock()
+	service := t.reconcileService
+	t.mu.RUnlock()
+	if service == nil {
+		return nil, fmt.Errorf("channeltransport: reconcile probe service must be bound")
 	}
 	return service, nil
 }
@@ -223,13 +261,27 @@ func (t *Transport) waitForLeaderHW(ctx context.Context, ack runtime.ProgressAck
 }
 
 func currentLeaderHW(source channel.HandlerRuntime, ack runtime.ProgressAckEnvelope) (uint64, bool) {
+	if source == nil {
+		return 0, false
+	}
 	handle, ok := source.Channel(ack.ChannelKey)
 	if !ok {
 		return 0, false
 	}
 	state := handle.Status()
+	if !replicaStateCommitReady(state) {
+		return 0, false
+	}
 	if state.Epoch != ack.Epoch {
 		return state.HW, false
 	}
 	return state.HW, state.HW >= ack.MatchOffset
+}
+
+func replicaStateCommitReady(state channel.ReplicaState) bool {
+	field := reflect.ValueOf(state).FieldByName("CommitReady")
+	if !field.IsValid() || field.Kind() != reflect.Bool {
+		return true
+	}
+	return field.Bool()
 }
