@@ -728,6 +728,14 @@ func (r *runtime) deliverEnvelope(ch *channel, env Envelope) bool {
 		if env.FetchResponse == nil {
 			return false
 		}
+		if env.RequestID == 0 &&
+			env.FetchResponse.TruncateTo == nil &&
+			len(env.FetchResponse.Records) == 0 &&
+			env.FetchResponse.LeaderHW > 0 &&
+			env.FetchResponse.LeaderHW < state.HW {
+			// Synthetic progress-ack responses must not regress follower commit state.
+			return true
+		}
 		return r.applyFetchResponseEnvelope(ch, env.Peer, *env.FetchResponse) == nil
 	case MessageKindProgressAck:
 		state := ch.Status()

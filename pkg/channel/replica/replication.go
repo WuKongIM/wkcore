@@ -116,6 +116,13 @@ func (r *replica) ApplyFetch(_ context.Context, req channel.ReplicaApplyFetchReq
 		nextHW = leo
 	}
 	if nextHW < r.state.HW {
+		if len(req.Records) == 0 && req.TruncateTo == nil {
+			r.state.LEO = leo
+			r.state.OffsetEpoch = offsetEpochForLEO(r.epochHistory, leo)
+			r.publishStateLocked()
+			r.mu.Unlock()
+			return nil
+		}
 		r.mu.Unlock()
 		return channel.ErrCorruptState
 	}
