@@ -501,22 +501,31 @@ func waitForAppCommittedMessage(t *testing.T, app *App, id channel.ChannelID, se
 	store := channelStoreForID(app.ChannelLogDB(), id)
 	key := channelhandler.KeyFromChannelID(id)
 	var msg channel.Message
-	require.Eventually(t, func() bool {
+	deadline := time.Now().Add(timeout)
+	lastState := "replica state unavailable"
+	for time.Now().Before(deadline) {
 		handle, ok := app.ISRRuntime().Channel(key)
 		if !ok {
-			return false
+			lastState = fmt.Sprintf("channel=%s/%d node=%d missing runtime", id.ID, id.Type, app.cfg.Node.ID)
+			time.Sleep(10 * time.Millisecond)
+			continue
 		}
 		state := handle.Status()
 		if !state.CommitReady || seq > state.HW {
-			return false
+			lastState = fmt.Sprintf("channel=%s/%d node=%d commit_ready=%t hw=%d want_seq=%d leo=%d leader=%d epoch=%d", id.ID, id.Type, app.cfg.Node.ID, state.CommitReady, state.HW, seq, state.LEO, state.Leader, state.Epoch)
+			time.Sleep(10 * time.Millisecond)
+			continue
 		}
 		loaded, err := channelhandler.LoadMsg(store, state.HW, seq)
 		if err != nil {
-			return false
+			lastState = fmt.Sprintf("channel=%s/%d node=%d load seq=%d with hw=%d failed: %v", id.ID, id.Type, app.cfg.Node.ID, seq, state.HW, err)
+			time.Sleep(10 * time.Millisecond)
+			continue
 		}
 		msg = loaded
-		return true
-	}, timeout, 10*time.Millisecond)
+		return msg
+	}
+	require.Failf(t, "wait for committed message", "timeout after %s: %s", timeout, lastState)
 	return msg
 }
 

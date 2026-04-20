@@ -139,6 +139,135 @@ func TestThreeNodeAppGatewaySendUsesDurableCommitWithMinISR2(t *testing.T) {
 	require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
 }
 
+func TestThreeNodeAppGatewaySendUsesLongPollQuorumCommitWithMinISR2(t *testing.T) {
+	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(cfg *Config) {
+		cfg.Cluster.ReplicationMode = "long_poll"
+	})
+	leaderID := harness.waitForStableLeader(t, 1)
+	leader := harness.apps[leaderID]
+	recipientUID := "three-node-long-poll-user"
+	channelID := deliveryusecase.EncodePersonChannel("sender-long-poll", recipientUID)
+
+	id := channel.ChannelID{
+		ID:   channelID,
+		Type: frame.ChannelTypePerson,
+	}
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 115,
+		LeaderEpoch:  16,
+		Replicas:     []uint64{1, 2, 3},
+		ISR:          []uint64{1, 2, 3},
+		Leader:       leader.cfg.Node.ID,
+		MinISR:       2,
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
+	}
+	require.NoError(t, leader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
+
+	for _, app := range harness.appsWithLeaderFirst(leaderID) {
+		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), id)
+		require.NoError(t, err)
+	}
+
+	conn := connectAppWKProtoClient(t, leader, "sender-long-poll")
+
+	sendAppWKProtoFrame(t, conn, &frame.SendPacket{
+		ChannelID:   recipientUID,
+		ChannelType: id.Type,
+		ClientSeq:   1,
+		ClientMsgNo: "three-node-long-poll-1",
+		Payload:     []byte("hello long poll gateway"),
+	})
+
+	sendack, ok := readAppWKProtoFrameWithin(t, conn, multinodeAppReadTimeout).(*frame.SendackPacket)
+	require.True(t, ok)
+	require.Equal(t, frame.ReasonSuccess, sendack.ReasonCode)
+	require.NotZero(t, sendack.MessageSeq)
+	require.NotZero(t, sendack.MessageID)
+	require.NoError(t, conn.Close())
+
+	harness.stopNode(t, leaderID)
+	newLeaderID := harness.waitForLeaderChange(t, 1, leaderID)
+	require.NotZero(t, newLeaderID)
+
+	for _, app := range harness.runningApps() {
+		msg := waitForAppCommittedMessage(t, app, id, sendack.MessageSeq, 5*time.Second)
+		require.Equal(t, []byte("hello long poll gateway"), msg.Payload)
+		require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
+	}
+
+	harness.restartNode(t, leaderID)
+	harness.waitForStableLeader(t, 1)
+
+	msg := waitForAppCommittedMessage(t, harness.apps[leaderID], id, sendack.MessageSeq, 5*time.Second)
+	require.Equal(t, []byte("hello long poll gateway"), msg.Payload)
+	require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
+}
+
+func TestThreeNodeAppMessageSendUsesLongPollLocalCommitWithoutAdvancingQuorum(t *testing.T) {
+	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(cfg *Config) {
+		cfg.Cluster.ReplicationMode = "long_poll"
+	})
+	leaderID := harness.waitForStableLeader(t, 1)
+	leader := harness.apps[leaderID]
+	recipientUID := "three-node-local-commit-user"
+	channelID := deliveryusecase.EncodePersonChannel("sender-local-commit", recipientUID)
+
+	id := channel.ChannelID{
+		ID:   channelID,
+		Type: frame.ChannelTypePerson,
+	}
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 116,
+		LeaderEpoch:  17,
+		Replicas:     []uint64{1, 2, 3},
+		ISR:          []uint64{1, 2, 3},
+		Leader:       leader.cfg.Node.ID,
+		MinISR:       3,
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
+	}
+	require.NoError(t, leader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
+
+	for _, app := range harness.appsWithLeaderFirst(leaderID) {
+		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), id)
+		require.NoError(t, err)
+	}
+
+	offlineFollowerID := leaderID%3 + 1
+	require.NotEqual(t, leaderID, offlineFollowerID)
+	harness.stopNode(t, offlineFollowerID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := leader.Message().Send(ctx, messageusecase.SendCommand{
+		FromUID:     "sender-local-commit",
+		ChannelID:   recipientUID,
+		ChannelType: id.Type,
+		ClientSeq:   1,
+		ClientMsgNo: "three-node-local-commit-1",
+		Payload:     []byte("hello local commit long poll"),
+		CommitMode:  channel.CommitModeLocal,
+	})
+	require.NoError(t, err)
+	require.Equal(t, frame.ReasonSuccess, result.Reason)
+	require.NotZero(t, result.MessageSeq)
+
+	require.Never(t, func() bool {
+		status, statusErr := leader.channelLog.Status(id)
+		if statusErr != nil {
+			return false
+		}
+		return status.CommittedSeq >= result.MessageSeq
+	}, 500*time.Millisecond, 50*time.Millisecond)
+}
+
 func TestThreeNodeAppGatewaySendFromFollowerForwardsDurableAppendToLeader(t *testing.T) {
 	harness := newThreeNodeAppHarness(t)
 	leaderID := harness.waitForStableLeader(t, 1)

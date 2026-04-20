@@ -50,6 +50,8 @@ type sendTraceBreakdown struct {
 	followerApplyDurable    []time.Duration
 	runtimeRetryScheduled   []time.Duration
 	runtimeFetchRequestSend []time.Duration
+	runtimeLanePollSend     []time.Duration
+	runtimeCursorDeltaSend  []time.Duration
 }
 
 func TestSendTraceThreeNodeRecordsCriticalStages(t *testing.T) {
@@ -113,12 +115,22 @@ func TestSendTraceThreeNodeRecordsCriticalStages(t *testing.T) {
 		breakdown.leaderQuorumWait,
 		breakdown.followerApplyDurable,
 	)
-	if len(breakdown.runtimeRetryScheduled) > 0 || len(breakdown.runtimeFetchRequestSend) > 0 {
-		t.Logf("runtime trace: retry_scheduled=%v fetch_request_send=%v", breakdown.runtimeRetryScheduled, breakdown.runtimeFetchRequestSend)
+	if len(breakdown.runtimeRetryScheduled) > 0 || len(breakdown.runtimeFetchRequestSend) > 0 || len(breakdown.runtimeLanePollSend) > 0 || len(breakdown.runtimeCursorDeltaSend) > 0 {
+		t.Logf(
+			"runtime trace: retry_scheduled=%v fetch_request_send=%v lane_poll_send=%v cursor_delta_send=%v",
+			breakdown.runtimeRetryScheduled,
+			breakdown.runtimeFetchRequestSend,
+			breakdown.runtimeLanePollSend,
+			breakdown.runtimeCursorDeltaSend,
+		)
 	}
 }
 
 func buildSendTraceBreakdown(events []sendtrace.Event, record sendStressRecord) (sendTraceBreakdown, []string) {
+	return buildSendTraceBreakdownForMode(events, record, false)
+}
+
+func buildSendTraceBreakdownForMode(events []sendtrace.Event, record sendStressRecord, requireLaneStages bool) (sendTraceBreakdown, []string) {
 	breakdown := sendTraceBreakdown{ackLatency: record.AckLatency}
 	missing := make([]string, 0)
 	seq := record.MessageSeq
@@ -160,6 +172,10 @@ func buildSendTraceBreakdown(events []sendtrace.Event, record sendStressRecord) 
 			breakdown.runtimeRetryScheduled = append(breakdown.runtimeRetryScheduled, event.Duration)
 		case sendtrace.StageRuntimeFetchRequestSend:
 			breakdown.runtimeFetchRequestSend = append(breakdown.runtimeFetchRequestSend, event.Duration)
+		case sendtrace.StageRuntimeLanePollRequestSend:
+			breakdown.runtimeLanePollSend = append(breakdown.runtimeLanePollSend, event.Duration)
+		case sendtrace.StageRuntimeLaneCursorDeltaSend:
+			breakdown.runtimeCursorDeltaSend = append(breakdown.runtimeCursorDeltaSend, event.Duration)
 		}
 	}
 	sort.Slice(breakdown.followerApplyDurable, func(i, j int) bool {
@@ -170,6 +186,12 @@ func buildSendTraceBreakdown(events []sendtrace.Event, record sendStressRecord) 
 	})
 	sort.Slice(breakdown.runtimeFetchRequestSend, func(i, j int) bool {
 		return breakdown.runtimeFetchRequestSend[i] < breakdown.runtimeFetchRequestSend[j]
+	})
+	sort.Slice(breakdown.runtimeLanePollSend, func(i, j int) bool {
+		return breakdown.runtimeLanePollSend[i] < breakdown.runtimeLanePollSend[j]
+	})
+	sort.Slice(breakdown.runtimeCursorDeltaSend, func(i, j int) bool {
+		return breakdown.runtimeCursorDeltaSend[i] < breakdown.runtimeCursorDeltaSend[j]
 	})
 	if breakdown.gatewayMessagesSend <= 0 {
 		missing = append(missing, string(sendtrace.StageGatewayMessagesSend))
@@ -194,6 +216,14 @@ func buildSendTraceBreakdown(events []sendtrace.Event, record sendStressRecord) 
 	}
 	if len(breakdown.followerApplyDurable) == 0 {
 		missing = append(missing, string(sendtrace.StageReplicaFollowerApplyDurable))
+	}
+	if requireLaneStages {
+		if len(breakdown.runtimeLanePollSend) == 0 {
+			missing = append(missing, string(sendtrace.StageRuntimeLanePollRequestSend))
+		}
+		if len(breakdown.runtimeCursorDeltaSend) == 0 {
+			missing = append(missing, string(sendtrace.StageRuntimeLaneCursorDeltaSend))
+		}
 	}
 	return breakdown, missing
 }
@@ -237,6 +267,34 @@ func TestSendTraceBreakdownReportsMissingStages(t *testing.T) {
 		string(sendtrace.StageReplicaLeaderQuorumWait),
 		string(sendtrace.StageReplicaFollowerApplyDurable),
 	}, missing)
+}
+
+func TestSendLatencyTraceBreakdownCapturesLaneStages(t *testing.T) {
+	record := sendStressRecord{ClientMsgNo: "trace-1", MessageSeq: 7, AckLatency: 9 * time.Millisecond}
+	events := []sendtrace.Event{
+		{Stage: sendtrace.StageGatewayMessagesSend, ClientMsgNo: "trace-1", Duration: 2 * time.Millisecond},
+		{Stage: sendtrace.StageGatewayWriteSendack, ClientMsgNo: "trace-1", Duration: 500 * time.Microsecond},
+		{Stage: sendtrace.StageMessageSendDurable, ClientMsgNo: "trace-1", Duration: 8 * time.Millisecond},
+		{Stage: sendtrace.StageChannelAppendLocal, MessageSeq: 7, Duration: 8 * time.Millisecond},
+		{Stage: sendtrace.StageReplicaLeaderQueueWait, RangeStart: 7, RangeEnd: 7, Duration: time.Millisecond},
+		{Stage: sendtrace.StageReplicaLeaderLocalDurable, RangeStart: 7, RangeEnd: 7, Duration: 2 * time.Millisecond},
+		{Stage: sendtrace.StageReplicaLeaderQuorumWait, RangeStart: 7, RangeEnd: 7, Duration: 5 * time.Millisecond},
+		{Stage: sendtrace.StageReplicaFollowerApplyDurable, RangeStart: 7, RangeEnd: 7, Duration: 3 * time.Millisecond},
+		{Stage: sendtrace.StageRuntimeLanePollRequestSend, Duration: 900 * time.Microsecond},
+		{Stage: sendtrace.StageRuntimeLaneCursorDeltaSend, Duration: 700 * time.Microsecond},
+	}
+
+	breakdown, missing := buildSendTraceBreakdownForMode(events, record, true)
+	require.Empty(t, missing)
+	require.Equal(t, []time.Duration{900 * time.Microsecond}, breakdown.runtimeLanePollSend)
+	require.Equal(t, []time.Duration{700 * time.Microsecond}, breakdown.runtimeCursorDeltaSend)
+}
+
+func TestSendLatencyTraceBreakdownReportsMissingLaneStagesInLongPollMode(t *testing.T) {
+	record := sendStressRecord{ClientMsgNo: "trace-1", MessageSeq: 7}
+	_, missing := buildSendTraceBreakdownForMode(nil, record, true)
+	require.Contains(t, missing, string(sendtrace.StageRuntimeLanePollRequestSend))
+	require.Contains(t, missing, string(sendtrace.StageRuntimeLaneCursorDeltaSend))
 }
 
 func TestSendTraceEventContainsMessageSeq(t *testing.T) {

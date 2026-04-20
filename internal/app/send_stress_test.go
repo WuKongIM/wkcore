@@ -41,6 +41,7 @@ const (
 	sendStressDialTimeoutEnv       = "WK_SEND_STRESS_DIAL_TIMEOUT"
 	sendStressAckTimeoutEnv        = "WK_SEND_STRESS_ACK_TIMEOUT"
 	sendStressSeedEnv              = "WK_SEND_STRESS_SEED"
+	sendStressReplicationModeEnv   = "WK_CLUSTER_REPLICATION_MODE"
 	sendStressWarmupAckTimeout     = 12 * time.Second
 	sendStressThroughputInflight   = 32
 	sendStressReplicaVerifyTimeout = 20 * time.Second
@@ -129,6 +130,7 @@ type sendStressScenario string
 const (
 	sendStressScenarioMultiTarget      sendStressScenario = "multi-target"
 	sendStressScenarioSingleHotChannel sendStressScenario = "single-hot-channel"
+	sendStressScenarioHotColdSkew      sendStressScenario = "hot-cold-skew"
 )
 
 func (s sendStressScenario) String() string {
@@ -584,6 +586,13 @@ func sendStressArtifactsForScenario(scenario sendStressScenario) sendStressArtif
 			CPUPath:   "tmp/profiles/send-stress-single-hot-channel.cpu.out",
 			BlockPath: "tmp/profiles/send-stress-single-hot-channel.block.out",
 		}
+	case sendStressScenarioHotColdSkew:
+		return sendStressArtifactSet{
+			Label:     "2026-04-20-send-stress-hot-cold-skew",
+			LogPath:   "/tmp/send-stress-hot-cold-skew.log",
+			CPUPath:   "tmp/profiles/send-stress-hot-cold-skew.cpu.out",
+			BlockPath: "tmp/profiles/send-stress-hot-cold-skew.block.out",
+		}
 	default:
 		return sendStressArtifactSet{
 			Label:     "2026-04-19-send-stress-postfix",
@@ -612,6 +621,19 @@ func sendStressActiveTargetCount(cfg sendStressConfig, totalTargets int) int {
 		return 0
 	}
 	return min(cfg.Workers, totalTargets)
+}
+
+func summarizeSendStressHotColdLatencies(records []sendStressRecord) (sendStressLatencySummary, sendStressLatencySummary) {
+	hotLatencies := make([]time.Duration, 0, len(records))
+	coldLatencies := make([]time.Duration, 0, len(records))
+	for _, record := range records {
+		if record.ChannelID == "stress-hot-group-channel" {
+			hotLatencies = append(hotLatencies, record.AckLatency)
+			continue
+		}
+		coldLatencies = append(coldLatencies, record.AckLatency)
+	}
+	return summarizeSendStressLatencies(hotLatencies), summarizeSendStressLatencies(coldLatencies)
 }
 
 func sendStressUniqueTargetCount(targets []sendStressTarget) int {
@@ -896,6 +918,7 @@ func TestSendStressUniqueTargetCountCollapsesHotChannelTargets(t *testing.T) {
 func TestSendStressArtifactsAreScenarioSpecific(t *testing.T) {
 	multi := sendStressArtifactsForScenario(sendStressScenarioMultiTarget)
 	hot := sendStressArtifactsForScenario(sendStressScenarioSingleHotChannel)
+	hotCold := sendStressArtifactsForScenario(sendStressScenarioHotColdSkew)
 
 	require.Equal(t, "2026-04-19-send-stress-postfix", multi.Label)
 	require.Equal(t, "/tmp/send-stress-postfix.log", multi.LogPath)
@@ -906,6 +929,36 @@ func TestSendStressArtifactsAreScenarioSpecific(t *testing.T) {
 	require.Equal(t, "/tmp/send-stress-single-hot-channel.log", hot.LogPath)
 	require.Equal(t, "tmp/profiles/send-stress-single-hot-channel.cpu.out", hot.CPUPath)
 	require.Equal(t, "tmp/profiles/send-stress-single-hot-channel.block.out", hot.BlockPath)
+
+	require.Equal(t, "2026-04-20-send-stress-hot-cold-skew", hotCold.Label)
+	require.Equal(t, "/tmp/send-stress-hot-cold-skew.log", hotCold.LogPath)
+	require.Equal(t, "tmp/profiles/send-stress-hot-cold-skew.cpu.out", hotCold.CPUPath)
+	require.Equal(t, "tmp/profiles/send-stress-hot-cold-skew.block.out", hotCold.BlockPath)
+}
+
+func TestSelectSendStressThreeNodeRunHonorsLongPollReplicationEnv(t *testing.T) {
+	preset := sendStressAcceptancePreset()
+	applySendStressAcceptanceConfigEnv(t, preset.Benchmark)
+	t.Setenv("WK_CLUSTER_REPLICATION_MODE", "long_poll")
+
+	selection := selectSendStressThreeNodeRun(t)
+
+	require.Equal(t, "long_poll", selection.replicationMode)
+}
+
+func TestSendStressHotColdLatencySummarySeparatesHotAndColdRecords(t *testing.T) {
+	records := []sendStressRecord{
+		{ChannelID: "stress-hot-group-channel", AckLatency: 10 * time.Millisecond},
+		{ChannelID: "stress-hot-group-channel", AckLatency: 20 * time.Millisecond},
+		{ChannelID: "stress-cold-group-channel-1", AckLatency: 90 * time.Millisecond},
+		{ChannelID: "stress-cold-group-channel-2", AckLatency: 120 * time.Millisecond},
+	}
+
+	hot, cold := summarizeSendStressHotColdLatencies(records)
+	require.Equal(t, 2, hot.Count)
+	require.Equal(t, 20*time.Millisecond, hot.P95)
+	require.Equal(t, 2, cold.Count)
+	require.Equal(t, 120*time.Millisecond, cold.P95)
 }
 
 func TestBuildSendStressVerificationPlanRejectsDuplicateMessageSeq(t *testing.T) {
@@ -1208,6 +1261,9 @@ func TestSendStressThreeNode(t *testing.T) {
 		if selection.useAcceptancePreset {
 			applySendPathTuning(t, appCfg, preset)
 		}
+		if selection.replicationMode != "" {
+			appCfg.Cluster.ReplicationMode = selection.replicationMode
+		}
 		if cfg.Mode == sendStressModeThroughput {
 			appCfg.Gateway.DefaultSession.AsyncSendDispatch = true
 		}
@@ -1244,6 +1300,9 @@ func TestSendStressSingleHotChannelThreeNode(t *testing.T) {
 		if selection.useAcceptancePreset {
 			applySendPathTuning(t, appCfg, preset)
 		}
+		if selection.replicationMode != "" {
+			appCfg.Cluster.ReplicationMode = selection.replicationMode
+		}
 		if cfg.Mode == sendStressModeThroughput {
 			appCfg.Gateway.DefaultSession.AsyncSendDispatch = true
 		}
@@ -1273,12 +1332,67 @@ func TestSendStressSingleHotChannelThreeNode(t *testing.T) {
 	require.Len(t, records, int(outcome.Success))
 }
 
+func TestSendStressHotColdSkewThreeNode(t *testing.T) {
+	selection := selectSendStressThreeNodeRun(t)
+	cfg := selection.cfg
+	preset := selection.preset
+
+	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(appCfg *Config) {
+		if selection.useAcceptancePreset {
+			applySendPathTuning(t, appCfg, preset)
+		}
+		if selection.replicationMode != "" {
+			appCfg.Cluster.ReplicationMode = selection.replicationMode
+		}
+		if cfg.Mode == sendStressModeThroughput {
+			appCfg.Gateway.DefaultSession.AsyncSendDispatch = true
+		}
+	})
+	leaderID := harness.waitForStableLeader(t, 1)
+	leader := harness.apps[leaderID]
+
+	targets := preloadSendStressTargets(t, harness, leader, cfg, selection.minISR, sendStressScenarioHotColdSkew)
+	require.Greater(t, sendStressUniqueTargetCount(targets), 1)
+	assertSendStressAcceptanceMinISR(t, harness, leader, targets, selection.minISR)
+	outcome, observed, records, failures := runSendStressWorkers(t, harness, targets, cfg, sendStressScenarioHotColdSkew)
+	verifySendStressCommittedRecordsForScenario(t, harness, records, sendStressScenarioHotColdSkew)
+	hotSummary, coldSummary := summarizeSendStressHotColdLatencies(records)
+	if cfg.Mode == sendStressModeThroughput {
+		artifacts := sendStressArtifactsForScenario(sendStressScenarioHotColdSkew)
+		t.Logf("send stress hot-cold artifacts: label=%s log=%s cpu=%s block=%s", artifacts.Label, artifacts.LogPath, artifacts.CPUPath, artifacts.BlockPath)
+		t.Logf("%s", compareSendStressBaseline(observed))
+	}
+
+	t.Logf(
+		"send stress hot-cold results: total=%d success=%d failed=%d error_rate=%.2f%% hot_count=%d hot_p95=%s cold_count=%d cold_p95=%s",
+		outcome.Total,
+		outcome.Success,
+		outcome.Failed,
+		outcome.ErrorRate(),
+		hotSummary.Count,
+		hotSummary.P95,
+		coldSummary.Count,
+		coldSummary.P95,
+	)
+	if len(failures) > 0 {
+		t.Logf("send stress hot-cold failures: %s", strings.Join(failures, " | "))
+	}
+
+	require.NotZero(t, hotSummary.Count)
+	require.NotZero(t, coldSummary.Count)
+	require.NotZero(t, outcome.Total)
+	require.Equal(t, outcome.Total, outcome.Success)
+	require.Zero(t, outcome.Failed)
+	require.Len(t, records, int(outcome.Success))
+}
+
 func selectSendStressThreeNodeRun(t *testing.T) sendStressThreeNodeRunSelection {
 	t.Helper()
 
 	preset := sendStressAcceptancePreset()
 	cfg := loadSendStressConfig(t)
 	requireSendStressEnabled(t, cfg)
+	replicationMode := strings.TrimSpace(os.Getenv(sendStressReplicationModeEnv))
 
 	expectedAcceptance := preset.Benchmark
 	expectedAcceptance.Enabled = true
@@ -1289,6 +1403,7 @@ func selectSendStressThreeNodeRun(t *testing.T) sendStressThreeNodeRunSelection 
 			cfg:                 cfg,
 			preset:              preset,
 			minISR:              preset.MinISR,
+			replicationMode:     replicationMode,
 			useAcceptancePreset: true,
 		}
 	}
@@ -1297,6 +1412,7 @@ func selectSendStressThreeNodeRun(t *testing.T) sendStressThreeNodeRunSelection 
 		cfg:                 cfg,
 		preset:              preset,
 		minISR:              3,
+		replicationMode:     replicationMode,
 		useAcceptancePreset: false,
 	}
 }
@@ -1305,6 +1421,7 @@ type sendStressThreeNodeRunSelection struct {
 	cfg                 sendStressConfig
 	preset              sendStressAcceptanceSpec
 	minISR              int
+	replicationMode     string
 	useAcceptancePreset bool
 }
 
@@ -1341,6 +1458,7 @@ func clearSendStressConfigEnv(t *testing.T) {
 		sendStressDialTimeoutEnv,
 		sendStressAckTimeoutEnv,
 		sendStressSeedEnv,
+		sendStressReplicationModeEnv,
 	} {
 		name := name
 		if value, ok := os.LookupEnv(name); ok {
@@ -1426,7 +1544,8 @@ func filterSendStressEnv(env []string) []string {
 			strings.HasPrefix(entry, sendStressMaxInflightEnv+"=") ||
 			strings.HasPrefix(entry, sendStressDialTimeoutEnv+"=") ||
 			strings.HasPrefix(entry, sendStressAckTimeoutEnv+"=") ||
-			strings.HasPrefix(entry, sendStressSeedEnv+"=") {
+			strings.HasPrefix(entry, sendStressSeedEnv+"=") ||
+			strings.HasPrefix(entry, sendStressReplicationModeEnv+"=") {
 			continue
 		}
 		filtered = append(filtered, entry)
@@ -1446,49 +1565,8 @@ func preloadSendStressTargets(t *testing.T, harness *threeNodeAppHarness, leader
 
 	leaderID := leader.cfg.Node.ID
 	targets := make([]sendStressTarget, 0, cfg.Senders)
-	switch scenario {
-	case "", sendStressScenarioMultiTarget:
-		for idx := 0; idx < cfg.Senders; idx++ {
-			senderUID := fmt.Sprintf("stress-sender-%03d", idx)
-			recipientUID := fmt.Sprintf("stress-recipient-%03d", idx)
-			channelID := deliveryusecase.EncodePersonChannel(senderUID, recipientUID)
-			channelType := frame.ChannelTypePerson
-			channelEpoch := uint64(1000 + idx)
-
-			meta := metadb.ChannelRuntimeMeta{
-				ChannelID:    channelID,
-				ChannelType:  int64(channelType),
-				ChannelEpoch: channelEpoch,
-				LeaderEpoch:  channelEpoch,
-				Replicas:     []uint64{1, 2, 3},
-				ISR:          []uint64{1, 2, 3},
-				Leader:       leaderID,
-				MinISR:       int64(minISR),
-				Status:       uint8(channel.StatusActive),
-				Features:     uint64(channel.MessageSeqFormatLegacyU32),
-				LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
-			}
-			require.NoError(t, leader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
-
-			id := channel.ChannelID{ID: channelID, Type: channelType}
-			for _, app := range harness.appsWithLeaderFirst(leaderID) {
-				_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), id)
-				require.NoError(t, err)
-			}
-
-			targets = append(targets, sendStressTarget{
-				SenderUID:     senderUID,
-				RecipientUID:  recipientUID,
-				ChannelID:     channelID,
-				ChannelType:   channelType,
-				OwnerNodeID:   leaderID,
-				ConnectNodeID: leaderID,
-			})
-		}
-	case sendStressScenarioSingleHotChannel:
-		channelID := "stress-hot-group-channel"
-		channelType := frame.ChannelTypeGroup
-		channelEpoch := uint64(5000)
+	upsertMeta := func(channelID string, channelType uint8, channelEpoch uint64) {
+		t.Helper()
 
 		meta := metadb.ChannelRuntimeMeta{
 			ChannelID:    channelID,
@@ -1510,6 +1588,31 @@ func preloadSendStressTargets(t *testing.T, harness *threeNodeAppHarness, leader
 			_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), id)
 			require.NoError(t, err)
 		}
+	}
+	switch scenario {
+	case "", sendStressScenarioMultiTarget:
+		for idx := 0; idx < cfg.Senders; idx++ {
+			senderUID := fmt.Sprintf("stress-sender-%03d", idx)
+			recipientUID := fmt.Sprintf("stress-recipient-%03d", idx)
+			channelID := deliveryusecase.EncodePersonChannel(senderUID, recipientUID)
+			channelType := frame.ChannelTypePerson
+			channelEpoch := uint64(1000 + idx)
+			upsertMeta(channelID, channelType, channelEpoch)
+
+			targets = append(targets, sendStressTarget{
+				SenderUID:     senderUID,
+				RecipientUID:  recipientUID,
+				ChannelID:     channelID,
+				ChannelType:   channelType,
+				OwnerNodeID:   leaderID,
+				ConnectNodeID: leaderID,
+			})
+		}
+	case sendStressScenarioSingleHotChannel:
+		channelID := "stress-hot-group-channel"
+		channelType := frame.ChannelTypeGroup
+		channelEpoch := uint64(5000)
+		upsertMeta(channelID, channelType, channelEpoch)
 
 		for idx := 0; idx < cfg.Senders; idx++ {
 			senderUID := fmt.Sprintf("stress-sender-%03d", idx)
@@ -1519,6 +1622,41 @@ func preloadSendStressTargets(t *testing.T, harness *threeNodeAppHarness, leader
 				RecipientUID:  recipientUID,
 				ChannelID:     channelID,
 				ChannelType:   channelType,
+				OwnerNodeID:   leaderID,
+				ConnectNodeID: leaderID,
+			})
+		}
+	case sendStressScenarioHotColdSkew:
+		hotChannelID := "stress-hot-group-channel"
+		upsertMeta(hotChannelID, frame.ChannelTypeGroup, 5000)
+
+		hotSenders := max(1, cfg.Senders/4)
+		if hotSenders > 8 {
+			hotSenders = 8
+		}
+		for idx := 0; idx < cfg.Senders; idx++ {
+			senderUID := fmt.Sprintf("stress-sender-%03d", idx)
+			if idx < hotSenders {
+				recipientUID := fmt.Sprintf("stress-hot-member-%03d", idx)
+				targets = append(targets, sendStressTarget{
+					SenderUID:     senderUID,
+					RecipientUID:  recipientUID,
+					ChannelID:     hotChannelID,
+					ChannelType:   frame.ChannelTypeGroup,
+					OwnerNodeID:   leaderID,
+					ConnectNodeID: leaderID,
+				})
+				continue
+			}
+
+			recipientUID := fmt.Sprintf("stress-cold-recipient-%03d", idx)
+			channelID := deliveryusecase.EncodePersonChannel(senderUID, recipientUID)
+			upsertMeta(channelID, frame.ChannelTypePerson, uint64(7000+idx))
+			targets = append(targets, sendStressTarget{
+				SenderUID:     senderUID,
+				RecipientUID:  recipientUID,
+				ChannelID:     channelID,
+				ChannelType:   frame.ChannelTypePerson,
 				OwnerNodeID:   leaderID,
 				ConnectNodeID: leaderID,
 			})
