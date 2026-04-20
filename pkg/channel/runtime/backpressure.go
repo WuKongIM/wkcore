@@ -481,7 +481,7 @@ func (r *runtime) shouldDropOutboundEnvelope(env Envelope) bool {
 		return true
 	}
 	switch env.Kind {
-	case MessageKindFetchRequest, MessageKindProgressAck, MessageKindReconcileProbeRequest:
+	case MessageKindFetchRequest, MessageKindProgressAck, MessageKindReconcileProbeRequest, MessageKindLanePollRequest:
 		return !r.isReplicationPeerValid(ch.metaSnapshot(), env.Peer)
 	}
 	return false
@@ -572,6 +572,13 @@ func (r *runtime) handleEnvelope(env Envelope) {
 		ch        *channel
 		knownDrop bool
 	)
+	if env.Kind == MessageKindLanePollResponse {
+		if env.LanePollResponse == nil {
+			return
+		}
+		r.handleLanePollResponse(env.Peer, *env.LanePollResponse)
+		return
+	}
 
 	active, ok := r.lookupChannel(env.ChannelKey)
 	if ok && active.gen == env.Generation {
@@ -759,6 +766,52 @@ func (r *runtime) deliverEnvelope(ch *channel, env Envelope) bool {
 	return true
 }
 
+func (r *runtime) handleLanePollResponse(peer core.NodeID, resp LanePollResponseEnvelope) {
+	manager, ok := r.laneManager(peer)
+	if !ok {
+		return
+	}
+	reissue := manager.ApplyResponse(resp)
+	for _, item := range resp.Items {
+		ch, ok := r.lookupChannel(item.ChannelKey)
+		if !ok {
+			continue
+		}
+		fetchResp := FetchResponseEnvelope{
+			ChannelKey: item.ChannelKey,
+			Epoch:      item.ChannelEpoch,
+			Generation: ch.gen,
+			LeaderHW:   item.LeaderHW,
+			Records:    item.Records,
+			TruncateTo: item.TruncateTo,
+		}
+		_ = r.applyFetchResponseEnvelope(ch, peer, fetchResp)
+	}
+	if !reissue {
+		return
+	}
+	req, ok := manager.NextRequest(resp.LaneID)
+	if !ok {
+		return
+	}
+	retryKey, _ := manager.AnyChannel(resp.LaneID)
+	r.sendOrDeferEnvelope(Envelope{
+		Peer:            peer,
+		ChannelKey:      retryKey,
+		RequestID:       r.requestID.Add(1),
+		Kind:            MessageKindLanePollRequest,
+		LanePollRequest: &req,
+	}, func(err error) {
+		if err == nil {
+			return
+		}
+		manager.SendFailed(resp.LaneID)
+		if retryKey != "" {
+			r.scheduleFollowerReplication(retryKey, peer)
+		}
+	})
+}
+
 func (r *runtime) applyFetchResponseEnvelope(ch *channel, peer core.NodeID, env FetchResponseEnvelope) error {
 	if err := ch.replica.ApplyFetch(context.Background(), core.ReplicaApplyFetchRequest{
 		ChannelKey: env.ChannelKey,
@@ -775,6 +828,17 @@ func (r *runtime) applyFetchResponseEnvelope(ch *channel, peer core.NodeID, env 
 	if meta.Leader != r.cfg.LocalNode {
 		state := ch.Status()
 		shouldReportProgress := len(env.Records) > 0 || env.TruncateTo != nil || state.LEO > env.LeaderHW
+		if r.longPollEnabled() {
+			if shouldReportProgress {
+				r.ensureLaneManager(meta.Leader).MarkCursorDelta(LaneCursorDelta{
+					ChannelKey:   ch.key,
+					ChannelEpoch: state.Epoch,
+					MatchOffset:  state.LEO,
+					OffsetEpoch:  state.OffsetEpoch,
+				})
+			}
+			return nil
+		}
 		if shouldReportProgress {
 			r.sendOrDeferEnvelope(Envelope{
 				Peer:       meta.Leader,

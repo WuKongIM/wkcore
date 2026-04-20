@@ -1302,6 +1302,149 @@ func TestSessionSyntheticProgressAckFetchResponseIgnoresRegressiveLeaderHW(t *te
 	}
 }
 
+func TestSessionLongPollTimedOutResponseImmediatelyReissuesPoll(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.ReplicationMode = "long_poll"
+		cfg.LongPollLaneCount = 4
+		cfg.LongPollMaxWait = 2 * time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+	key := testChannelKey(2601)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2601, 4, 2, []core.NodeID{1, 2}))
+
+	env.runtime.runScheduler()
+
+	session := env.sessions.session(2)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected initial long poll open, got %d sends", got)
+	}
+	if session.last.Kind != MessageKindLanePollRequest {
+		t.Fatalf("last kind = %v, want lane poll request", session.last.Kind)
+	}
+	first := session.last.LanePollRequest
+	if first == nil {
+		t.Fatal("expected lane poll request payload")
+	}
+	if first.Op != LanePollOpOpen {
+		t.Fatalf("initial op = %v, want open", first.Op)
+	}
+
+	env.transport.deliver(Envelope{
+		Peer: 2,
+		Kind: MessageKindLanePollResponse,
+		Sync: true,
+		LanePollResponse: &LanePollResponseEnvelope{
+			LaneID:       first.LaneID,
+			Status:       LanePollStatusOK,
+			SessionID:    501,
+			SessionEpoch: 1,
+			TimedOut:     true,
+		},
+	})
+
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("expected timed-out empty response to immediately reissue poll, got %d sends", got)
+	}
+	if session.last.Kind != MessageKindLanePollRequest {
+		t.Fatalf("last kind after timeout = %v, want lane poll request", session.last.Kind)
+	}
+	if session.last.LanePollRequest == nil || session.last.LanePollRequest.Op != LanePollOpPoll {
+		t.Fatalf("reissue request = %+v, want poll", session.last.LanePollRequest)
+	}
+	if session.last.LanePollRequest.LaneID != testFollowerLaneFor(key, 4) {
+		t.Fatalf("reissue lane = %d, want %d", session.last.LanePollRequest.LaneID, testFollowerLaneFor(key, 4))
+	}
+}
+
+func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.ReplicationMode = "long_poll"
+		cfg.LongPollLaneCount = 4
+		cfg.LongPollMaxWait = 2 * time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2602, 4, 2, []core.NodeID{1, 2}))
+
+	env.runtime.runScheduler()
+
+	session := env.sessions.session(2)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected initial long poll open, got %d sends", got)
+	}
+	first := session.last.LanePollRequest
+	if first == nil {
+		t.Fatal("expected lane poll request payload")
+	}
+
+	env.transport.deliver(Envelope{
+		Peer: 2,
+		Kind: MessageKindLanePollResponse,
+		Sync: true,
+		LanePollResponse: &LanePollResponseEnvelope{
+			LaneID:        first.LaneID,
+			Status:        LanePollStatusNeedReset,
+			ResetRequired: true,
+			ResetReason:   LanePollResetReasonLaneLayoutMismatch,
+			SessionID:     900,
+			SessionEpoch:  7,
+		},
+	})
+
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("expected need_reset response to immediately send a fresh open, got %d sends", got)
+	}
+	if session.last.Kind != MessageKindLanePollRequest {
+		t.Fatalf("last kind after reset = %v, want lane poll request", session.last.Kind)
+	}
+	if session.last.LanePollRequest == nil || session.last.LanePollRequest.Op != LanePollOpOpen {
+		t.Fatalf("reopen request = %+v, want open", session.last.LanePollRequest)
+	}
+	if len(session.last.LanePollRequest.FullMembership) == 0 {
+		t.Fatal("reset reopen should carry full membership snapshot")
+	}
+}
+
+func TestSessionLongPollRPCTimeoutUsesRecoveryBackoff(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.ReplicationMode = "long_poll"
+		cfg.LongPollLaneCount = 4
+		cfg.LongPollMaxWait = 2 * time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+		cfg.FollowerReplicationRetryInterval = 20 * time.Millisecond
+		cfg.AutoRunScheduler = true
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2603, 4, 2, []core.NodeID{1, 2}))
+
+	session := env.sessions.session(2)
+	session.enqueueSendErrors(context.DeadlineExceeded)
+
+	env.runtime.runScheduler()
+
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected only the initial long poll attempt before backoff, got %d sends", got)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("long poll timeout should not immediately retry, got %d sends", got)
+	}
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := session.sendCount(); got >= 2 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	t.Fatalf("expected retry after recovery backoff, got %d sends", session.sendCount())
+}
+
 func TestSessionRealEmptyFetchResponseWithRegressiveLeaderHWReportsProgressAndRetries(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.AutoRunScheduler = true

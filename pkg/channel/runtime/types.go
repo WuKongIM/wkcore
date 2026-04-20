@@ -35,6 +35,8 @@ const (
 	MessageKindTruncate
 	MessageKindSnapshotChunk
 	MessageKindAck
+	MessageKindLanePollRequest
+	MessageKindLanePollResponse
 )
 
 type BackpressureLevel uint8
@@ -66,6 +68,8 @@ type Envelope struct {
 	ProgressAck            *ProgressAckEnvelope
 	ReconcileProbeRequest  *ReconcileProbeRequestEnvelope
 	ReconcileProbeResponse *ReconcileProbeResponseEnvelope
+	LanePollRequest        *LanePollRequestEnvelope
+	LanePollResponse       *LanePollResponseEnvelope
 }
 
 type FetchRequestEnvelope struct {
@@ -146,6 +150,86 @@ type LaneCursorDelta struct {
 type LanePollBudget struct {
 	MaxBytes    int
 	MaxChannels int
+}
+
+type LanePollOp uint8
+
+const (
+	LanePollOpOpen LanePollOp = iota + 1
+	LanePollOpPoll
+	LanePollOpClose
+)
+
+type LanePollStatus uint8
+
+const (
+	LanePollStatusOK LanePollStatus = iota + 1
+	LanePollStatusNeedReset
+	LanePollStatusStaleMeta
+	LanePollStatusNotLeader
+	LanePollStatusClosed
+)
+
+type LanePollResetReason uint8
+
+const (
+	LanePollResetReasonNone LanePollResetReason = iota
+	LanePollResetReasonLaneLayoutMismatch
+	LanePollResetReasonSessionEpochMismatch
+	LanePollResetReasonMembershipVersionMismatch
+	LanePollResetReasonLeaderRestart
+	LanePollResetReasonSessionEvicted
+)
+
+type LanePollItemFlags uint8
+
+const (
+	LanePollItemFlagData LanePollItemFlags = 1 << iota
+	LanePollItemFlagTruncate
+	LanePollItemFlagHWOnly
+	LanePollItemFlagReset
+)
+
+type LaneMembership struct {
+	ChannelKey   core.ChannelKey
+	ChannelEpoch uint64
+}
+
+type LaneResponseItem struct {
+	ChannelKey   core.ChannelKey
+	ChannelEpoch uint64
+	LeaderEpoch  uint64
+	Flags        LanePollItemFlags
+	Records      []core.Record
+	LeaderHW     uint64
+	TruncateTo   *uint64
+}
+
+type LanePollRequestEnvelope struct {
+	LaneID                uint16
+	LaneCount             uint16
+	SessionID             uint64
+	SessionEpoch          uint64
+	Op                    LanePollOp
+	ProtocolVersion       uint16
+	MaxWait               time.Duration
+	MaxBytes              int
+	MaxChannels           int
+	MembershipVersionHint uint64
+	FullMembership        []LaneMembership
+	CursorDelta           []LaneCursorDelta
+}
+
+type LanePollResponseEnvelope struct {
+	LaneID        uint16
+	Status        LanePollStatus
+	SessionID     uint64
+	SessionEpoch  uint64
+	TimedOut      bool
+	MoreReady     bool
+	ResetRequired bool
+	ResetReason   LanePollResetReason
+	Items         []LaneResponseItem
 }
 
 type Limits struct {

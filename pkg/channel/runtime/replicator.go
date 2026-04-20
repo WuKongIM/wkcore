@@ -48,6 +48,11 @@ func (r *runtime) processReplication(key core.ChannelKey) {
 	if !ok {
 		return
 	}
+	meta := ch.metaSnapshot()
+	if r.longPollEnabled() && meta.Leader != 0 && meta.Leader != r.cfg.LocalNode {
+		r.processFollowerLongPoll(ch, meta)
+		return
+	}
 
 	var failedPeers []core.NodeID
 	scheduleRetry := false
@@ -118,6 +123,39 @@ func (r *runtime) processReplication(key core.ChannelKey) {
 	ch.markReplication()
 	if scheduleRetry {
 		r.enqueueScheduler(key, PriorityNormal)
+	}
+}
+
+func (r *runtime) processFollowerLongPoll(ch *channel, meta core.Meta) {
+	for {
+		peer, ok := ch.popReplicationPeer()
+		if !ok {
+			return
+		}
+		if peer == 0 || peer != meta.Leader {
+			continue
+		}
+		manager := r.ensureLaneManager(peer)
+		manager.MarkChannelPending(ch.key)
+		laneID := manager.LaneFor(ch.key)
+		req, ok := manager.NextRequest(laneID)
+		if !ok {
+			continue
+		}
+		err := r.sendEnvelope(Envelope{
+			Peer:            peer,
+			ChannelKey:      ch.key,
+			Epoch:           meta.Epoch,
+			Generation:      ch.gen,
+			RequestID:       r.requestID.Add(1),
+			Kind:            MessageKindLanePollRequest,
+			LanePollRequest: &req,
+		})
+		if err == nil {
+			continue
+		}
+		manager.SendFailed(laneID)
+		r.scheduleFollowerReplication(ch.key, peer)
 	}
 }
 

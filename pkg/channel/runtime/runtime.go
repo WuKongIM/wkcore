@@ -29,6 +29,8 @@ type runtime struct {
 	beforePeerSessionHook       func(Envelope)
 	afterOutboundValidationHook func(Envelope)
 	sessions                    peerSessionCache
+	laneMu                      sync.Mutex
+	lanes                       map[core.NodeID]*PeerLaneManager
 	peerRequests                peerRequestState
 	snapshots                   snapshotState
 	snapshotThrottle            snapshotThrottle
@@ -89,6 +91,7 @@ func New(cfg Config) (Runtime, error) {
 		generationStore:        cfg.GenerationStore,
 		scheduler:              newScheduler(),
 		sessions:               newPeerSessionCache(),
+		lanes:                  make(map[core.NodeID]*PeerLaneManager),
 		peerRequests:           newPeerRequestState(),
 		snapshotThrottle:       newSnapshotThrottle(cfg.Limits.MaxRecoveryBytesPerSecond, time.Sleep),
 		replicationRetry:       make(map[core.ChannelKey]map[core.NodeID]*replicationRetryState),
@@ -154,6 +157,7 @@ func (r *runtime) EnsureChannel(meta core.Meta) error {
 	ch := newChannel(meta.Key, generation, rep, meta, r.cfg.Now, r)
 	shard.channels[meta.Key] = ch
 	shard.mu.Unlock()
+	r.syncFollowerLaneMembership(nil, meta)
 
 	if meta.Leader != r.cfg.LocalNode {
 		r.retryReplication(meta.Key, meta.Leader, true)
@@ -184,6 +188,7 @@ func (r *runtime) RemoveChannel(key core.ChannelKey) error {
 	r.tombstones.add(key, ch.gen, r.cfg.Now().Add(r.cfg.Tombstones.TombstoneTTL))
 	delete(shard.channels, key)
 	shard.mu.Unlock()
+	r.syncFollowerLaneMembership(&previousMeta, core.Meta{})
 	r.snapshots.removeWaiter(key)
 	r.evictInvalidPeerSessions(r.activeReplicationPeers(previousMeta))
 	r.sendCoordMu.Unlock()
@@ -221,6 +226,7 @@ func (r *runtime) ApplyMeta(meta core.Meta) error {
 		ch.clearSnapshotWork()
 		r.snapshots.removeWaiter(meta.Key)
 	}
+	r.syncFollowerLaneMembership(&previousMeta, meta)
 	r.evictInvalidPeerSessions(invalidatedPeers)
 	r.sendCoordMu.Unlock()
 	r.clearInvalidPeerWork(ch, meta)
@@ -309,6 +315,7 @@ func (r *runtime) evictInvalidPeerSessions(peers []core.NodeID) {
 		if r.peerReferencedByAnyChannel(peer) {
 			continue
 		}
+		r.deleteLaneManager(peer)
 		session, ok := r.sessions.evict(peer)
 		if !ok {
 			continue
@@ -550,6 +557,9 @@ func (r *runtime) Close() error {
 		delete(r.sessions.sessions, peer)
 	}
 	r.sessions.mu.Unlock()
+	r.laneMu.Lock()
+	r.lanes = make(map[core.NodeID]*PeerLaneManager)
+	r.laneMu.Unlock()
 
 	var err error
 	for _, rep := range reps {
