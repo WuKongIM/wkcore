@@ -220,6 +220,7 @@ func (r *replica) flushAppendBatch(batch []*appendRequest) {
 		req.waiter.durableDoneAt = durableDoneAt
 		req.waiter.result.BaseOffset = nextLEO
 		req.waiter.result.RecordCount = len(req.batch)
+		req.waiter.result.NextCommitHW = r.state.HW
 		sendtrace.Record(sendtrace.Event{
 			Stage:      sendtrace.StageReplicaLeaderQueueWait,
 			At:         req.waiter.enqueuedAt,
@@ -238,6 +239,11 @@ func (r *replica) flushAppendBatch(batch []*appendRequest) {
 			RangeStart: rangeStart,
 			RangeEnd:   target,
 		})
+		if channel.CommitModeFromContext(req.ctx) == channel.CommitModeLocal {
+			r.completeAppendWaiter(req.waiter, req.waiter.result, nil)
+			nextLEO = target
+			continue
+		}
 		r.waiters = append(r.waiters, req.waiter)
 		nextLEO = target
 	}

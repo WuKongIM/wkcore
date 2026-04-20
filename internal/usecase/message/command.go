@@ -1,6 +1,9 @@
 package message
 
-import "github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+import (
+	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+)
 
 type SendCommand struct {
 	Framer               frame.Framer
@@ -16,6 +19,7 @@ type SendCommand struct {
 	ChannelType          uint8
 	Topic                string
 	Payload              []byte
+	CommitMode           channel.CommitMode
 	ProtocolVersion      uint8
 	ExpectedChannelEpoch uint64
 	ExpectedLeaderEpoch  uint64

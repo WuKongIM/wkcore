@@ -56,6 +56,7 @@ func (a *App) sendDurable(ctx context.Context, cmd SendCommand) (SendResult, err
 		ChannelID:             channelID,
 		Message:               draft,
 		SupportsMessageSeqU64: supportsMessageSeqU64(cmd.ProtocolVersion),
+		CommitMode:            commitModeOrDefault(cmd.CommitMode),
 		ExpectedChannelEpoch:  cmd.ExpectedChannelEpoch,
 		ExpectedLeaderEpoch:   cmd.ExpectedLeaderEpoch,
 	})
@@ -112,6 +113,13 @@ func buildDurableMessage(cmd SendCommand, now time.Time) channel.Message {
 
 func supportsMessageSeqU64(version uint8) bool {
 	return version == 0 || version > frame.LegacyMessageSeqVersion
+}
+
+func commitModeOrDefault(mode channel.CommitMode) channel.CommitMode {
+	if mode == 0 {
+		return channel.CommitModeQuorum
+	}
+	return mode
 }
 
 func messageLogFields(channelID channel.ChannelID, uid string) []wklog.Field {

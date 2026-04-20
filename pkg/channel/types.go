@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"context"
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
@@ -33,6 +34,16 @@ const (
 type Features struct {
 	MessageSeqFormat MessageSeqFormat
 }
+
+// CommitMode controls when an append request completes.
+type CommitMode uint8
+
+const (
+	// CommitModeQuorum waits for the leader to reach quorum commit before completing.
+	CommitModeQuorum CommitMode = iota + 1
+	// CommitModeLocal completes after the leader durably appends the record batch.
+	CommitModeLocal
+)
 
 type Message struct {
 	MessageID  uint64
@@ -73,8 +84,10 @@ type AppendRequest struct {
 	ChannelID             ChannelID
 	Message               Message
 	SupportsMessageSeqU64 bool
-	ExpectedChannelEpoch  uint64
-	ExpectedLeaderEpoch   uint64
+	// CommitMode defaults to CommitModeQuorum when unset.
+	CommitMode           CommitMode
+	ExpectedChannelEpoch uint64
+	ExpectedLeaderEpoch  uint64
 }
 
 type AppendResult struct {
@@ -216,4 +229,24 @@ type ReplicaReconcileProof struct {
 	OffsetEpoch  uint64
 	LogEndOffset uint64
 	CheckpointHW uint64
+}
+
+type commitModeContextKey struct{}
+
+// WithCommitMode returns a context that carries the append commit mode.
+func WithCommitMode(ctx context.Context, mode CommitMode) context.Context {
+	return context.WithValue(ctx, commitModeContextKey{}, normalizeCommitMode(mode))
+}
+
+// CommitModeFromContext reads the append commit mode from ctx.
+func CommitModeFromContext(ctx context.Context) CommitMode {
+	mode, _ := ctx.Value(commitModeContextKey{}).(CommitMode)
+	return normalizeCommitMode(mode)
+}
+
+func normalizeCommitMode(mode CommitMode) CommitMode {
+	if mode == 0 {
+		return CommitModeQuorum
+	}
+	return mode
 }

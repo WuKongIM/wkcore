@@ -127,6 +127,7 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 	require.Equal(t, "chat", cluster.sendRequests[0].Message.Topic)
 	require.Equal(t, "u1", cluster.sendRequests[0].Message.FromUID)
 	require.Equal(t, []byte("hi"), cluster.sendRequests[0].Message.Payload)
+	require.Equal(t, channel.CommitModeQuorum, cluster.sendRequests[0].CommitMode)
 	require.Len(t, dispatcher.calls, 1)
 	require.Equal(t, uint64(42), dispatcher.calls[0].SenderSessionID)
 	require.Equal(t, channel.Message{
@@ -146,6 +147,51 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 		FromUID:     "u1",
 		Payload:     []byte("hi"),
 	}, dispatcher.calls[0].Message)
+}
+
+func TestSendDefaultsToQuorumCommitMode(t *testing.T) {
+	cluster := &fakeChannelCluster{
+		sendReplies: []fakeChannelClusterSendReply{
+			{result: channel.AppendResult{MessageID: 88, MessageSeq: 12}},
+		},
+	}
+	app := New(Options{
+		Now:     fixedNowFn,
+		Cluster: cluster,
+	})
+
+	_, err := app.Send(context.Background(), SendCommand{
+		FromUID:     "u1",
+		ChannelID:   "u2",
+		ChannelType: frame.ChannelTypePerson,
+		Payload:     []byte("hi"),
+	})
+	require.NoError(t, err)
+	require.Len(t, cluster.sendRequests, 1)
+	require.Equal(t, channel.CommitModeQuorum, cluster.sendRequests[0].CommitMode)
+}
+
+func TestSendPropagatesLocalCommitMode(t *testing.T) {
+	cluster := &fakeChannelCluster{
+		sendReplies: []fakeChannelClusterSendReply{
+			{result: channel.AppendResult{MessageID: 89, MessageSeq: 13}},
+		},
+	}
+	app := New(Options{
+		Now:     fixedNowFn,
+		Cluster: cluster,
+	})
+
+	_, err := app.Send(context.Background(), SendCommand{
+		FromUID:     "u1",
+		ChannelID:   "u2",
+		ChannelType: frame.ChannelTypePerson,
+		CommitMode:  channel.CommitModeLocal,
+		Payload:     []byte("hi"),
+	})
+	require.NoError(t, err)
+	require.Len(t, cluster.sendRequests, 1)
+	require.Equal(t, channel.CommitModeLocal, cluster.sendRequests[0].CommitMode)
 }
 
 func TestSendRecanonicalizesPrecomposedPersonChannelBeforeDurableWrite(t *testing.T) {

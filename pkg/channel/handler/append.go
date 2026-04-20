@@ -38,6 +38,7 @@ func (s *service) Append(ctx context.Context, req channel.AppendRequest) (channe
 		return channel.AppendResult{}, channel.ErrNotLeader
 	}
 
+	ctx = channel.WithCommitMode(ctx, req.CommitMode)
 	draft := req.Message
 	draft.ChannelID = req.ChannelID.ID
 	draft.ChannelType = req.ChannelID.Type

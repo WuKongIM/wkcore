@@ -68,6 +68,56 @@ func TestAppendCollectorDrainsBurstsWithoutRetrigger(t *testing.T) {
 	require.Equal(t, uint64(2), env.replica.Status().LEO)
 }
 
+func TestAppendQuorumModeWaitsForHWAdvance(t *testing.T) {
+	env := newThreeReplicaCluster(t)
+	done := make(chan channel.CommitResult, 1)
+
+	go func() {
+		res, err := env.leader.Append(channel.WithCommitMode(context.Background(), channel.CommitModeQuorum), []channel.Record{{Payload: []byte("x"), SizeBytes: 1}})
+		if err == nil {
+			done <- res
+		}
+	}()
+	waitForLogAppend(t, env.leader.log.(*fakeLogStore), 1)
+
+	select {
+	case <-done:
+		t.Fatal("append returned before quorum HW advanced")
+	default:
+	}
+
+	env.replicateOnce(t, env.follower2)
+	select {
+	case <-done:
+		t.Fatal("append returned before MinISR was satisfied")
+	default:
+	}
+
+	env.replicateOnce(t, env.follower3)
+	res := <-done
+	require.Equal(t, uint64(1), res.NextCommitHW)
+}
+
+func TestAppendLocalModeCompletesAfterLeaderDurableAppend(t *testing.T) {
+	env := newThreeReplicaCluster(t)
+	done := make(chan channel.CommitResult, 1)
+
+	go func() {
+		res, err := env.leader.Append(channel.WithCommitMode(context.Background(), channel.CommitModeLocal), []channel.Record{{Payload: []byte("x"), SizeBytes: 1}})
+		if err == nil {
+			done <- res
+		}
+	}()
+	waitForLogAppend(t, env.leader.log.(*fakeLogStore), 1)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("local commit append did not complete after durable write")
+	}
+	require.Equal(t, uint64(0), env.leader.Status().HW)
+}
+
 func TestAppendRejectsReplicaThatIsNotLeader(t *testing.T) {
 	r := newFollowerReplica(t)
 	_, err := r.Append(context.Background(), []channel.Record{{Payload: []byte("x"), SizeBytes: 1}})
