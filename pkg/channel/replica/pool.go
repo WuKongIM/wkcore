@@ -2,6 +2,7 @@ package replica
 
 import (
 	"sync"
+	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 )
@@ -40,13 +41,18 @@ func releaseAppendRequest(req *appendRequest) {
 	req.batch = nil
 	req.byteCount = 0
 	req.waiter = nil
+	req.enqueuedAt = time.Time{}
 	appendRequestPool.Put(req)
 }
 
 func acquireAppendWaiter() *appendWaiter {
 	waiter := appendWaiterPool.Get().(*appendWaiter)
 	waiter.target = 0
+	waiter.rangeStart = 0
+	waiter.rangeEnd = 0
 	waiter.result = channel.CommitResult{}
+	waiter.enqueuedAt = time.Time{}
+	waiter.durableDoneAt = time.Time{}
 	for {
 		select {
 		case <-waiter.ch:
@@ -61,7 +67,11 @@ func releaseAppendWaiter(waiter *appendWaiter) {
 		return
 	}
 	waiter.target = 0
+	waiter.rangeStart = 0
+	waiter.rangeEnd = 0
 	waiter.result = channel.CommitResult{}
+	waiter.enqueuedAt = time.Time{}
+	waiter.durableDoneAt = time.Time{}
 	appendWaiterPool.Put(waiter)
 }
 

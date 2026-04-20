@@ -3,6 +3,7 @@ package replica
 import (
 	"context"
 
+	"github.com/WuKongIM/WuKongIM/internal/observability/sendtrace"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 )
 
@@ -47,6 +48,8 @@ func (r *replica) ApplyFetch(_ context.Context, req channel.ReplicaApplyFetchReq
 	}
 
 	if len(req.Records) > 0 {
+		rangeStart := leo + 1
+		rangeEnd := leo + uint64(len(req.Records))
 		if len(r.epochHistory) == 0 || r.epochHistory[len(r.epochHistory)-1].Epoch != req.Epoch {
 			if err := r.appendEpochPointLocked(channel.EpochPoint{Epoch: req.Epoch, StartOffset: leo}); err != nil {
 				r.mu.Unlock()
@@ -75,17 +78,29 @@ func (r *replica) ApplyFetch(_ context.Context, req channel.ReplicaApplyFetchReq
 			}
 
 			r.mu.Unlock()
+			startedAt := r.now()
 			storedLEO, err := r.applyFetch.StoreApplyFetch(channel.ApplyFetchStoreRequest{
 				PreviousCommittedHW: r.state.HW,
 				Records:             req.Records,
 				Checkpoint:          checkpoint,
 			})
+			finishedAt := r.now()
 			if err != nil {
 				return err
 			}
 			if storedLEO != nextLEO {
 				return channel.ErrCorruptState
 			}
+			sendtrace.Record(sendtrace.Event{
+				Stage:      sendtrace.StageReplicaFollowerApplyDurable,
+				At:         startedAt,
+				Duration:   sendtrace.Elapsed(startedAt, finishedAt),
+				NodeID:     uint64(r.localNode),
+				PeerNodeID: uint64(req.Leader),
+				ChannelKey: string(req.ChannelKey),
+				RangeStart: rangeStart,
+				RangeEnd:   rangeEnd,
+			})
 
 			r.mu.Lock()
 			r.state.LEO = storedLEO
@@ -99,6 +114,7 @@ func (r *replica) ApplyFetch(_ context.Context, req channel.ReplicaApplyFetchReq
 			r.mu.Unlock()
 			return nil
 		}
+		startedAt := r.now()
 		if _, err := r.log.Append(req.Records); err != nil {
 			r.mu.Unlock()
 			return err
@@ -107,6 +123,17 @@ func (r *replica) ApplyFetch(_ context.Context, req channel.ReplicaApplyFetchReq
 		if err := r.log.Sync(); err != nil {
 			return err
 		}
+		finishedAt := r.now()
+		sendtrace.Record(sendtrace.Event{
+			Stage:      sendtrace.StageReplicaFollowerApplyDurable,
+			At:         startedAt,
+			Duration:   sendtrace.Elapsed(startedAt, finishedAt),
+			NodeID:     uint64(r.localNode),
+			PeerNodeID: uint64(req.Leader),
+			ChannelKey: string(req.ChannelKey),
+			RangeStart: rangeStart,
+			RangeEnd:   rangeEnd,
+		})
 		r.mu.Lock()
 		leo = r.log.LEO()
 	}

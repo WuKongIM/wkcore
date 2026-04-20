@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/internal/observability/sendtrace"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 )
 
@@ -55,6 +56,8 @@ func (r *replica) Append(ctx context.Context, batch []channel.Record) (channel.C
 	req.batch = batch
 	req.byteCount = appendRequestBytes(batch)
 	req.waiter = waiter
+	req.enqueuedAt = r.now()
+	req.waiter.enqueuedAt = req.enqueuedAt
 	r.enqueueAppendRequest(req)
 
 	select {
@@ -183,6 +186,7 @@ func (r *replica) flushAppendBatch(batch []*appendRequest) {
 		return
 	}
 
+	durableStartedAt := r.now()
 	base, err := r.log.Append(mergedBuffer.records)
 	if err != nil {
 		r.completeAppendRequests(active, err)
@@ -192,6 +196,7 @@ func (r *replica) flushAppendBatch(batch []*appendRequest) {
 		r.completeAppendRequests(active, err)
 		return
 	}
+	durableDoneAt := r.now()
 
 	r.mu.Lock()
 	if err := r.appendableLocked(); err != nil {
@@ -202,6 +207,7 @@ func (r *replica) flushAppendBatch(batch []*appendRequest) {
 	nextLEO := base
 	for _, req := range active {
 		target := nextLEO + uint64(len(req.batch))
+		rangeStart := nextLEO + 1
 		if req.ctx.Err() != nil {
 			r.completeAppendWaiter(req.waiter, channel.CommitResult{}, req.ctx.Err())
 			nextLEO = target
@@ -209,8 +215,29 @@ func (r *replica) flushAppendBatch(batch []*appendRequest) {
 		}
 
 		req.waiter.target = target
+		req.waiter.rangeStart = rangeStart
+		req.waiter.rangeEnd = target
+		req.waiter.durableDoneAt = durableDoneAt
 		req.waiter.result.BaseOffset = nextLEO
 		req.waiter.result.RecordCount = len(req.batch)
+		sendtrace.Record(sendtrace.Event{
+			Stage:      sendtrace.StageReplicaLeaderQueueWait,
+			At:         req.waiter.enqueuedAt,
+			Duration:   sendtrace.Elapsed(req.waiter.enqueuedAt, durableStartedAt),
+			NodeID:     uint64(r.localNode),
+			ChannelKey: string(r.state.ChannelKey),
+			RangeStart: rangeStart,
+			RangeEnd:   target,
+		})
+		sendtrace.Record(sendtrace.Event{
+			Stage:      sendtrace.StageReplicaLeaderLocalDurable,
+			At:         durableStartedAt,
+			Duration:   sendtrace.Elapsed(durableStartedAt, durableDoneAt),
+			NodeID:     uint64(r.localNode),
+			ChannelKey: string(r.state.ChannelKey),
+			RangeStart: rangeStart,
+			RangeEnd:   target,
+		})
 		r.waiters = append(r.waiters, req.waiter)
 		nextLEO = target
 	}

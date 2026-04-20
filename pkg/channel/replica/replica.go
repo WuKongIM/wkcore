@@ -21,16 +21,21 @@ type appendCompletion struct {
 }
 
 type appendRequest struct {
-	ctx       context.Context
-	batch     []channel.Record
-	byteCount int
-	waiter    *appendWaiter
+	ctx        context.Context
+	batch      []channel.Record
+	byteCount  int
+	waiter     *appendWaiter
+	enqueuedAt time.Time
 }
 
 type appendWaiter struct {
-	target uint64
-	result channel.CommitResult
-	ch     chan appendCompletion
+	target        uint64
+	rangeStart    uint64
+	rangeEnd      uint64
+	result        channel.CommitResult
+	ch            chan appendCompletion
+	enqueuedAt    time.Time
+	durableDoneAt time.Time
 }
 
 type replica struct {
@@ -69,10 +74,10 @@ type replica struct {
 	checkpointDone    chan struct{}
 	closeOnce         sync.Once
 
-	pendingCheckpoint channel.Checkpoint
-	checkpointQueued  bool
+	pendingCheckpoint  channel.Checkpoint
+	checkpointQueued   bool
 	checkpointInFlight bool
-	reconcilePending  map[channel.NodeID]struct{}
+	reconcilePending   map[channel.NodeID]struct{}
 }
 
 func NewReplica(cfg ReplicaConfig) (Replica, error) {

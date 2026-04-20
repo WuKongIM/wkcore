@@ -282,7 +282,8 @@ func build(cfg Config) (_ *App, err error) {
 			remoteAcks:  app.deliveryAcks,
 			notifier:    app.nodeClient,
 		},
-		Logger: app.logger.Named("message"),
+		LocalNodeID: cfg.Node.ID,
+		Logger:      app.logger.Named("message"),
 	})
 	userApp := userusecase.New(userusecase.Options{
 		Users:   app.store,
@@ -313,10 +314,11 @@ func build(cfg Config) (_ *App, err error) {
 		})
 	}
 	app.gatewayHandler = accessgateway.New(accessgateway.Options{
-		Online:   onlineRegistry,
-		Messages: app.messageApp,
-		Presence: app.presenceApp,
-		Logger:   app.logger.Named("access.gateway"),
+		LocalNodeID: cfg.Node.ID,
+		Online:      onlineRegistry,
+		Messages:    app.messageApp,
+		Presence:    app.presenceApp,
+		Logger:      app.logger.Named("access.gateway"),
 	})
 
 	var gatewayObserver gateway.Observer

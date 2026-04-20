@@ -4,6 +4,7 @@ import (
 	"context"
 
 	coregateway "github.com/WuKongIM/WuKongIM/internal/gateway"
+	"github.com/WuKongIM/WuKongIM/internal/observability/sendtrace"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	"github.com/WuKongIM/WuKongIM/pkg/wklog"
@@ -51,7 +52,16 @@ func (h *Handler) handleSend(ctx *coregateway.Context, pkt *frame.SendPacket) er
 	reqCtx, cancel := context.WithTimeout(ctx.RequestContext, h.sendTimeout)
 	defer cancel()
 
+	sendStartedAt := h.now()
 	result, err := h.messages.Send(reqCtx, cmd)
+	sendtrace.Record(sendtrace.Event{
+		Stage:       sendtrace.StageGatewayMessagesSend,
+		At:          sendStartedAt,
+		Duration:    sendtrace.Elapsed(sendStartedAt, h.now()),
+		NodeID:      h.localNodeID,
+		ClientMsgNo: cmd.ClientMsgNo,
+		MessageSeq:  result.MessageSeq,
+	})
 	if err != nil {
 		fields := append([]wklog.Field{
 			wklog.Event("access.gateway.frame.send_failed"),
@@ -61,12 +71,12 @@ func (h *Handler) handleSend(ctx *coregateway.Context, pkt *frame.SendPacket) er
 		h.frameLogger().Warn("send request failed", fields...)
 		if reason, ok := mapSendErrorReason(err); ok {
 			result.Reason = reason
-			return writeSendack(ctx, pkt, result)
+			return h.writeSendackWithTrace(ctx, pkt, cmd.ClientMsgNo, result)
 		}
 		return err
 	}
 
-	return writeSendack(ctx, pkt, result)
+	return h.writeSendackWithTrace(ctx, pkt, cmd.ClientMsgNo, result)
 }
 
 func (h *Handler) handleRecvAck(ctx *coregateway.Context, pkt *frame.RecvackPacket) error {
@@ -79,4 +89,18 @@ func (h *Handler) handleRecvAck(ctx *coregateway.Context, pkt *frame.RecvackPack
 
 func (h *Handler) handlePing(ctx *coregateway.Context) error {
 	return writePong(ctx)
+}
+
+func (h *Handler) writeSendackWithTrace(ctx *coregateway.Context, pkt *frame.SendPacket, clientMsgNo string, result message.SendResult) error {
+	startedAt := h.now()
+	err := writeSendack(ctx, pkt, result)
+	sendtrace.Record(sendtrace.Event{
+		Stage:       sendtrace.StageGatewayWriteSendack,
+		At:          startedAt,
+		Duration:    sendtrace.Elapsed(startedAt, h.now()),
+		NodeID:      h.localNodeID,
+		ClientMsgNo: clientMsgNo,
+		MessageSeq:  result.MessageSeq,
+	})
+	return err
 }

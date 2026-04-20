@@ -32,6 +32,7 @@ type PresenceUsecase interface {
 }
 
 type Options struct {
+	LocalNodeID uint64
 	Online      online.Registry
 	Messages    MessageUsecase
 	Presence    PresenceUsecase
@@ -41,6 +42,7 @@ type Options struct {
 }
 
 type Handler struct {
+	localNodeID uint64
 	online      online.Registry
 	messages    MessageUsecase
 	presence    PresenceUsecase
@@ -69,12 +71,14 @@ func New(opts Options) *Handler {
 	}
 	if opts.Messages == nil {
 		opts.Messages = message.New(message.Options{
-			Online: opts.Online,
-			Now:    opts.Now,
+			Online:      opts.Online,
+			LocalNodeID: opts.LocalNodeID,
+			Now:         opts.Now,
 		})
 	}
 
 	return &Handler{
+		localNodeID: opts.LocalNodeID,
 		online:      opts.Online,
 		messages:    opts.Messages,
 		presence:    opts.Presence,

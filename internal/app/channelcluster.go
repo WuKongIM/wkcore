@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/internal/observability/sendtrace"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	channelhandler "github.com/WuKongIM/WuKongIM/pkg/channel/handler"
 	channelruntime "github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
@@ -134,6 +135,17 @@ func (c *appChannelCluster) Append(ctx context.Context, req channel.AppendReques
 	}
 	start := time.Now()
 	result, err := c.service.Append(ctx, req)
+	if err == nil {
+		sendtrace.Record(sendtrace.Event{
+			Stage:       sendtrace.StageChannelAppendLocal,
+			At:          start,
+			Duration:    sendtrace.Elapsed(start, time.Now()),
+			NodeID:      c.localNodeID,
+			ChannelKey:  string(channelhandler.KeyFromChannelID(req.ChannelID)),
+			ClientMsgNo: req.Message.ClientMsgNo,
+			MessageSeq:  result.MessageSeq,
+		})
+	}
 	if errors.Is(err, channel.ErrNotLeader) {
 		if forwarded, forwardErr, ok := c.forwardAppendToLeader(ctx, req); ok {
 			result, err = forwarded, forwardErr
@@ -260,7 +272,20 @@ func (c *appChannelCluster) forwardAppendToLeader(ctx context.Context, req chann
 	if leaderID == 0 || leaderID == c.localNodeID {
 		return channel.AppendResult{}, nil, false
 	}
+	startedAt := time.Now()
 	result, err := c.remoteAppender.AppendToLeader(ctx, leaderID, req)
+	if err == nil {
+		sendtrace.Record(sendtrace.Event{
+			Stage:       sendtrace.StageChannelAppendForward,
+			At:          startedAt,
+			Duration:    sendtrace.Elapsed(startedAt, time.Now()),
+			NodeID:      c.localNodeID,
+			PeerNodeID:  leaderID,
+			ChannelKey:  string(meta.Key),
+			ClientMsgNo: req.Message.ClientMsgNo,
+			MessageSeq:  result.MessageSeq,
+		})
+	}
 	return result, err, true
 }
 

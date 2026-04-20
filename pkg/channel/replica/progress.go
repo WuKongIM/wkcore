@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/internal/observability/sendtrace"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 )
 
@@ -129,9 +130,19 @@ func (r *replica) notifyReadyWaitersLocked() {
 	}
 
 	remaining := r.waiters[:0]
+	now := r.now()
 	for _, waiter := range r.waiters {
 		if r.state.HW >= waiter.target {
 			waiter.result.NextCommitHW = r.state.HW
+			sendtrace.Record(sendtrace.Event{
+				Stage:      sendtrace.StageReplicaLeaderQuorumWait,
+				At:         waiter.durableDoneAt,
+				Duration:   sendtrace.Elapsed(waiter.durableDoneAt, now),
+				NodeID:     uint64(r.localNode),
+				ChannelKey: string(r.state.ChannelKey),
+				RangeStart: waiter.rangeStart,
+				RangeEnd:   waiter.rangeEnd,
+			})
 			r.completeAppendWaiter(waiter, waiter.result, nil)
 			continue
 		}

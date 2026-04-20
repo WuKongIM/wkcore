@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/internal/observability/sendtrace"
 	runtimechannelid "github.com/WuKongIM/WuKongIM/internal/runtime/channelid"
 	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
@@ -50,12 +51,21 @@ func (a *App) sendDurable(ctx context.Context, cmd SendCommand) (SendResult, err
 		ID:   cmd.ChannelID,
 		Type: cmd.ChannelType,
 	}
+	startedAt := a.now()
 	result, err := sendWithMetaRefreshRetry(ctx, a.sendLogger(), a.retryLogger(), a.cluster, a.refresher, channel.AppendRequest{
 		ChannelID:             channelID,
 		Message:               draft,
 		SupportsMessageSeqU64: supportsMessageSeqU64(cmd.ProtocolVersion),
 		ExpectedChannelEpoch:  cmd.ExpectedChannelEpoch,
 		ExpectedLeaderEpoch:   cmd.ExpectedLeaderEpoch,
+	})
+	sendtrace.Record(sendtrace.Event{
+		Stage:       sendtrace.StageMessageSendDurable,
+		At:          startedAt,
+		Duration:    sendtrace.Elapsed(startedAt, a.now()),
+		NodeID:      a.localNodeID,
+		ClientMsgNo: cmd.ClientMsgNo,
+		MessageSeq:  result.MessageSeq,
 	})
 	if err != nil {
 		return SendResult{}, err

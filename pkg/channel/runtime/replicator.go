@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/internal/observability/sendtrace"
 	core "github.com/WuKongIM/WuKongIM/pkg/channel"
 )
 
@@ -83,7 +84,18 @@ func (r *runtime) processReplication(key core.ChannelKey) {
 				ReplicaID:  r.cfg.LocalNode,
 			}
 		}
+		sendStartedAt := r.cfg.Now()
 		err := r.sendEnvelope(env)
+		if env.Kind == MessageKindFetchRequest {
+			sendtrace.Record(sendtrace.Event{
+				Stage:      sendtrace.StageRuntimeFetchRequestSend,
+				At:         sendStartedAt,
+				Duration:   sendtrace.Elapsed(sendStartedAt, r.cfg.Now()),
+				NodeID:     uint64(r.cfg.LocalNode),
+				PeerNodeID: uint64(peer),
+				ChannelKey: string(key),
+			})
+		}
 		if err == nil {
 			r.clearReplicationRetry(key, peer)
 			continue
@@ -131,8 +143,17 @@ func (r *runtime) scheduleFollowerReplication(key core.ChannelKey, leader core.N
 	}
 	state.timerVersion++
 	version := state.timerVersion
+	scheduledAt := r.cfg.Now()
 	state.timer = time.AfterFunc(r.cfg.FollowerReplicationRetryInterval, func() {
 		r.fireFollowerReplicationRetry(key, leader, version)
+	})
+	sendtrace.Record(sendtrace.Event{
+		Stage:      sendtrace.StageRuntimeFollowerRetryScheduled,
+		At:         scheduledAt,
+		Duration:   r.cfg.FollowerReplicationRetryInterval,
+		NodeID:     uint64(r.cfg.LocalNode),
+		PeerNodeID: uint64(leader),
+		ChannelKey: string(key),
 	})
 }
 
