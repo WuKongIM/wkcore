@@ -3,8 +3,11 @@ package app
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 	"testing"
+	"time"
+	"unsafe"
 
 	conversationusecase "github.com/WuKongIM/WuKongIM/internal/usecase/conversation"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
@@ -132,6 +135,39 @@ func TestLoadRecentConversationMessagesTreatsNotReadyAsEmpty(t *testing.T) {
 	msgs, err := loadRecentConversationMessages(context.Background(), notReadyConversationFactsCluster{}, channel.ChannelID{ID: "g1", Type: 2}, 10, 1024)
 	require.NoError(t, err)
 	require.Nil(t, msgs)
+}
+
+func TestBuildLongPollForwardsReplicationSettingsIntoChannelConfigs(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Cluster.ReplicationMode = "long_poll"
+	cfg.Cluster.LongPollLaneCount = 16
+	cfg.Cluster.LongPollMaxWait = 2 * time.Millisecond
+	cfg.Cluster.LongPollMaxBytes = 128 * 1024
+	cfg.Cluster.LongPollMaxChannels = 32
+
+	app, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, app.Stop())
+	})
+
+	require.Equal(t, channel.Config{
+		ReplicationMode:     "long_poll",
+		LongPollLaneCount:   16,
+		LongPollMaxWait:     2 * time.Millisecond,
+		LongPollMaxBytes:    128 * 1024,
+		LongPollMaxChannels: 32,
+	}, cfg.Cluster.replicationConfig())
+	require.Equal(t, "long_poll", appRuntimeStringField(t, app.isrRuntime, "cfg", "ReplicationMode"))
+	require.Equal(t, 16, appRuntimeIntField(t, app.isrRuntime, "cfg", "LongPollLaneCount"))
+	require.Equal(t, 2*time.Millisecond, appRuntimeDurationField(t, app.isrRuntime, "cfg", "LongPollMaxWait"))
+	require.Equal(t, 128*1024, appRuntimeIntField(t, app.isrRuntime, "cfg", "LongPollMaxBytes"))
+	require.Equal(t, 32, appRuntimeIntField(t, app.isrRuntime, "cfg", "LongPollMaxChannels"))
+	require.Equal(t, "long_poll", appTransportStringField(t, app.isrTransport, "replicationMode"))
+	require.Equal(t, 16, appTransportIntField(t, app.isrTransport, "longPollLaneCount"))
+	require.Equal(t, 2*time.Millisecond, appTransportDurationField(t, app.isrTransport, "longPollMaxWait"))
+	require.Equal(t, 128*1024, appTransportIntField(t, app.isrTransport, "longPollMaxBytes"))
+	require.Equal(t, 32, appTransportIntField(t, app.isrTransport, "longPollMaxChannels"))
 }
 
 type staleConversationFactsCluster struct{}
@@ -264,4 +300,103 @@ func normalizeConversationFactsBatchCalls(calls []conversationFactsBatchCall) []
 		return out[i].NodeID < out[j].NodeID
 	})
 	return out
+}
+
+func appRuntimeStringField(t *testing.T, appRuntime any, structField, name string) string {
+	t.Helper()
+
+	value := reflect.ValueOf(appRuntime)
+	if value.Kind() != reflect.Pointer || value.IsNil() {
+		t.Fatalf("runtime is %s, want non-nil pointer", value.Kind())
+	}
+	cfgField := value.Elem().FieldByName(structField)
+	if !cfgField.IsValid() {
+		t.Fatalf("runtime missing %s field", structField)
+	}
+	cfg := reflect.NewAt(cfgField.Type(), unsafe.Pointer(cfgField.UnsafeAddr())).Elem()
+	field := cfg.FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("runtime config missing %s field", name)
+	}
+	return reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().String()
+}
+
+func appRuntimeIntField(t *testing.T, appRuntime any, structField, name string) int {
+	t.Helper()
+
+	value := reflect.ValueOf(appRuntime)
+	if value.Kind() != reflect.Pointer || value.IsNil() {
+		t.Fatalf("runtime is %s, want non-nil pointer", value.Kind())
+	}
+	cfgField := value.Elem().FieldByName(structField)
+	if !cfgField.IsValid() {
+		t.Fatalf("runtime missing %s field", structField)
+	}
+	cfg := reflect.NewAt(cfgField.Type(), unsafe.Pointer(cfgField.UnsafeAddr())).Elem()
+	field := cfg.FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("runtime config missing %s field", name)
+	}
+	return int(reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Int())
+}
+
+func appRuntimeDurationField(t *testing.T, appRuntime any, structField, name string) time.Duration {
+	t.Helper()
+
+	value := reflect.ValueOf(appRuntime)
+	if value.Kind() != reflect.Pointer || value.IsNil() {
+		t.Fatalf("runtime is %s, want non-nil pointer", value.Kind())
+	}
+	cfgField := value.Elem().FieldByName(structField)
+	if !cfgField.IsValid() {
+		t.Fatalf("runtime missing %s field", structField)
+	}
+	cfg := reflect.NewAt(cfgField.Type(), unsafe.Pointer(cfgField.UnsafeAddr())).Elem()
+	field := cfg.FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("runtime config missing %s field", name)
+	}
+	return time.Duration(reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Int())
+}
+
+func appTransportStringField(t *testing.T, transport any, name string) string {
+	t.Helper()
+
+	value := reflect.ValueOf(transport)
+	if value.Kind() != reflect.Pointer || value.IsNil() {
+		t.Fatalf("transport is %s, want non-nil pointer", value.Kind())
+	}
+	field := value.Elem().FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("transport missing %s field", name)
+	}
+	return reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().String()
+}
+
+func appTransportIntField(t *testing.T, transport any, name string) int {
+	t.Helper()
+
+	value := reflect.ValueOf(transport)
+	if value.Kind() != reflect.Pointer || value.IsNil() {
+		t.Fatalf("transport is %s, want non-nil pointer", value.Kind())
+	}
+	field := value.Elem().FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("transport missing %s field", name)
+	}
+	return int(reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Int())
+}
+
+func appTransportDurationField(t *testing.T, transport any, name string) time.Duration {
+	t.Helper()
+
+	value := reflect.ValueOf(transport)
+	if value.Kind() != reflect.Pointer || value.IsNil() {
+		t.Fatalf("transport is %s, want non-nil pointer", value.Kind())
+	}
+	field := value.Elem().FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("transport missing %s field", name)
+	}
+	return time.Duration(reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Int())
 }

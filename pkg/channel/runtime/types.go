@@ -197,6 +197,11 @@ type Config struct {
 	PeerSessions                     PeerSessionManager
 	AutoRunScheduler                 bool
 	FollowerReplicationRetryInterval time.Duration
+	ReplicationMode                  string
+	LongPollLaneCount                int
+	LongPollMaxWait                  time.Duration
+	LongPollMaxBytes                 int
+	LongPollMaxChannels              int
 	Tombstones                       TombstonePolicy
 	Limits                           Limits
 	Now                              func() time.Time

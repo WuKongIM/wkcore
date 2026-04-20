@@ -576,3 +576,47 @@ func TestLoadConfigUsesLogDefaultsWhenUnset(t *testing.T) {
 	require.True(t, cfg.Log.Console)
 	require.Equal(t, "console", cfg.Log.Format)
 }
+
+func TestLoadConfigParsesLongPollDefaultsFromConf(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_CLUSTER_SLOT_COUNT=1",
+		"WK_CLUSTER_REPLICATION_MODE=long_poll",
+		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
+	)
+
+	cfg, err := loadConfig(configPath)
+	require.NoError(t, err)
+	require.Equal(t, "long_poll", cfg.Cluster.ReplicationMode)
+	require.Equal(t, 8, cfg.Cluster.LongPollLaneCount)
+	require.Equal(t, 1*time.Millisecond, cfg.Cluster.LongPollMaxWait)
+	require.Equal(t, 64*1024, cfg.Cluster.LongPollMaxBytes)
+	require.Equal(t, 64, cfg.Cluster.LongPollMaxChannels)
+}
+
+func TestLoadConfigParsesLongPollOverridesFromEnv(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_CLUSTER_SLOT_COUNT=1",
+		"WK_CLUSTER_REPLICATION_MODE=long_poll",
+		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
+	)
+	t.Setenv("WK_CLUSTER_LONG_POLL_LANE_COUNT", "16")
+	t.Setenv("WK_CLUSTER_LONG_POLL_MAX_WAIT", "2ms")
+	t.Setenv("WK_CLUSTER_LONG_POLL_MAX_BYTES", "131072")
+	t.Setenv("WK_CLUSTER_LONG_POLL_MAX_CHANNELS", "32")
+
+	cfg, err := loadConfig(configPath)
+	require.NoError(t, err)
+	require.Equal(t, "long_poll", cfg.Cluster.ReplicationMode)
+	require.Equal(t, 16, cfg.Cluster.LongPollLaneCount)
+	require.Equal(t, 2*time.Millisecond, cfg.Cluster.LongPollMaxWait)
+	require.Equal(t, 128*1024, cfg.Cluster.LongPollMaxBytes)
+	require.Equal(t, 32, cfg.Cluster.LongPollMaxChannels)
+}

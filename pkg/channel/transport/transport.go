@@ -14,20 +14,30 @@ import (
 const defaultRPCTimeout = 5 * time.Second
 
 type Options struct {
-	LocalNode          channel.NodeID
-	Client             *wktransport.Client
-	RPCMux             *wktransport.RPCMux
-	FetchService       runtime.FetchService
-	RPCTimeout         time.Duration
-	MaxPendingFetchRPC int
+	LocalNode           channel.NodeID
+	Client              *wktransport.Client
+	RPCMux              *wktransport.RPCMux
+	FetchService        runtime.FetchService
+	RPCTimeout          time.Duration
+	MaxPendingFetchRPC  int
+	ReplicationMode     string
+	LongPollLaneCount   int
+	LongPollMaxWait     time.Duration
+	LongPollMaxBytes    int
+	LongPollMaxChannels int
 }
 
 type Transport struct {
-	localNode  channel.NodeID
-	client     *wktransport.Client
-	rpcMux     *wktransport.RPCMux
-	rpcTimeout time.Duration
-	maxPending int
+	localNode           channel.NodeID
+	client              *wktransport.Client
+	rpcMux              *wktransport.RPCMux
+	rpcTimeout          time.Duration
+	maxPending          int
+	replicationMode     string
+	longPollLaneCount   int
+	longPollMaxWait     time.Duration
+	longPollMaxBytes    int
+	longPollMaxChannels int
 
 	mu               sync.RWMutex
 	handler          func(runtime.Envelope)
@@ -60,12 +70,17 @@ func New(opts Options) (*Transport, error) {
 	}
 
 	transport := &Transport{
-		localNode:    opts.LocalNode,
-		client:       opts.Client,
-		rpcMux:       opts.RPCMux,
-		rpcTimeout:   opts.RPCTimeout,
-		maxPending:   opts.MaxPendingFetchRPC,
-		fetchService: opts.FetchService,
+		localNode:           opts.LocalNode,
+		client:              opts.Client,
+		rpcMux:              opts.RPCMux,
+		rpcTimeout:          opts.RPCTimeout,
+		maxPending:          opts.MaxPendingFetchRPC,
+		replicationMode:     opts.ReplicationMode,
+		longPollLaneCount:   opts.LongPollLaneCount,
+		longPollMaxWait:     opts.LongPollMaxWait,
+		longPollMaxBytes:    opts.LongPollMaxBytes,
+		longPollMaxChannels: opts.LongPollMaxChannels,
+		fetchService:        opts.FetchService,
 	}
 	if source, ok := opts.FetchService.(channel.HandlerRuntime); ok {
 		transport.statusSource = source

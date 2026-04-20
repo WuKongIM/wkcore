@@ -51,23 +51,33 @@ type MessageIDGenerator interface {
 }
 
 type Config struct {
-	LocalNode       NodeID
-	Store           any
-	GenerationStore any
-	MessageIDs      MessageIDGenerator
-	Transport       TransportConfig
-	Runtime         RuntimeConfig
-	Handler         HandlerConfig
-	Now             func() time.Time
+	LocalNode           NodeID
+	Store               any
+	GenerationStore     any
+	MessageIDs          MessageIDGenerator
+	ReplicationMode     string
+	LongPollLaneCount   int
+	LongPollMaxWait     time.Duration
+	LongPollMaxBytes    int
+	LongPollMaxChannels int
+	Transport           TransportConfig
+	Runtime             RuntimeConfig
+	Handler             HandlerConfig
+	Now                 func() time.Time
 }
 
 type TransportConfig struct {
-	Client             any
-	RPCMux             any
-	RPCTimeout         time.Duration
-	MaxPendingFetchRPC int
-	Build              func(TransportBuildConfig) (any, error)
-	BindFetchService   func(transport any, runtime HandlerRuntime) error
+	Client              any
+	RPCMux              any
+	RPCTimeout          time.Duration
+	MaxPendingFetchRPC  int
+	ReplicationMode     string
+	LongPollLaneCount   int
+	LongPollMaxWait     time.Duration
+	LongPollMaxBytes    int
+	LongPollMaxChannels int
+	Build               func(TransportBuildConfig) (any, error)
+	BindFetchService    func(transport any, runtime HandlerRuntime) error
 }
 
 type RuntimeLimits struct {
@@ -85,6 +95,11 @@ type RuntimeTombstones struct {
 type RuntimeConfig struct {
 	AutoRunScheduler                 bool
 	FollowerReplicationRetryInterval time.Duration
+	ReplicationMode                  string
+	LongPollLaneCount                int
+	LongPollMaxWait                  time.Duration
+	LongPollMaxBytes                 int
+	LongPollMaxChannels              int
 	Limits                           RuntimeLimits
 	Tombstones                       RuntimeTombstones
 	Build                            func(RuntimeBuildConfig) (Runtime, HandlerRuntime, error)
@@ -95,11 +110,16 @@ type HandlerConfig struct {
 }
 
 type TransportBuildConfig struct {
-	LocalNode          NodeID
-	Client             any
-	RPCMux             any
-	RPCTimeout         time.Duration
-	MaxPendingFetchRPC int
+	LocalNode           NodeID
+	Client              any
+	RPCMux              any
+	RPCTimeout          time.Duration
+	MaxPendingFetchRPC  int
+	ReplicationMode     string
+	LongPollLaneCount   int
+	LongPollMaxWait     time.Duration
+	LongPollMaxBytes    int
+	LongPollMaxChannels int
 }
 
 type RuntimeBuildConfig struct {
@@ -109,6 +129,11 @@ type RuntimeBuildConfig struct {
 	Transport                        any
 	AutoRunScheduler                 bool
 	FollowerReplicationRetryInterval time.Duration
+	ReplicationMode                  string
+	LongPollLaneCount                int
+	LongPollMaxWait                  time.Duration
+	LongPollMaxBytes                 int
+	LongPollMaxChannels              int
 	Limits                           RuntimeLimits
 	Tombstones                       RuntimeTombstones
 	Now                              func() time.Time
@@ -152,11 +177,16 @@ func New(cfg Config) (Cluster, error) {
 	}
 
 	transportValue, err := cfg.Transport.Build(TransportBuildConfig{
-		LocalNode:          cfg.LocalNode,
-		Client:             cfg.Transport.Client,
-		RPCMux:             cfg.Transport.RPCMux,
-		RPCTimeout:         cfg.Transport.RPCTimeout,
-		MaxPendingFetchRPC: cfg.Transport.MaxPendingFetchRPC,
+		LocalNode:           cfg.LocalNode,
+		Client:              cfg.Transport.Client,
+		RPCMux:              cfg.Transport.RPCMux,
+		RPCTimeout:          cfg.Transport.RPCTimeout,
+		MaxPendingFetchRPC:  cfg.Transport.MaxPendingFetchRPC,
+		ReplicationMode:     cfg.ReplicationMode,
+		LongPollLaneCount:   cfg.LongPollLaneCount,
+		LongPollMaxWait:     cfg.LongPollMaxWait,
+		LongPollMaxBytes:    cfg.LongPollMaxBytes,
+		LongPollMaxChannels: cfg.LongPollMaxChannels,
 	})
 	if err != nil {
 		return nil, err
@@ -170,6 +200,11 @@ func New(cfg Config) (Cluster, error) {
 		Transport:                        transportValue,
 		AutoRunScheduler:                 cfg.Runtime.AutoRunScheduler,
 		FollowerReplicationRetryInterval: cfg.Runtime.FollowerReplicationRetryInterval,
+		ReplicationMode:                  cfg.ReplicationMode,
+		LongPollLaneCount:                cfg.LongPollLaneCount,
+		LongPollMaxWait:                  cfg.LongPollMaxWait,
+		LongPollMaxBytes:                 cfg.LongPollMaxBytes,
+		LongPollMaxChannels:              cfg.LongPollMaxChannels,
 		Limits:                           cfg.Runtime.Limits,
 		Tombstones:                       cfg.Runtime.Tombstones,
 		Now:                              cfg.Now,

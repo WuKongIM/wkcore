@@ -122,6 +122,7 @@ func build(cfg Config) (_ *App, err error) {
 	if dialTimeout <= 0 {
 		dialTimeout = defaultDataPlaneDialTimeout
 	}
+	replicationCfg := cfg.Cluster.replicationConfig()
 	app.dataPlanePool = transport.NewPool(transport.PoolConfig{
 		Discovery:   discovery,
 		Size:        poolSize,
@@ -130,11 +131,16 @@ func build(cfg Config) (_ *App, err error) {
 	})
 	app.dataPlaneClient = transport.NewClient(app.dataPlanePool)
 	app.isrTransport, err = channeltransport.New(channeltransport.Options{
-		LocalNode:          channel.NodeID(cfg.Node.ID),
-		Client:             app.dataPlaneClient,
-		RPCMux:             app.cluster.RPCMux(),
-		RPCTimeout:         cfg.Cluster.DataPlaneRPCTimeout,
-		MaxPendingFetchRPC: effectiveDataPlaneMaxPendingFetch(cfg.Cluster.PoolSize, cfg.Cluster.DataPlaneMaxPendingFetch),
+		LocalNode:           channel.NodeID(cfg.Node.ID),
+		Client:              app.dataPlaneClient,
+		RPCMux:              app.cluster.RPCMux(),
+		RPCTimeout:          cfg.Cluster.DataPlaneRPCTimeout,
+		MaxPendingFetchRPC:  effectiveDataPlaneMaxPendingFetch(cfg.Cluster.PoolSize, cfg.Cluster.DataPlaneMaxPendingFetch),
+		ReplicationMode:     replicationCfg.ReplicationMode,
+		LongPollLaneCount:   replicationCfg.LongPollLaneCount,
+		LongPollMaxWait:     replicationCfg.LongPollMaxWait,
+		LongPollMaxBytes:    replicationCfg.LongPollMaxBytes,
+		LongPollMaxChannels: replicationCfg.LongPollMaxChannels,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("app: create channel transport: %w", err)
@@ -147,6 +153,11 @@ func build(cfg Config) (_ *App, err error) {
 		PeerSessions:                     app.isrTransport,
 		AutoRunScheduler:                 true,
 		FollowerReplicationRetryInterval: cfg.Cluster.FollowerReplicationRetryInterval,
+		ReplicationMode:                  replicationCfg.ReplicationMode,
+		LongPollLaneCount:                replicationCfg.LongPollLaneCount,
+		LongPollMaxWait:                  replicationCfg.LongPollMaxWait,
+		LongPollMaxBytes:                 replicationCfg.LongPollMaxBytes,
+		LongPollMaxChannels:              replicationCfg.LongPollMaxChannels,
 		Limits: channelruntime.Limits{
 			MaxFetchInflightPeer:      effectiveDataPlaneMaxFetchInflight(cfg.Cluster.PoolSize, cfg.Cluster.DataPlaneMaxFetchInflight),
 			MaxSnapshotInflight:       1,
@@ -459,6 +470,16 @@ func (c ClusterConfig) runtimeConfig(storage StorageConfig, db *metadb.DB, raftD
 		DialTimeout:                  c.DialTimeout,
 		Timeouts:                     c.Timeouts,
 		Logger:                       logger,
+	}
+}
+
+func (c ClusterConfig) replicationConfig() channel.Config {
+	return channel.Config{
+		ReplicationMode:     c.ReplicationMode,
+		LongPollLaneCount:   c.LongPollLaneCount,
+		LongPollMaxWait:     c.LongPollMaxWait,
+		LongPollMaxBytes:    c.LongPollMaxBytes,
+		LongPollMaxChannels: c.LongPollMaxChannels,
 	}
 }
 
