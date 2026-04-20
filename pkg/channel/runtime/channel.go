@@ -32,8 +32,9 @@ type channel struct {
 	mu       sync.Mutex
 	pending  taskMask
 
-	replicationPeers nodeIDQueue
-	snapshotBytes    int64
+	replicationPeers   nodeIDQueue
+	replicationTargets []PeerLaneKey
+	snapshotBytes      int64
 }
 
 func newChannel(
@@ -153,6 +154,18 @@ func (c *channel) enqueueSnapshot(bytes int64) {
 	c.mu.Lock()
 	c.snapshotBytes += bytes
 	c.mu.Unlock()
+}
+
+func (c *channel) setReplicationTargets(targets []PeerLaneKey) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.replicationTargets = append(c.replicationTargets[:0], targets...)
+}
+
+func (c *channel) replicationTargetsSnapshot() []PeerLaneKey {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]PeerLaneKey(nil), c.replicationTargets...)
 }
 
 func (c *channel) drainSnapshotBytes() int64 {

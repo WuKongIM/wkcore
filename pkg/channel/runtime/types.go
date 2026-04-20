@@ -131,6 +131,23 @@ type ReconcileProbeResponseEnvelope struct {
 	CheckpointHW uint64
 }
 
+type PeerLaneKey struct {
+	Peer   core.NodeID
+	LaneID uint16
+}
+
+type LaneCursorDelta struct {
+	ChannelKey   core.ChannelKey
+	ChannelEpoch uint64
+	MatchOffset  uint64
+	OffsetEpoch  uint64
+}
+
+type LanePollBudget struct {
+	MaxBytes    int
+	MaxChannels int
+}
+
 type Limits struct {
 	MaxChannels               int
 	MaxFetchInflightPeer      int
