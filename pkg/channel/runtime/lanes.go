@@ -23,6 +23,7 @@ type followerLaneState struct {
 	sessionEpoch   uint64
 	membership     map[core.ChannelKey]LaneMembership
 	membershipVer  uint64
+	inflightVer    uint64
 	dirtyCursor    map[core.ChannelKey]LaneCursorDelta
 	inflightCursor []core.ChannelKey
 	pending        bool
@@ -159,6 +160,7 @@ func (m *PeerLaneManager) NextRequest(laneID uint16) (LanePollRequestEnvelope, b
 		req.MembershipVersionHint = lane.membershipVer
 	}
 	req.CursorDelta, lane.inflightCursor = sortedLaneCursorDelta(lane.dirtyCursor)
+	lane.inflightVer = lane.membershipVer
 	lane.inflight = true
 	lane.pending = false
 	return req, true
@@ -192,7 +194,9 @@ func (m *PeerLaneManager) ApplyResponse(resp LanePollResponseEnvelope) bool {
 		if resp.SessionEpoch != 0 {
 			lane.sessionEpoch = resp.SessionEpoch
 		}
-		lane.needOpen = false
+		if lane.membershipVer == lane.inflightVer {
+			lane.needOpen = false
+		}
 		lane.pending = len(lane.membership) > 0
 		return lane.pending
 	default:

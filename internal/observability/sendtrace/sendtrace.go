@@ -19,6 +19,8 @@ const (
 	StageReplicaFollowerApplyDurable   Stage = "replica.follower.apply_durable"
 	StageRuntimeFollowerRetryScheduled Stage = "runtime.follower_retry_scheduled"
 	StageRuntimeFetchRequestSend       Stage = "runtime.fetch_request_send"
+	StageRuntimeLanePollRequestSend    Stage = "runtime.lane_poll_request_send"
+	StageRuntimeLaneCursorDeltaSend    Stage = "runtime.lane_cursor_delta_send"
 )
 
 type Event struct {

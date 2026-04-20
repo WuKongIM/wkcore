@@ -219,6 +219,8 @@ func (t *Transport) BindFetchService(service runtime.FetchService) {
 	}
 	if longPollService, ok := service.(LongPollService); ok {
 		t.longPollService = longPollService
+	} else if lanePollService, ok := service.(runtime.LanePollService); ok {
+		t.longPollService = runtimeLanePollServiceAdapter{service: lanePollService}
 	} else {
 		t.longPollService = nil
 	}
@@ -279,7 +281,9 @@ func (t *Transport) handleFetchBatchRPC(ctx context.Context, body []byte) ([]byt
 	}
 	for _, item := range req.Items {
 		itemResp := runtime.FetchBatchResponseItem{RequestID: item.RequestID}
-		fetchResp, fetchErr := service.ServeFetch(ctx, item.Request)
+		// Batched fetch RPCs must stay prompt; otherwise one idle channel can
+		// head-of-line block the whole batch while singleton fetches long-poll.
+		fetchResp, fetchErr := service.ServeFetch(runtime.WithoutFetchLongPoll(ctx), item.Request)
 		if fetchErr != nil {
 			itemResp.Error = fetchErr.Error()
 		} else {

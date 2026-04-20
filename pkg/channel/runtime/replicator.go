@@ -141,6 +141,21 @@ func (r *runtime) markLeaderLaneReady(ch *channel) {
 	}
 }
 
+func (r *runtime) onChannelAppend(key core.ChannelKey) {
+	if !r.longPollEnabled() {
+		return
+	}
+	ch, ok := r.lookupChannel(key)
+	if !ok {
+		return
+	}
+	meta := ch.metaSnapshot()
+	if meta.Leader != r.cfg.LocalNode {
+		return
+	}
+	r.markLeaderLaneReady(ch)
+}
+
 func (r *runtime) processFollowerLongPoll(ch *channel, meta core.Meta) {
 	for {
 		peer, ok := ch.popReplicationPeer()

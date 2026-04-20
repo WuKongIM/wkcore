@@ -13,7 +13,7 @@ func TestLeaderLaneSessionDedupesReadyChannels(t *testing.T) {
 	session.MarkDataReady("g1", 11)
 
 	var selected int
-	result, waiter := session.Poll(nil, nil, LanePollBudget{MaxChannels: 4}, func(key core.ChannelKey, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
+	result, waiter := session.Poll(nil, nil, LanePollBudget{MaxChannels: 4}, func(key core.ChannelKey, _ LaneCursorDelta, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
 		selected++
 		return LeaderLaneReadyItem{
 			ChannelKey:   key,
@@ -38,7 +38,7 @@ func TestLeaderLaneSessionSetsMoreReadyWhenBudgetTruncates(t *testing.T) {
 	session.MarkDataReady("g1", 11)
 	session.MarkDataReady("g2", 12)
 
-	result, waiter := session.Poll(nil, nil, LanePollBudget{MaxChannels: 1}, func(key core.ChannelKey, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
+	result, waiter := session.Poll(nil, nil, LanePollBudget{MaxChannels: 1}, func(key core.ChannelKey, _ LaneCursorDelta, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
 		return LeaderLaneReadyItem{
 			ChannelKey:   key,
 			ChannelEpoch: 11,
@@ -62,7 +62,7 @@ func TestLeaderLaneSessionRequeuesHotChannelAtTail(t *testing.T) {
 	session.MarkDataReady("hot", 11)
 	session.MarkDataReady("cold", 12)
 
-	result, waiter := session.Poll(nil, nil, LanePollBudget{MaxChannels: 1}, func(key core.ChannelKey, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
+	result, waiter := session.Poll(nil, nil, LanePollBudget{MaxChannels: 1}, func(key core.ChannelKey, _ LaneCursorDelta, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
 		return LeaderLaneReadyItem{
 			ChannelKey:   key,
 			ChannelEpoch: 11,
@@ -77,7 +77,7 @@ func TestLeaderLaneSessionRequeuesHotChannelAtTail(t *testing.T) {
 		t.Fatalf("first poll items = %+v, want hot", result.Items)
 	}
 
-	result, waiter = session.Poll(nil, nil, LanePollBudget{MaxChannels: 1}, func(key core.ChannelKey, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
+	result, waiter = session.Poll(nil, nil, LanePollBudget{MaxChannels: 1}, func(key core.ChannelKey, _ LaneCursorDelta, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
 		return LeaderLaneReadyItem{
 			ChannelKey:   key,
 			ChannelEpoch: 12,
@@ -96,7 +96,7 @@ func TestLeaderLaneSessionRequeuesHotChannelAtTail(t *testing.T) {
 func TestLeaderLaneSessionParkedRequestWakesOnDataReady(t *testing.T) {
 	session := newLeaderLaneSession(1, 1)
 
-	result, waiter := session.Poll(nil, nil, LanePollBudget{MaxChannels: 1}, func(key core.ChannelKey, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
+	result, waiter := session.Poll(nil, nil, LanePollBudget{MaxChannels: 1}, func(key core.ChannelKey, _ LaneCursorDelta, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
 		return LeaderLaneReadyItem{}, true
 	})
 	if len(result.Items) != 0 {
@@ -124,7 +124,7 @@ func TestLeaderLaneSessionAppliesCursorDeltaBeforeSelectingItems(t *testing.T) {
 		{ChannelKey: "g-delta", ChannelEpoch: 11, MatchOffset: 9},
 	}, func(delta LaneCursorDelta) {
 		steps = append(steps, "apply:"+string(delta.ChannelKey))
-	}, LanePollBudget{MaxChannels: 1}, func(key core.ChannelKey, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
+	}, LanePollBudget{MaxChannels: 1}, func(key core.ChannelKey, _ LaneCursorDelta, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
 		steps = append(steps, "select:"+string(key))
 		return LeaderLaneReadyItem{
 			ChannelKey:   key,
@@ -153,7 +153,7 @@ func TestLeaderLaneSessionIgnoresStaleChannelEpochDeltas(t *testing.T) {
 		{ChannelKey: "g1", ChannelEpoch: 10, MatchOffset: 7},
 	}, func(delta LaneCursorDelta) {
 		applied++
-	}, LanePollBudget{MaxChannels: 1}, func(key core.ChannelKey, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
+	}, LanePollBudget{MaxChannels: 1}, func(key core.ChannelKey, _ LaneCursorDelta, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
 		return LeaderLaneReadyItem{}, true
 	})
 	if waiter == nil {
@@ -165,7 +165,7 @@ func TestLeaderLaneSessionIgnoresStaleChannelEpochDeltas(t *testing.T) {
 }
 
 func TestLeaderLaneSessionChannelCachesReplicationTargets(t *testing.T) {
-	ch := newChannel("g1", 1, &fakeReplica{}, core.Meta{Key: "g1"}, time.Now, nil)
+	ch := newChannel("g1", 1, &fakeReplica{}, core.Meta{Key: "g1"}, time.Now, nil, nil, nil)
 	targets := []PeerLaneKey{{Peer: 2, LaneID: 1}, {Peer: 3, LaneID: 2}}
 
 	ch.setReplicationTargets(targets)

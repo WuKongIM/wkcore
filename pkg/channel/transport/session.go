@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/internal/observability/sendtrace"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
 )
@@ -377,6 +378,9 @@ func (s *peerSession) sendProgressAck(env runtime.Envelope) error {
 	if env.ProgressAck == nil {
 		return fmt.Errorf("channeltransport: missing progress ack payload")
 	}
+	if s.adapter.replicationMode == "long_poll" {
+		return fmt.Errorf("channeltransport: progress ack is disabled in long_poll mode")
+	}
 
 	body, err := encodeProgressAck(*env.ProgressAck)
 	if err != nil {
@@ -429,8 +433,34 @@ func (s *peerSession) sendLongPollRequest(env runtime.Envelope) error {
 		FullMembership:        toTransportLaneMembership(env.LanePollRequest.FullMembership),
 		CursorDelta:           toTransportLaneCursorDelta(env.LanePollRequest.CursorDelta),
 	}
+	startedAt := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), s.adapter.rpcTimeout)
+	defer cancel()
 
-	resp, err := s.adapter.LongPollFetch(context.Background(), s.peer, req)
+	resp, err := s.adapter.LongPollFetch(ctx, s.peer, req)
+	finishedAt := time.Now()
+	sendtrace.Record(sendtrace.Event{
+		Stage:      sendtrace.StageRuntimeLanePollRequestSend,
+		At:         startedAt,
+		Duration:   sendtrace.Elapsed(startedAt, finishedAt),
+		NodeID:     uint64(s.adapter.localNode),
+		PeerNodeID: uint64(s.peer),
+		ChannelKey: string(env.ChannelKey),
+	})
+	if len(req.CursorDelta) > 0 {
+		channelKey := ""
+		if len(req.CursorDelta) > 0 {
+			channelKey = string(req.CursorDelta[0].ChannelKey)
+		}
+		sendtrace.Record(sendtrace.Event{
+			Stage:      sendtrace.StageRuntimeLaneCursorDeltaSend,
+			At:         startedAt,
+			Duration:   sendtrace.Elapsed(startedAt, finishedAt),
+			NodeID:     uint64(s.adapter.localNode),
+			PeerNodeID: uint64(s.peer),
+			ChannelKey: channelKey,
+		})
+	}
 	if err != nil {
 		return err
 	}

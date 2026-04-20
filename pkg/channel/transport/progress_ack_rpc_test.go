@@ -119,6 +119,113 @@ func TestHandleProgressAckRPCDoesNotAdvertiseFinalLeaderHWWhileCommitNotReady(t 
 	})
 }
 
+func TestHandleFetchBatchRPCDisablesLongPollForEachItem(t *testing.T) {
+	var observed []bool
+
+	client := wktransport.NewClient(wktransport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{},
+	}, 1, time.Second))
+
+	adapter, err := New(Options{
+		LocalNode: 1,
+		Client:    client,
+		RPCMux:    wktransport.NewRPCMux(),
+		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+			observed = append(observed, runtime.FetchLongPollEnabled(ctx))
+			return runtime.FetchResponseEnvelope{
+				ChannelKey: req.ChannelKey,
+				Epoch:      req.Epoch,
+				Generation: req.Generation,
+			}, nil
+		}),
+	})
+	require.NoError(t, err)
+	defer adapter.client.Stop()
+
+	body, err := encodeFetchBatchRequest(runtime.FetchBatchRequestEnvelope{
+		Items: []runtime.FetchBatchRequestItem{
+			{
+				RequestID: 1,
+				Request: runtime.FetchRequestEnvelope{
+					ChannelKey:  "group-1",
+					Epoch:       3,
+					Generation:  7,
+					ReplicaID:   2,
+					FetchOffset: 11,
+					OffsetEpoch: 3,
+					MaxBytes:    4096,
+				},
+			},
+			{
+				RequestID: 2,
+				Request: runtime.FetchRequestEnvelope{
+					ChannelKey:  "group-2",
+					Epoch:       3,
+					Generation:  7,
+					ReplicaID:   2,
+					FetchOffset: 12,
+					OffsetEpoch: 3,
+					MaxBytes:    4096,
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	respBody, err := adapter.handleFetchBatchRPC(ctx, body)
+	require.NoError(t, err)
+	_, err = decodeFetchBatchResponse(respBody)
+	require.NoError(t, err)
+	require.Equal(t, []bool{false, false}, observed)
+}
+
+func TestHandleFetchRPCPreservesLongPollByDefault(t *testing.T) {
+	var observed bool
+
+	client := wktransport.NewClient(wktransport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{},
+	}, 1, time.Second))
+
+	adapter, err := New(Options{
+		LocalNode: 1,
+		Client:    client,
+		RPCMux:    wktransport.NewRPCMux(),
+		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+			observed = runtime.FetchLongPollEnabled(ctx)
+			return runtime.FetchResponseEnvelope{
+				ChannelKey: req.ChannelKey,
+				Epoch:      req.Epoch,
+				Generation: req.Generation,
+			}, nil
+		}),
+	})
+	require.NoError(t, err)
+	defer adapter.client.Stop()
+
+	body, err := encodeFetchRequest(runtime.FetchRequestEnvelope{
+		ChannelKey:  "group-1",
+		Epoch:       3,
+		Generation:  7,
+		ReplicaID:   2,
+		FetchOffset: 11,
+		OffsetEpoch: 3,
+		MaxBytes:    4096,
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	respBody, err := adapter.handleRPC(ctx, body)
+	require.NoError(t, err)
+	_, err = decodeFetchResponse(respBody)
+	require.NoError(t, err)
+	require.True(t, observed)
+}
+
 func setOptionalReplicaStateField(t *testing.T, state *channel.ReplicaState, field string, value any) {
 	t.Helper()
 

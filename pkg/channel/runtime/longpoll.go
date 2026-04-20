@@ -7,6 +7,30 @@ import (
 	core "github.com/WuKongIM/WuKongIM/pkg/channel"
 )
 
+type fetchLongPollContextKey struct{}
+
+// WithoutFetchLongPoll marks a fetch request context so ServeFetch returns
+// immediately on empty results instead of parking the RPC in long-poll mode.
+func WithoutFetchLongPoll(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, fetchLongPollContextKey{}, false)
+}
+
+// FetchLongPollEnabled reports whether ServeFetch should wait for replica state
+// changes before returning an empty fetch response.
+func FetchLongPollEnabled(ctx context.Context) bool {
+	if ctx == nil {
+		return true
+	}
+	enabled, ok := ctx.Value(fetchLongPollContextKey{}).(bool)
+	if !ok {
+		return true
+	}
+	return enabled
+}
+
 type followerCursorApplier interface {
 	ApplyFollowerCursor(ctx context.Context, req core.ReplicaFollowerCursorUpdate) error
 }
@@ -37,6 +61,9 @@ func (r *runtime) ServeLanePoll(ctx context.Context, req LanePollRequestEnvelope
 				continue
 			}
 			session.TrackChannel(member.ChannelKey, member.ChannelEpoch)
+			if ch.Status().LEO > 0 {
+				session.MarkDataReady(member.ChannelKey, member.ChannelEpoch)
+			}
 		}
 		r.leaderLanes.RegisterSession(sessionKey, session)
 	} else if req.SessionID != 0 && req.SessionEpoch != 0 {
@@ -64,8 +91,8 @@ func (r *runtime) ServeLanePoll(ctx context.Context, req LanePollRequestEnvelope
 	selectItems := func() (LeaderLanePollResult, *lanePollWaiter) {
 		return session.Poll(req.CursorDelta, func(delta LaneCursorDelta) {
 			r.applyFollowerCursor(delta, req.ReplicaID)
-		}, budget, func(key core.ChannelKey, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
-			return r.selectLaneReadyItem(ctx, session, key, req.ReplicaID, budget.MaxBytes, mask)
+		}, budget, func(key core.ChannelKey, cursor LaneCursorDelta, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
+			return r.selectLaneReadyItem(ctx, cursor, key, req.ReplicaID, budget.MaxBytes, mask)
 		})
 	}
 
@@ -123,13 +150,12 @@ func (r *runtime) ServeLanePoll(ctx context.Context, req LanePollRequestEnvelope
 	return resp, nil
 }
 
-func (r *runtime) selectLaneReadyItem(ctx context.Context, session *LeaderLaneSession, key core.ChannelKey, replicaID core.NodeID, maxBytes int, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
+func (r *runtime) selectLaneReadyItem(ctx context.Context, cursor LaneCursorDelta, key core.ChannelKey, replicaID core.NodeID, maxBytes int, mask laneReadyMask) (LeaderLaneReadyItem, bool) {
 	ch, ok := r.lookupChannel(key)
 	if !ok {
 		return LeaderLaneReadyItem{ChannelKey: key}, true
 	}
 	state := ch.Status()
-	cursor, _ := session.Cursor(key)
 	fetchResult, err := ch.replica.Fetch(ctx, core.ReplicaFetchRequest{
 		ChannelKey:  key,
 		Epoch:       state.Epoch,

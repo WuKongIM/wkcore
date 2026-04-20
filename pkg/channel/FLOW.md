@@ -89,6 +89,8 @@ Replica 层 (replica/append.go):
   ① 新数据写入 → Runtime 检测需要复制 → 调度器排入 Follower 任务
   ② 构建 FetchRequest{ChannelKey, Epoch, FetchOffset, MaxBytes}
   ③ Transport 对 Fetch 做 200µs 定时合并；队列达到 8 条或 32 KiB 时立即刷批，批量失败/缺项时先按 4 条分块重试，再退化到单条 RPC → transport/session.go → 发送到 Follower
+     - 单条 Fetch RPC 在 empty response 上允许 short long-poll：leader 会等待副本状态变化或 retry interval 超时后再返回
+     - 批量 Fetch RPC 显式关闭该 long-poll，避免一个 idle channel 把整批请求 head-of-line 阻塞住
 
 Follower 侧:
   ④ replica/fetch.go:Fetch → 从日志读取记录，检测分歧(Epoch History)
@@ -186,5 +188,6 @@ Idempotency (0x14): prefix + key + fromUID + msgNo — 幂等条目
 - **Checkpoint 不再阻塞 sendack**: leader 在 quorum commit 后先完成 Append waiter，Checkpoint 持久化走后台 coalescing；若 checkpoint 写盘长期失败，当前实现还缺少显式 health / metrics 暴露。
 - **Transport RPC 分片**: `progress_ack` 模式下 Fetch / ReconcileProbe 继续按 FNV-64a(ChannelKey) 路由；`long_poll` 模式 steady-state lane poll 按 `laneID` 路由，保证同一 `(peer,lane)` 有序。见 `transport/session.go`。
 - **Fetch 批量刷批策略**: 仅 `progress_ack` 模式保留 200µs 定时窗口 + 8 条 / 32 KiB eager flush + 4 条 chunk fallback 的批量 Fetch 策略；`long_poll` steady-state 不再走该批量器。
+- **Legacy empty fetch reopen**: `progress_ack` 模式 follower 收到真实 empty `FetchResponse` 后会立刻重开下一轮 `FetchRequest`；若本地 `LEO > LeaderHW` 还会先补发 `ProgressAck`。同步回调里会优先发非 fetch 消息、再 drain 其他 channel 的 peer queue，最后才处理当前 channel 的 deferred refetch，避免 many-channel 场景下同频道 refetch 抢回 inflight 槽位导致其他频道饥饿。
 - **Leader lane session 是固定规模资源**: ready queue / parked waiter 的规模与 `peer * laneCount` 成正比，不会退化成 per-channel timer / goroutine。
 - **`ProgressAck` 只剩 legacy steady-state 路径**: 进程级 `ReplicationMode=long_poll` 时 steady-state ACK 通过 `cursorDelta` 回传；`ReconcileProbe` 仍是独立恢复协议。

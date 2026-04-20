@@ -50,6 +50,7 @@ type ReplicaConfig struct {
 	AppendGroupCommitMaxWait    time.Duration
 	AppendGroupCommitMaxRecords int
 	AppendGroupCommitMaxBytes   int
+	OnStateChange               func()
 }
 
 type Replica interface {

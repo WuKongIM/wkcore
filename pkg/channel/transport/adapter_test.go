@@ -79,6 +79,68 @@ func TestNewDoesNotCollideWithClusterManagedSlotRPCService(t *testing.T) {
 	}
 }
 
+func TestBindFetchServiceAdaptsRuntimeLanePollService(t *testing.T) {
+	mux := transport.NewRPCMux()
+	client := transport.NewClient(transport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter, err := New(Options{
+		LocalNode:        1,
+		Client:           client,
+		RPCMux:           mux,
+		ReplicationMode:  "long_poll",
+		LongPollLaneCount: 4,
+		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+			return runtime.FetchResponseEnvelope{}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	service := &lanePollFetchServiceStub{}
+	adapter.BindFetchService(service)
+
+	body, err := encodeLongPollFetchRequest(LongPollFetchRequest{
+		PeerID:      2,
+		LaneID:      1,
+		LaneCount:   4,
+		Op:          LanePollOpOpen,
+		MaxWaitMs:   1,
+		MaxBytes:    4096,
+		MaxChannels: 64,
+		FullMembership: []LongPollMembership{
+			{ChannelKey: "g1", ChannelEpoch: 7},
+		},
+	})
+	if err != nil {
+		t.Fatalf("encodeLongPollFetchRequest() error = %v", err)
+	}
+
+	respBody, err := adapter.handleLongPollFetchRPC(context.Background(), body)
+	if err != nil {
+		t.Fatalf("handleLongPollFetchRPC() error = %v", err)
+	}
+	resp, err := decodeLongPollFetchResponse(respBody)
+	if err != nil {
+		t.Fatalf("decodeLongPollFetchResponse() error = %v", err)
+	}
+	if !service.called.Load() {
+		t.Fatal("expected runtime lane poll service to be invoked")
+	}
+	if resp.Status != LanePollStatusOK {
+		t.Fatalf("resp.Status = %d, want %d", resp.Status, LanePollStatusOK)
+	}
+	if len(resp.Items) != 1 {
+		t.Fatalf("len(resp.Items) = %d, want 1", len(resp.Items))
+	}
+	if resp.Items[0].ChannelKey != "g1" {
+		t.Fatalf("resp.Items[0].ChannelKey = %q, want %q", resp.Items[0].ChannelKey, "g1")
+	}
+}
+
 func TestPeerSessionReportsHardBackpressureWhileRPCInFlight(t *testing.T) {
 	server := transport.NewServer()
 	mux := transport.NewRPCMux()
@@ -777,6 +839,48 @@ func TestTransportLongPollModeDoesNotRequireProgressAckRPC(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unknown rpc service") {
 		t.Fatalf("HandleRPC() error = %v, want unknown service", err)
+	}
+}
+
+func TestPeerSessionSendRejectsProgressAckInLongPollMode(t *testing.T) {
+	client := transport.NewClient(transport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	adapter, err := New(Options{
+		LocalNode:       1,
+		Client:          client,
+		RPCMux:          transport.NewRPCMux(),
+		ReplicationMode: "long_poll",
+		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+			return runtime.FetchResponseEnvelope{}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer adapter.Close()
+
+	err = adapter.SessionManager().Session(2).Send(runtime.Envelope{
+		Peer:       2,
+		ChannelKey: "g-progress",
+		Epoch:      3,
+		Generation: 7,
+		Kind:       runtime.MessageKindProgressAck,
+		ProgressAck: &runtime.ProgressAckEnvelope{
+			ChannelKey:  "g-progress",
+			Epoch:       3,
+			Generation:  7,
+			ReplicaID:   1,
+			MatchOffset: 9,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected progress ack send to be rejected in long_poll mode")
+	}
+	if !strings.Contains(err.Error(), "long_poll") {
+		t.Fatalf("Send() error = %v, want long_poll rejection", err)
 	}
 }
 
@@ -1905,6 +2009,36 @@ type fetchServiceFunc func(context.Context, runtime.FetchRequestEnvelope) (runti
 
 func (f fetchServiceFunc) ServeFetch(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
 	return f(ctx, req)
+}
+
+type lanePollFetchServiceStub struct {
+	called atomic.Bool
+}
+
+func (s *lanePollFetchServiceStub) ServeFetch(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+	return runtime.FetchResponseEnvelope{}, nil
+}
+
+func (s *lanePollFetchServiceStub) ServeLanePoll(ctx context.Context, req runtime.LanePollRequestEnvelope) (runtime.LanePollResponseEnvelope, error) {
+	s.called.Store(true)
+	return runtime.LanePollResponseEnvelope{
+		LaneID:       req.LaneID,
+		Status:       runtime.LanePollStatusOK,
+		SessionID:    11,
+		SessionEpoch: 3,
+		Items: []runtime.LaneResponseItem{
+			{
+				ChannelKey:   "g1",
+				ChannelEpoch: 7,
+				LeaderEpoch:  7,
+				Flags:        runtime.LanePollItemFlagData,
+				Records: []channel.Record{
+					{Payload: []byte("wake"), SizeBytes: len("wake")},
+				},
+				LeaderHW: 1,
+			},
+		},
+	}, nil
 }
 
 type longPollServiceFunc func(context.Context, LongPollFetchRequest) (LongPollFetchResponse, error)

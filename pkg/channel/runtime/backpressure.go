@@ -355,6 +355,14 @@ func (r *runtime) sendEnvelopeLocked(env Envelope) error {
 	if env.Kind == MessageKindFetchRequest && session.TryBatch(env) {
 		return nil
 	}
+	if env.Kind == MessageKindLanePollRequest {
+		// Long-poll RPCs can legitimately park for maxWait, so don't keep
+		// global send coordination locked across the blocking session.Send.
+		r.sendCoordMu.Unlock()
+		err := session.Send(env)
+		r.sendCoordMu.Lock()
+		return err
+	}
 	if err := session.Send(env); err != nil {
 		if trackInflight {
 			r.peerRequests.release(env.Peer)
@@ -407,15 +415,23 @@ func (r *runtime) popDeferredSyncWork() (deferredEnvelope, core.NodeID, bool) {
 	r.syncDeliveryMu.Lock()
 	defer r.syncDeliveryMu.Unlock()
 
-	if len(r.syncDeferredSends) > 0 {
-		next := r.syncDeferredSends[0]
-		copy(r.syncDeferredSends, r.syncDeferredSends[1:])
+	for i, next := range r.syncDeferredSends {
+		if next.env.Kind == MessageKindFetchRequest || next.env.Kind == MessageKindReconcileProbeRequest {
+			continue
+		}
+		copy(r.syncDeferredSends[i:], r.syncDeferredSends[i+1:])
 		r.syncDeferredSends = r.syncDeferredSends[:len(r.syncDeferredSends)-1]
 		return next, 0, true
 	}
 	for peer := range r.syncDeferredPeerDrains {
 		delete(r.syncDeferredPeerDrains, peer)
 		return deferredEnvelope{}, peer, true
+	}
+	if len(r.syncDeferredSends) > 0 {
+		next := r.syncDeferredSends[0]
+		copy(r.syncDeferredSends, r.syncDeferredSends[1:])
+		r.syncDeferredSends = r.syncDeferredSends[:len(r.syncDeferredSends)-1]
+		return next, 0, true
 	}
 	return deferredEnvelope{}, 0, false
 }
@@ -862,7 +878,7 @@ func (r *runtime) applyFetchResponseEnvelope(ch *channel, peer core.NodeID, env 
 		}
 
 		if len(env.Records) == 0 && env.TruncateTo == nil {
-			r.scheduleFollowerReplication(ch.key, meta.Leader)
+			r.retryReplication(ch.key, meta.Leader, true)
 			return nil
 		}
 		state = ch.Status()
@@ -933,18 +949,42 @@ func (r *runtime) ServeFetch(ctx context.Context, req FetchRequestEnvelope) (Fet
 		OffsetEpoch: req.OffsetEpoch,
 		MaxBytes:    req.MaxBytes,
 	}
-	result, err := ch.replica.Fetch(ctx, fetchReq)
-	if err != nil {
-		return FetchResponseEnvelope{}, err
+	for {
+		version := ch.replicaChangeVersion()
+		result, err := ch.replica.Fetch(ctx, fetchReq)
+		if err != nil {
+			return FetchResponseEnvelope{}, err
+		}
+		resp := FetchResponseEnvelope{
+			ChannelKey: req.ChannelKey,
+			Epoch:      result.Epoch,
+			Generation: req.Generation,
+			TruncateTo: result.TruncateTo,
+			LeaderHW:   result.HW,
+			Records:    result.Records,
+		}
+		if !shouldLongPollFetchResponse(resp) || !FetchLongPollEnabled(ctx) {
+			return resp, nil
+		}
+
+		waitCtx, cancel := longPollFetchContext(ctx, r.cfg.FollowerReplicationRetryInterval)
+		changed := ch.waitReplicaChange(waitCtx, version)
+		cancel()
+		if !changed {
+			return resp, nil
+		}
 	}
-	return FetchResponseEnvelope{
-		ChannelKey: req.ChannelKey,
-		Epoch:      result.Epoch,
-		Generation: req.Generation,
-		TruncateTo: result.TruncateTo,
-		LeaderHW:   result.HW,
-		Records:    result.Records,
-	}, nil
+}
+
+func shouldLongPollFetchResponse(resp FetchResponseEnvelope) bool {
+	return resp.TruncateTo == nil && len(resp.Records) == 0
+}
+
+func longPollFetchContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, timeout)
 }
 
 func (r *runtime) ServeReconcileProbe(_ context.Context, req ReconcileProbeRequestEnvelope) (ReconcileProbeResponseEnvelope, error) {

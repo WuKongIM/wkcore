@@ -183,7 +183,21 @@ func (s *Server) handleRPCRequest(mc *MuxConn, handler RPCHandler, body []byte) 
 	requestID := binary.BigEndian.Uint64(body[0:8])
 	payload := body[8:]
 
-	respData, err := handler(context.Background(), payload)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-mc.readerDone:
+		case <-s.stopCh:
+		case <-done:
+			return
+		}
+		cancel()
+	}()
+
+	respData, err := handler(ctx, payload)
+	close(done)
+	cancel()
 	var errCode uint8
 	if err != nil {
 		errCode = 1

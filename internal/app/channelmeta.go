@@ -99,6 +99,7 @@ func (f *channelReplicaFactory) New(cfg channelruntime.ChannelConfig) (channelre
 		AppendGroupCommitMaxWait:    f.appendGroupCommitMaxWait,
 		AppendGroupCommitMaxRecords: f.appendGroupCommitMaxRecords,
 		AppendGroupCommitMaxBytes:   f.appendGroupCommitMaxBytes,
+		OnStateChange:               cfg.OnReplicaStateChange,
 	})
 }
 

@@ -251,7 +251,11 @@ func (r *replica) flushAppendBatch(batch []*appendRequest) {
 	r.state.OffsetEpoch = offsetEpochForLEO(r.epochHistory, nextLEO)
 	r.setReplicaProgressLocked(r.localNode, nextLEO)
 	r.publishStateLocked()
+	notifyLeaderLocalAppend := r.onLeaderLocalAppend
 	r.mu.Unlock()
+	if len(active) > 0 && notifyLeaderLocalAppend != nil {
+		notifyLeaderLocalAppend()
+	}
 	r.signalAdvanceHW()
 }
 

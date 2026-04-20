@@ -28,6 +28,8 @@ type channel struct {
 	replica  replica.Replica
 	now      func() time.Time
 	delegate ChannelDelegate
+	onAppend func(core.ChannelKey)
+	changes  *replicaChangeNotifier
 	meta     atomic.Pointer[core.Meta]
 	mu       sync.Mutex
 	pending  taskMask
@@ -44,9 +46,14 @@ func newChannel(
 	meta core.Meta,
 	now func() time.Time,
 	delegate ChannelDelegate,
+	onAppend func(core.ChannelKey),
+	changes *replicaChangeNotifier,
 ) *channel {
 	if now == nil {
 		now = time.Now
+	}
+	if changes == nil {
+		changes = newReplicaChangeNotifier()
 	}
 	c := &channel{
 		key:      key,
@@ -54,6 +61,8 @@ func newChannel(
 		replica:  rep,
 		now:      now,
 		delegate: delegate,
+		onAppend: onAppend,
+		changes:  changes,
 	}
 	c.setMeta(meta)
 	return c
@@ -71,6 +80,13 @@ func (c *channel) Status() core.ReplicaState {
 	return c.replica.Status()
 }
 
+func (c *channel) waitReplicaChange(ctx context.Context, version uint64) bool {
+	if c == nil || c.changes == nil {
+		return false
+	}
+	return c.changes.wait(ctx, version)
+}
+
 func (c *channel) Append(ctx context.Context, records []core.Record) (core.CommitResult, error) {
 	meta := c.metaSnapshot()
 	state := c.replica.Status()
@@ -86,7 +102,14 @@ func (c *channel) Append(ctx context.Context, records []core.Record) (core.Commi
 	if !meta.LeaseUntil.IsZero() && !c.now().Before(meta.LeaseUntil) {
 		return core.CommitResult{}, core.ErrLeaseExpired
 	}
-	return c.replica.Append(ctx, records)
+	result, err := c.replica.Append(ctx, records)
+	if err != nil {
+		return core.CommitResult{}, err
+	}
+	if c.onAppend != nil {
+		c.onAppend(c.key)
+	}
+	return result, nil
 }
 
 func (c *channel) setMeta(meta core.Meta) {
@@ -100,6 +123,13 @@ func (c *channel) metaSnapshot() core.Meta {
 		return core.Meta{}
 	}
 	return *ptr
+}
+
+func (c *channel) replicaChangeVersion() uint64 {
+	if c == nil || c.changes == nil {
+		return 0
+	}
+	return c.changes.snapshot()
 }
 
 func (c *channel) markReplication() {
@@ -196,6 +226,16 @@ type nodeIDQueue struct {
 	dirty map[core.NodeID]struct{}
 }
 
+type replicaChangeNotifier struct {
+	mu      sync.Mutex
+	version uint64
+	ready   chan struct{}
+}
+
+func newReplicaChangeNotifier() *replicaChangeNotifier {
+	return &replicaChangeNotifier{ready: make(chan struct{})}
+}
+
 func (q *nodeIDQueue) enqueue(nodeID core.NodeID) {
 	if q.set == nil {
 		q.set = make(map[core.NodeID]struct{})
@@ -266,4 +306,44 @@ func (q *nodeIDQueue) filter(allow func(core.NodeID) bool) {
 		filtered.enqueue(nodeID)
 	}
 	*q = filtered
+}
+
+func (n *replicaChangeNotifier) notify() {
+	if n == nil {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.version++
+	close(n.ready)
+	n.ready = make(chan struct{})
+}
+
+func (n *replicaChangeNotifier) snapshot() uint64 {
+	if n == nil {
+		return 0
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.version
+}
+
+func (n *replicaChangeNotifier) wait(ctx context.Context, version uint64) bool {
+	if n == nil {
+		return false
+	}
+	n.mu.Lock()
+	if n.version != version {
+		n.mu.Unlock()
+		return true
+	}
+	ready := n.ready
+	n.mu.Unlock()
+
+	select {
+	case <-ready:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }

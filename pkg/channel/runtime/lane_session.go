@@ -137,7 +137,7 @@ func (s *LeaderLaneSession) Poll(
 	cursor []LaneCursorDelta,
 	apply func(LaneCursorDelta),
 	budget LanePollBudget,
-	selector func(core.ChannelKey, laneReadyMask) (LeaderLaneReadyItem, bool),
+	selector func(core.ChannelKey, LaneCursorDelta, laneReadyMask) (LeaderLaneReadyItem, bool),
 ) (LeaderLanePollResult, *lanePollWaiter) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -173,7 +173,7 @@ func (s *LeaderLaneSession) Poll(
 		if mask == 0 {
 			continue
 		}
-		item, finished := selector(key, mask)
+		item, finished := selector(key, s.cursor[key], mask)
 		if budget.MaxBytes > 0 && len(result.Items) > 0 && drainedBytes+item.SizeBytes > budget.MaxBytes {
 			nextQueue = append(nextQueue, key)
 			result.MoreReady = true

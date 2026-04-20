@@ -142,6 +142,64 @@ func TestFollowerLaneMembershipChangeTouchesAffectedLaneOnly(t *testing.T) {
 	}
 }
 
+func TestFollowerLaneMembershipChangeDuringInflightOpenForcesReopen(t *testing.T) {
+	mgr := newPeerLaneManager(PeerLaneManagerConfig{
+		Peer:      2,
+		LaneCount: 4,
+		MaxWait:   time.Millisecond,
+		Budget: LanePollBudget{
+			MaxBytes:    64 * 1024,
+			MaxChannels: 64,
+		},
+	})
+
+	firstKey := testChannelKeyForLane(t, 0, 4, "first-inflight")
+	secondKey := testChannelKeyForLane(t, 0, 4, "second-inflight")
+	if firstKey == secondKey {
+		t.Fatal("expected distinct keys on same lane")
+	}
+
+	laneID := mgr.LaneFor(firstKey)
+	mgr.UpsertChannel(firstKey, 11)
+
+	req, ok := mgr.NextRequest(laneID)
+	if !ok {
+		t.Fatal("expected initial open request")
+	}
+	if req.Op != LanePollOpOpen {
+		t.Fatalf("initial op = %v, want open", req.Op)
+	}
+	if len(req.FullMembership) != 1 || req.FullMembership[0].ChannelKey != firstKey {
+		t.Fatalf("initial membership = %+v, want only %q", req.FullMembership, firstKey)
+	}
+
+	mgr.UpsertChannel(secondKey, 21)
+	if mgr.LaneFor(secondKey) != laneID {
+		t.Fatalf("second key lane = %d, want %d", mgr.LaneFor(secondKey), laneID)
+	}
+
+	mgr.ApplyResponse(LanePollResponseEnvelope{
+		LaneID:       laneID,
+		Status:       LanePollStatusOK,
+		SessionID:    301,
+		SessionEpoch: 1,
+	})
+
+	req, ok = mgr.NextRequest(laneID)
+	if !ok {
+		t.Fatal("expected reopen after inflight membership change")
+	}
+	if req.Op != LanePollOpOpen {
+		t.Fatalf("op after inflight membership change = %v, want open", req.Op)
+	}
+	if len(req.FullMembership) != 2 {
+		t.Fatalf("membership len after inflight membership change = %d, want 2", len(req.FullMembership))
+	}
+	if req.FullMembership[0].ChannelKey != firstKey || req.FullMembership[1].ChannelKey != secondKey {
+		t.Fatalf("membership after inflight membership change = %+v, want [%q %q]", req.FullMembership, firstKey, secondKey)
+	}
+}
+
 func testFollowerLaneFor(key core.ChannelKey, laneCount int) uint16 {
 	hasher := fnv.New32a()
 	_, _ = hasher.Write([]byte(key))

@@ -136,13 +136,24 @@ func (r *runtime) EnsureChannel(meta core.Meta) error {
 		}
 		return err
 	}
-	rep, err := r.replicaFactory.New(ChannelConfig{ChannelKey: meta.Key, Generation: generation, Meta: meta})
+	changes := newReplicaChangeNotifier()
+	rep, err := r.replicaFactory.New(ChannelConfig{
+		ChannelKey:           meta.Key,
+		Generation:           generation,
+		Meta:                 meta,
+		OnReplicaStateChange: changes.notify,
+	})
 	if err != nil {
 		shard.mu.Unlock()
 		if reserved {
 			r.releaseChannelSlot()
 		}
 		return err
+	}
+	if notifier, ok := rep.(interface{ SetLeaderLocalAppendNotifier(func()) }); ok {
+		notifier.SetLeaderLocalAppendNotifier(func() {
+			r.onChannelAppend(meta.Key)
+		})
 	}
 	if err := applyReplicaMeta(rep, r.cfg.LocalNode, meta); err != nil {
 		shard.mu.Unlock()
@@ -156,7 +167,7 @@ func (r *runtime) EnsureChannel(meta core.Meta) error {
 		return err
 	}
 
-	ch := newChannel(meta.Key, generation, rep, meta, r.cfg.Now, r)
+	ch := newChannel(meta.Key, generation, rep, meta, r.cfg.Now, r, r.onChannelAppend, changes)
 	shard.channels[meta.Key] = ch
 	shard.mu.Unlock()
 	r.syncFollowerLaneMembership(nil, meta)

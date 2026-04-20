@@ -5,6 +5,7 @@ import (
 	"net"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestServerStartStop(t *testing.T) {
@@ -167,6 +168,49 @@ func TestServerHandleRPCMux(t *testing.T) {
 	}
 	if errCode != 0 || string(data) != "mux:ok" {
 		t.Fatalf("unexpected response errCode=%d data=%q", errCode, data)
+	}
+}
+
+func TestServerHandleRPCCancelsHandlerWhenConnectionCloses(t *testing.T) {
+	s := NewServer()
+	started := make(chan struct{}, 1)
+	canceled := make(chan struct{}, 1)
+	s.HandleRPC(func(ctx context.Context, body []byte) ([]byte, error) {
+		started <- struct{}{}
+		<-ctx.Done()
+		canceled <- struct{}{}
+		return nil, ctx.Err()
+	})
+	if err := s.Start("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+
+	conn, err := net.Dial("tcp", s.Listener().Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var req net.Buffers
+	writeFrame(&req, MsgTypeRPCRequest, encodeRPCRequest(51, []byte("block")))
+	if _, err := req.WriteTo(conn); err != nil {
+		t.Fatalf("WriteTo() error = %v", err)
+	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for rpc handler to start")
+	}
+
+	if err := conn.Close(); err != nil {
+		t.Fatalf("conn.Close() error = %v", err)
+	}
+
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("expected rpc handler context to cancel after client close")
 	}
 }
 

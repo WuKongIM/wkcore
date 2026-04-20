@@ -264,9 +264,10 @@ type ReconcileProbeService interface {
 type ChannelHandle = core.HandlerChannel
 
 type ChannelConfig struct {
-	ChannelKey core.ChannelKey
-	Generation uint64
-	Meta       core.Meta
+	ChannelKey           core.ChannelKey
+	Generation           uint64
+	Meta                 core.Meta
+	OnReplicaStateChange func()
 }
 
 type ReplicaFactory interface {

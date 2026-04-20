@@ -829,6 +829,158 @@ func TestSessionRemoveChannelDuringSendRaceDropsStaleReplication(t *testing.T) {
 	}
 }
 
+func TestSessionLongPollApplyMetaDoesNotBlockOnInFlightPoll(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.ReplicationMode = "long_poll"
+		cfg.LongPollLaneCount = 4
+		cfg.LongPollMaxWait = time.Second
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+	key := testChannelKey(3111)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(3111, 4, 2, []core.NodeID{1, 2, 3}))
+
+	session2 := env.sessions.session(2)
+	paused, release := blockPeerSessionSend(t, session2, func(env Envelope) bool {
+		return env.Kind == MessageKindLanePollRequest && env.ChannelKey == key && env.Peer == 2
+	})
+	defer release()
+
+	doneScheduler := make(chan struct{})
+	go func() {
+		env.runtime.runScheduler()
+		close(doneScheduler)
+	}()
+
+	select {
+	case <-paused:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for long-poll send to block")
+	}
+
+	doneApply := make(chan error, 1)
+	go func() {
+		doneApply <- env.runtime.ApplyMeta(testMetaLocal(3111, 5, 3, []core.NodeID{1, 3}))
+	}()
+
+	select {
+	case err := <-doneApply:
+		if err != nil {
+			t.Fatalf("ApplyMeta() error = %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		release()
+		select {
+		case <-doneScheduler:
+		case <-time.After(time.Second):
+			t.Fatal("runScheduler did not finish after releasing blocked long poll")
+		}
+		select {
+		case err := <-doneApply:
+			if err != nil {
+				t.Fatalf("ApplyMeta() error after release = %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("ApplyMeta did not finish after releasing blocked long poll")
+		}
+		t.Fatal("ApplyMeta blocked on in-flight long poll send")
+	}
+
+	if got := session2.closeCount(); got != 1 {
+		t.Fatalf("expected stale peer session to be evicted and closed, got close count %d", got)
+	}
+
+	release()
+	select {
+	case <-doneScheduler:
+	case <-time.After(time.Second):
+		t.Fatal("runScheduler did not finish")
+	}
+
+	ch, ok := env.runtime.lookupChannel(key)
+	if !ok {
+		t.Fatal("expected channel to remain after ApplyMeta")
+	}
+	meta := ch.metaSnapshot()
+	if meta.Epoch != 5 || meta.Leader != 3 {
+		t.Fatalf("channel meta after ApplyMeta = %+v, want epoch 5 leader 3", meta)
+	}
+}
+
+func TestSessionLongPollRemoveChannelDoesNotBlockOnInFlightPoll(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.ReplicationMode = "long_poll"
+		cfg.LongPollLaneCount = 4
+		cfg.LongPollMaxWait = time.Second
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+	key := testChannelKey(3112)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(3112, 4, 2, []core.NodeID{1, 2, 3}))
+
+	session2 := env.sessions.session(2)
+	paused, release := blockPeerSessionSend(t, session2, func(env Envelope) bool {
+		return env.Kind == MessageKindLanePollRequest && env.ChannelKey == key && env.Peer == 2
+	})
+	defer release()
+
+	doneScheduler := make(chan struct{})
+	go func() {
+		env.runtime.runScheduler()
+		close(doneScheduler)
+	}()
+
+	select {
+	case <-paused:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for long-poll send to block")
+	}
+
+	doneRemove := make(chan error, 1)
+	go func() {
+		doneRemove <- env.runtime.RemoveChannel(key)
+	}()
+
+	select {
+	case err := <-doneRemove:
+		if err != nil {
+			t.Fatalf("RemoveChannel() error = %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		release()
+		select {
+		case <-doneScheduler:
+		case <-time.After(time.Second):
+			t.Fatal("runScheduler did not finish after releasing blocked long poll")
+		}
+		select {
+		case err := <-doneRemove:
+			if err != nil {
+				t.Fatalf("RemoveChannel() error after release = %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("RemoveChannel did not finish after releasing blocked long poll")
+		}
+		t.Fatal("RemoveChannel blocked on in-flight long poll send")
+	}
+
+	if got := session2.closeCount(); got != 1 {
+		t.Fatalf("expected removed peer session to be closed, got close count %d", got)
+	}
+	if _, ok := env.runtime.lookupChannel(key); ok {
+		t.Fatal("expected channel to be removed before blocked long poll completes")
+	}
+
+	release()
+	select {
+	case <-doneScheduler:
+	case <-time.After(time.Second):
+		t.Fatal("runScheduler did not finish")
+	}
+}
+
 func TestSessionApplyMetaFailureLeavesCachedChannelMetaUnchanged(t *testing.T) {
 	env := newSessionTestEnv(t)
 	initial := testMetaLocal(31, 1, 2, []core.NodeID{1, 2})
@@ -1112,6 +1264,61 @@ func TestSessionFetchResponseReentrantQueuedPeerDrainDoesNotDeadlock(t *testing.
 	}
 }
 
+func TestSessionFetchResponseDrainsQueuedPeerBeforeDeferredRefetch(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Limits.MaxFetchInflightPeer = 1
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+	first := testChannelKey(25021)
+	second := testChannelKey(25022)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(25021, 4, 2, []core.NodeID{1, 2}))
+	mustEnsureLocal(t, env.runtime, testMetaLocal(25022, 4, 2, []core.NodeID{1, 2}))
+
+	env.factory.replicas[0].state.LEO = 9
+
+	env.runtime.runScheduler()
+	session := env.sessions.session(2)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected one initial fetch request, got %d sends", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("expected one queued peer request before response, got %d", got)
+	}
+
+	env.transport.deliver(Envelope{
+		Peer:       2,
+		ChannelKey: first,
+		Generation: 1,
+		Epoch:      4,
+		RequestID:  session.sent[0].RequestID,
+		Kind:       MessageKindFetchResponse,
+		Sync:       true,
+		FetchResponse: &FetchResponseEnvelope{
+			LeaderHW: 9,
+			Records:  []core.Record{{Payload: []byte("ok"), SizeBytes: 2}},
+		},
+	})
+
+	session.mu.Lock()
+	sent := append([]Envelope(nil), session.sent...)
+	session.mu.Unlock()
+	if len(sent) != 3 {
+		t.Fatalf("expected initial fetch, progress ack, and queued peer drain send, got %d sends", len(sent))
+	}
+	if sent[1].Kind != MessageKindProgressAck {
+		t.Fatalf("second outbound kind = %v, want progress ack", sent[1].Kind)
+	}
+	if sent[2].Kind != MessageKindFetchRequest {
+		t.Fatalf("third outbound kind = %v, want fetch request", sent[2].Kind)
+	}
+	if sent[2].ChannelKey != second {
+		t.Fatalf("third outbound channel = %q, want queued peer channel %q", sent[2].ChannelKey, second)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 1 {
+		t.Fatalf("expected deferred refetch to remain queued behind drained peer request, got %d queued", got)
+	}
+}
+
 func TestSessionAsyncBatchedFlushDrainsDeferredSyncWork(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(2504, 4, 2, []core.NodeID{1, 2}))
@@ -1356,6 +1563,74 @@ func TestSessionLongPollTimedOutResponseImmediatelyReissuesPoll(t *testing.T) {
 	if session.last.LanePollRequest.LaneID != testFollowerLaneFor(key, 4) {
 		t.Fatalf("reissue lane = %d, want %d", session.last.LanePollRequest.LaneID, testFollowerLaneFor(key, 4))
 	}
+}
+
+func TestSessionLongPollEnsureChannelStartsInitialOpenForEveryPopulatedLane(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.ReplicationMode = "long_poll"
+		cfg.LongPollLaneCount = 8
+		cfg.LongPollMaxWait = time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+		cfg.FollowerReplicationRetryInterval = time.Hour
+		cfg.AutoRunScheduler = true
+	})
+
+	const (
+		laneCount       = 8
+		channelsPerLane = 4
+	)
+	for lane := 0; lane < laneCount; lane++ {
+		for replicaIdx := 0; replicaIdx < channelsPerLane; replicaIdx++ {
+			key := testChannelKeyForLane(t, uint16(lane), laneCount, "lp-init-"+strconv.Itoa(lane)+"-"+strconv.Itoa(replicaIdx))
+			mustEnsureLocal(t, env.runtime, core.Meta{
+				Key:      key,
+				Epoch:    uint64(100 + lane*channelsPerLane + replicaIdx),
+				Leader:   2,
+				Replicas: []core.NodeID{1, 2, 3},
+				ISR:      []core.NodeID{1, 2, 3},
+				MinISR:   2,
+			})
+		}
+	}
+
+	session := env.sessions.session(2)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		session.mu.Lock()
+		sent := append([]Envelope(nil), session.sent...)
+		session.mu.Unlock()
+
+		laneOpens := make(map[uint16]struct{})
+		for _, env := range sent {
+			if env.Kind != MessageKindLanePollRequest || env.LanePollRequest == nil {
+				continue
+			}
+			if env.LanePollRequest.Op != LanePollOpOpen {
+				continue
+			}
+			laneOpens[env.LanePollRequest.LaneID] = struct{}{}
+		}
+		if len(laneOpens) == laneCount {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	session.mu.Lock()
+	sent := append([]Envelope(nil), session.sent...)
+	session.mu.Unlock()
+	laneOpens := make(map[uint16]struct{})
+	for _, env := range sent {
+		if env.Kind != MessageKindLanePollRequest || env.LanePollRequest == nil {
+			continue
+		}
+		if env.LanePollRequest.Op != LanePollOpOpen {
+			continue
+		}
+		laneOpens[env.LanePollRequest.LaneID] = struct{}{}
+	}
+	t.Fatalf("initial long-poll opens covered lanes=%v, want all %d lanes", laneOpens, laneCount)
 }
 
 func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
@@ -1621,7 +1896,7 @@ func TestSessionFetchFailureEnvelopeReleasesInflightAndRetriesReplication(t *tes
 	t.Fatalf("expected fetch failure to trigger immediate retry, got %d sends", session.sendCount())
 }
 
-func TestSessionEmptyFetchResponseUsesRetryIntervalBeforeFollowerRefetch(t *testing.T) {
+func TestSessionEmptyFetchResponseImmediatelyReopensFollowerFetch(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.AutoRunScheduler = true
 		cfg.FollowerReplicationRetryInterval = 20 * time.Millisecond
@@ -1646,11 +1921,7 @@ func TestSessionEmptyFetchResponseUsesRetryIntervalBeforeFollowerRefetch(t *test
 		},
 	})
 
-	if got := session.sendCount(); got != 1 {
-		t.Fatalf("expected empty fetch response to avoid immediate follower re-fetch, got %d sends", got)
-	}
-
-	deadline := time.Now().Add(250 * time.Millisecond)
+	deadline := time.Now().Add(50 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		if got := session.sendCount(); got >= 2 {
 			return
@@ -1658,7 +1929,7 @@ func TestSessionEmptyFetchResponseUsesRetryIntervalBeforeFollowerRefetch(t *test
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	t.Fatalf("expected empty fetch response to trigger delayed follower re-fetch, got %d sends", session.sendCount())
+	t.Fatalf("expected empty fetch response to reopen follower fetch immediately, got %d sends", session.sendCount())
 }
 
 func TestSessionEmptyFetchResponseSendsProgressAckWhenFollowerHasUncommittedData(t *testing.T) {
@@ -1746,6 +2017,117 @@ func TestSessionServeFetchReturnsReplicaFetchResult(t *testing.T) {
 	}
 	if len(resp.Records) != 2 || string(resp.Records[1].Payload) != "bc" {
 		t.Fatalf("unexpected response records: %+v", resp.Records)
+	}
+}
+
+func TestSessionServeFetchWaitsForReplicaStateChangeBeforeReturningRecords(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.FollowerReplicationRetryInterval = 50 * time.Millisecond
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2601, 5, 1, []core.NodeID{1, 2}))
+
+	rep := env.factory.replicas[0]
+	respCh := make(chan FetchResponseEnvelope, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		resp, err := env.runtime.ServeFetch(context.Background(), FetchRequestEnvelope{
+			ChannelKey:  testChannelKey(2601),
+			Epoch:       5,
+			Generation:  1,
+			ReplicaID:   2,
+			FetchOffset: 0,
+			OffsetEpoch: 5,
+			MaxBytes:    1024,
+		})
+		respCh <- resp
+		errCh <- err
+	}()
+
+	select {
+	case <-respCh:
+		t.Fatal("ServeFetch returned before leader replica changed")
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	rep.mu.Lock()
+	rep.fetchResult = core.ReplicaFetchResult{
+		Epoch:   5,
+		HW:      1,
+		Records: []core.Record{{Payload: []byte("a"), SizeBytes: 1}},
+	}
+	rep.state.LEO = 1
+	rep.mu.Unlock()
+	rep.notifyStateChange()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ServeFetch() error = %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("ServeFetch did not return after leader replica changed")
+	}
+
+	resp := <-respCh
+	if len(resp.Records) != 1 || string(resp.Records[0].Payload) != "a" {
+		t.Fatalf("ServeFetch returned %+v, want appended record", resp)
+	}
+	if rep.fetchCalls < 2 {
+		t.Fatalf("expected ServeFetch to refetch after replica change, got %d fetch calls", rep.fetchCalls)
+	}
+}
+
+func TestSessionServeFetchReturnsEmptyAfterLongPollTimeout(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.FollowerReplicationRetryInterval = 20 * time.Millisecond
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2602, 5, 1, []core.NodeID{1, 2}))
+
+	startedAt := time.Now()
+	resp, err := env.runtime.ServeFetch(context.Background(), FetchRequestEnvelope{
+		ChannelKey:  testChannelKey(2602),
+		Epoch:       5,
+		Generation:  1,
+		ReplicaID:   2,
+		FetchOffset: 0,
+		OffsetEpoch: 5,
+		MaxBytes:    1024,
+	})
+	if err != nil {
+		t.Fatalf("ServeFetch() error = %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed < 20*time.Millisecond {
+		t.Fatalf("ServeFetch returned too early after %s, want at least 20ms", elapsed)
+	}
+	if len(resp.Records) != 0 || resp.TruncateTo != nil {
+		t.Fatalf("ServeFetch returned %+v, want empty long-poll timeout response", resp)
+	}
+}
+
+func TestSessionServeFetchSkipsLongPollWhenDisabledByContext(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.FollowerReplicationRetryInterval = 50 * time.Millisecond
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2603, 5, 1, []core.NodeID{1, 2}))
+
+	startedAt := time.Now()
+	resp, err := env.runtime.ServeFetch(WithoutFetchLongPoll(context.Background()), FetchRequestEnvelope{
+		ChannelKey:  testChannelKey(2603),
+		Epoch:       5,
+		Generation:  1,
+		ReplicaID:   2,
+		FetchOffset: 0,
+		OffsetEpoch: 5,
+		MaxBytes:    1024,
+	})
+	if err != nil {
+		t.Fatalf("ServeFetch() error = %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed >= 20*time.Millisecond {
+		t.Fatalf("ServeFetch took %s with long-poll disabled, want immediate response", elapsed)
+	}
+	if len(resp.Records) != 0 || resp.TruncateTo != nil {
+		t.Fatalf("ServeFetch returned %+v, want immediate empty response when long-poll is disabled", resp)
 	}
 }
 
@@ -1861,6 +2243,7 @@ func (f *sessionReplicaFactory) New(cfg ChannelConfig) (replica.Replica, error) 
 			Leader:      cfg.Meta.Leader,
 			CommitReady: f.initialCommitReady,
 		},
+		onStateChange: cfg.OnReplicaStateChange,
 	}
 	f.replicas = append(f.replicas, replica)
 	return replica, nil
@@ -1869,6 +2252,7 @@ func (f *sessionReplicaFactory) New(cfg ChannelConfig) (replica.Replica, error) 
 type sessionReplica struct {
 	mu                    sync.Mutex
 	state                 core.ReplicaState
+	onStateChange         func()
 	applyFetchCalls       int
 	lastApplyFetch        core.ReplicaApplyFetchRequest
 	applyFetchErr         error
@@ -1942,6 +2326,12 @@ func (r *sessionReplica) Fetch(ctx context.Context, req core.ReplicaFetchRequest
 	r.fetchCalls++
 	r.lastFetch = req
 	return r.fetchResult, r.fetchErr
+}
+
+func (r *sessionReplica) notifyStateChange() {
+	if r.onStateChange != nil {
+		r.onStateChange()
+	}
 }
 func (r *sessionReplica) ApplyFetch(ctx context.Context, req core.ReplicaApplyFetchRequest) error {
 	r.mu.Lock()
@@ -2049,6 +2439,32 @@ type trackingPeerSession struct {
 	afterSend    func()
 	afterFlush   func()
 	tryBatch     bool
+}
+
+func blockPeerSessionSend(t *testing.T, session *trackingPeerSession, match func(Envelope) bool) (<-chan struct{}, func()) {
+	t.Helper()
+
+	paused := make(chan struct{}, 1)
+	releaseCh := make(chan struct{})
+	var releaseOnce sync.Once
+	session.afterSend = func() {
+		session.mu.Lock()
+		last := session.last
+		session.mu.Unlock()
+		if match != nil && !match(last) {
+			return
+		}
+		select {
+		case paused <- struct{}{}:
+		default:
+		}
+		<-releaseCh
+	}
+	return paused, func() {
+		releaseOnce.Do(func() {
+			close(releaseCh)
+		})
+	}
 }
 
 func (s *trackingPeerSession) Send(env Envelope) error {

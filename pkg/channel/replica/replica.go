@@ -44,15 +44,17 @@ type replica struct {
 	advanceMu sync.Mutex
 	appendMu  sync.Mutex
 
-	localNode channel.NodeID
+	localNode     channel.NodeID
+	onStateChange func()
 
-	log         LogStore
-	checkpoints CheckpointStore
-	applyFetch  ApplyFetchStore
-	history     EpochHistoryStore
-	snapshots   SnapshotApplier
-	probeSource ReconcileProbeSource
-	now         func() time.Time
+	log                 LogStore
+	checkpoints         CheckpointStore
+	applyFetch          ApplyFetchStore
+	history             EpochHistoryStore
+	snapshots           SnapshotApplier
+	probeSource         ReconcileProbeSource
+	now                 func() time.Time
+	onLeaderLocalAppend func()
 
 	meta         channel.Meta
 	state        channel.ReplicaState
@@ -101,14 +103,15 @@ func NewReplica(cfg ReplicaConfig) (Replica, error) {
 	}
 
 	r := &replica{
-		localNode:   cfg.LocalNode,
-		log:         cfg.LogStore,
-		checkpoints: cfg.CheckpointStore,
-		applyFetch:  cfg.ApplyFetchStore,
-		history:     cfg.EpochHistoryStore,
-		snapshots:   cfg.SnapshotApplier,
-		probeSource: cfg.ReconcileProbeSource,
-		now:         cfg.Now,
+		localNode:     cfg.LocalNode,
+		onStateChange: cfg.OnStateChange,
+		log:           cfg.LogStore,
+		checkpoints:   cfg.CheckpointStore,
+		applyFetch:    cfg.ApplyFetchStore,
+		history:       cfg.EpochHistoryStore,
+		snapshots:     cfg.SnapshotApplier,
+		probeSource:   cfg.ReconcileProbeSource,
+		now:           cfg.Now,
 		appendGroupCommit: appendGroupCommitConfig{
 			maxWait:    effectiveAppendGroupCommitMaxWait(cfg.AppendGroupCommitMaxWait),
 			maxRecords: effectiveAppendGroupCommitMaxRecords(cfg.AppendGroupCommitMaxRecords),
@@ -155,6 +158,12 @@ func effectiveAppendGroupCommitMaxBytes(configured int) int {
 		return configured
 	}
 	return 64 * 1024
+}
+
+func (r *replica) SetLeaderLocalAppendNotifier(fn func()) {
+	r.mu.Lock()
+	r.onLeaderLocalAppend = fn
+	r.mu.Unlock()
 }
 
 func (r *replica) ApplyMeta(meta channel.Meta) error {
@@ -327,4 +336,7 @@ func (r *replica) Status() channel.ReplicaState {
 func (r *replica) publishStateLocked() {
 	snapshot := r.state
 	r.statePointer.Store(&snapshot)
+	if r.onStateChange != nil {
+		r.onStateChange()
+	}
 }
