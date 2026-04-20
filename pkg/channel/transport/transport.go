@@ -90,6 +90,8 @@ func New(opts Options) (*Transport, error) {
 	}
 	if lp, ok := opts.FetchService.(LongPollService); ok {
 		transport.longPollService = lp
+	} else if lp, ok := opts.FetchService.(runtime.LanePollService); ok {
+		transport.longPollService = runtimeLanePollServiceAdapter{service: lp}
 	}
 	if service, ok := opts.FetchService.(runtime.ReconcileProbeService); ok {
 		transport.reconcileService = service
@@ -104,6 +106,90 @@ func New(opts Options) (*Transport, error) {
 	}
 	opts.RPCMux.Handle(RPCServiceReconcileProbe, transport.handleReconcileProbeRPC)
 	return transport, nil
+}
+
+type runtimeLanePollServiceAdapter struct {
+	service runtime.LanePollService
+}
+
+func (a runtimeLanePollServiceAdapter) ServeLongPollFetch(ctx context.Context, req LongPollFetchRequest) (LongPollFetchResponse, error) {
+	resp, err := a.service.ServeLanePoll(ctx, runtime.LanePollRequestEnvelope{
+		ReplicaID:             req.PeerID,
+		LaneID:                req.LaneID,
+		LaneCount:             req.LaneCount,
+		SessionID:             req.SessionID,
+		SessionEpoch:          req.SessionEpoch,
+		Op:                    runtime.LanePollOp(req.Op),
+		ProtocolVersion:       req.ProtocolVersion,
+		MaxWait:               time.Duration(req.MaxWaitMs) * time.Millisecond,
+		MaxBytes:              int(req.MaxBytes),
+		MaxChannels:           int(req.MaxChannels),
+		MembershipVersionHint: req.MembershipVersionHint,
+		FullMembership:        toRuntimeLaneMembership(req.FullMembership),
+		CursorDelta:           toRuntimeLaneCursorDelta(req.CursorDelta),
+	})
+	if err != nil {
+		return LongPollFetchResponse{}, err
+	}
+	return LongPollFetchResponse{
+		Status:        LanePollStatus(resp.Status),
+		SessionID:     resp.SessionID,
+		SessionEpoch:  resp.SessionEpoch,
+		TimedOut:      resp.TimedOut,
+		MoreReady:     resp.MoreReady,
+		ResetRequired: resp.ResetRequired,
+		ResetReason:   LongPollResetReason(resp.ResetReason),
+		Items:         toTransportLongPollItems(resp.Items),
+	}, nil
+}
+
+func toRuntimeLaneMembership(items []LongPollMembership) []runtime.LaneMembership {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]runtime.LaneMembership, 0, len(items))
+	for _, item := range items {
+		out = append(out, runtime.LaneMembership{
+			ChannelKey:   item.ChannelKey,
+			ChannelEpoch: item.ChannelEpoch,
+		})
+	}
+	return out
+}
+
+func toRuntimeLaneCursorDelta(items []LongPollCursorDelta) []runtime.LaneCursorDelta {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]runtime.LaneCursorDelta, 0, len(items))
+	for _, item := range items {
+		out = append(out, runtime.LaneCursorDelta{
+			ChannelKey:   item.ChannelKey,
+			ChannelEpoch: item.ChannelEpoch,
+			MatchOffset:  item.MatchOffset,
+			OffsetEpoch:  item.OffsetEpoch,
+		})
+	}
+	return out
+}
+
+func toTransportLongPollItems(items []runtime.LaneResponseItem) []LongPollItem {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]LongPollItem, 0, len(items))
+	for _, item := range items {
+		out = append(out, LongPollItem{
+			ChannelKey:   item.ChannelKey,
+			ChannelEpoch: item.ChannelEpoch,
+			LeaderEpoch:  item.LeaderEpoch,
+			Flags:        LongPollItemFlags(item.Flags),
+			Records:      item.Records,
+			LeaderHW:     item.LeaderHW,
+			TruncateTo:   item.TruncateTo,
+		})
+	}
+	return out
 }
 
 func (t *Transport) Close() error {

@@ -19,6 +19,7 @@ type LeaderLaneReadyItem struct {
 	ChannelEpoch uint64
 	ReadyMask    laneReadyMask
 	SizeBytes    int
+	Response     LaneResponseItem
 }
 
 type LeaderLanePollResult struct {
@@ -60,6 +61,7 @@ type LeaderLaneSession struct {
 	readyQueue   []core.ChannelKey
 	parked       *lanePollWaiter
 	channelEpoch map[core.ChannelKey]uint64
+	cursor       map[core.ChannelKey]LaneCursorDelta
 }
 
 func newLeaderLaneSession(sessionID, sessionEpoch uint64) *LeaderLaneSession {
@@ -68,6 +70,7 @@ func newLeaderLaneSession(sessionID, sessionEpoch uint64) *LeaderLaneSession {
 		sessionEpoch: sessionEpoch,
 		readyFlags:   make(map[core.ChannelKey]laneReadyMask),
 		channelEpoch: make(map[core.ChannelKey]uint64),
+		cursor:       make(map[core.ChannelKey]LaneCursorDelta),
 	}
 }
 
@@ -75,6 +78,35 @@ func (s *LeaderLaneSession) TrackChannel(key core.ChannelKey, epoch uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.channelEpoch[key] = epoch
+}
+
+func (s *LeaderLaneSession) ForgetChannel(key core.ChannelKey) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.channelEpoch, key)
+	delete(s.cursor, key)
+	delete(s.readyFlags, key)
+	filtered := s.readyQueue[:0]
+	for _, queued := range s.readyQueue {
+		if queued == key {
+			continue
+		}
+		filtered = append(filtered, queued)
+	}
+	s.readyQueue = filtered
+}
+
+func (s *LeaderLaneSession) Cursor(key core.ChannelKey) (LaneCursorDelta, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delta, ok := s.cursor[key]
+	return delta, ok
+}
+
+func (s *LeaderLaneSession) Session() (uint64, uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessionID, s.sessionEpoch
 }
 
 func (s *LeaderLaneSession) MarkDataReady(key core.ChannelKey, epoch uint64) {
@@ -114,6 +146,7 @@ func (s *LeaderLaneSession) Poll(
 		if trackedEpoch, ok := s.channelEpoch[delta.ChannelKey]; ok && trackedEpoch != 0 && delta.ChannelEpoch != 0 && trackedEpoch != delta.ChannelEpoch {
 			continue
 		}
+		s.cursor[delta.ChannelKey] = delta
 		if apply != nil {
 			apply(delta)
 		}

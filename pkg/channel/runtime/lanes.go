@@ -273,6 +273,15 @@ func sortedLaneCursorDelta(cursor map[core.ChannelKey]LaneCursorDelta) ([]LaneCu
 	return out, drained
 }
 
+func laneIDFor(key core.ChannelKey, laneCount int) uint16 {
+	if laneCount <= 0 {
+		return 0
+	}
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(key))
+	return uint16(hasher.Sum32() % uint32(laneCount))
+}
+
 func (r *runtime) longPollEnabled() bool {
 	return r.cfg.ReplicationMode == "long_poll" && r.cfg.LongPollLaneCount > 0
 }
@@ -325,4 +334,32 @@ func (r *runtime) syncFollowerLaneMembership(previous *core.Meta, next core.Meta
 	if next.Leader != 0 && next.Leader != r.cfg.LocalNode {
 		r.ensureLaneManager(next.Leader).UpsertChannel(next.Key, next.Epoch)
 	}
+}
+
+func (r *runtime) syncLeaderLaneTargets(ch *channel, next core.Meta) {
+	if !r.longPollEnabled() || ch == nil {
+		return
+	}
+
+	for _, target := range ch.replicationTargetsSnapshot() {
+		if session, ok := r.leaderLanes.Session(target); ok {
+			session.ForgetChannel(ch.key)
+		}
+	}
+	ch.setReplicationTargets(nil)
+	r.leaderLanes.SetReplicationTargets(ch.key, nil)
+
+	if next.Leader != r.cfg.LocalNode {
+		return
+	}
+	targets := make([]PeerLaneKey, 0, len(next.Replicas))
+	laneID := laneIDFor(next.Key, r.cfg.LongPollLaneCount)
+	for _, peer := range next.Replicas {
+		if peer == 0 || peer == r.cfg.LocalNode {
+			continue
+		}
+		targets = append(targets, PeerLaneKey{Peer: peer, LaneID: laneID})
+	}
+	ch.setReplicationTargets(targets)
+	r.leaderLanes.SetReplicationTargets(ch.key, targets)
 }

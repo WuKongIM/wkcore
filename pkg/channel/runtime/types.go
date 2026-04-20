@@ -206,6 +206,7 @@ type LaneResponseItem struct {
 }
 
 type LanePollRequestEnvelope struct {
+	ReplicaID             core.NodeID
 	LaneID                uint16
 	LaneCount             uint16
 	SessionID             uint64
@@ -230,6 +231,10 @@ type LanePollResponseEnvelope struct {
 	ResetRequired bool
 	ResetReason   LanePollResetReason
 	Items         []LaneResponseItem
+}
+
+type LanePollService interface {
+	ServeLanePoll(ctx context.Context, req LanePollRequestEnvelope) (LanePollResponseEnvelope, error)
 }
 
 type Limits struct {

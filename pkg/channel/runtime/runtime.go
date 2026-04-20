@@ -31,6 +31,7 @@ type runtime struct {
 	sessions                    peerSessionCache
 	laneMu                      sync.Mutex
 	lanes                       map[core.NodeID]*PeerLaneManager
+	leaderLanes                 *laneDirectory
 	peerRequests                peerRequestState
 	snapshots                   snapshotState
 	snapshotThrottle            snapshotThrottle
@@ -92,6 +93,7 @@ func New(cfg Config) (Runtime, error) {
 		scheduler:              newScheduler(),
 		sessions:               newPeerSessionCache(),
 		lanes:                  make(map[core.NodeID]*PeerLaneManager),
+		leaderLanes:            newLaneDirectory(),
 		peerRequests:           newPeerRequestState(),
 		snapshotThrottle:       newSnapshotThrottle(cfg.Limits.MaxRecoveryBytesPerSecond, time.Sleep),
 		replicationRetry:       make(map[core.ChannelKey]map[core.NodeID]*replicationRetryState),
@@ -158,6 +160,7 @@ func (r *runtime) EnsureChannel(meta core.Meta) error {
 	shard.channels[meta.Key] = ch
 	shard.mu.Unlock()
 	r.syncFollowerLaneMembership(nil, meta)
+	r.syncLeaderLaneTargets(ch, meta)
 
 	if meta.Leader != r.cfg.LocalNode {
 		r.retryReplication(meta.Key, meta.Leader, true)
@@ -189,6 +192,7 @@ func (r *runtime) RemoveChannel(key core.ChannelKey) error {
 	delete(shard.channels, key)
 	shard.mu.Unlock()
 	r.syncFollowerLaneMembership(&previousMeta, core.Meta{})
+	r.syncLeaderLaneTargets(ch, core.Meta{})
 	r.snapshots.removeWaiter(key)
 	r.evictInvalidPeerSessions(r.activeReplicationPeers(previousMeta))
 	r.sendCoordMu.Unlock()
@@ -227,6 +231,7 @@ func (r *runtime) ApplyMeta(meta core.Meta) error {
 		r.snapshots.removeWaiter(meta.Key)
 	}
 	r.syncFollowerLaneMembership(&previousMeta, meta)
+	r.syncLeaderLaneTargets(ch, meta)
 	r.evictInvalidPeerSessions(invalidatedPeers)
 	r.sendCoordMu.Unlock()
 	r.clearInvalidPeerWork(ch, meta)

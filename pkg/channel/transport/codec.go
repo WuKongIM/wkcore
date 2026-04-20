@@ -15,7 +15,7 @@ const (
 	RPCServiceFetch          uint8 = 30
 	RPCServiceProgressAck    uint8 = 31
 	RPCServiceFetchBatch     uint8 = 32
-	RPCServiceLongPollFetch  uint8 = 33
+	RPCServiceLongPollFetch  uint8 = 35
 	RPCServiceReconcileProbe uint8 = 34
 
 	fetchRequestCodecVersion  byte = 1

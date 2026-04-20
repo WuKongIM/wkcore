@@ -89,6 +89,8 @@ func (s *peerSession) Send(env runtime.Envelope) error {
 	switch env.Kind {
 	case runtime.MessageKindFetchRequest:
 		return s.sendFetchRequest(env)
+	case runtime.MessageKindLanePollRequest:
+		return s.sendLongPollRequest(env)
 	case runtime.MessageKindProgressAck:
 		return s.sendProgressAck(env)
 	case runtime.MessageKindReconcileProbeRequest:
@@ -406,6 +408,51 @@ func (s *peerSession) sendProgressAck(env runtime.Envelope) error {
 	return nil
 }
 
+func (s *peerSession) sendLongPollRequest(env runtime.Envelope) error {
+	if env.LanePollRequest == nil {
+		return fmt.Errorf("channeltransport: missing lane poll request payload")
+	}
+
+	req := LongPollFetchRequest{
+		PeerID:                s.adapter.localNode,
+		LaneID:                env.LanePollRequest.LaneID,
+		LaneCount:             env.LanePollRequest.LaneCount,
+		SessionID:             env.LanePollRequest.SessionID,
+		SessionEpoch:          env.LanePollRequest.SessionEpoch,
+		Op:                    LanePollOp(env.LanePollRequest.Op),
+		ProtocolVersion:       env.LanePollRequest.ProtocolVersion,
+		MaxWaitMs:             uint32(env.LanePollRequest.MaxWait / time.Millisecond),
+		MaxBytes:              uint32(env.LanePollRequest.MaxBytes),
+		MaxChannels:           uint32(env.LanePollRequest.MaxChannels),
+		MembershipVersionHint: env.LanePollRequest.MembershipVersionHint,
+		Capabilities:          LongPollCapabilityQuorumAck | LongPollCapabilityLocalAck,
+		FullMembership:        toTransportLaneMembership(env.LanePollRequest.FullMembership),
+		CursorDelta:           toTransportLaneCursorDelta(env.LanePollRequest.CursorDelta),
+	}
+
+	resp, err := s.adapter.LongPollFetch(context.Background(), s.peer, req)
+	if err != nil {
+		return err
+	}
+	s.adapter.deliver(runtime.Envelope{
+		Peer: s.peer,
+		Kind: runtime.MessageKindLanePollResponse,
+		Sync: true,
+		LanePollResponse: &runtime.LanePollResponseEnvelope{
+			LaneID:        req.LaneID,
+			Status:        runtime.LanePollStatus(resp.Status),
+			SessionID:     resp.SessionID,
+			SessionEpoch:  resp.SessionEpoch,
+			TimedOut:      resp.TimedOut,
+			MoreReady:     resp.MoreReady,
+			ResetRequired: resp.ResetRequired,
+			ResetReason:   runtime.LanePollResetReason(resp.ResetReason),
+			Items:         toRuntimeLaneResponseItems(resp.Items),
+		},
+	})
+	return nil
+}
+
 func (s *peerSession) sendReconcileProbe(env runtime.Envelope) error {
 	if env.ReconcileProbeRequest == nil {
 		return fmt.Errorf("channeltransport: missing reconcile probe payload")
@@ -439,6 +486,55 @@ func (s *peerSession) sendReconcileProbe(env runtime.Envelope) error {
 	pendingReleased = true
 	s.deliverReconcileProbeResponse(env.RequestID, resp)
 	return nil
+}
+
+func toTransportLaneMembership(items []runtime.LaneMembership) []LongPollMembership {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]LongPollMembership, 0, len(items))
+	for _, item := range items {
+		out = append(out, LongPollMembership{
+			ChannelKey:   item.ChannelKey,
+			ChannelEpoch: item.ChannelEpoch,
+		})
+	}
+	return out
+}
+
+func toTransportLaneCursorDelta(items []runtime.LaneCursorDelta) []LongPollCursorDelta {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]LongPollCursorDelta, 0, len(items))
+	for _, item := range items {
+		out = append(out, LongPollCursorDelta{
+			ChannelKey:   item.ChannelKey,
+			ChannelEpoch: item.ChannelEpoch,
+			MatchOffset:  item.MatchOffset,
+			OffsetEpoch:  item.OffsetEpoch,
+		})
+	}
+	return out
+}
+
+func toRuntimeLaneResponseItems(items []LongPollItem) []runtime.LaneResponseItem {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]runtime.LaneResponseItem, 0, len(items))
+	for _, item := range items {
+		out = append(out, runtime.LaneResponseItem{
+			ChannelKey:   item.ChannelKey,
+			ChannelEpoch: item.ChannelEpoch,
+			LeaderEpoch:  item.LeaderEpoch,
+			Flags:        runtime.LanePollItemFlags(item.Flags),
+			Records:      item.Records,
+			LeaderHW:     item.LeaderHW,
+			TruncateTo:   item.TruncateTo,
+		})
+	}
+	return out
 }
 
 func (s *peerSession) deliverFetchResponse(requestID uint64, resp runtime.FetchResponseEnvelope) {

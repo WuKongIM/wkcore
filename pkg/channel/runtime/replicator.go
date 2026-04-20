@@ -53,6 +53,10 @@ func (r *runtime) processReplication(key core.ChannelKey) {
 		r.processFollowerLongPoll(ch, meta)
 		return
 	}
+	if r.longPollEnabled() && meta.Leader == r.cfg.LocalNode {
+		r.markLeaderLaneReady(ch)
+		return
+	}
 
 	var failedPeers []core.NodeID
 	scheduleRetry := false
@@ -123,6 +127,17 @@ func (r *runtime) processReplication(key core.ChannelKey) {
 	ch.markReplication()
 	if scheduleRetry {
 		r.enqueueScheduler(key, PriorityNormal)
+	}
+}
+
+func (r *runtime) markLeaderLaneReady(ch *channel) {
+	state := ch.Status()
+	for _, target := range ch.replicationTargetsSnapshot() {
+		session, ok := r.leaderLanes.Session(target)
+		if !ok {
+			continue
+		}
+		session.MarkDataReady(ch.key, state.Epoch)
 	}
 }
 
