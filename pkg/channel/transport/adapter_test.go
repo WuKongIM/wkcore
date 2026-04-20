@@ -666,6 +666,120 @@ func TestAdapterHandleProgressAckInvokesRegisteredHandler(t *testing.T) {
 	}
 }
 
+func TestTransportLongPollModeRegistersLongPollRPC(t *testing.T) {
+	client := transport.NewClient(transport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	mux := transport.NewRPCMux()
+	got := make(chan LongPollFetchRequest, 1)
+	adapter, err := New(Options{
+		LocalNode:       1,
+		Client:          client,
+		RPCMux:          mux,
+		ReplicationMode: "long_poll",
+		LongPollService: longPollServiceFunc(func(ctx context.Context, req LongPollFetchRequest) (LongPollFetchResponse, error) {
+			got <- req
+			return LongPollFetchResponse{
+				Status:       LanePollStatusOK,
+				SessionID:    req.SessionID,
+				SessionEpoch: req.SessionEpoch,
+				TimedOut:     true,
+			}, nil
+		}),
+		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+			return runtime.FetchResponseEnvelope{}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer adapter.Close()
+
+	body, err := encodeLongPollFetchRequest(LongPollFetchRequest{
+		PeerID:          2,
+		LaneID:          4,
+		LaneCount:       8,
+		SessionID:       101,
+		SessionEpoch:    6,
+		Op:              LanePollOpOpen,
+		ProtocolVersion: 1,
+		Capabilities:    LongPollCapabilityQuorumAck | LongPollCapabilityLocalAck,
+		MaxWaitMs:       1,
+		MaxBytes:        64 * 1024,
+		MaxChannels:     64,
+		FullMembership: []LongPollMembership{
+			{ChannelKey: "g1", ChannelEpoch: 11},
+		},
+	})
+	if err != nil {
+		t.Fatalf("encodeLongPollFetchRequest() error = %v", err)
+	}
+
+	respBody, err := mux.HandleRPC(context.Background(), append([]byte{RPCServiceLongPollFetch}, body...))
+	if err != nil {
+		t.Fatalf("HandleRPC() error = %v", err)
+	}
+	resp, err := decodeLongPollFetchResponse(respBody)
+	if err != nil {
+		t.Fatalf("decodeLongPollFetchResponse() error = %v", err)
+	}
+	if !resp.TimedOut || resp.Status != LanePollStatusOK {
+		t.Fatalf("response = %+v, want timed out ok response", resp)
+	}
+
+	select {
+	case req := <-got:
+		if req.LaneID != 4 || req.SessionID != 101 {
+			t.Fatalf("request = %+v, want lane=4 session=101", req)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for long poll request delivery")
+	}
+}
+
+func TestTransportLongPollModeDoesNotRequireProgressAckRPC(t *testing.T) {
+	client := transport.NewClient(transport.NewPool(staticDiscovery{
+		addrs: map[uint64]string{},
+	}, 1, time.Second))
+	defer client.Stop()
+
+	mux := transport.NewRPCMux()
+	adapter, err := New(Options{
+		LocalNode:       1,
+		Client:          client,
+		RPCMux:          mux,
+		ReplicationMode: "long_poll",
+		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+			return runtime.FetchResponseEnvelope{}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer adapter.Close()
+
+	body, err := encodeProgressAck(runtime.ProgressAckEnvelope{
+		ChannelKey:  "g-progress",
+		Epoch:       3,
+		Generation:  7,
+		ReplicaID:   2,
+		MatchOffset: 19,
+	})
+	if err != nil {
+		t.Fatalf("encodeProgressAck() error = %v", err)
+	}
+
+	_, err = mux.HandleRPC(context.Background(), append([]byte{RPCServiceProgressAck}, body...))
+	if err == nil {
+		t.Fatal("expected unknown progress ack service in long_poll mode")
+	}
+	if !strings.Contains(err.Error(), "unknown rpc service") {
+		t.Fatalf("HandleRPC() error = %v, want unknown service", err)
+	}
+}
+
 func TestPeerSessionTryBatchQueuesMultipleFetchRequests(t *testing.T) {
 	client := transport.NewClient(transport.NewPool(staticDiscovery{
 		addrs: map[uint64]string{},
@@ -1790,6 +1904,12 @@ func (d staticDiscovery) Resolve(nodeID uint64) (string, error) {
 type fetchServiceFunc func(context.Context, runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error)
 
 func (f fetchServiceFunc) ServeFetch(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
+	return f(ctx, req)
+}
+
+type longPollServiceFunc func(context.Context, LongPollFetchRequest) (LongPollFetchResponse, error)
+
+func (f longPollServiceFunc) ServeLongPollFetch(ctx context.Context, req LongPollFetchRequest) (LongPollFetchResponse, error) {
 	return f(ctx, req)
 }
 

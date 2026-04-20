@@ -18,6 +18,7 @@ type Options struct {
 	Client              *wktransport.Client
 	RPCMux              *wktransport.RPCMux
 	FetchService        runtime.FetchService
+	LongPollService     LongPollService
 	RPCTimeout          time.Duration
 	MaxPendingFetchRPC  int
 	ReplicationMode     string
@@ -42,6 +43,7 @@ type Transport struct {
 	mu               sync.RWMutex
 	handler          func(runtime.Envelope)
 	fetchService     runtime.FetchService
+	longPollService  LongPollService
 	reconcileService runtime.ReconcileProbeService
 	statusSource     channel.HandlerRuntime
 	closeOnce        sync.Once
@@ -81,9 +83,13 @@ func New(opts Options) (*Transport, error) {
 		longPollMaxBytes:    opts.LongPollMaxBytes,
 		longPollMaxChannels: opts.LongPollMaxChannels,
 		fetchService:        opts.FetchService,
+		longPollService:     opts.LongPollService,
 	}
 	if source, ok := opts.FetchService.(channel.HandlerRuntime); ok {
 		transport.statusSource = source
+	}
+	if lp, ok := opts.FetchService.(LongPollService); ok {
+		transport.longPollService = lp
 	}
 	if service, ok := opts.FetchService.(runtime.ReconcileProbeService); ok {
 		transport.reconcileService = service
@@ -91,7 +97,11 @@ func New(opts Options) (*Transport, error) {
 	transport.sessions = newSessionManager(transport)
 	opts.RPCMux.Handle(RPCServiceFetch, transport.handleRPC)
 	opts.RPCMux.Handle(RPCServiceFetchBatch, transport.handleFetchBatchRPC)
-	opts.RPCMux.Handle(RPCServiceProgressAck, transport.handleProgressAckRPC)
+	if transport.replicationMode == "long_poll" {
+		opts.RPCMux.Handle(RPCServiceLongPollFetch, transport.handleLongPollFetchRPC)
+	} else {
+		opts.RPCMux.Handle(RPCServiceProgressAck, transport.handleProgressAckRPC)
+	}
 	opts.RPCMux.Handle(RPCServiceReconcileProbe, transport.handleReconcileProbeRPC)
 	return transport, nil
 }
@@ -104,6 +114,7 @@ func (t *Transport) Close() error {
 		t.rpcMux.Unhandle(RPCServiceFetch)
 		t.rpcMux.Unhandle(RPCServiceFetchBatch)
 		t.rpcMux.Unhandle(RPCServiceProgressAck)
+		t.rpcMux.Unhandle(RPCServiceLongPollFetch)
 		t.rpcMux.Unhandle(RPCServiceReconcileProbe)
 	})
 	return nil
@@ -120,6 +131,17 @@ func (t *Transport) BindFetchService(service runtime.FetchService) {
 	} else {
 		t.reconcileService = nil
 	}
+	if longPollService, ok := service.(LongPollService); ok {
+		t.longPollService = longPollService
+	} else {
+		t.longPollService = nil
+	}
+	t.mu.Unlock()
+}
+
+func (t *Transport) BindLongPollService(service LongPollService) {
+	t.mu.Lock()
+	t.longPollService = service
 	t.mu.Unlock()
 }
 
@@ -200,6 +222,22 @@ func (t *Transport) handleProgressAckRPC(ctx context.Context, body []byte) ([]by
 	return encodeProgressAckResponse(progressAckResponseEnvelope{LeaderHW: leaderHW})
 }
 
+func (t *Transport) handleLongPollFetchRPC(ctx context.Context, body []byte) ([]byte, error) {
+	req, err := decodeLongPollFetchRequest(body)
+	if err != nil {
+		return nil, err
+	}
+	service, err := t.boundLongPollService()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := service.ServeLongPollFetch(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return encodeLongPollFetchResponse(resp)
+}
+
 func (t *Transport) handleReconcileProbeRPC(ctx context.Context, body []byte) ([]byte, error) {
 	req, err := decodeReconcileProbeRequest(body)
 	if err != nil {
@@ -243,6 +281,28 @@ func (t *Transport) boundReconcileProbeService() (runtime.ReconcileProbeService,
 		return nil, fmt.Errorf("channeltransport: reconcile probe service must be bound")
 	}
 	return service, nil
+}
+
+func (t *Transport) boundLongPollService() (LongPollService, error) {
+	t.mu.RLock()
+	service := t.longPollService
+	t.mu.RUnlock()
+	if service == nil {
+		return nil, fmt.Errorf("channeltransport: long poll service must be bound")
+	}
+	return service, nil
+}
+
+func (t *Transport) LongPollFetch(ctx context.Context, peer channel.NodeID, req LongPollFetchRequest) (LongPollFetchResponse, error) {
+	body, err := encodeLongPollFetchRequest(req)
+	if err != nil {
+		return LongPollFetchResponse{}, err
+	}
+	respBody, err := t.client.RPCService(ctx, uint64(peer), longPollRPCShardKey(req.LaneID), RPCServiceLongPollFetch, body)
+	if err != nil {
+		return LongPollFetchResponse{}, err
+	}
+	return decodeLongPollFetchResponse(respBody)
 }
 
 func currentLeaderHW(source channel.HandlerRuntime, ack runtime.ProgressAckEnvelope) (uint64, bool) {
