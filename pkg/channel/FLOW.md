@@ -11,9 +11,9 @@
 |------|-------------|------|
 | `handler/` | `handler.New()` → `Service` | 请求校验、幂等去重、DurableMessage 编解码、消息序列号管理 |
 | `replica/` | `replica.NewReplica()` → `Replica` | 副本状态机：Group Commit 追加、HW 推进、分歧检测、角色转换、恢复 |
-| `runtime/` | `runtime.Build()` → `Runtime` | 频道生命周期管理、复制调度（三优先级）、多级背压、墓碑清理 |
+| `runtime/` | `runtime.Build()` → `Runtime` | 频道生命周期管理、复制调度（三优先级）、leader/follower lane 状态、 多级背压、墓碑清理 |
 | `store/` | `store.NewEngine()` → `Engine` | Pebble KV：日志、检查点、Epoch 历史、幂等表持久化 |
-| `transport/` | `transport.Build()` | Fetch / ProgressAck / ReconcileProbe RPC、PeerSession 批量合并（200µs 定时刷批，8 条或 32 KiB 立即刷批，失败后按 4 条分块回退） |
+| `transport/` | `transport.Build()` | `progress_ack` 模式下的 Fetch / FetchBatch / ProgressAck、`long_poll` 模式下的 `LongPollFetch`，以及始终独立保留的 ReconcileProbe RPC |
 
 ## 3. 对外接口
 
@@ -85,7 +85,7 @@ Replica 层 (replica/append.go):
 发起: `runtime/replicator.go` | 接收: `replica/replication.go:ApplyFetch`
 
 ```
-正常 Fetch 复制:
+`ReplicationMode=progress_ack`（legacy steady-state 路径）:
   ① 新数据写入 → Runtime 检测需要复制 → 调度器排入 Follower 任务
   ② 构建 FetchRequest{ChannelKey, Epoch, FetchOffset, MaxBytes}
   ③ Transport 对 Fetch 做 200µs 定时合并；队列达到 8 条或 32 KiB 时立即刷批，批量失败/缺项时先按 4 条分块重试，再退化到单条 RPC → transport/session.go → 发送到 Follower
@@ -99,6 +99,16 @@ Leader 处理响应:
   ⑥ replica/replication.go:ApplyFetch → 更新 Progress Map
   ⑦ replica/progress.go:advanceHW → 取 ISR 中第 MinISR 高的 MatchOffset
   ⑧ 推进运行时 CommitHW，通知 Waiter → 消息提交完成
+```
+
+```
+`ReplicationMode=long_poll`（当前 steady-state 主路径）:
+  ① follower 侧 Runtime 为每个 peer 维护固定 `N lane` 的 `PeerLaneManager`
+  ② lane 首次发送 `open(full membership)`，后续 steady-state 只发 `poll(membershipVersionHint + cursorDelta[])`
+  ③ leader 侧 Runtime 为每个 `(peer,lane)` 维护 `LeaderLaneSession`；频道把复制事件通过 `replicationTargets` 直达对应 lane
+  ④ leader 处理 `ServeLanePoll` 时，先应用 `cursorDelta` 推进 follower progress / HW，再从 lane ready queue 挑选可返回的 channel item
+  ⑤ 若 lane 当前无 ready item，则 park 到 `maxWait` 或新事件；空响应是正常 timeout，follower 收到后立即续下一条 poll
+  ⑥ follower 收到 item 后仍走 `ApplyFetch` 落盘，但 steady-state ACK 不再单独发 `ProgressAck`，而是由下一条 lane poll 的 `cursorDelta` 回传
 ```
 
 ```
@@ -174,5 +184,7 @@ Idempotency (0x14): prefix + key + fromUID + msgNo — 幂等条目
 - **Lease 过期自动降级**: Leader Lease 过期后自动变为 FencedLeader，拒绝所有写入但不影响读取。见 `replica/append.go:appendableLocked`。
 - **Cross-channel durable batching**: `store/commit.go` 使用 200µs 窗口跨频道合并 Pebble durable 写入；Leader 的 synced Append 和 Follower 的 ApplyFetch 都走同一个 coordinator。单频道的 `writeMu` 仍然串行，且 sync 完成前不会发布新的 LEO。
 - **Checkpoint 不再阻塞 sendack**: leader 在 quorum commit 后先完成 Append waiter，Checkpoint 持久化走后台 coalescing；若 checkpoint 写盘长期失败，当前实现还缺少显式 health / metrics 暴露。
-- **Transport RPC 分片**: Fetch / ReconcileProbe 都按 FNV-64a(ChannelKey) 路由到固定 RPC 流，保证同一频道有序，并复用 warmed pool slot。见 `transport/session.go`。
-- **Fetch 批量刷批策略**: 默认保留 200µs 定时窗口；队列到 8 条或累计编码体到 32 KiB 时立即刷批；每轮刷批都带 generation，旧 timer / eager callback 不会误冲掉后续新队列；批量 RPC 失败或返回缺项时，先按 4 条分块再试，只有最终 singleton 或 chunk RPC 本身失败后才退到单条 `Fetch`。
+- **Transport RPC 分片**: `progress_ack` 模式下 Fetch / ReconcileProbe 继续按 FNV-64a(ChannelKey) 路由；`long_poll` 模式 steady-state lane poll 按 `laneID` 路由，保证同一 `(peer,lane)` 有序。见 `transport/session.go`。
+- **Fetch 批量刷批策略**: 仅 `progress_ack` 模式保留 200µs 定时窗口 + 8 条 / 32 KiB eager flush + 4 条 chunk fallback 的批量 Fetch 策略；`long_poll` steady-state 不再走该批量器。
+- **Leader lane session 是固定规模资源**: ready queue / parked waiter 的规模与 `peer * laneCount` 成正比，不会退化成 per-channel timer / goroutine。
+- **`ProgressAck` 只剩 legacy steady-state 路径**: 进程级 `ReplicationMode=long_poll` 时 steady-state ACK 通过 `cursorDelta` 回传；`ReconcileProbe` 仍是独立恢复协议。
