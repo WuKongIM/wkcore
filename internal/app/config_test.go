@@ -200,6 +200,21 @@ func TestConfigGatewayPreservesExplicitFalseCloseOnHandlerError(t *testing.T) {
 	require.False(t, *cfg.Gateway.DefaultSession.CloseOnHandlerError)
 }
 
+func TestConfigGatewayDefaultsSendTimeout(t *testing.T) {
+	cfg := validConfig()
+
+	require.NoError(t, cfg.ApplyDefaultsAndValidate())
+	require.Equal(t, defaultGatewaySendTimeout, cfg.Gateway.SendTimeout)
+}
+
+func TestConfigValidateRejectsExplicitNonPositiveGatewaySendTimeout(t *testing.T) {
+	cfg := validConfig()
+	cfg.Gateway.SendTimeout = 0
+	cfg.Gateway.SetExplicitFlags(true)
+
+	require.ErrorContains(t, cfg.ApplyDefaultsAndValidate(), "gateway send timeout")
+}
+
 func TestConfigValidateRejectsTokenAuthWithoutHooks(t *testing.T) {
 	cfg := validConfig()
 	cfg.Gateway.TokenAuthOn = true

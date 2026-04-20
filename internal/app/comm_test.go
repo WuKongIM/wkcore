@@ -32,6 +32,7 @@ var appWKProtoClients sync.Map
 
 type sendStressAcceptanceSpec struct {
 	Benchmark                        sendStressConfig
+	GatewaySendTimeout               time.Duration
 	FollowerReplicationRetryInterval time.Duration
 	AppendGroupCommitMaxWait         time.Duration
 	AppendGroupCommitMaxRecords      int
@@ -55,6 +56,7 @@ func sendStressAcceptancePreset() sendStressAcceptanceSpec {
 			MaxInflightPerWorker: 64,
 			Seed:                 20260408,
 		},
+		GatewaySendTimeout:               25 * time.Second,
 		FollowerReplicationRetryInterval: 250 * time.Millisecond,
 		AppendGroupCommitMaxWait:         2 * time.Millisecond,
 		AppendGroupCommitMaxRecords:      128,
@@ -306,6 +308,7 @@ func applySendPathTuning(t *testing.T, cfg *Config, preset sendStressAcceptanceS
 	cfg.Cluster.DataPlanePoolSize = preset.DataPlanePoolSize
 	cfg.Cluster.DataPlaneMaxFetchInflight = preset.DataPlaneMaxFetchInflight
 	cfg.Cluster.DataPlaneMaxPendingFetch = preset.DataPlaneMaxPendingFetch
+	cfg.Gateway.SendTimeout = preset.GatewaySendTimeout
 }
 
 func TestThreeNodeAppHarnessUsesSendPathTuning(t *testing.T) {
@@ -319,6 +322,7 @@ func TestThreeNodeAppHarnessUsesSendPathTuning(t *testing.T) {
 	require.Equal(t, 32, preset.Benchmark.Senders)
 	require.Equal(t, 64, preset.Benchmark.MaxInflightPerWorker)
 	require.Equal(t, 20*time.Second, preset.Benchmark.AckTimeout)
+	require.Equal(t, 25*time.Second, preset.GatewaySendTimeout)
 
 	for nodeID, app := range harness.apps {
 		require.NotNil(t, app, "node %d app should be running", nodeID)
@@ -332,6 +336,7 @@ func TestThreeNodeAppHarnessUsesSendPathTuning(t *testing.T) {
 		require.Equal(t, preset.AppendGroupCommitMaxWait, maxWait, "node %d append group wait", nodeID)
 		require.Equal(t, preset.AppendGroupCommitMaxRecords, maxRecords, "node %d append group records", nodeID)
 		require.Equal(t, preset.AppendGroupCommitMaxBytes, maxBytes, "node %d append group bytes", nodeID)
+		require.Equal(t, preset.GatewaySendTimeout, appGatewayHandlerDurationField(t, app.GatewayHandler(), "sendTimeout"), "node %d gateway send timeout", nodeID)
 	}
 }
 

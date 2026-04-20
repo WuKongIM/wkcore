@@ -12,6 +12,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	channelhandler "github.com/WuKongIM/WuKongIM/pkg/channel/handler"
 	channelruntime "github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
@@ -477,6 +478,34 @@ func TestStopStopsGatewayBeforeClosingStorage(t *testing.T) {
 	require.NoError(t, app.Stop())
 	require.Equal(t, []string{"gateway.stop", "meta.stop", "cluster.stop", "channellog.close", "raft.close", "metadb.close"}, calls)
 	require.False(t, app.started.Load())
+}
+
+func TestStopSkipsChannelMetaCleanupBecauseClusterShutdownClosesRuntime(t *testing.T) {
+	key := channelhandler.KeyFromChannelID(channel.ChannelID{ID: "local-stop", Type: 1})
+	done := make(chan struct{})
+	cluster := &fakeChannelMetaCluster{}
+
+	app := &App{
+		started:       atomicBool(true),
+		channelMetaOn: atomicBool(true),
+		clusterOn:     atomicBool(true),
+		channelMetaSync: &channelMetaSync{
+			cluster: cluster,
+			cancel: func() {
+				close(done)
+			},
+			done: done,
+			appliedLocal: map[channel.ChannelKey]struct{}{
+				key: {},
+			},
+		},
+		stopClusterFn: func() {},
+		closeRaftDBFn: func() error { return nil },
+		closeWKDBFn:   func() error { return nil },
+	}
+
+	require.NoError(t, app.Stop())
+	require.Empty(t, cluster.removed)
 }
 
 func TestAppLifecycleStopsPresenceWorkerAfterGateway(t *testing.T) {

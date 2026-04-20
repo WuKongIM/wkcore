@@ -294,6 +294,10 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 	if err != nil {
 		return app.Config{}, err
 	}
+	gatewaySendTimeout, err := parseDuration(v, "WK_GATEWAY_SEND_TIMEOUT")
+	if err != nil {
+		return app.Config{}, err
+	}
 	logMaxSize, err := parseInt(v, "WK_LOG_MAX_SIZE")
 	if err != nil {
 		return app.Config{}, err
@@ -393,6 +397,7 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 		},
 		Gateway: app.GatewayConfig{
 			TokenAuthOn: tokenAuthOn,
+			SendTimeout: gatewaySendTimeout,
 			DefaultSession: gateway.SessionOptions{
 				ReadBufferSize:      readBufferSize,
 				WriteQueueSize:      writeQueueSize,
@@ -435,6 +440,7 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 		stringValue(v, "WK_CLUSTER_LONG_POLL_MAX_BYTES") != "",
 		stringValue(v, "WK_CLUSTER_LONG_POLL_MAX_CHANNELS") != "",
 	)
+	cfg.Gateway.SetExplicitFlags(stringValue(v, "WK_GATEWAY_SEND_TIMEOUT") != "")
 	cfg.Log.SetExplicitFlags(stringValue(v, "WK_LOG_COMPRESS") != "", stringValue(v, "WK_LOG_CONSOLE") != "")
 	cfg.Observability.SetExplicitFlags(
 		stringValue(v, "WK_METRICS_ENABLE") != "",

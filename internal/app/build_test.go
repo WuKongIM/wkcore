@@ -170,6 +170,19 @@ func TestBuildLongPollForwardsReplicationSettingsIntoChannelConfigs(t *testing.T
 	require.Equal(t, 32, appTransportIntField(t, app.isrTransport, "longPollMaxChannels"))
 }
 
+func TestBuildForwardsGatewaySendTimeoutIntoHandler(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Gateway.SendTimeout = 27 * time.Second
+
+	app, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, app.Stop())
+	})
+
+	require.Equal(t, 27*time.Second, appGatewayHandlerDurationField(t, app.GatewayHandler(), "sendTimeout"))
+}
+
 type staleConversationFactsCluster struct{}
 
 func (staleConversationFactsCluster) Status(channel.ChannelID) (channel.ChannelRuntimeStatus, error) {
@@ -397,6 +410,20 @@ func appTransportDurationField(t *testing.T, transport any, name string) time.Du
 	field := value.Elem().FieldByName(name)
 	if !field.IsValid() {
 		t.Fatalf("transport missing %s field", name)
+	}
+	return time.Duration(reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Int())
+}
+
+func appGatewayHandlerDurationField(t *testing.T, handler any, name string) time.Duration {
+	t.Helper()
+
+	value := reflect.ValueOf(handler)
+	if value.Kind() != reflect.Pointer || value.IsNil() {
+		t.Fatalf("gateway handler is %s, want non-nil pointer", value.Kind())
+	}
+	field := value.Elem().FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("gateway handler missing %s field", name)
 	}
 	return time.Duration(reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Int())
 }

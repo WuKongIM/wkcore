@@ -203,6 +203,14 @@ func channelMetaSyncStartupRetryable(err error) bool {
 }
 
 func (s *channelMetaSync) Stop() error {
+	return s.stop(true)
+}
+
+func (s *channelMetaSync) StopWithoutCleanup() error {
+	return s.stop(false)
+}
+
+func (s *channelMetaSync) stop(cleanup bool) error {
 	if s == nil {
 		return nil
 	}
@@ -217,6 +225,9 @@ func (s *channelMetaSync) Stop() error {
 	}
 	cancel()
 	<-done
+	if !cleanup {
+		return nil
+	}
 	return s.cleanupAppliedLocal()
 }
 

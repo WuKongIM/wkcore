@@ -223,7 +223,7 @@ func (a *App) stopChannelMetaSync() error {
 
 	var err error
 	if a.channelMetaSync != nil {
-		err = errors.Join(err, a.channelMetaSync.Stop())
+		err = errors.Join(err, a.channelMetaSync.StopWithoutCleanup())
 	}
 	return err
 }

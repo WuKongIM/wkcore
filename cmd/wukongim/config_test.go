@@ -525,6 +525,22 @@ func TestLoadConfigParsesGatewayAsyncSendDispatchFromConf(t *testing.T) {
 	require.True(t, cfg.Gateway.DefaultSession.AsyncSendDispatch)
 }
 
+func TestLoadConfigParsesGatewaySendTimeoutFromConf(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_CLUSTER_SLOT_COUNT=1",
+		"WK_GATEWAY_SEND_TIMEOUT=25s",
+		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
+	)
+
+	cfg, err := loadConfig(configPath)
+	require.NoError(t, err)
+	require.Equal(t, 25*time.Second, cfg.Gateway.SendTimeout)
+}
+
 func TestLoadConfigParsesLogSettingsFromConf(t *testing.T) {
 	dir := t.TempDir()
 	configPath := writeConf(t, dir, "wukongim.conf",

@@ -329,6 +329,7 @@ func build(cfg Config) (_ *App, err error) {
 		Online:      onlineRegistry,
 		Messages:    app.messageApp,
 		Presence:    app.presenceApp,
+		SendTimeout: cfg.Gateway.SendTimeout,
 		Logger:      app.logger.Named("access.gateway"),
 	})
 

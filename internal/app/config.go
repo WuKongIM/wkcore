@@ -173,8 +173,18 @@ func (c ClusterConfig) DerivedControllerNodes() []NodeConfigRef {
 
 type GatewayConfig struct {
 	TokenAuthOn    bool
+	SendTimeout    time.Duration
 	DefaultSession gateway.SessionOptions
 	Listeners      []gateway.ListenerOptions
+
+	sendTimeoutSet bool
+}
+
+func (c *GatewayConfig) SetExplicitFlags(sendTimeoutSet bool) {
+	if c == nil {
+		return
+	}
+	c.sendTimeoutSet = sendTimeoutSet
 }
 
 type APIConfig struct {
@@ -221,6 +231,9 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	}
 	if c.Gateway.TokenAuthOn {
 		return fmt.Errorf("%w: gateway token auth requires verifier hooks", ErrInvalidConfig)
+	}
+	if c.Gateway.SendTimeout <= 0 && c.Gateway.sendTimeoutSet {
+		return fmt.Errorf("%w: gateway send timeout must be > 0", ErrInvalidConfig)
 	}
 	if len(c.Cluster.Slots) > 0 {
 		return fmt.Errorf("%w: Cluster.Slots is no longer supported; remove static slot peers and use Cluster.InitialSlotCount for managed slots", ErrInvalidConfig)
@@ -372,6 +385,9 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	}
 
 	c.Gateway.DefaultSession = gateway.NormalizeSessionOptions(c.Gateway.DefaultSession)
+	if c.Gateway.SendTimeout <= 0 {
+		c.Gateway.SendTimeout = defaultGatewaySendTimeout
+	}
 	if c.Conversation.ColdThreshold <= 0 {
 		c.Conversation.ColdThreshold = 30 * 24 * time.Hour
 	}
@@ -503,3 +519,5 @@ func effectiveAppendGroupCommitMaxBytes(configured int) int {
 	}
 	return 64 * 1024
 }
+
+const defaultGatewaySendTimeout = 20 * time.Second
