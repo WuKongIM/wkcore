@@ -64,6 +64,34 @@ func TestStatusIsUpdatedAfterFollowerAckAdvancesHW(t *testing.T) {
 	require.Equal(t, uint64(1), state.LEO)
 }
 
+func TestProgressCursorUpdateIgnoresRegressingMatchOffset(t *testing.T) {
+	cluster := newThreeReplicaCluster(t)
+	cluster.leader.mu.Lock()
+	cluster.leader.state.LEO = 3
+	cluster.leader.state.OffsetEpoch = 7
+	cluster.leader.progress[cluster.leader.localNode] = 3
+	cluster.leader.mu.Unlock()
+
+	require.NoError(t, cluster.leader.ApplyFollowerCursor(context.Background(), channel.ReplicaFollowerCursorUpdate{
+		ChannelKey:  cluster.leader.state.ChannelKey,
+		Epoch:       cluster.leader.state.Epoch,
+		ReplicaID:   cluster.follower2.localNode,
+		MatchOffset: 3,
+		OffsetEpoch: cluster.leader.state.OffsetEpoch,
+	}))
+	require.NoError(t, cluster.leader.ApplyFollowerCursor(context.Background(), channel.ReplicaFollowerCursorUpdate{
+		ChannelKey:  cluster.leader.state.ChannelKey,
+		Epoch:       cluster.leader.state.Epoch,
+		ReplicaID:   cluster.follower2.localNode,
+		MatchOffset: 2,
+		OffsetEpoch: cluster.leader.state.OffsetEpoch,
+	}))
+
+	cluster.leader.mu.RLock()
+	defer cluster.leader.mu.RUnlock()
+	require.Equal(t, uint64(3), cluster.leader.progress[cluster.follower2.localNode])
+}
+
 func TestStatusReportsCommitAndCheckpointWatermarksSeparately(t *testing.T) {
 	t.Run("not ready", func(t *testing.T) {
 		env := newTestEnv(t)

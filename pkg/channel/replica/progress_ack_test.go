@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestApplyProgressAckAdvancesHWWithoutFollowUpFetch(t *testing.T) {
+func TestCursorDeltaAdvancesHWWithoutFollowUpFetch(t *testing.T) {
 	cluster := newThreeReplicaCluster(t)
 	done := make(chan channel.CommitResult, 1)
 	go func() {
@@ -37,11 +37,12 @@ func TestApplyProgressAckAdvancesHWWithoutFollowUpFetch(t *testing.T) {
 			Records:    fetch.Records,
 			LeaderHW:   fetch.HW,
 		}))
-		require.NoError(t, cluster.leader.ApplyProgressAck(context.Background(), channel.ReplicaProgressAckRequest{
+		require.NoError(t, cluster.leader.ApplyFollowerCursor(context.Background(), channel.ReplicaFollowerCursorUpdate{
 			ChannelKey:  cluster.leader.state.ChannelKey,
 			Epoch:       cluster.leader.state.Epoch,
 			ReplicaID:   follower.localNode,
 			MatchOffset: follower.state.LEO,
+			OffsetEpoch: follower.state.OffsetEpoch,
 		}))
 	}
 
@@ -57,13 +58,14 @@ func TestApplyProgressAckAdvancesHWWithoutFollowUpFetch(t *testing.T) {
 	require.Equal(t, uint64(1), res.NextCommitHW)
 }
 
-func TestApplyProgressAckIgnoresStaleEpoch(t *testing.T) {
+func TestCursorDeltaIgnoresStaleEpoch(t *testing.T) {
 	env := newFetchEnvWithHistory(t)
-	err := env.replica.ApplyProgressAck(context.Background(), channel.ReplicaProgressAckRequest{
+	err := env.replica.ApplyFollowerCursor(context.Background(), channel.ReplicaFollowerCursorUpdate{
 		ChannelKey:  "group-10",
 		Epoch:       6,
 		ReplicaID:   2,
 		MatchOffset: 5,
+		OffsetEpoch: 7,
 	})
 	require.ErrorIs(t, err, channel.ErrStaleMeta)
 }

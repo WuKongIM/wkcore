@@ -222,6 +222,14 @@ type ReplicaProgressAckRequest struct {
 	MatchOffset uint64
 }
 
+type ReplicaFollowerCursorUpdate struct {
+	ChannelKey  ChannelKey
+	Epoch       uint64
+	ReplicaID   NodeID
+	MatchOffset uint64
+	OffsetEpoch uint64
+}
+
 type ReplicaReconcileProof struct {
 	ChannelKey   ChannelKey
 	Epoch        uint64

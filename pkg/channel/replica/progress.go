@@ -293,7 +293,7 @@ func (r *replica) divergenceStateLocked(fetchOffset, offsetEpoch, leaderLEO uint
 	return fetchOffset, nil
 }
 
-func (r *replica) ApplyProgressAck(_ context.Context, req channel.ReplicaProgressAckRequest) error {
+func (r *replica) ApplyFollowerCursor(_ context.Context, req channel.ReplicaFollowerCursorUpdate) error {
 	r.mu.Lock()
 
 	if r.state.Role == channel.ReplicaRoleTombstoned {
@@ -331,4 +331,13 @@ func (r *replica) ApplyProgressAck(_ context.Context, req channel.ReplicaProgres
 
 	r.signalAdvanceHW()
 	return nil
+}
+
+func (r *replica) ApplyProgressAck(ctx context.Context, req channel.ReplicaProgressAckRequest) error {
+	return r.ApplyFollowerCursor(ctx, channel.ReplicaFollowerCursorUpdate{
+		ChannelKey:  req.ChannelKey,
+		Epoch:       req.Epoch,
+		ReplicaID:   req.ReplicaID,
+		MatchOffset: req.MatchOffset,
+	})
 }
