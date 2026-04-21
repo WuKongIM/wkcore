@@ -245,6 +245,190 @@ func TestSnapshotPlannerStateUsesObservationSnapshotForRuntime(t *testing.T) {
 	}
 }
 
+func TestSnapshotPlannerStateUsesMetadataSnapshotWhenWarm(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+
+	storeNode := controllermeta.ClusterNode{
+		NodeID:          1,
+		Addr:            "127.0.0.1:7001",
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Unix(1710010000, 0),
+		CapacityWeight:  1,
+	}
+	storeAssignment := controllermeta.SlotAssignment{
+		SlotID:       1,
+		DesiredPeers: []uint64{1},
+		ConfigEpoch:  1,
+	}
+	storeTask := controllermeta.ReconcileTask{
+		SlotID:  1,
+		Kind:    controllermeta.TaskKindBootstrap,
+		Step:    controllermeta.TaskStepAddLearner,
+		Status:  controllermeta.TaskStatusPending,
+		Attempt: 1,
+	}
+	requireNoErr(t, host.meta.UpsertNode(context.Background(), storeNode))
+	requireNoErr(t, host.meta.UpsertAssignment(context.Background(), storeAssignment))
+	requireNoErr(t, host.meta.UpsertTask(context.Background(), storeTask))
+
+	setControllerMetadataSnapshotStateForTest(host, controllerMetadataSnapshot{
+		Nodes: []controllermeta.ClusterNode{{
+			NodeID:          1,
+			Addr:            "127.0.0.1:7001",
+			Status:          controllermeta.NodeStatusAlive,
+			LastHeartbeatAt: time.Unix(1710010001, 0),
+			CapacityWeight:  9,
+		}},
+		NodesByID: map[uint64]controllermeta.ClusterNode{
+			1: {
+				NodeID:          1,
+				Addr:            "127.0.0.1:7001",
+				Status:          controllermeta.NodeStatusAlive,
+				LastHeartbeatAt: time.Unix(1710010001, 0),
+				CapacityWeight:  9,
+			},
+		},
+		Assignments: []controllermeta.SlotAssignment{{
+			SlotID:       1,
+			DesiredPeers: []uint64{1, 2, 3},
+			ConfigEpoch:  9,
+		}},
+		AssignmentsBySlot: map[uint32]controllermeta.SlotAssignment{
+			1: {
+				SlotID:       1,
+				DesiredPeers: []uint64{1, 2, 3},
+				ConfigEpoch:  9,
+			},
+		},
+		Tasks: []controllermeta.ReconcileTask{{
+			SlotID:  1,
+			Kind:    controllermeta.TaskKindRepair,
+			Step:    controllermeta.TaskStepPromote,
+			Status:  controllermeta.TaskStatusRetrying,
+			Attempt: 7,
+		}},
+		TasksBySlot: map[uint32]controllermeta.ReconcileTask{
+			1: {
+				SlotID:  1,
+				Kind:    controllermeta.TaskKindRepair,
+				Step:    controllermeta.TaskStepPromote,
+				Status:  controllermeta.TaskStatusRetrying,
+				Attempt: 7,
+			},
+		},
+		LeaderID:   host.localNode,
+		Generation: 1,
+		Ready:      true,
+		Dirty:      false,
+	})
+
+	state, err := cluster.snapshotPlannerState(context.Background())
+	if err != nil {
+		t.Fatalf("snapshotPlannerState() error = %v", err)
+	}
+	if got := state.Nodes[1].CapacityWeight; got != 9 {
+		t.Fatalf("snapshotPlannerState() node capacity = %d, want 9 from metadata snapshot", got)
+	}
+	if got := state.Assignments[1].ConfigEpoch; got != 9 {
+		t.Fatalf("snapshotPlannerState() assignment config epoch = %d, want 9 from metadata snapshot", got)
+	}
+	if got := state.Tasks[1].Attempt; got != 7 {
+		t.Fatalf("snapshotPlannerState() task attempt = %d, want 7 from metadata snapshot", got)
+	}
+}
+
+func TestSnapshotPlannerStateFallsBackToStoreWhenMetadataSnapshotDirty(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+
+	storeNode := controllermeta.ClusterNode{
+		NodeID:          1,
+		Addr:            "127.0.0.1:7001",
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Unix(1710010100, 0),
+		CapacityWeight:  2,
+	}
+	storeAssignment := controllermeta.SlotAssignment{
+		SlotID:       1,
+		DesiredPeers: []uint64{1, 4},
+		ConfigEpoch:  4,
+	}
+	storeTask := controllermeta.ReconcileTask{
+		SlotID:  1,
+		Kind:    controllermeta.TaskKindBootstrap,
+		Step:    controllermeta.TaskStepAddLearner,
+		Status:  controllermeta.TaskStatusPending,
+		Attempt: 2,
+	}
+	requireNoErr(t, host.meta.UpsertNode(context.Background(), storeNode))
+	requireNoErr(t, host.meta.UpsertAssignment(context.Background(), storeAssignment))
+	requireNoErr(t, host.meta.UpsertTask(context.Background(), storeTask))
+
+	setControllerMetadataSnapshotStateForTest(host, controllerMetadataSnapshot{
+		Nodes: []controllermeta.ClusterNode{{
+			NodeID:          1,
+			Addr:            "127.0.0.1:7001",
+			Status:          controllermeta.NodeStatusAlive,
+			LastHeartbeatAt: time.Unix(1710010101, 0),
+			CapacityWeight:  99,
+		}},
+		NodesByID: map[uint64]controllermeta.ClusterNode{
+			1: {
+				NodeID:          1,
+				Addr:            "127.0.0.1:7001",
+				Status:          controllermeta.NodeStatusAlive,
+				LastHeartbeatAt: time.Unix(1710010101, 0),
+				CapacityWeight:  99,
+			},
+		},
+		Assignments: []controllermeta.SlotAssignment{{
+			SlotID:       1,
+			DesiredPeers: []uint64{9, 9, 9},
+			ConfigEpoch:  99,
+		}},
+		AssignmentsBySlot: map[uint32]controllermeta.SlotAssignment{
+			1: {
+				SlotID:       1,
+				DesiredPeers: []uint64{9, 9, 9},
+				ConfigEpoch:  99,
+			},
+		},
+		Tasks: []controllermeta.ReconcileTask{{
+			SlotID:  1,
+			Kind:    controllermeta.TaskKindRepair,
+			Step:    controllermeta.TaskStepPromote,
+			Status:  controllermeta.TaskStatusRetrying,
+			Attempt: 99,
+		}},
+		TasksBySlot: map[uint32]controllermeta.ReconcileTask{
+			1: {
+				SlotID:  1,
+				Kind:    controllermeta.TaskKindRepair,
+				Step:    controllermeta.TaskStepPromote,
+				Status:  controllermeta.TaskStatusRetrying,
+				Attempt: 99,
+			},
+		},
+		LeaderID:   host.localNode,
+		Generation: 1,
+		Ready:      true,
+		Dirty:      true,
+	})
+
+	state, err := cluster.snapshotPlannerState(context.Background())
+	if err != nil {
+		t.Fatalf("snapshotPlannerState() error = %v", err)
+	}
+	if got := state.Nodes[1].CapacityWeight; got != 2 {
+		t.Fatalf("snapshotPlannerState() node capacity = %d, want 2 from store fallback", got)
+	}
+	if got := state.Assignments[1].ConfigEpoch; got != 4 {
+		t.Fatalf("snapshotPlannerState() assignment config epoch = %d, want 4 from store fallback", got)
+	}
+	if got := state.Tasks[1].Attempt; got != 2 {
+		t.Fatalf("snapshotPlannerState() task attempt = %d, want 2 from store fallback", got)
+	}
+}
+
 func TestControllerTickOnceSkipsPlanningUntilRuntimeWarm(t *testing.T) {
 	cluster, host, _ := newTestLocalControllerCluster(t, true)
 	cluster.cfg.SlotReplicaN = 1
@@ -985,6 +1169,96 @@ func TestGroupAgentSyncAssignmentsFallsBackToLocalControllerMetaWhenControllerRe
 	assignments := cache.Snapshot()
 	if len(assignments) != 1 || assignments[0].SlotID != assignment.SlotID {
 		t.Fatalf("cached assignments = %v", assignments)
+	}
+}
+
+func TestSlotAgentListControllerNodesUsesLocalMetadataSnapshot(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	requireNoErr(t, host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          1,
+		Addr:            "127.0.0.1:7001",
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Unix(1710010200, 0),
+		CapacityWeight:  1,
+	}))
+	setControllerMetadataSnapshotStateForTest(host, controllerMetadataSnapshot{
+		Nodes: []controllermeta.ClusterNode{{
+			NodeID:          1,
+			Addr:            "127.0.0.1:7001",
+			Status:          controllermeta.NodeStatusAlive,
+			LastHeartbeatAt: time.Unix(1710010201, 0),
+			CapacityWeight:  8,
+		}},
+		NodesByID: map[uint64]controllermeta.ClusterNode{
+			1: {
+				NodeID:          1,
+				Addr:            "127.0.0.1:7001",
+				Status:          controllermeta.NodeStatusAlive,
+				LastHeartbeatAt: time.Unix(1710010201, 0),
+				CapacityWeight:  8,
+			},
+		},
+		LeaderID:   host.localNode,
+		Generation: 1,
+		Ready:      true,
+		Dirty:      false,
+	})
+
+	agent := &slotAgent{
+		cluster: cluster,
+		client:  fakeControllerClient{listNodesErr: errors.New("should not call controller client")},
+	}
+	nodes, err := agent.listControllerNodes(context.Background())
+	if err != nil {
+		t.Fatalf("listControllerNodes() error = %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].CapacityWeight != 8 {
+		t.Fatalf("listControllerNodes() = %#v, want metadata snapshot node with capacity 8", nodes)
+	}
+}
+
+func TestSlotAgentGetTaskUsesLocalMetadataSnapshot(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	requireNoErr(t, host.meta.UpsertTask(context.Background(), controllermeta.ReconcileTask{
+		SlotID:  1,
+		Kind:    controllermeta.TaskKindBootstrap,
+		Step:    controllermeta.TaskStepAddLearner,
+		Status:  controllermeta.TaskStatusPending,
+		Attempt: 1,
+	}))
+	setControllerMetadataSnapshotStateForTest(host, controllerMetadataSnapshot{
+		Tasks: []controllermeta.ReconcileTask{{
+			SlotID:  1,
+			Kind:    controllermeta.TaskKindRepair,
+			Step:    controllermeta.TaskStepPromote,
+			Status:  controllermeta.TaskStatusRetrying,
+			Attempt: 6,
+		}},
+		TasksBySlot: map[uint32]controllermeta.ReconcileTask{
+			1: {
+				SlotID:  1,
+				Kind:    controllermeta.TaskKindRepair,
+				Step:    controllermeta.TaskStepPromote,
+				Status:  controllermeta.TaskStatusRetrying,
+				Attempt: 6,
+			},
+		},
+		LeaderID:   host.localNode,
+		Generation: 1,
+		Ready:      true,
+		Dirty:      false,
+	})
+
+	agent := &slotAgent{
+		cluster: cluster,
+		client:  fakeControllerClient{getTaskErr: errors.New("should not call controller client")},
+	}
+	task, err := agent.getTask(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("getTask() error = %v", err)
+	}
+	if task.Attempt != 6 || task.Kind != controllermeta.TaskKindRepair {
+		t.Fatalf("getTask() = %+v, want metadata snapshot task attempt 6 repair", task)
 	}
 }
 
@@ -2624,4 +2898,15 @@ func newTestClusterWithController(store *controllermeta.Store, timeout time.Dura
 			controllerClient:            client,
 		},
 	}
+}
+
+func setControllerMetadataSnapshotStateForTest(host *controllerHost, snapshot controllerMetadataSnapshot) {
+	if host == nil {
+		return
+	}
+	host.metadataSnapshotState.mu.Lock()
+	defer host.metadataSnapshotState.mu.Unlock()
+	host.metadataSnapshotState.snapshot = snapshot
+	host.metadataSnapshotState.reloadPending = false
+	host.metadataSnapshotState.reloadScheduled = false
 }

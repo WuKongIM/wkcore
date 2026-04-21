@@ -119,6 +119,11 @@ func (a *slotAgent) listControllerNodes(ctx context.Context) ([]controllermeta.C
 	if a == nil || a.client == nil {
 		return nil, ErrNotStarted
 	}
+	if a.cluster != nil && a.cluster.controllerHost != nil && a.cluster.controllerHost.IsLeader(a.cluster.cfg.NodeID) {
+		if snapshot, ok := a.cluster.controllerHost.metadataSnapshot(); ok {
+			return snapshot.Nodes, nil
+		}
+	}
 	var nodes []controllermeta.ClusterNode
 	err := a.retryControllerCall(ctx, func(attemptCtx context.Context) error {
 		var err error
@@ -151,6 +156,15 @@ func (a *slotAgent) listRuntimeViews(ctx context.Context) ([]controllermeta.Slot
 func (a *slotAgent) getTask(ctx context.Context, slotID uint32) (controllermeta.ReconcileTask, error) {
 	if a == nil || a.client == nil {
 		return controllermeta.ReconcileTask{}, ErrNotStarted
+	}
+	if a.cluster != nil && a.cluster.controllerHost != nil && a.cluster.controllerHost.IsLeader(a.cluster.cfg.NodeID) {
+		if snapshot, ok := a.cluster.controllerHost.metadataSnapshot(); ok {
+			task, exists := snapshot.TasksBySlot[slotID]
+			if !exists {
+				return controllermeta.ReconcileTask{}, controllermeta.ErrNotFound
+			}
+			return task, nil
+		}
 	}
 	if a.cluster != nil && a.cluster.controllerMeta != nil && a.cluster.isLocalControllerLeader() {
 		return a.cluster.controllerMeta.GetTask(ctx, slotID)
