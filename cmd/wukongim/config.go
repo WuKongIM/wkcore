@@ -326,6 +326,18 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 	if err != nil {
 		return app.Config{}, err
 	}
+	managerAuthOn, err := parseBool(v, "WK_MANAGER_AUTH_ON")
+	if err != nil {
+		return app.Config{}, err
+	}
+	managerJWTExpire, err := parseDuration(v, "WK_MANAGER_JWT_EXPIRE")
+	if err != nil {
+		return app.Config{}, err
+	}
+	managerUsers, err := parseJSONValue[[]app.ManagerUserConfig](v, "WK_MANAGER_USERS")
+	if err != nil {
+		return app.Config{}, err
+	}
 
 	cfg := app.Config{
 		Node: app.NodeConfig{
@@ -389,6 +401,14 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 			ExternalTCPAddr: stringValue(v, "WK_EXTERNAL_TCPADDR"),
 			ExternalWSAddr:  stringValue(v, "WK_EXTERNAL_WSADDR"),
 			ExternalWSSAddr: stringValue(v, "WK_EXTERNAL_WSSADDR"),
+		},
+		Manager: app.ManagerConfig{
+			ListenAddr: stringValue(v, "WK_MANAGER_LISTEN_ADDR"),
+			AuthOn:     managerAuthOn,
+			JWTSecret:  stringValue(v, "WK_MANAGER_JWT_SECRET"),
+			JWTIssuer:  stringValue(v, "WK_MANAGER_JWT_ISSUER"),
+			JWTExpire:  managerJWTExpire,
+			Users:      managerUsers,
 		},
 		Gateway: app.GatewayConfig{
 			TokenAuthOn: tokenAuthOn,

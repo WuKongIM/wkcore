@@ -7,11 +7,13 @@ import (
 
 	accessapi "github.com/WuKongIM/WuKongIM/internal/access/api"
 	accessgateway "github.com/WuKongIM/WuKongIM/internal/access/gateway"
+	accessmanager "github.com/WuKongIM/WuKongIM/internal/access/manager"
 	accessnode "github.com/WuKongIM/WuKongIM/internal/access/node"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	conversationusecase "github.com/WuKongIM/WuKongIM/internal/usecase/conversation"
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
+	managementusecase "github.com/WuKongIM/WuKongIM/internal/usecase/management"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
@@ -46,8 +48,10 @@ type App struct {
 	deliveryRuntime       *deliveryruntime.Manager
 	deliveryAcks          *deliveryruntime.AckIndex
 	messageApp            *message.App
+	managementApp         *managementusecase.App
 	conversationProjector conversationusecase.Projector
 	api                   *accessapi.Server
+	manager               *accessmanager.Server
 	nodeClient            *accessnode.Client
 	nodeAccess            *accessnode.Adapter
 	presenceWorker        *presenceWorker
@@ -69,6 +73,7 @@ type App struct {
 	presenceOn     atomic.Bool
 	conversationOn atomic.Bool
 	apiOn          atomic.Bool
+	managerOn      atomic.Bool
 	gatewayOn      atomic.Bool
 
 	startClusterFn               func() error
@@ -76,8 +81,10 @@ type App struct {
 	startPresenceFn              func() error
 	startConversationProjectorFn func() error
 	startAPIFn                   func() error
+	startManagerFn               func() error
 	startGatewayFn               func() error
 	stopAPIFn                    func() error
+	stopManagerFn                func() error
 	stopGatewayFn                func() error
 	stopConversationProjectorFn  func() error
 	stopPresenceFn               func() error
@@ -174,6 +181,13 @@ func (a *App) API() *accessapi.Server {
 		return nil
 	}
 	return a.api
+}
+
+func (a *App) Manager() *accessmanager.Server {
+	if a == nil {
+		return nil
+	}
+	return a.manager
 }
 
 func (a *App) Gateway() *gateway.Gateway {

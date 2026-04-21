@@ -203,6 +203,58 @@ func TestLoadConfigParsesExternalRouteAddresses(t *testing.T) {
 	require.Equal(t, "wss://im.example.com:15300", cfg.API.ExternalWSSAddr)
 }
 
+func TestLoadConfigParsesManagerSettings(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_CLUSTER_SLOT_COUNT=1",
+		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
+		`WK_GATEWAY_LISTENERS=[{"name":"tcp-wkproto","network":"tcp","address":"127.0.0.1:5100","transport":"stdnet","protocol":"wkproto"}]`,
+		"WK_MANAGER_LISTEN_ADDR=127.0.0.1:5301",
+		"WK_MANAGER_AUTH_ON=true",
+		"WK_MANAGER_JWT_SECRET=test-secret",
+		"WK_MANAGER_JWT_ISSUER=wukongim-manager",
+		"WK_MANAGER_JWT_EXPIRE=24h",
+		`WK_MANAGER_USERS=[{"username":"admin","password":"secret","permissions":[{"resource":"cluster.node","actions":["r"]}]}]`,
+	)
+
+	cfg, err := loadConfig(configPath)
+	require.NoError(t, err)
+	require.Equal(t, "127.0.0.1:5301", cfg.Manager.ListenAddr)
+	require.True(t, cfg.Manager.AuthOn)
+	require.Equal(t, "test-secret", cfg.Manager.JWTSecret)
+	require.Equal(t, "wukongim-manager", cfg.Manager.JWTIssuer)
+	require.Equal(t, 24*time.Hour, cfg.Manager.JWTExpire)
+	require.Len(t, cfg.Manager.Users, 1)
+	require.Equal(t, "admin", cfg.Manager.Users[0].Username)
+	require.Len(t, cfg.Manager.Users[0].Permissions, 1)
+	require.Equal(t, "cluster.node", cfg.Manager.Users[0].Permissions[0].Resource)
+	require.Equal(t, []string{"r"}, cfg.Manager.Users[0].Permissions[0].Actions)
+}
+
+func TestLoadConfigLeavesManagerDisabledWhenListenAddrIsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeConf(t, dir, "wukongim.conf",
+		"WK_NODE_ID=1",
+		"WK_NODE_DATA_DIR="+filepath.Join(dir, "node-1"),
+		"WK_CLUSTER_LISTEN_ADDR=127.0.0.1:7000",
+		"WK_CLUSTER_SLOT_COUNT=1",
+		`WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]`,
+		`WK_GATEWAY_LISTENERS=[{"name":"tcp-wkproto","network":"tcp","address":"127.0.0.1:5100","transport":"stdnet","protocol":"wkproto"}]`,
+		"WK_MANAGER_AUTH_ON=true",
+		"WK_MANAGER_JWT_SECRET=test-secret",
+		"WK_MANAGER_JWT_ISSUER=wukongim-manager",
+		"WK_MANAGER_JWT_EXPIRE=24h",
+		`WK_MANAGER_USERS=[{"username":"admin","password":"secret","permissions":[{"resource":"cluster.node","actions":["r"]}]}]`,
+	)
+
+	cfg, err := loadConfig(configPath)
+	require.NoError(t, err)
+	require.Equal(t, "", cfg.Manager.ListenAddr)
+}
+
 func TestLoadConfigParsesSendPathTuning(t *testing.T) {
 	dir := t.TempDir()
 	basePath := writeConf(t, dir, "wukongim.conf",

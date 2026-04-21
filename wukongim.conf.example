@@ -43,6 +43,14 @@ WK_CLUSTER_LEADER_TRANSFER_RETRY_BUDGET=300ms
 WK_CLUSTER_NODES=[{"id":1,"addr":"127.0.0.1:7000"}]
 
 WK_API_LISTEN_ADDR=0.0.0.0:5001
+# Manager API uses a dedicated HTTP port for backend administration only.
+WK_MANAGER_LISTEN_ADDR=0.0.0.0:5301
+WK_MANAGER_AUTH_ON=true
+# Replace the manager JWT secret and default password before production use.
+WK_MANAGER_JWT_SECRET=change-me
+WK_MANAGER_JWT_ISSUER=wukongim-manager
+WK_MANAGER_JWT_EXPIRE=24h
+WK_MANAGER_USERS=[{"username":"admin","password":"change-me","permissions":[{"resource":"cluster.node","actions":["r"]}]}]
 # Optional: published by /route and /route/batch only; does not change listener binds.
 # WK_EXTERNAL_TCPADDR=im.example.com:5100
 # WK_EXTERNAL_WSADDR=ws://im.example.com:5200

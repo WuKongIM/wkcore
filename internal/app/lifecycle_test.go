@@ -55,6 +55,20 @@ func TestNewBuildsOptionalAPIServerWhenConfigured(t *testing.T) {
 	require.NotNil(t, app.API())
 }
 
+func TestNewBuildsOptionalManagerServerWhenConfigured(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Manager = validManagerConfigForTest()
+	cfg.Manager.ListenAddr = "127.0.0.1:0"
+
+	app, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, app.Stop())
+	})
+
+	require.NotNil(t, app.Manager())
+}
+
 func TestNewBuildsRootLogger(t *testing.T) {
 	cfg := testConfig(t)
 
@@ -215,6 +229,7 @@ func TestAccessorsExposeBuiltRuntime(t *testing.T) {
 	require.Same(t, app.gatewayHandler, app.GatewayHandler())
 	require.Same(t, app.gateway, app.Gateway())
 	require.Same(t, app.api, app.API())
+	require.Same(t, app.manager, app.Manager())
 }
 
 func TestNewClosesOpenedStoresWhenGatewayBuildFails(t *testing.T) {
@@ -284,6 +299,39 @@ func TestStartStartsAPIAfterGatewayWhenEnabled(t *testing.T) {
 
 	require.NoError(t, app.Start())
 	require.Equal(t, []string{"cluster.start", "meta.start", "gateway.start", "api.start"}, calls)
+}
+
+func TestStartStartsManagerAfterAPIWhenEnabled(t *testing.T) {
+	var calls []string
+
+	app := &App{
+		cluster:         &raftcluster.Cluster{},
+		channelMetaSync: &channelMetaSync{},
+		gateway:         &gateway.Gateway{},
+		startClusterFn: func() error {
+			calls = append(calls, "cluster.start")
+			return nil
+		},
+		startChannelMetaSyncFn: func() error {
+			calls = append(calls, "meta.start")
+			return nil
+		},
+		startGatewayFn: func() error {
+			calls = append(calls, "gateway.start")
+			return nil
+		},
+		startAPIFn: func() error {
+			calls = append(calls, "api.start")
+			return nil
+		},
+		startManagerFn: func() error {
+			calls = append(calls, "manager.start")
+			return nil
+		},
+	}
+
+	require.NoError(t, app.Start())
+	require.Equal(t, []string{"cluster.start", "meta.start", "gateway.start", "api.start", "manager.start"}, calls)
 }
 
 func TestStartStartsChannelMetaSyncAfterClusterBeforeGateway(t *testing.T) {
@@ -396,6 +444,57 @@ func TestStartRollsBackClusterWhenGatewayStartFails(t *testing.T) {
 	err := app.Start()
 	require.ErrorIs(t, err, startErr)
 	require.Equal(t, []string{"cluster.start", "gateway.start", "cluster.stop"}, calls)
+	require.False(t, app.started.Load())
+}
+
+func TestStartRollsBackAPIAndClusterWhenManagerStartFails(t *testing.T) {
+	var calls []string
+	startErr := errors.New("manager start failed")
+
+	app := &App{
+		cluster:         &raftcluster.Cluster{},
+		channelMetaSync: &channelMetaSync{},
+		gateway:         &gateway.Gateway{},
+		startClusterFn: func() error {
+			calls = append(calls, "cluster.start")
+			return nil
+		},
+		startChannelMetaSyncFn: func() error {
+			calls = append(calls, "meta.start")
+			return nil
+		},
+		startGatewayFn: func() error {
+			calls = append(calls, "gateway.start")
+			return nil
+		},
+		startAPIFn: func() error {
+			calls = append(calls, "api.start")
+			return nil
+		},
+		startManagerFn: func() error {
+			calls = append(calls, "manager.start")
+			return startErr
+		},
+		stopAPIFn: func() error {
+			calls = append(calls, "api.stop")
+			return nil
+		},
+		stopGatewayFn: func() error {
+			calls = append(calls, "gateway.stop")
+			return nil
+		},
+		stopChannelMetaSyncFn: func() error {
+			calls = append(calls, "meta.stop")
+			return nil
+		},
+		stopClusterFn: func() {
+			calls = append(calls, "cluster.stop")
+		},
+	}
+
+	err := app.Start()
+	require.ErrorIs(t, err, startErr)
+	require.Equal(t, []string{"cluster.start", "meta.start", "gateway.start", "api.start", "manager.start", "api.stop", "gateway.stop", "meta.stop", "cluster.stop"}, calls)
 	require.False(t, app.started.Load())
 }
 
@@ -597,6 +696,53 @@ func TestStopStopsAPIBeforeGatewayAndClusterClose(t *testing.T) {
 	require.Equal(t, []string{"api.stop", "gateway.stop", "meta.stop", "cluster.stop", "channellog.close", "raft.close", "metadb.close"}, calls)
 }
 
+func TestStopStopsManagerBeforeAPIGatewayAndClusterClose(t *testing.T) {
+	var calls []string
+
+	app := &App{
+		started:       atomicBool(true),
+		clusterOn:     atomicBool(true),
+		managerOn:     atomicBool(true),
+		apiOn:         atomicBool(true),
+		gatewayOn:     atomicBool(true),
+		channelMetaOn: atomicBool(true),
+		stopManagerFn: func() error {
+			calls = append(calls, "manager.stop")
+			return nil
+		},
+		stopAPIFn: func() error {
+			calls = append(calls, "api.stop")
+			return nil
+		},
+		stopGatewayFn: func() error {
+			calls = append(calls, "gateway.stop")
+			return nil
+		},
+		stopChannelMetaSyncFn: func() error {
+			calls = append(calls, "meta.stop")
+			return nil
+		},
+		stopClusterFn: func() {
+			calls = append(calls, "cluster.stop")
+		},
+		closeChannelLogDBFn: func() error {
+			calls = append(calls, "channellog.close")
+			return nil
+		},
+		closeRaftDBFn: func() error {
+			calls = append(calls, "raft.close")
+			return nil
+		},
+		closeWKDBFn: func() error {
+			calls = append(calls, "metadb.close")
+			return nil
+		},
+	}
+
+	require.NoError(t, app.Stop())
+	require.Equal(t, []string{"manager.stop", "api.stop", "gateway.stop", "meta.stop", "cluster.stop", "channellog.close", "raft.close", "metadb.close"}, calls)
+}
+
 func TestStopIsIdempotent(t *testing.T) {
 	var calls []string
 
@@ -772,6 +918,24 @@ func testConfig(t *testing.T) Config {
 	cfg.Cluster.Nodes = []NodeConfigRef{{ID: cfg.Node.ID, Addr: clusterAddr}}
 	cfg.Gateway.Listeners[0].Address = "127.0.0.1:0"
 	return cfg
+}
+
+func validManagerConfigForTest() ManagerConfig {
+	return ManagerConfig{
+		ListenAddr: "127.0.0.1:5301",
+		AuthOn:     true,
+		JWTSecret:  "test-secret",
+		JWTIssuer:  "wukongim-manager",
+		JWTExpire:  time.Hour,
+		Users: []ManagerUserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []ManagerPermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"r"},
+			}},
+		}},
+	}
 }
 
 func openWKDBForTest(path string) (interface{ Close() error }, error) {
