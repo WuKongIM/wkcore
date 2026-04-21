@@ -10,6 +10,7 @@ import (
 
 	accessapi "github.com/WuKongIM/WuKongIM/internal/access/api"
 	accessgateway "github.com/WuKongIM/WuKongIM/internal/access/gateway"
+	accessmanager "github.com/WuKongIM/WuKongIM/internal/access/manager"
 	accessnode "github.com/WuKongIM/WuKongIM/internal/access/node"
 	"github.com/WuKongIM/WuKongIM/internal/gateway"
 	applog "github.com/WuKongIM/WuKongIM/internal/log"
@@ -18,6 +19,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	conversationusecase "github.com/WuKongIM/WuKongIM/internal/usecase/conversation"
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
+	managementusecase "github.com/WuKongIM/WuKongIM/internal/usecase/management"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	userusecase "github.com/WuKongIM/WuKongIM/internal/usecase/user"
@@ -300,6 +302,25 @@ func build(cfg Config) (_ *App, err error) {
 		Online:  onlineRegistry,
 		Logger:  app.logger.Named("user"),
 	})
+	if cfg.Manager.ListenAddr != "" {
+		app.managementApp = managementusecase.New(managementusecase.Options{
+			LocalNodeID:       cfg.Node.ID,
+			ControllerPeerIDs: controllerPeerIDs(cfg.Cluster.DerivedControllerNodes()),
+			Cluster:           app.cluster,
+		})
+		app.manager = accessmanager.New(accessmanager.Options{
+			ListenAddr: cfg.Manager.ListenAddr,
+			Auth: accessmanager.AuthConfig{
+				On:        cfg.Manager.AuthOn,
+				JWTSecret: cfg.Manager.JWTSecret,
+				JWTIssuer: cfg.Manager.JWTIssuer,
+				JWTExpire: cfg.Manager.JWTExpire,
+				Users:     managerUserConfigs(cfg.Manager.Users),
+			},
+			Management: app.managementApp,
+			Logger:     app.logger.Named("access.manager"),
+		})
+	}
 	if cfg.API.ListenAddr != "" {
 		legacyRouteExternal, legacyRouteIntranet := legacyRouteAddresses(cfg.API, cfg.Gateway.Listeners)
 		app.api = accessapi.New(accessapi.Options{
@@ -379,6 +400,40 @@ func effectiveDataPlaneMaxFetchInflight(clusterPoolSize, configured int) int {
 		return configured
 	}
 	return dataPlaneMaxFetchInflightPeer(clusterPoolSize)
+}
+
+func controllerPeerIDs(nodes []NodeConfigRef) []uint64 {
+	peerIDs := make([]uint64, 0, len(nodes))
+	for _, node := range nodes {
+		if node.ID == 0 {
+			continue
+		}
+		peerIDs = append(peerIDs, node.ID)
+	}
+	return peerIDs
+}
+
+func managerUserConfigs(users []ManagerUserConfig) []accessmanager.UserConfig {
+	out := make([]accessmanager.UserConfig, 0, len(users))
+	for _, user := range users {
+		out = append(out, accessmanager.UserConfig{
+			Username:    user.Username,
+			Password:    user.Password,
+			Permissions: managerPermissionConfigs(user.Permissions),
+		})
+	}
+	return out
+}
+
+func managerPermissionConfigs(permissions []ManagerPermissionConfig) []accessmanager.PermissionConfig {
+	out := make([]accessmanager.PermissionConfig, 0, len(permissions))
+	for _, permission := range permissions {
+		out = append(out, accessmanager.PermissionConfig{
+			Resource: permission.Resource,
+			Actions:  append([]string(nil), permission.Actions...),
+		})
+	}
+	return out
 }
 
 func legacyRouteAddresses(apiCfg APIConfig, listeners []gateway.ListenerOptions) (accessapi.LegacyRouteAddresses, accessapi.LegacyRouteAddresses) {

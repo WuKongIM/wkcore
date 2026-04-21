@@ -81,6 +81,18 @@ func (a *App) Start() error {
 	if a.api != nil || a.startAPIFn != nil {
 		a.apiOn.Store(true)
 	}
+	if err := a.startManager(); err != nil {
+		_ = a.stopAPI()
+		_ = a.stopGateway()
+		_ = a.stopPresence()
+		_ = a.stopChannelMetaSync()
+		_ = a.stopClusterWithError()
+		a.started.Store(false)
+		return err
+	}
+	if a.manager != nil || a.startManagerFn != nil {
+		a.managerOn.Store(true)
+	}
 	return nil
 }
 
@@ -96,6 +108,7 @@ func (a *App) Stop() error {
 	a.stopOnce.Do(func() {
 		a.started.Store(false)
 		err = errors.Join(
+			a.stopManager(),
 			a.stopAPI(),
 			a.stopGateway(),
 			a.stopConversationProjector(),
@@ -152,6 +165,16 @@ func (a *App) startAPI() error {
 		return nil
 	}
 	return a.api.Start()
+}
+
+func (a *App) startManager() error {
+	if a.startManagerFn != nil {
+		return a.startManagerFn()
+	}
+	if a.manager == nil {
+		return nil
+	}
+	return a.manager.Start()
 }
 
 func (a *App) startPresence() error {
@@ -241,6 +264,21 @@ func (a *App) stopAPI() error {
 	ctx, cancel := context.WithTimeout(context.Background(), apiStopTimeout)
 	defer cancel()
 	return a.api.Stop(ctx)
+}
+
+func (a *App) stopManager() error {
+	if !a.managerOn.Swap(false) {
+		return nil
+	}
+	if a.stopManagerFn != nil {
+		return a.stopManagerFn()
+	}
+	if a.manager == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), apiStopTimeout)
+	defer cancel()
+	return a.manager.Stop(ctx)
 }
 
 func (a *App) stopCluster() {

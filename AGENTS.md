@@ -48,6 +48,7 @@ internal/
   access/                接入层，只做入口适配
     api/                 HTTP API 入口与路由适配
     gateway/             网关 frame -> usecase 的适配
+    manager/             后台管理 HTTP API 入口、JWT 与权限适配
     node/                节点间 RPC / 转发入口适配
   gateway/               通用网关基础设施
     binding/             内置 handler 绑定与注册
@@ -61,6 +62,7 @@ internal/
   usecase/               可复用业务用例，不依赖具体入口协议
     conversation/        会话投影、同步等用例
     delivery/            投递、离线、订阅等用例
+    management/          后台管理聚合查询用例
     message/             消息发送、回执、重试等用例
     presence/            在线状态登记与权威查询用例
     user/                用户与 token 相关用例

@@ -390,6 +390,8 @@ func (f fakeObservabilityCluster) ListObservedRuntimeViews(context.Context) ([]c
 	return append([]controllermeta.SlotRuntimeView(nil), f.views...), nil
 }
 
+func (f fakeObservabilityCluster) ControllerLeaderID() uint64 { return 0 }
+
 func (f fakeObservabilityCluster) ListTasks(context.Context) ([]controllermeta.ReconcileTask, error) {
 	return append([]controllermeta.ReconcileTask(nil), f.tasks...), nil
 }
