@@ -1089,6 +1089,26 @@ func (c *Cluster) ListTasks(ctx context.Context) ([]controllermeta.ReconcileTask
 	return nil, ErrNotStarted
 }
 
+// ListTasksStrict returns the controller leader's task snapshot without local fallback.
+func (c *Cluster) ListTasksStrict(ctx context.Context) ([]controllermeta.ReconcileTask, error) {
+	if c != nil && c.controllerMeta != nil && c.isLocalControllerLeader() {
+		return c.controllerMeta.ListTasks(ctx)
+	}
+	if c != nil && c.controllerClient != nil {
+		var tasks []controllermeta.ReconcileTask
+		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
+			var err error
+			tasks, err = c.controllerClient.ListTasks(attemptCtx)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+		return tasks, nil
+	}
+	return nil, ErrNotStarted
+}
+
 func (c *Cluster) ListSlotAssignments(ctx context.Context) ([]controllermeta.SlotAssignment, error) {
 	if c.controllerClient != nil {
 		var assignments []controllermeta.SlotAssignment

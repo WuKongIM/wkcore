@@ -87,6 +87,26 @@ func (c *Cluster) GetReconcileTask(ctx context.Context, slotID uint32) (controll
 	return controllermeta.ReconcileTask{}, ErrNotStarted
 }
 
+// GetReconcileTaskStrict returns the controller leader's task detail without local fallback.
+func (c *Cluster) GetReconcileTaskStrict(ctx context.Context, slotID uint32) (controllermeta.ReconcileTask, error) {
+	if c != nil && c.controllerMeta != nil && c.isLocalControllerLeader() {
+		return c.controllerMeta.GetTask(ctx, slotID)
+	}
+	if c != nil && c.controllerClient != nil {
+		var task controllermeta.ReconcileTask
+		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
+			var err error
+			task, err = c.controllerClient.GetTask(attemptCtx, slotID)
+			return err
+		})
+		if err != nil {
+			return controllermeta.ReconcileTask{}, err
+		}
+		return task, nil
+	}
+	return controllermeta.ReconcileTask{}, ErrNotStarted
+}
+
 func (c *Cluster) ForceReconcile(ctx context.Context, slotID uint32) error {
 	if c.controllerClient != nil || c.controller != nil {
 		return c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
