@@ -1,0 +1,179 @@
+package manager
+
+import (
+	"context"
+	"errors"
+	"net"
+	"net/http"
+	"sync"
+	"time"
+
+	managementusecase "github.com/WuKongIM/WuKongIM/internal/usecase/management"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
+	"github.com/gin-gonic/gin"
+)
+
+// ErrListenAddrRequired reports that the manager listen address is missing.
+var ErrListenAddrRequired = errors.New("access/manager: listen address required")
+
+// Management exposes the manager read usecases needed by HTTP handlers.
+type Management interface {
+	// ListNodes returns manager-facing node DTOs.
+	ListNodes(ctx context.Context) ([]managementusecase.Node, error)
+}
+
+// PermissionConfig binds a resource to allowed actions.
+type PermissionConfig struct {
+	// Resource is the protected manager resource name.
+	Resource string
+	// Actions contains the allowed action codes.
+	Actions []string
+}
+
+// UserConfig describes one static manager login user.
+type UserConfig struct {
+	// Username is the static login identity.
+	Username string
+	// Password is the static login secret.
+	Password string
+	// Permissions lists the resource permissions granted to the user.
+	Permissions []PermissionConfig
+}
+
+// AuthConfig configures manager JWT authentication and permissions.
+type AuthConfig struct {
+	// On enables JWT login and permission enforcement.
+	On bool
+	// JWTSecret is the HMAC signing secret for manager tokens.
+	JWTSecret string
+	// JWTIssuer is the issuer claim used in manager tokens.
+	JWTIssuer string
+	// JWTExpire is the token lifetime used for new manager tokens.
+	JWTExpire time.Duration
+	// Users contains the configured static manager users.
+	Users []UserConfig
+}
+
+// Options configures the manager HTTP server.
+type Options struct {
+	// ListenAddr is the manager server listen address.
+	ListenAddr string
+	// Auth configures manager JWT login and permissions.
+	Auth AuthConfig
+	// Management provides the manager read usecases.
+	Management Management
+	// Logger is the logger used by the manager server.
+	Logger wklog.Logger
+}
+
+// Server serves the manager HTTP API.
+type Server struct {
+	mu         sync.RWMutex
+	engine     *gin.Engine
+	httpServer *http.Server
+	listener   net.Listener
+	listenAddr string
+	addr       string
+	management Management
+	auth       authState
+	logger     wklog.Logger
+	started    bool
+}
+
+// New constructs a manager HTTP server.
+func New(opts Options) *Server {
+	if gin.Mode() != gin.ReleaseMode {
+		gin.SetMode(gin.ReleaseMode)
+	}
+	if opts.Logger == nil {
+		opts.Logger = wklog.NewNop()
+	}
+	engine := gin.New()
+	engine.Use(openCORSMiddleware())
+	srv := &Server{
+		engine:     engine,
+		listenAddr: opts.ListenAddr,
+		management: opts.Management,
+		auth:       newAuthState(opts.Auth),
+		logger:     opts.Logger,
+	}
+	srv.registerRoutes()
+	return srv
+}
+
+// Engine returns the underlying gin engine.
+func (s *Server) Engine() *gin.Engine {
+	if s == nil {
+		return nil
+	}
+	return s.engine
+}
+
+// Addr returns the resolved manager listen address after Start.
+func (s *Server) Addr() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.addr
+}
+
+// Start begins serving the manager HTTP API.
+func (s *Server) Start() error {
+	if s == nil {
+		return nil
+	}
+
+	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		return nil
+	}
+	listenAddr := s.listenAddr
+	engine := s.engine
+	s.mu.Unlock()
+
+	if listenAddr == "" {
+		return ErrListenAddrRequired
+	}
+
+	ln, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return err
+	}
+
+	httpServer := &http.Server{Handler: engine}
+
+	s.mu.Lock()
+	s.listener = ln
+	s.httpServer = httpServer
+	s.addr = ln.Addr().String()
+	s.started = true
+	s.mu.Unlock()
+
+	go func() {
+		_ = httpServer.Serve(ln)
+	}()
+
+	return nil
+}
+
+// Stop gracefully shuts the manager HTTP server down.
+func (s *Server) Stop(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+
+	s.mu.Lock()
+	httpServer := s.httpServer
+	s.httpServer = nil
+	s.listener = nil
+	s.started = false
+	s.mu.Unlock()
+
+	if httpServer == nil {
+		return nil
+	}
+	return httpServer.Shutdown(ctx)
+}
