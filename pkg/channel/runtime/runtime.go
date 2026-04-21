@@ -41,6 +41,8 @@ type runtime struct {
 	snapshotThrottle       snapshotThrottle
 	requestID              atomic.Uint64
 	sendCoordActive        atomic.Int32
+	laneRetryMu            sync.Mutex
+	laneRetry              map[PeerLaneKey]*laneRetryState
 	replicationRetryMu     sync.Mutex
 	replicationRetry       map[core.ChannelKey]map[core.NodeID]*replicationRetryState
 	backpressureRetry      map[core.NodeID]*backpressureRetryState
@@ -101,6 +103,7 @@ func New(cfg Config) (Runtime, error) {
 		leaderLanes:            newLaneDirectory(),
 		peerRequests:           newPeerRequestState(),
 		snapshotThrottle:       newSnapshotThrottle(cfg.Limits.MaxRecoveryBytesPerSecond, time.Sleep),
+		laneRetry:              make(map[PeerLaneKey]*laneRetryState),
 		replicationRetry:       make(map[core.ChannelKey]map[core.NodeID]*replicationRetryState),
 		backpressureRetry:      make(map[core.NodeID]*backpressureRetryState),
 		syncDeferredPeerDrains: make(map[core.NodeID]struct{}),
@@ -551,6 +554,7 @@ func (r *runtime) Close() error {
 
 	r.stopTombstoneCleanup()
 	stopTimers(r.clearAllReplicationRetries())
+	stopTimers(r.clearAllLaneRetries())
 	stopTimers(r.clearAllBackpressureRetries())
 	r.peerRequests.clearAll()
 	r.snapshots.clear()

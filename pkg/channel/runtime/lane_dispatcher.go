@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"sync"
+	"time"
 
 	core "github.com/WuKongIM/WuKongIM/pkg/channel"
 )
@@ -21,6 +22,11 @@ type laneDispatchQueue struct {
 	queued     map[laneDispatchWorkKey]struct{}
 	processing map[laneDispatchWorkKey]struct{}
 	dirty      map[laneDispatchWorkKey]struct{}
+}
+
+type laneRetryState struct {
+	timer        *time.Timer
+	timerVersion uint64
 }
 
 // newLaneDispatchQueue constructs an empty lane dispatch queue.
@@ -106,6 +112,7 @@ func (r *runtime) scheduleLaneDispatch(peer core.NodeID, laneID uint16) {
 	if r.isClosed() {
 		return
 	}
+	r.clearLaneRetry(peer, laneID)
 	r.laneDispatcher.schedule(laneDispatchWorkKey{peer: peer, lane: laneID})
 	r.startLaneDispatcherWorker()
 }
@@ -173,9 +180,84 @@ func (r *runtime) dispatchLanePoll(key laneDispatchWorkKey) {
 		return
 	}
 	manager.SendFailed(key.lane)
-	if retryKey != "" {
-		r.scheduleFollowerReplication(retryKey, key.peer)
+	r.scheduleLaneRetry(key.peer, key.lane)
+}
+
+func (r *runtime) scheduleLaneRetry(peer core.NodeID, laneID uint16) {
+	if r.isClosed() {
+		return
 	}
+
+	key := PeerLaneKey{Peer: peer, LaneID: laneID}
+	r.laneRetryMu.Lock()
+	defer r.laneRetryMu.Unlock()
+
+	state := r.laneRetryStateLocked(key)
+	if state.timer != nil {
+		return
+	}
+	state.timerVersion++
+	version := state.timerVersion
+	state.timer = time.AfterFunc(r.cfg.FollowerReplicationRetryInterval, func() {
+		r.fireLaneRetry(key, version)
+	})
+}
+
+func (r *runtime) fireLaneRetry(key PeerLaneKey, version uint64) {
+	if r.isClosed() {
+		return
+	}
+
+	r.laneRetryMu.Lock()
+	state, ok := r.laneRetry[key]
+	if !ok || state.timerVersion != version {
+		r.laneRetryMu.Unlock()
+		return
+	}
+	state.timer = nil
+	delete(r.laneRetry, key)
+	r.laneRetryMu.Unlock()
+
+	r.scheduleLaneDispatch(key.Peer, key.LaneID)
+}
+
+func (r *runtime) laneRetryStateLocked(key PeerLaneKey) *laneRetryState {
+	if state, ok := r.laneRetry[key]; ok {
+		return state
+	}
+	state := &laneRetryState{}
+	r.laneRetry[key] = state
+	return state
+}
+
+func (r *runtime) clearLaneRetry(peer core.NodeID, laneID uint16) {
+	r.laneRetryMu.Lock()
+	defer r.laneRetryMu.Unlock()
+
+	key := PeerLaneKey{Peer: peer, LaneID: laneID}
+	state, ok := r.laneRetry[key]
+	if !ok {
+		return
+	}
+	state.timerVersion++
+	if state.timer != nil {
+		state.timer.Stop()
+	}
+	delete(r.laneRetry, key)
+}
+
+func (r *runtime) clearAllLaneRetries() []*time.Timer {
+	r.laneRetryMu.Lock()
+	defer r.laneRetryMu.Unlock()
+
+	timers := make([]*time.Timer, 0, len(r.laneRetry))
+	for key, state := range r.laneRetry {
+		if state.timer != nil {
+			timers = append(timers, state.timer)
+		}
+		delete(r.laneRetry, key)
+	}
+	return timers
 }
 
 // reset clears all queue state.

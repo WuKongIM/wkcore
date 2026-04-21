@@ -1610,6 +1610,14 @@ func laneDispatchHasWork(rt *runtime, peer core.NodeID, lane uint16) bool {
 	return false
 }
 
+func laneRetryScheduled(rt *runtime, peer core.NodeID, lane uint16) bool {
+	rt.laneRetryMu.Lock()
+	defer rt.laneRetryMu.Unlock()
+
+	state, ok := rt.laneRetry[PeerLaneKey{Peer: peer, LaneID: lane}]
+	return ok && state.timer != nil
+}
+
 func waitForSessionSendCount(t *testing.T, session *trackingPeerSession, want int) {
 	t.Helper()
 
@@ -1978,7 +1986,7 @@ func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
 	}
 }
 
-func TestSessionLongPollBackpressuredReissueSchedulesFollowerRetry(t *testing.T) {
+func TestSessionLongPollBackpressuredReissueSchedulesLaneRetry(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 4
@@ -2018,10 +2026,7 @@ func TestSessionLongPollBackpressuredReissueSchedulesFollowerRetry(t *testing.T)
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if got := session.sendCount(); got > 1 {
-			break
-		}
-		if ch, ok := env.runtime.lookupChannel(key); ok && queuedReplicationPeers(ch) > 0 {
+		if laneRetryScheduled(env.runtime, 2, first.LaneID) {
 			return
 		}
 		time.Sleep(time.Millisecond)
@@ -2033,8 +2038,74 @@ func TestSessionLongPollBackpressuredReissueSchedulesFollowerRetry(t *testing.T)
 	if !ok {
 		t.Fatal("expected channel to still exist")
 	}
-	if got := queuedReplicationPeers(ch); got == 0 {
-		t.Fatal("expected backpressured response reissue to schedule a follower retry")
+	if laneRetryScheduled(env.runtime, 2, first.LaneID) {
+		if got := queuedReplicationPeers(ch); got != 0 {
+			t.Fatalf("expected lane retry to avoid channel retry queueing, got %d queued peers", got)
+		}
+		return
+	}
+	t.Fatal("expected backpressured response reissue to schedule a lane retry")
+}
+
+func TestSessionLongPollLaneRetryIsScopedPerLane(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.ReplicationMode = "long_poll"
+		cfg.LongPollLaneCount = 2
+		cfg.LongPollMaxWait = 2 * time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+		cfg.FollowerReplicationRetryInterval = 20 * time.Millisecond
+	})
+
+	firstKey := testChannelKeyForLane(t, 0, 2, "lp-lane-retry-first")
+	secondKey := testChannelKeyForLane(t, 1, 2, "lp-lane-retry-second")
+	mustEnsureLocal(t, env.runtime, core.Meta{
+		Key:      firstKey,
+		Epoch:    31,
+		Leader:   2,
+		Replicas: []core.NodeID{1, 2, 3},
+		ISR:      []core.NodeID{1, 2, 3},
+		MinISR:   2,
+	})
+	mustEnsureLocal(t, env.runtime, core.Meta{
+		Key:      secondKey,
+		Epoch:    32,
+		Leader:   2,
+		Replicas: []core.NodeID{1, 2, 3},
+		ISR:      []core.NodeID{1, 2, 3},
+		MinISR:   2,
+	})
+
+	session := env.sessions.session(2)
+	session.enqueueSendErrors(context.DeadlineExceeded)
+
+	env.runtime.runScheduler()
+	waitForSessionSendCount(t, session, 2)
+
+	session.mu.Lock()
+	sent := append([]Envelope(nil), session.sent...)
+	session.mu.Unlock()
+	if len(sent) < 2 || sent[0].LanePollRequest == nil || sent[1].LanePollRequest == nil {
+		t.Fatalf("expected two lane poll sends, got %+v", sent)
+	}
+	failedLane := sent[0].LanePollRequest.LaneID
+	otherLane := sent[1].LanePollRequest.LaneID
+	if failedLane == otherLane {
+		t.Fatalf("expected different lanes, got %d and %d", failedLane, otherLane)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if laneRetryScheduled(env.runtime, 2, failedLane) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !laneRetryScheduled(env.runtime, 2, failedLane) {
+		t.Fatalf("expected failed lane %d to have a retry scheduled", failedLane)
+	}
+	if laneRetryScheduled(env.runtime, 2, otherLane) {
+		t.Fatalf("expected successful lane %d to avoid retry scheduling", otherLane)
 	}
 }
 
