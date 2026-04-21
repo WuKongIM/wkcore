@@ -1828,6 +1828,65 @@ func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
 	}
 }
 
+func TestSessionLongPollBackpressuredReissueSchedulesFollowerRetry(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.ReplicationMode = "long_poll"
+		cfg.LongPollLaneCount = 4
+		cfg.LongPollMaxWait = 2 * time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+		cfg.FollowerReplicationRetryInterval = 15 * time.Millisecond
+	})
+	key := testChannelKey(2604)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2604, 4, 2, []core.NodeID{1, 2}))
+
+	env.runtime.runScheduler()
+
+	session := env.sessions.session(2)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected initial long poll open, got %d sends", got)
+	}
+	first := session.last.LanePollRequest
+	if first == nil {
+		t.Fatal("expected lane poll request payload")
+	}
+
+	session.setBackpressure(BackpressureState{Level: BackpressureHard})
+	env.transport.deliver(Envelope{
+		Peer: 2,
+		Kind: MessageKindLanePollResponse,
+		Sync: true,
+		LanePollResponse: &LanePollResponseEnvelope{
+			LaneID:       first.LaneID,
+			Status:       LanePollStatusOK,
+			SessionID:    777,
+			SessionEpoch: 1,
+			TimedOut:     true,
+		},
+	})
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got := session.sendCount(); got > 1 {
+			break
+		}
+		if ch, ok := env.runtime.lookupChannel(key); ok && queuedReplicationPeers(ch) > 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected backpressured response reissue to stay queued, got %d sends", got)
+	}
+	ch, ok := env.runtime.lookupChannel(key)
+	if !ok {
+		t.Fatal("expected channel to still exist")
+	}
+	if got := queuedReplicationPeers(ch); got == 0 {
+		t.Fatal("expected backpressured response reissue to schedule a follower retry")
+	}
+}
+
 func TestSessionLongPollRPCTimeoutUsesRecoveryBackoff(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.ReplicationMode = "long_poll"

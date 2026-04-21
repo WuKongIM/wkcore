@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"errors"
 	"sync"
 
 	core "github.com/WuKongIM/WuKongIM/pkg/channel"
@@ -170,7 +169,7 @@ func (r *runtime) dispatchLanePoll(key laneDispatchWorkKey) {
 		Kind:            MessageKindLanePollRequest,
 		LanePollRequest: &req,
 	})
-	if err == nil || errors.Is(err, ErrBackpressured) {
+	if err == nil {
 		return
 	}
 	manager.SendFailed(key.lane)
