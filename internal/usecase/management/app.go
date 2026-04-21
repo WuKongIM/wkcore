@@ -14,6 +14,10 @@ type ClusterReader interface {
 	ListSlotAssignmentsStrict(ctx context.Context) ([]controllermeta.SlotAssignment, error)
 	// ListObservedRuntimeViewsStrict returns the controller leader's runtime views without local fallback.
 	ListObservedRuntimeViewsStrict(ctx context.Context) ([]controllermeta.SlotRuntimeView, error)
+	// ListTasksStrict returns the controller leader's task snapshot without local fallback.
+	ListTasksStrict(ctx context.Context) ([]controllermeta.ReconcileTask, error)
+	// GetReconcileTaskStrict returns the controller leader's task detail without local fallback.
+	GetReconcileTaskStrict(ctx context.Context, slotID uint32) (controllermeta.ReconcileTask, error)
 	ControllerLeaderID() uint64
 }
 

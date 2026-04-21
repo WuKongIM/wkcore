@@ -37,9 +37,13 @@ type API interface {
 	// ListObservedRuntimeViewsStrict returns the controller leader's observed runtime snapshot without local fallback.
 	ListObservedRuntimeViewsStrict(ctx context.Context) ([]controllermeta.SlotRuntimeView, error)
 	ListTasks(ctx context.Context) ([]controllermeta.ReconcileTask, error)
+	// ListTasksStrict returns the controller leader's task snapshot without local fallback.
+	ListTasksStrict(ctx context.Context) ([]controllermeta.ReconcileTask, error)
 	GetMigrationStatus() []HashSlotMigration
 	TransportPoolStats() []transport.PoolPeerStats
 	GetReconcileTask(ctx context.Context, slotID uint32) (controllermeta.ReconcileTask, error)
+	// GetReconcileTaskStrict returns the controller leader's task detail without local fallback.
+	GetReconcileTaskStrict(ctx context.Context, slotID uint32) (controllermeta.ReconcileTask, error)
 	ForceReconcile(ctx context.Context, slotID uint32) error
 	MarkNodeDraining(ctx context.Context, nodeID uint64) error
 	ResumeNode(ctx context.Context, nodeID uint64) error

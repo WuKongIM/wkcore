@@ -629,6 +629,74 @@ func TestListTasksFallsBackToLocalControllerMetaWhenLeaderUnavailable(t *testing
 	}
 }
 
+func TestListTasksStrictReturnsLeaderTasksWithoutLocalFallback(t *testing.T) {
+	dir := t.TempDir()
+	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
+	if err != nil {
+		t.Fatalf("open controllermeta: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertTask(context.Background(), controllermeta.ReconcileTask{
+		SlotID:    99,
+		Kind:      controllermeta.TaskKindRepair,
+		Step:      controllermeta.TaskStepAddLearner,
+		Status:    controllermeta.TaskStatusPending,
+		NextRunAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertTask() error = %v", err)
+	}
+
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, fakeControllerClient{
+		listTasks: []controllermeta.ReconcileTask{{
+			SlotID:    1,
+			Kind:      controllermeta.TaskKindBootstrap,
+			Step:      controllermeta.TaskStepAddLearner,
+			Status:    controllermeta.TaskStatusPending,
+			NextRunAt: time.Now(),
+		}},
+	})
+
+	tasks, err := cluster.ListTasksStrict(context.Background())
+	if err != nil {
+		t.Fatalf("ListTasksStrict() error = %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].SlotID != 1 {
+		t.Fatalf("ListTasksStrict() = %v, want leader data only", tasks)
+	}
+}
+
+func TestListTasksStrictReturnsLeaderReadErrorWithoutLocalFallback(t *testing.T) {
+	dir := t.TempDir()
+	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
+	if err != nil {
+		t.Fatalf("open controllermeta: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertTask(context.Background(), controllermeta.ReconcileTask{
+		SlotID:    99,
+		Kind:      controllermeta.TaskKindRepair,
+		Step:      controllermeta.TaskStepAddLearner,
+		Status:    controllermeta.TaskStatusRetrying,
+		Attempt:   1,
+		NextRunAt: time.Now().Add(time.Second),
+	}); err != nil {
+		t.Fatalf("UpsertTask() error = %v", err)
+	}
+
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, fakeControllerClient{listTasksErr: ErrNoLeader})
+
+	_, err = cluster.ListTasksStrict(context.Background())
+	if !errors.Is(err, ErrNoLeader) {
+		t.Fatalf("ListTasksStrict() error = %v, want %v", err, ErrNoLeader)
+	}
+}
+
 func TestManagedSlotsReadyAllowsIdleLocalNode(t *testing.T) {
 	cluster := &Cluster{
 		cfg: Config{
@@ -948,6 +1016,108 @@ func TestGetReconcileTaskReturnsReadTimeoutWhenControllerReadTimesOut(t *testing
 	}
 	if got != (controllermeta.ReconcileTask{}) {
 		t.Fatalf("GetReconcileTask() = %+v, want zero task on timeout read", got)
+	}
+}
+
+func TestGetReconcileTaskStrictReturnsLeaderTaskWithoutLocalFallback(t *testing.T) {
+	dir := t.TempDir()
+	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
+	if err != nil {
+		t.Fatalf("open controllermeta: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	localTask := controllermeta.ReconcileTask{
+		SlotID:    9,
+		Kind:      controllermeta.TaskKindRepair,
+		Step:      controllermeta.TaskStepAddLearner,
+		Status:    controllermeta.TaskStatusPending,
+		NextRunAt: time.Now(),
+	}
+	if err := store.UpsertTask(context.Background(), localTask); err != nil {
+		t.Fatalf("UpsertTask() error = %v", err)
+	}
+
+	leaderTask := controllermeta.ReconcileTask{
+		SlotID:     9,
+		Kind:       controllermeta.TaskKindRebalance,
+		Step:       controllermeta.TaskStepTransferLeader,
+		SourceNode: 2,
+		TargetNode: 4,
+		Status:     controllermeta.TaskStatusRetrying,
+		Attempt:    2,
+		NextRunAt:  time.Now().Add(time.Minute),
+	}
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, fakeControllerClient{
+		tasks: map[uint32]controllermeta.ReconcileTask{
+			leaderTask.SlotID: leaderTask,
+		},
+	})
+
+	got, err := cluster.GetReconcileTaskStrict(context.Background(), leaderTask.SlotID)
+	if err != nil {
+		t.Fatalf("GetReconcileTaskStrict() error = %v", err)
+	}
+	if got.Kind != leaderTask.Kind || got.Step != leaderTask.Step || got.TargetNode != leaderTask.TargetNode {
+		t.Fatalf("GetReconcileTaskStrict() = %+v, want leader task %+v", got, leaderTask)
+	}
+}
+
+func TestGetReconcileTaskStrictReturnsNotFoundWithoutLocalFallback(t *testing.T) {
+	dir := t.TempDir()
+	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
+	if err != nil {
+		t.Fatalf("open controllermeta: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertTask(context.Background(), controllermeta.ReconcileTask{
+		SlotID:    8,
+		Kind:      controllermeta.TaskKindRepair,
+		Step:      controllermeta.TaskStepAddLearner,
+		Status:    controllermeta.TaskStatusPending,
+		NextRunAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertTask() error = %v", err)
+	}
+
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, fakeControllerClient{})
+
+	_, err = cluster.GetReconcileTaskStrict(context.Background(), 8)
+	if !errors.Is(err, controllermeta.ErrNotFound) {
+		t.Fatalf("GetReconcileTaskStrict() error = %v, want %v", err, controllermeta.ErrNotFound)
+	}
+}
+
+func TestGetReconcileTaskStrictReturnsLeaderReadErrorWithoutLocalFallback(t *testing.T) {
+	dir := t.TempDir()
+	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
+	if err != nil {
+		t.Fatalf("open controllermeta: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertTask(context.Background(), controllermeta.ReconcileTask{
+		SlotID:    7,
+		Kind:      controllermeta.TaskKindRepair,
+		Step:      controllermeta.TaskStepAddLearner,
+		Status:    controllermeta.TaskStatusPending,
+		NextRunAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertTask() error = %v", err)
+	}
+
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, fakeControllerClient{getTaskErr: context.DeadlineExceeded})
+
+	_, err = cluster.GetReconcileTaskStrict(context.Background(), 7)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("GetReconcileTaskStrict() error = %v, want %v", err, context.DeadlineExceeded)
 	}
 }
 

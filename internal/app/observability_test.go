@@ -408,6 +408,10 @@ func (f fakeObservabilityCluster) ListTasks(context.Context) ([]controllermeta.R
 	return append([]controllermeta.ReconcileTask(nil), f.tasks...), nil
 }
 
+func (f fakeObservabilityCluster) ListTasksStrict(context.Context) ([]controllermeta.ReconcileTask, error) {
+	return append([]controllermeta.ReconcileTask(nil), f.tasks...), nil
+}
+
 func (f fakeObservabilityCluster) GetMigrationStatus() []raftcluster.HashSlotMigration {
 	return append([]raftcluster.HashSlotMigration(nil), f.migrations...)
 }
@@ -418,6 +422,15 @@ func (f fakeObservabilityCluster) TransportPoolStats() []transport.PoolPeerStats
 
 func (f fakeObservabilityCluster) GetReconcileTask(context.Context, uint32) (controllermeta.ReconcileTask, error) {
 	return controllermeta.ReconcileTask{}, nil
+}
+
+func (f fakeObservabilityCluster) GetReconcileTaskStrict(_ context.Context, slotID uint32) (controllermeta.ReconcileTask, error) {
+	for _, task := range f.tasks {
+		if task.SlotID == slotID {
+			return task, nil
+		}
+	}
+	return controllermeta.ReconcileTask{}, controllermeta.ErrNotFound
 }
 
 func (f fakeObservabilityCluster) ForceReconcile(context.Context, uint32) error { return nil }
