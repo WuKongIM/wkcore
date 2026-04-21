@@ -38,6 +38,55 @@ func TestRuntimeLongPollServeLanePollTimesOutWhenLaneHasNoReadyItems(t *testing.
 	require.NotZero(t, resp.SessionEpoch)
 }
 
+func TestLongPollOpenActivatesTrackedMissingChannels(t *testing.T) {
+	activator := &recordingActivator{}
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Activator = activator
+		cfg.LongPollLaneCount = 4
+		cfg.LongPollMaxWait = time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+	})
+	meta := testMetaLocal(27011, 4, 1, []core.NodeID{1, 2})
+
+	activator.fn = func(context.Context, core.ChannelKey, ActivationSource) (core.Meta, error) {
+		require.NoError(t, env.runtime.EnsureChannel(meta))
+		replica := env.factory.replicas[len(env.factory.replicas)-1]
+		replica.mu.Lock()
+		replica.state.LEO = 1
+		replica.fetchResult = core.ReplicaFetchResult{
+			HW: 1,
+			Records: []core.Record{
+				{Payload: []byte("cold"), SizeBytes: len("cold")},
+			},
+		}
+		replica.mu.Unlock()
+		return meta, nil
+	}
+
+	resp, err := env.runtime.ServeLanePoll(context.Background(), LanePollRequestEnvelope{
+		ReplicaID:   2,
+		LaneID:      testFollowerLaneFor(meta.Key, 4),
+		LaneCount:   4,
+		Op:          LanePollOpOpen,
+		MaxWait:     time.Millisecond,
+		MaxBytes:    64 * 1024,
+		MaxChannels: 64,
+		FullMembership: []LaneMembership{
+			{ChannelKey: meta.Key, ChannelEpoch: meta.Epoch},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, activator.callCount())
+	require.Equal(t, meta.Key, activator.calls[0].key)
+	require.Equal(t, ActivationSourceLaneOpen, activator.calls[0].source)
+	require.Equal(t, LanePollStatusOK, resp.Status)
+	require.False(t, resp.TimedOut)
+	require.Len(t, resp.Items, 1)
+	require.Equal(t, meta.Key, resp.Items[0].ChannelKey)
+	require.Equal(t, LanePollItemFlagData, resp.Items[0].Flags)
+}
+
 func TestApplyMetaUpdatesLaneTargetsForLeaderChannels(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.LongPollLaneCount = 4

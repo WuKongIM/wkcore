@@ -862,9 +862,9 @@ func (r *runtime) applyReconcileProbeResponseEnvelope(ch *channel, env Reconcile
 }
 
 func (r *runtime) ServeFetch(ctx context.Context, req FetchRequestEnvelope) (FetchResponseEnvelope, error) {
-	ch, ok := r.lookupChannel(req.ChannelKey)
-	if !ok {
-		return FetchResponseEnvelope{}, ErrChannelNotFound
+	ch, _, err := r.ensureChannelForIngress(ctx, req.ChannelKey, ActivationSourceFetch)
+	if err != nil {
+		return FetchResponseEnvelope{}, err
 	}
 	if ch.gen != req.Generation {
 		return FetchResponseEnvelope{}, ErrGenerationMismatch
@@ -921,10 +921,10 @@ func longPollFetchContext(parent context.Context, timeout time.Duration) (contex
 	return context.WithTimeout(parent, timeout)
 }
 
-func (r *runtime) ServeReconcileProbe(_ context.Context, req ReconcileProbeRequestEnvelope) (ReconcileProbeResponseEnvelope, error) {
-	ch, ok := r.lookupChannel(req.ChannelKey)
-	if !ok {
-		return ReconcileProbeResponseEnvelope{}, ErrChannelNotFound
+func (r *runtime) ServeReconcileProbe(ctx context.Context, req ReconcileProbeRequestEnvelope) (ReconcileProbeResponseEnvelope, error) {
+	ch, _, err := r.ensureChannelForIngress(ctx, req.ChannelKey, ActivationSourceProbe)
+	if err != nil {
+		return ReconcileProbeResponseEnvelope{}, err
 	}
 	if ch.gen != req.Generation {
 		return ReconcileProbeResponseEnvelope{}, ErrGenerationMismatch
