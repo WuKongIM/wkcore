@@ -61,6 +61,62 @@ func TestListNodesSortsByNodeIDAndDefaultsCountsToZero(t *testing.T) {
 	}, summarizeNodes(got))
 }
 
+func TestGetNodeReturnsNodeWithHostedAndLeaderSlots(t *testing.T) {
+	now := time.Unix(1713686400, 0).UTC()
+	app := New(Options{
+		LocalNodeID:       2,
+		ControllerPeerIDs: []uint64{1, 2},
+		Cluster: fakeClusterReader{
+			controllerLeaderID: 1,
+			nodes: []controllermeta.ClusterNode{
+				{NodeID: 2, Addr: "127.0.0.1:7002", Status: controllermeta.NodeStatusDraining, LastHeartbeatAt: now.Add(-2 * time.Second), CapacityWeight: 2},
+				{NodeID: 1, Addr: "127.0.0.1:7001", Status: controllermeta.NodeStatusAlive, LastHeartbeatAt: now.Add(-1 * time.Second), CapacityWeight: 1},
+			},
+			views: []controllermeta.SlotRuntimeView{
+				{SlotID: 7, CurrentPeers: []uint64{2, 1}, LeaderID: 1, HasQuorum: true},
+				{SlotID: 2, CurrentPeers: []uint64{3, 2}, LeaderID: 2, HasQuorum: true},
+				{SlotID: 4, CurrentPeers: []uint64{2}, LeaderID: 2, HasQuorum: true},
+			},
+		},
+	})
+
+	got, err := app.GetNode(context.Background(), 2)
+	require.NoError(t, err)
+	require.Equal(t, NodeDetail{
+		Node: Node{
+			NodeID:          2,
+			Addr:            "127.0.0.1:7002",
+			Status:          "draining",
+			LastHeartbeatAt: now.Add(-2 * time.Second),
+			ControllerRole:  "follower",
+			SlotCount:       3,
+			LeaderSlotCount: 2,
+			IsLocal:         true,
+			CapacityWeight:  2,
+		},
+		Slots: NodeSlots{
+			HostedIDs: []uint32{2, 4, 7},
+			LeaderIDs: []uint32{2, 4},
+		},
+	}, got)
+}
+
+func TestGetNodeReturnsNotFound(t *testing.T) {
+	app := New(Options{
+		LocalNodeID:       1,
+		ControllerPeerIDs: []uint64{1},
+		Cluster: fakeClusterReader{
+			controllerLeaderID: 1,
+			nodes: []controllermeta.ClusterNode{
+				{NodeID: 1, Addr: "127.0.0.1:7001", Status: controllermeta.NodeStatusAlive},
+			},
+		},
+	})
+
+	_, err := app.GetNode(context.Background(), 2)
+	require.ErrorIs(t, err, controllermeta.ErrNotFound)
+}
+
 type fakeClusterReader struct {
 	controllerLeaderID          uint64
 	slotIDs                     []multiraft.SlotID

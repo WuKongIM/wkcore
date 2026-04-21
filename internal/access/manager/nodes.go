@@ -76,21 +76,7 @@ func (s *Server) handleNodes(c *gin.Context) {
 func nodeDTOs(items []managementusecase.Node) []NodeDTO {
 	out := make([]NodeDTO, 0, len(items))
 	for _, item := range items {
-		out = append(out, NodeDTO{
-			NodeID:          item.NodeID,
-			Addr:            item.Addr,
-			Status:          item.Status,
-			LastHeartbeatAt: item.LastHeartbeatAt,
-			IsLocal:         item.IsLocal,
-			CapacityWeight:  item.CapacityWeight,
-			Controller: NodeControllerDTO{
-				Role: item.ControllerRole,
-			},
-			SlotStats: NodeSlotStatsDTO{
-				Count:       item.SlotCount,
-				LeaderCount: item.LeaderSlotCount,
-			},
-		})
+		out = append(out, nodeDTO(item))
 	}
 	return out
 }

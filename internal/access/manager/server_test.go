@@ -203,6 +203,135 @@ func TestManagerNodesReturnsServiceUnavailableWhenLeaderConsistentReadUnavailabl
 	require.JSONEq(t, `{"error":"service_unavailable","message":"controller leader consistent read unavailable"}`, rec.Body.String())
 }
 
+func TestManagerNodeDetailRejectsInvalidNodeID(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/nodes/bad", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"error":"bad_request","message":"invalid node_id"}`, rec.Body.String())
+}
+
+func TestManagerNodeDetailReturnsNotFound(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{nodeDetailErr: controllermeta.ErrNotFound},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/nodes/2", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	require.JSONEq(t, `{"error":"not_found","message":"node not found"}`, rec.Body.String())
+}
+
+func TestManagerNodeDetailReturnsAggregatedDetail(t *testing.T) {
+	lastHeartbeatAt := time.Date(2026, 4, 21, 15, 4, 5, 0, time.UTC)
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{
+			nodeDetail: managementusecase.NodeDetail{
+				Node: managementusecase.Node{
+					NodeID:          2,
+					Addr:            "127.0.0.1:7002",
+					Status:          "draining",
+					LastHeartbeatAt: lastHeartbeatAt,
+					ControllerRole:  "follower",
+					SlotCount:       3,
+					LeaderSlotCount: 2,
+					IsLocal:         true,
+					CapacityWeight:  2,
+				},
+				Slots: managementusecase.NodeSlots{
+					HostedIDs: []uint32{2, 4, 7},
+					LeaderIDs: []uint32{2, 4},
+				},
+			},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/nodes/2", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{
+		"node_id": 2,
+		"addr": "127.0.0.1:7002",
+		"status": "draining",
+		"last_heartbeat_at": "2026-04-21T15:04:05Z",
+		"is_local": true,
+		"capacity_weight": 2,
+		"controller": {
+			"role": "follower"
+		},
+		"slot_stats": {
+			"count": 3,
+			"leader_count": 2
+		},
+		"slots": {
+			"hosted_ids": [2, 4, 7],
+			"leader_ids": [2, 4]
+		}
+	}`, rec.Body.String())
+}
+
+func TestManagerNodeDetailReturnsServiceUnavailableWhenLeaderConsistentReadUnavailable(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{nodeDetailErr: raftcluster.ErrNoLeader},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/nodes/2", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.JSONEq(t, `{"error":"service_unavailable","message":"controller leader consistent read unavailable"}`, rec.Body.String())
+}
+
 func TestManagerSlotsRejectsMissingToken(t *testing.T) {
 	srv := New(Options{
 		Auth:       testAuthConfig(nil),
@@ -1559,6 +1688,8 @@ func mustEncodeChannelRuntimeMetaCursorForTest(t *testing.T, cursor managementus
 type managementStub struct {
 	nodes                           []managementusecase.Node
 	nodesErr                        error
+	nodeDetail                      managementusecase.NodeDetail
+	nodeDetailErr                   error
 	slots                           []managementusecase.Slot
 	slotsErr                        error
 	slotDetail                      managementusecase.SlotDetail
@@ -1579,6 +1710,10 @@ type managementStub struct {
 
 func (s managementStub) ListNodes(context.Context) ([]managementusecase.Node, error) {
 	return append([]managementusecase.Node(nil), s.nodes...), s.nodesErr
+}
+
+func (s managementStub) GetNode(context.Context, uint64) (managementusecase.NodeDetail, error) {
+	return s.nodeDetail, s.nodeDetailErr
 }
 
 func (s managementStub) ListSlots(context.Context) ([]managementusecase.Slot, error) {
