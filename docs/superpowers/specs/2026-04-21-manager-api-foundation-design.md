@@ -35,7 +35,7 @@
 
 1. 新增独立的 manager API 服务，不复用当前 `internal/access/api` 的服务实例与监听端口
 2. 提供 `POST /manager/login`，基于配置中的静态用户签发 JWT
-3. 提供 `GET /manager/nodes`、`GET /manager/slots`、`GET /manager/tasks`、`GET /manager/tasks/:slot_id`，要求 JWT 与权限校验通过后才能访问
+3. 提供 `GET /manager/nodes`、`GET /manager/slots`、`GET /manager/slots/:slot_id`、`GET /manager/tasks`、`GET /manager/tasks/:slot_id`，要求 JWT 与权限校验通过后才能访问
 4. manager 只读接口返回适合后台展示的稳定 DTO，而不是直接透传内部控制面模型
 5. cluster 相关 manager 读接口从任意节点访问时，都必须返回同一个 controller leader 视角的数据，或显式失败
 6. 在 `internal/app` 中将 manager 服务作为独立入口装配进应用生命周期
@@ -45,7 +45,7 @@
 
 第一版明确不做以下内容：
 
-- 不实现 slot 详情、channel runtime meta、overview 等更多 manager 只读接口
+- 不实现 channel runtime meta、overview 等更多 manager 只读接口
 - 不实现基于数据库或外部 IAM 的动态账号体系
 - 不实现刷新 token、登出、黑名单、会话吊销
 - 不实现细粒度的写操作权限校验链路
@@ -273,6 +273,7 @@ WK_MANAGER_USERS=[{"username":"admin","password":"admin123","permissions":[{"res
 
 - `GET /manager/nodes` -> `cluster.node:r`
 - `GET /manager/slots` -> `cluster.slot:r`
+- `GET /manager/slots/:slot_id` -> `cluster.slot:r`
 - `GET /manager/tasks` -> `cluster.task:r`
 - `GET /manager/tasks/:slot_id` -> `cluster.task:r`
 
@@ -436,7 +437,69 @@ Authorization: Bearer <jwt>
 
 第一版不做分页、过滤、排序参数，列表按 `slot_id` 升序返回。
 
-## 7.4 `GET /manager/tasks`
+## 7.4 `GET /manager/slots/:slot_id`
+
+请求头：
+
+```text
+Authorization: Bearer <jwt>
+```
+
+成功响应：
+
+```json
+{
+  "slot_id": 2,
+  "state": {
+    "quorum": "ready",
+    "sync": "matched"
+  },
+  "assignment": {
+    "desired_peers": [2, 3, 5],
+    "config_epoch": 8,
+    "balance_version": 3
+  },
+  "runtime": {
+    "current_peers": [2, 3, 5],
+    "leader_id": 2,
+    "healthy_voters": 3,
+    "has_quorum": true,
+    "observed_config_epoch": 8,
+    "last_report_at": "2026-04-21T10:00:00+08:00"
+  },
+  "task": {
+    "kind": "repair",
+    "step": "catch_up",
+    "status": "retrying",
+    "source_node": 3,
+    "target_node": 5,
+    "attempt": 1,
+    "next_run_at": "2026-04-21T10:05:00+08:00",
+    "last_error": "learner catch-up timeout"
+  }
+}
+```
+
+错误语义：
+
+- `slot_id` 非法：`400`
+- 未带 token / token 非法 / token 过期：`401`
+- 权限不足：`403`
+- 指定 `slot_id` 不存在 slot：`404`
+- controller leader 一致读不可用：`503`
+
+路径参数规则：
+
+- `slot_id` 必须是正整数
+- 第一版直接按单个 `slot_id` 查询，不支持批量查询
+
+补充约束：
+
+- `task` 表示当前 slot 的 reconcile task 摘要
+- 若该 slot 当前没有 reconcile task，则返回 `null`
+- `task` 为空不应让 slot 详情接口返回 `404`
+
+## 7.5 `GET /manager/tasks`
 
 请求头：
 
@@ -473,7 +536,7 @@ Authorization: Bearer <jwt>
 
 第一版不做分页、过滤、排序参数，列表按 `slot_id` 升序返回。
 
-## 7.5 `GET /manager/tasks/:slot_id`
+## 7.6 `GET /manager/tasks/:slot_id`
 
 请求头：
 
@@ -638,6 +701,32 @@ task 列表与详情第一版返回如下核心字段：
 
 这样后台管理系统点击单个 task 时，可以同时看到它关联的 slot 期望副本与当前 runtime 观测。
 
+## 8.5 Slot 详情 DTO 设计
+
+`GET /manager/slots/:slot_id` 沿用 slot 列表里的主体字段：
+
+- `slot_id`
+- `state`
+- `assignment`
+- `runtime`
+
+并补一个可空的 `task` 摘要对象：
+
+- `task.kind`
+- `task.step`
+- `task.status`
+- `task.source_node`
+- `task.target_node`
+- `task.attempt`
+- `task.next_run_at`
+- `task.last_error`
+
+设计约束：
+
+- `task` 只表示“当前 slot 是否存在正在跟踪的 reconcile task”
+- 若 task 不存在，`task = null`
+- slot 本身存在但 task 不存在时，接口仍返回 `200`
+
 ## 9. 节点、Slot 与 Task 数据聚合设计
 
 ## 9.1 数据来源
@@ -699,7 +788,24 @@ controller 角色按以下规则计算：
   - `epoch_lag`：副本一致，但 `observed_config_epoch` 落后于 `config_epoch`
   - `unreported`：不存在 runtime view
 
-## 9.7 Task 列表数据来源
+## 9.7 Slot 详情数据来源
+
+`internal/usecase/management` 的 slot 详情查询需要以下输入：
+
+- `cluster.ListSlotAssignmentsStrict(ctx)`
+- `cluster.ListObservedRuntimeViewsStrict(ctx)`
+- `cluster.GetReconcileTaskStrict(ctx, slotID)`
+
+聚合规则：
+
+- assignment 与 runtime 继续按 `slot_id` 聚合生成 slot 主体字段
+- 若 `GetReconcileTaskStrict` 返回 task，则将其转换成 `task` 摘要对象
+- 若 `GetReconcileTaskStrict` 返回 `ErrNotFound`，则视为“slot 存在但当前没有 reconcile task”，返回 `task=null`
+- 若 assignment 与 runtime 都查不到该 `slot_id`，则 slot detail 返回 `404`
+
+第一版 slot detail 不为了拿 task 摘要而额外新增 cluster strict read 边界，直接复用已有的 strict slot/task 读接口。
+
+## 9.8 Task 列表数据来源
 
 `internal/usecase/management` 的 task 列表查询需要以下输入：
 
@@ -707,7 +813,7 @@ controller 角色按以下规则计算：
 
 task 列表直接基于 controller leader 的 task snapshot 输出，并按 `slot_id` 升序返回。
 
-## 9.8 Task 详情数据来源
+## 9.9 Task 详情数据来源
 
 `internal/usecase/management` 的 task 详情查询需要以下输入：
 
@@ -723,7 +829,7 @@ task 列表直接基于 controller leader 的 task snapshot 输出，并按 `slo
 
 这样 manager task 详情接口可以在一个响应里同时表达“当前 controller 正在做什么”与“这个 slot 现在是什么状态”。
 
-## 9.9 Task 字段字符串化规则
+## 9.10 Task 字段字符串化规则
 
 manager task DTO 不直接暴露 `pkg/controller/meta` 的枚举值，而是统一转换为稳定字符串：
 
@@ -772,6 +878,14 @@ controller peer 列表则不需要进 `pkg/cluster.API`，第一版直接从 `ap
 - `GetReconcileTaskStrict` 仍然保留 `ErrNotFound` 语义，用于 manager detail 接口返回 `404`
 
 manager usecase 只使用这组 strict read 接口，不再复用“允许本地降级”的通用运维读语义。
+
+其中 `GET /manager/slots/:slot_id` 直接复用：
+
+- `ListSlotAssignmentsStrict(ctx)`
+- `ListObservedRuntimeViewsStrict(ctx)`
+- `GetReconcileTaskStrict(ctx, slotID)`
+
+不再额外新增新的 cluster strict read 方法。
 
 ## 11. `internal/app` 装配设计
 
@@ -839,6 +953,13 @@ manager 服务与现有业务 API 服务并列存在，互不替代。
 - `GET /manager/slots` 权限不足
 - `GET /manager/slots` 成功返回 slot 列表
 - `GET /manager/slots` controller leader 一致读不可用
+- `GET /manager/slots/:slot_id` 未带 token
+- `GET /manager/slots/:slot_id` `slot_id` 非法
+- `GET /manager/slots/:slot_id` 权限不足
+- `GET /manager/slots/:slot_id` 成功返回 slot 详情
+- `GET /manager/slots/:slot_id` slot 存在但 task 为空
+- `GET /manager/slots/:slot_id` slot 不存在
+- `GET /manager/slots/:slot_id` controller leader 一致读不可用
 - `GET /manager/tasks` 未带 token
 - `GET /manager/tasks` 权限不足
 - `GET /manager/tasks` 成功返回 task 列表
@@ -864,6 +985,8 @@ manager 服务与现有业务 API 服务并列存在，互不替代。
 - `retrying` 任务的 `next_run_at` 映射正确，其他状态返回 `nil`
 - task 详情能聚合 slot assignment/runtime 上下文
 - task 不存在时正确透传 `ErrNotFound`
+- slot 详情能聚合 assignment/runtime 与可空 task 摘要
+- slot 不存在时正确返回 `ErrNotFound`
 
 ## 13.3 `internal/app`
 
@@ -895,7 +1018,6 @@ manager 服务与现有业务 API 服务并列存在，互不替代。
 
 在此骨架上，后续可以按同一模式继续扩展：
 
-- `GET /manager/slots/:id`
 - `GET /manager/overview`
 - `GET /manager/channel-runtime-meta`
 - `GET /manager/channel-runtime-meta/:channel_id`
