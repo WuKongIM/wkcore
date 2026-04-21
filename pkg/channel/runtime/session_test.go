@@ -1822,6 +1822,84 @@ func TestSessionLongPollFollowerStartupSchedulesDispatcher(t *testing.T) {
 	}
 }
 
+func TestSessionLongPollMembershipChangeSchedulesAffectedLane(t *testing.T) {
+	t.Run("remove", func(t *testing.T) {
+		env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+			cfg.ReplicationMode = "long_poll"
+			cfg.LongPollLaneCount = 4
+			cfg.LongPollMaxWait = time.Millisecond
+			cfg.LongPollMaxBytes = 64 * 1024
+			cfg.LongPollMaxChannels = 64
+			cfg.FollowerReplicationRetryInterval = time.Hour
+		})
+
+		const peer core.NodeID = 2
+		keep := testChannelKeyForLane(t, 0, 4, "lp-membership-keep")
+		remove := testChannelKeyForLane(t, 0, 4, "lp-membership-remove")
+
+		manager := env.runtime.ensureLaneManager(peer)
+		manager.UpsertChannel(keep, 11)
+		manager.UpsertChannel(remove, 12)
+		laneID := manager.LaneFor(keep)
+		env.runtime.laneDispatcher.reset()
+
+		prev := core.Meta{
+			Key:      remove,
+			Epoch:    12,
+			Leader:   peer,
+			Replicas: []core.NodeID{1, 2, 3},
+			ISR:      []core.NodeID{1, 2, 3},
+			MinISR:   2,
+		}
+		env.runtime.syncFollowerLaneMembership(&prev, core.Meta{})
+
+		if !laneDispatchHasWork(env.runtime, peer, laneID) {
+			t.Fatalf("expected removal to schedule lane %d for peer %d", laneID, peer)
+		}
+	})
+
+	t.Run("upsert", func(t *testing.T) {
+		env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+			cfg.ReplicationMode = "long_poll"
+			cfg.LongPollLaneCount = 4
+			cfg.LongPollMaxWait = time.Millisecond
+			cfg.LongPollMaxBytes = 64 * 1024
+			cfg.LongPollMaxChannels = 64
+			cfg.FollowerReplicationRetryInterval = time.Hour
+		})
+
+		const peer core.NodeID = 2
+		key := testChannelKeyForLane(t, 0, 4, "lp-membership-upsert")
+		manager := env.runtime.ensureLaneManager(peer)
+		manager.UpsertChannel(key, 12)
+		env.runtime.laneDispatcher.reset()
+
+		prev := core.Meta{
+			Key:      key,
+			Epoch:    12,
+			Leader:   peer,
+			Replicas: []core.NodeID{1, 2, 3},
+			ISR:      []core.NodeID{1, 2, 3},
+			MinISR:   2,
+		}
+		next := core.Meta{
+			Key:      key,
+			Epoch:    13,
+			Leader:   peer,
+			Replicas: []core.NodeID{1, 2, 3},
+			ISR:      []core.NodeID{1, 2, 3},
+			MinISR:   2,
+		}
+
+		env.runtime.syncFollowerLaneMembership(&prev, next)
+
+		laneID := manager.LaneFor(key)
+		if !laneDispatchHasWork(env.runtime, peer, laneID) {
+			t.Fatalf("expected upsert to schedule lane %d for peer %d", laneID, peer)
+		}
+	})
+}
+
 func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.ReplicationMode = "long_poll"

@@ -67,7 +67,7 @@ func (m *PeerLaneManager) LaneFor(key core.ChannelKey) uint16 {
 	return uint16(hasher.Sum32() % uint32(m.laneCount))
 }
 
-func (m *PeerLaneManager) UpsertChannel(key core.ChannelKey, epoch uint64) {
+func (m *PeerLaneManager) UpsertChannel(key core.ChannelKey, epoch uint64) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -76,29 +76,31 @@ func (m *PeerLaneManager) UpsertChannel(key core.ChannelKey, epoch uint64) {
 	member := LaneMembership{ChannelKey: key, ChannelEpoch: epoch}
 	current, ok := lane.membership[key]
 	if ok && current == member {
-		return
+		return false
 	}
 	lane.membership[key] = member
 	delete(lane.dirtyCursor, key)
 	lane.membershipVer++
 	lane.pending = true
 	lane.needOpen = true
+	return true
 }
 
-func (m *PeerLaneManager) RemoveChannel(key core.ChannelKey) {
+func (m *PeerLaneManager) RemoveChannel(key core.ChannelKey) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	laneID := m.LaneFor(key)
 	lane := &m.lanes[laneID]
 	if _, ok := lane.membership[key]; !ok {
-		return
+		return false
 	}
 	delete(lane.membership, key)
 	delete(lane.dirtyCursor, key)
 	lane.membershipVer++
 	lane.pending = len(lane.membership) > 0
 	lane.needOpen = len(lane.membership) > 0
+	return true
 }
 
 func (m *PeerLaneManager) MarkChannelPending(key core.ChannelKey) {
@@ -329,14 +331,22 @@ func (r *runtime) syncFollowerLaneMembership(previous *core.Meta, next core.Meta
 	}
 	if previous != nil && previous.Leader != 0 && previous.Leader != r.cfg.LocalNode {
 		if manager, ok := r.laneManager(previous.Leader); ok {
-			manager.RemoveChannel(previous.Key)
-			if manager.Empty() {
-				r.deleteLaneManager(previous.Leader)
+			laneID := manager.LaneFor(previous.Key)
+			if manager.RemoveChannel(previous.Key) {
+				if manager.Empty() {
+					r.deleteLaneManager(previous.Leader)
+				} else {
+					r.scheduleLaneDispatch(previous.Leader, laneID)
+				}
 			}
 		}
 	}
 	if next.Leader != 0 && next.Leader != r.cfg.LocalNode {
-		r.ensureLaneManager(next.Leader).UpsertChannel(next.Key, next.Epoch)
+		manager := r.ensureLaneManager(next.Leader)
+		laneID := manager.LaneFor(next.Key)
+		if manager.UpsertChannel(next.Key, next.Epoch) && previous != nil {
+			r.scheduleLaneDispatch(next.Leader, laneID)
+		}
 	}
 }
 
