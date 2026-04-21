@@ -671,6 +671,58 @@ Authorization: Bearer <jwt>
 - `next_cursor` 为空字符串表示没有下一页
 - 不允许通过全量聚合后再截页来实现分页
 
+## 7.8 `GET /manager/channel-runtime-meta/:channel_type/:channel_id`
+
+请求头：
+
+```text
+Authorization: Bearer <jwt>
+```
+
+路径参数：
+
+- `channel_type`
+  - 必填
+  - 正整数
+- `channel_id`
+  - 必填
+  - 频道 ID
+
+成功响应：
+
+```json
+{
+  "channel_id": "g1",
+  "channel_type": 2,
+  "slot_id": 7,
+  "hash_slot": 129,
+  "channel_epoch": 12,
+  "leader_epoch": 6,
+  "leader": 3,
+  "replicas": [3, 5, 8],
+  "isr": [3, 5],
+  "min_isr": 2,
+  "status": "active",
+  "features": 1,
+  "lease_until_ms": 1700000000000
+}
+```
+
+错误语义：
+
+- `channel_type` 非法：`400`
+- 未带 token / token 非法 / token 过期：`401`
+- 权限不足：`403`
+- 该 `(channel_type, channel_id)` 不存在：`404`
+- 目标 slot leader 权威读不可用：`503`
+
+详情一致性约束：
+
+- 该接口不通过扫描或分页链路定位目标记录
+- 该接口必须基于 `(channel_type, channel_id)` 做精确单条权威读取
+- 从任意节点访问同一频道详情时，应路由到同一个 slot leader 数据源
+- 不允许退回本地 DB 或本地缓存视图
+
 ## 8. 节点、Slot、Task 与 Channel Runtime Meta DTO 设计
 
 节点列表第一版返回如下字段：
@@ -834,6 +886,23 @@ task 列表与详情第一版返回如下核心字段：
 - `deleting`
 - `deleted`
 - `unknown`
+
+## 8.7 Channel Runtime Meta 详情 DTO 设计
+
+`GET /manager/channel-runtime-meta/:channel_type/:channel_id` 在列表 DTO 基础上增加以下字段：
+
+- `hash_slot`
+  - 当前频道 ID 映射到的逻辑 hash slot
+- `features`
+  - 当前 runtime meta 中的 feature bitset，先按数值直接透出
+- `lease_until_ms`
+  - 当前 leader lease 到期时间，毫秒时间戳
+
+detail DTO 仍保持“稳定 manager 字段”原则：
+
+- 不直接暴露底层内部结构体名
+- 不新增 replica 逐节点状态明细
+- 不把 detail 接口做成 list 响应外壳，而是直接返回单对象
 
 ## 9. 节点、Slot、Task 与 Channel Runtime Meta 数据聚合设计
 
@@ -1002,6 +1071,27 @@ cursor 规则：
 - 该接口不保证“跨所有 slot 的全局事务快照”
 - 因此分页过程中若 channel runtime 正在变化，不同页之间允许看到前后变化
 
+## 9.13 Channel Runtime Meta 详情数据来源
+
+`internal/usecase/management` 的 channel runtime meta 详情查询需要以下输入：
+
+- `cluster.SlotForKey(channelID)`
+- `cluster.HashSlotForKey(channelID)`
+- `slot/proxy.Store.GetChannelRuntimeMeta(ctx, channelID, channelType)`
+
+职责划分如下：
+
+- `cluster` 只负责 key 路由，不承接 channel runtime meta 业务读取
+- `slot/proxy.Store` 负责按频道路由到对应 slot leader 做单条权威读
+- `management` usecase 负责补齐 `slot_id`、`hash_slot` 和稳定 DTO 字段映射
+
+实现约束：
+
+- 不新增 `pkg/cluster.API` 的 channel runtime meta detail 读取能力
+- 不复用 list 的 scan / k-way merge 链路来查找单条记录
+- 详情接口命中不存在记录时返回 `ErrNotFound`
+- 详情接口命中 slot leader 不可用时直接失败，不返回局部降级结果
+
 ## 10. Cluster / Slot API 边界调整
 
 为避免 `management` 用例依赖具体 `*cluster.Cluster` 实现，建议给 `pkg/cluster.API` 新增一个很小的只读接口：
@@ -1162,6 +1252,12 @@ manager 服务与现有业务 API 服务并列存在，互不替代。
 - `GET /manager/channel-runtime-meta` 成功返回第一页
 - `GET /manager/channel-runtime-meta` 使用 `next_cursor` 成功返回第二页
 - `GET /manager/channel-runtime-meta` slot leader 权威读不可用
+- `GET /manager/channel-runtime-meta/:channel_type/:channel_id` 未带 token
+- `GET /manager/channel-runtime-meta/:channel_type/:channel_id` 权限不足
+- `GET /manager/channel-runtime-meta/:channel_type/:channel_id` `channel_type` 非法
+- `GET /manager/channel-runtime-meta/:channel_type/:channel_id` 记录不存在
+- `GET /manager/channel-runtime-meta/:channel_type/:channel_id` 成功返回详情对象
+- `GET /manager/channel-runtime-meta/:channel_type/:channel_id` slot leader 权威读不可用
 
 ## 13.2 `internal/usecase/management`
 
@@ -1182,6 +1278,10 @@ manager 服务与现有业务 API 服务并列存在，互不替代。
 - channel runtime meta 全局分页按 `slot_id/channel_id/channel_type` 顺序输出
 - channel runtime meta 使用 `next_cursor` 能正确续扫
 - channel runtime meta `status` 数值到稳定字符串映射正确
+- channel runtime meta 详情能正确补齐 `slot_id/hash_slot`
+- channel runtime meta 详情正确透传 `features/lease_until_ms`
+- channel runtime meta 详情不存在时正确透传 `ErrNotFound`
+- channel runtime meta 详情权威读错误正确透传
 
 ## 13.3 `pkg/slot/meta`
 
@@ -1232,8 +1332,8 @@ manager 服务与现有业务 API 服务并列存在，互不替代。
 在此骨架上，后续可以按同一模式继续扩展：
 
 - `GET /manager/overview`
-- `GET /manager/channel-runtime-meta/:channel_id`
 - `GET /manager/channel-runtime-meta` 的筛选条件（如 `slot_id`、`channel_type`）
+- `GET /manager/channel-runtime-meta` 详情的 replica 明细视图
 - 写操作接口与 `w` 权限
 
 这些后续接口仍应遵循：
@@ -1252,7 +1352,8 @@ manager 服务与现有业务 API 服务并列存在，互不替代。
 4. 新增 `internal/usecase/management`，避免把聚合逻辑堆进 access 层
 5. 控制面类 manager 读接口统一走 controller leader 一致读，不允许 fallback 到本地滞后视图
 6. `channel runtime meta` 列表统一走 slot leader 权威分页读，不允许全量聚合后再截页
-7. 节点列表、slot 列表、slot 详情、task 列表/详情与 channel runtime meta 列表都返回稳定 DTO，字段覆盖后台首屏与调度排障所需的基础信息
-8. `pkg/cluster.API` 增加最小只读能力 `ControllerLeaderID() uint64`、strict read 接口边界与 `HashSlotsOf(slotID)`；channel runtime meta 具体读能力继续留在 `pkg/slot/proxy`
+7. `channel runtime meta` 详情采用 `GET /manager/channel-runtime-meta/:channel_type/:channel_id`，继续走 slot leader 单条权威读
+8. 节点列表、slot 列表、slot 详情、task 列表/详情与 channel runtime meta 列表/详情都返回稳定 DTO，字段覆盖后台首屏与调度排障所需的基础信息
+9. `pkg/cluster.API` 增加最小只读能力 `ControllerLeaderID() uint64`、strict read 接口边界与 `HashSlotsOf(slotID)`；channel runtime meta 具体读能力继续留在 `pkg/slot/proxy`
 
 这套方案优先解决“管理面入口框架缺失”的问题，并为后续分布式数据管理接口扩展提供稳定基础。
