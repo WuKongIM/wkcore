@@ -525,17 +525,36 @@ func (c *Cluster) controllerTickOnce(ctx context.Context) {
 }
 
 func (c *Cluster) snapshotPlannerState(ctx context.Context) (slotcontroller.PlannerState, error) {
-	nodes, err := c.controllerMeta.ListNodes(ctx)
-	if err != nil {
-		return slotcontroller.PlannerState{}, err
+	var (
+		nodes       []controllermeta.ClusterNode
+		assignments []controllermeta.SlotAssignment
+		tasks       []controllermeta.ReconcileTask
+		err         error
+	)
+	if c != nil && c.controllerHost != nil && c.controllerHost.IsLeader(c.cfg.NodeID) {
+		if snapshot, ok := c.controllerHost.metadataSnapshot(); ok {
+			nodes = snapshot.Nodes
+			assignments = snapshot.Assignments
+			tasks = snapshot.Tasks
+		}
 	}
-	assignments, err := c.controllerMeta.ListAssignments(ctx)
-	if err != nil {
-		return slotcontroller.PlannerState{}, err
+	if nodes == nil {
+		nodes, err = c.controllerMeta.ListNodes(ctx)
+		if err != nil {
+			return slotcontroller.PlannerState{}, err
+		}
 	}
-	tasks, err := c.controllerMeta.ListTasks(ctx)
-	if err != nil {
-		return slotcontroller.PlannerState{}, err
+	if assignments == nil {
+		assignments, err = c.controllerMeta.ListAssignments(ctx)
+		if err != nil {
+			return slotcontroller.PlannerState{}, err
+		}
+	}
+	if tasks == nil {
+		tasks, err = c.controllerMeta.ListTasks(ctx)
+		if err != nil {
+			return slotcontroller.PlannerState{}, err
+		}
 	}
 	views, err := c.plannerRuntimeViews(ctx)
 	if err != nil {

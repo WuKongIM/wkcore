@@ -2,7 +2,9 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -66,10 +68,7 @@ func TestControllerHostHashSlotSnapshotReloadsOnLocalLeaderChange(t *testing.T) 
 
 	host.handleLeaderChange(2, host.localNode)
 
-	snapshot, ok := host.hashSlotTableSnapshot()
-	if !ok {
-		t.Fatal("hashSlotTableSnapshot() ok = false, want true")
-	}
+	snapshot := waitForHashSlotTableSnapshot(t, host, time.Second)
 	if snapshot.Version() != table.Version() {
 		t.Fatalf("hashSlotTableSnapshot().Version() = %d, want %d", snapshot.Version(), table.Version())
 	}
@@ -95,7 +94,8 @@ func TestControllerHostHandleCommittedCommandReloadsHashSlotSnapshotOnHashSlotMu
 
 	initial := NewHashSlotTable(8, 2)
 	requireNoErr(t, host.meta.SaveHashSlotTable(context.Background(), initial))
-	host.storeHashSlotTableSnapshot(initial)
+	host.handleLeaderChange(2, host.localNode)
+	waitForHashSlotTableSnapshot(t, host, time.Second)
 
 	updated := initial.Clone()
 	updated.StartMigration(3, 1, 2)
@@ -110,10 +110,7 @@ func TestControllerHostHandleCommittedCommandReloadsHashSlotSnapshotOnHashSlotMu
 		},
 	})
 
-	snapshot, ok := host.hashSlotTableSnapshot()
-	if !ok {
-		t.Fatal("hashSlotTableSnapshot() ok = false, want true")
-	}
+	snapshot := waitForHashSlotTableSnapshot(t, host, time.Second)
 	if snapshot.Version() != updated.Version() {
 		t.Fatalf("hashSlotTableSnapshot().Version() = %d, want %d", snapshot.Version(), updated.Version())
 	}
@@ -134,12 +131,153 @@ func TestControllerHostLeaderChangeReloadsNodeMirrorOnLocalLeadership(t *testing
 
 	host.handleLeaderChange(2, host.localNode)
 
-	node, ok := host.healthScheduler.mirroredNode(1)
-	if !ok {
-		t.Fatal("mirroredNode(1) ok = false, want true")
-	}
+	node := waitForMirroredNode(t, host, 1, time.Second)
 	if node.Status != controllermeta.NodeStatusAlive {
 		t.Fatalf("mirroredNode(1).Status = %v, want alive", node.Status)
+	}
+}
+
+func TestControllerHostLeaderAcquireClearsHashSlotSnapshotBeforeWarmup(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+
+	oldTable := NewHashSlotTable(8, 2)
+	host.storeHashSlotTableSnapshot(oldTable)
+	if _, ok := host.hashSlotTableSnapshot(); !ok {
+		t.Fatal("hashSlotTableSnapshot() ok = false before leader acquire, want true")
+	}
+
+	newTable := NewHashSlotTable(8, 2)
+	newTable.StartMigration(3, 1, 2)
+	requireNoErr(t, host.meta.SaveHashSlotTable(context.Background(), newTable))
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	setControllerHostHashSlotLoadFn(host, func(ctx context.Context) (*HashSlotTable, error) {
+		close(started)
+		<-release
+		return host.meta.LoadHashSlotTable(ctx)
+	})
+
+	host.handleLeaderChange(2, host.localNode)
+
+	if _, ok := host.hashSlotTableSnapshot(); ok {
+		t.Fatal("hashSlotTableSnapshot() ok = true immediately after leader acquire, want false")
+	}
+
+	<-started
+	close(release)
+
+	snapshot := waitForHashSlotTableSnapshot(t, host, time.Second)
+	if snapshot.Version() != newTable.Version() {
+		t.Fatalf("hashSlotTableSnapshot().Version() = %d, want %d", snapshot.Version(), newTable.Version())
+	}
+}
+
+func TestControllerHostStaleWarmupDoesNotRepopulateAfterLeaderLoss(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+
+	table := NewHashSlotTable(8, 2)
+	requireNoErr(t, host.meta.SaveHashSlotTable(context.Background(), table))
+	requireNoErr(t, host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          1,
+		Addr:            "127.0.0.1:7001",
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Unix(1710000000, 0),
+		CapacityWeight:  1,
+	}))
+
+	hashStarted := make(chan struct{})
+	hashRelease := make(chan struct{})
+	setControllerHostHashSlotLoadFn(host, func(ctx context.Context) (*HashSlotTable, error) {
+		close(hashStarted)
+		<-hashRelease
+		return host.meta.LoadHashSlotTable(ctx)
+	})
+	nodeStarted := make(chan struct{})
+	nodeRelease := make(chan struct{})
+	setControllerHostNodeMirrorLoadFn(host, func(ctx context.Context) ([]controllermeta.ClusterNode, error) {
+		close(nodeStarted)
+		<-nodeRelease
+		return host.meta.ListNodes(ctx)
+	})
+
+	host.handleLeaderChange(2, host.localNode)
+
+	<-hashStarted
+	<-nodeStarted
+
+	// Lose leadership before warmups can apply.
+	host.handleLeaderChange(host.localNode, 2)
+
+	close(hashRelease)
+	close(nodeRelease)
+
+	// Give the warmup goroutines a chance to run to completion if they are buggy.
+	time.Sleep(100 * time.Millisecond)
+
+	if _, ok := host.hashSlotTableSnapshot(); ok {
+		t.Fatal("hashSlotTableSnapshot() ok = true after leader loss, want false")
+	}
+	if _, ok := host.healthScheduler.mirroredNode(1); ok {
+		t.Fatal("mirroredNode(1) ok = true after leader loss, want false")
+	}
+}
+
+func TestControllerHostCommittedCommandSchedulesHashSlotReloadAsync(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+
+	initial := NewHashSlotTable(8, 2)
+	requireNoErr(t, host.meta.SaveHashSlotTable(context.Background(), initial))
+	host.storeHashSlotTableSnapshot(initial)
+
+	host.handleLeaderChange(2, host.localNode)
+
+	updated := initial.Clone()
+	updated.StartMigration(3, 1, 2)
+	requireNoErr(t, host.meta.SaveHashSlotTable(context.Background(), updated))
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	setControllerHostHashSlotLoadFn(host, func(ctx context.Context) (*HashSlotTable, error) {
+		close(started)
+		<-release
+		return host.meta.LoadHashSlotTable(ctx)
+	})
+
+	done := make(chan struct{})
+	go func() {
+		host.handleCommittedCommand(slotcontroller.Command{
+			Kind: slotcontroller.CommandKindStartMigration,
+			Migration: &slotcontroller.MigrationRequest{
+				HashSlot: 3,
+				Source:   1,
+				Target:   2,
+			},
+		})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("handleCommittedCommand blocked; hash slot reload must be async")
+	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("hash slot reload was not scheduled")
+	}
+
+	// Stale snapshot must not be served while reload is pending.
+	if _, ok := host.hashSlotTableSnapshot(); ok {
+		t.Fatal("hashSlotTableSnapshot() ok = true while reload is pending, want false")
+	}
+
+	close(release)
+
+	snapshot := waitForHashSlotTableSnapshot(t, host, time.Second)
+	if snapshot.Version() != updated.Version() {
+		t.Fatalf("hashSlotTableSnapshot().Version() = %d, want %d", snapshot.Version(), updated.Version())
 	}
 }
 
@@ -232,4 +370,590 @@ func TestControllerHostLeaderChangeResetsRuntimeWarmupCoverage(t *testing.T) {
 	if !host.warmupComplete() {
 		t.Fatal("warmupComplete() = false after post-reset full sync, want true")
 	}
+}
+
+func TestControllerHostMetadataSnapshotReloadsOnLocalLeaderChange(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	seedControllerMetaForSnapshot(t, host)
+
+	if _, ok := host.metadataSnapshot(); ok {
+		t.Fatal("metadataSnapshot() ok = true before local leadership, want false")
+	}
+
+	host.handleLeaderChange(2, host.localNode)
+
+	// Reload is async; readers fall back until warm-up completes.
+	waitForControllerMetadataSnapshotClean(t, host, time.Second)
+
+	snapshot, ok := host.metadataSnapshot()
+	if !ok {
+		t.Fatal("metadataSnapshot() ok = false after local leadership, want true")
+	}
+	if !snapshot.Ready {
+		t.Fatal("metadataSnapshot().Ready = false after reload, want true")
+	}
+	if snapshot.Dirty {
+		t.Fatal("metadataSnapshot().Dirty = true after reload, want false")
+	}
+	if snapshot.LeaderID != host.localNode {
+		t.Fatalf("metadataSnapshot().LeaderID = %d, want %d", snapshot.LeaderID, host.localNode)
+	}
+	if snapshot.Generation != 1 {
+		t.Fatalf("metadataSnapshot().Generation = %d, want 1", snapshot.Generation)
+	}
+	if len(snapshot.Nodes) != 1 || snapshot.NodesByID[1].NodeID != 1 {
+		t.Fatalf("metadataSnapshot() nodes not loaded, got %+v", snapshot.Nodes)
+	}
+	if len(snapshot.Assignments) != 1 || snapshot.AssignmentsBySlot[1].SlotID != 1 {
+		t.Fatalf("metadataSnapshot() assignments not loaded, got %+v", snapshot.Assignments)
+	}
+	if len(snapshot.Tasks) != 1 || snapshot.TasksBySlot[1].SlotID != 1 {
+		t.Fatalf("metadataSnapshot() tasks not loaded, got %+v", snapshot.Tasks)
+	}
+
+	// Losing and re-acquiring local leadership must invalidate the previous leader generation.
+	host.handleLeaderChange(host.localNode, 2)
+	host.handleLeaderChange(2, host.localNode)
+
+	snapshot2 := peekControllerMetadataSnapshot(host)
+	if snapshot2.Generation != 2 {
+		t.Fatalf("metadataSnapshotPeek().Generation = %d after leader reacquire, want 2", snapshot2.Generation)
+	}
+}
+
+func TestControllerHostMetadataSnapshotLeaderChangeCallbackIsNonBlocking(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	seedControllerMetaForSnapshot(t, host)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	setControllerMetadataSnapshotLoadFn(host, func(ctx context.Context, store *controllermeta.Store) (controllerMetadataSnapshot, error) {
+		close(started)
+		<-release
+		return loadControllerMetadataSnapshot(ctx, store)
+	})
+	t.Cleanup(func() { setControllerMetadataSnapshotLoadFn(host, nil) })
+	t.Cleanup(func() { close(release) })
+
+	done := make(chan struct{})
+	go func() {
+		host.handleLeaderChange(2, host.localNode)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("handleLeaderChange blocked; leader-change callback must be non-blocking")
+	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("metadata snapshot reload was not started after local leader change")
+	}
+}
+
+func TestControllerHostMetadataSnapshotClearsOnLeaderLoss(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	seedControllerMetaForSnapshot(t, host)
+
+	host.handleLeaderChange(2, host.localNode)
+	waitForControllerMetadataSnapshotClean(t, host, time.Second)
+	if _, ok := host.metadataSnapshot(); !ok {
+		t.Fatal("metadataSnapshot() ok = false before leader loss, want true")
+	}
+
+	host.handleLeaderChange(host.localNode, 2)
+
+	if _, ok := host.metadataSnapshot(); ok {
+		t.Fatal("metadataSnapshot() ok = true after leader loss, want false")
+	}
+	peek := peekControllerMetadataSnapshot(host)
+	if peek.Ready {
+		t.Fatal("metadataSnapshotPeek().Ready = true after leader loss, want false")
+	}
+	if peek.Dirty {
+		t.Fatal("metadataSnapshotPeek().Dirty = true after leader loss, want false")
+	}
+}
+
+func TestControllerHostHandleCommittedCommandMarksMetadataSnapshotDirty(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	seedControllerMetaForSnapshot(t, host)
+
+	host.handleLeaderChange(2, host.localNode)
+	waitForControllerMetadataSnapshotClean(t, host, time.Second)
+	if _, ok := host.metadataSnapshot(); !ok {
+		t.Fatal("metadataSnapshot() ok = false before commit, want true")
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	setControllerMetadataSnapshotLoadFn(host, func(ctx context.Context, store *controllermeta.Store) (controllerMetadataSnapshot, error) {
+		close(started)
+		<-release
+		return loadControllerMetadataSnapshot(ctx, store)
+	})
+	t.Cleanup(func() { setControllerMetadataSnapshotLoadFn(host, nil) })
+
+	done := make(chan struct{})
+	go func() {
+		host.handleCommittedCommand(slotcontroller.Command{
+			Kind: slotcontroller.CommandKindOperatorRequest,
+			Op: &slotcontroller.OperatorRequest{
+				Kind:   slotcontroller.OperatorResumeNode,
+				NodeID: 1,
+			},
+		})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("handleCommittedCommand blocked; metadata snapshot reload must be async")
+	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("metadata snapshot reload was not scheduled after dirty mark")
+	}
+
+	peek := peekControllerMetadataSnapshot(host)
+	if !peek.Ready || !peek.Dirty {
+		t.Fatalf("metadataSnapshot state = (Ready=%v Dirty=%v), want (true true)", peek.Ready, peek.Dirty)
+	}
+	if _, ok := host.metadataSnapshot(); ok {
+		t.Fatal("metadataSnapshot() ok = true while dirty, want false")
+	}
+
+	close(release)
+	waitForControllerMetadataSnapshotClean(t, host, time.Second)
+}
+
+func TestControllerHostMetadataSnapshotAsyncReloadUsesTimeoutContext(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	seedControllerMetaForSnapshot(t, host)
+	host.handleLeaderChange(2, host.localNode)
+	waitForControllerMetadataSnapshotClean(t, host, time.Second)
+
+	started := make(chan struct{})
+	done := make(chan struct{})
+	var gotDeadline atomic.Uint32
+	setControllerMetadataSnapshotLoadFn(host, func(ctx context.Context, store *controllermeta.Store) (controllerMetadataSnapshot, error) {
+		_, ok := ctx.Deadline()
+		if ok {
+			gotDeadline.Store(1)
+		}
+		close(started)
+		<-done
+		return controllerMetadataSnapshot{}, context.Canceled
+	})
+	t.Cleanup(func() { setControllerMetadataSnapshotLoadFn(host, nil) })
+	t.Cleanup(func() { close(done) })
+
+	host.handleCommittedCommand(slotcontroller.Command{
+		Kind: slotcontroller.CommandKindOperatorRequest,
+		Op: &slotcontroller.OperatorRequest{
+			Kind:   slotcontroller.OperatorResumeNode,
+			NodeID: 1,
+		},
+	})
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("metadata snapshot reload did not start")
+	}
+	if gotDeadline.Load() == 0 {
+		t.Fatal("metadata snapshot reload used an unbounded context without deadline")
+	}
+}
+
+func TestControllerHostMetadataSnapshotAsyncReloadCanceledOnStop(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	seedControllerMetaForSnapshot(t, host)
+	host.handleLeaderChange(2, host.localNode)
+	waitForControllerMetadataSnapshotClean(t, host, time.Second)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var sawCancel atomic.Uint32
+	setControllerMetadataSnapshotLoadFn(host, func(ctx context.Context, store *controllermeta.Store) (controllerMetadataSnapshot, error) {
+		close(started)
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.Canceled) {
+				sawCancel.Store(1)
+			}
+			return controllerMetadataSnapshot{}, ctx.Err()
+		case <-release:
+			return controllerMetadataSnapshot{}, context.Canceled
+		}
+	})
+	t.Cleanup(func() { setControllerMetadataSnapshotLoadFn(host, nil) })
+	t.Cleanup(func() { close(release) })
+
+	host.handleCommittedCommand(slotcontroller.Command{
+		Kind: slotcontroller.CommandKindOperatorRequest,
+		Op: &slotcontroller.OperatorRequest{
+			Kind:   slotcontroller.OperatorResumeNode,
+			NodeID: 1,
+		},
+	})
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("metadata snapshot reload did not start")
+	}
+
+	host.Stop()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && sawCancel.Load() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if sawCancel.Load() == 0 {
+		t.Fatal("metadata snapshot reload context was not canceled on host.Stop()")
+	}
+}
+
+func TestControllerHostMetadataSnapshotHeartbeatMarksDirtyWithoutReload(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	seedControllerMetaForSnapshot(t, host)
+
+	host.handleLeaderChange(2, host.localNode)
+	waitForControllerMetadataSnapshotClean(t, host, time.Second)
+
+	started := make(chan struct{})
+	setControllerMetadataSnapshotLoadFn(host, func(ctx context.Context, store *controllermeta.Store) (controllerMetadataSnapshot, error) {
+		close(started)
+		return loadControllerMetadataSnapshot(ctx, store)
+	})
+	t.Cleanup(func() { setControllerMetadataSnapshotLoadFn(host, nil) })
+
+	host.handleCommittedCommand(slotcontroller.Command{Kind: slotcontroller.CommandKindNodeHeartbeat})
+
+	select {
+	case <-started:
+		t.Fatal("metadata snapshot reload was scheduled for node heartbeat; want dirty-only to avoid churn")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	peek := peekControllerMetadataSnapshot(host)
+	if !peek.Ready || !peek.Dirty {
+		t.Fatalf("metadataSnapshot state after heartbeat = (Ready=%v Dirty=%v), want (true true)", peek.Ready, peek.Dirty)
+	}
+	if _, ok := host.metadataSnapshot(); ok {
+		t.Fatal("metadataSnapshot() ok = true after heartbeat dirty, want false")
+	}
+}
+
+func TestControllerHostMetadataSnapshotEvaluateTimeoutsMarksDirtyWithoutReload(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	seedControllerMetaForSnapshot(t, host)
+
+	host.handleLeaderChange(2, host.localNode)
+	waitForControllerMetadataSnapshotClean(t, host, time.Second)
+
+	started := make(chan struct{})
+	setControllerMetadataSnapshotLoadFn(host, func(ctx context.Context, store *controllermeta.Store) (controllerMetadataSnapshot, error) {
+		close(started)
+		return loadControllerMetadataSnapshot(ctx, store)
+	})
+	t.Cleanup(func() { setControllerMetadataSnapshotLoadFn(host, nil) })
+
+	host.handleCommittedCommand(slotcontroller.Command{
+		Kind: slotcontroller.CommandKindEvaluateTimeouts,
+		Advance: &slotcontroller.TaskAdvance{
+			SlotID:  1,
+			Attempt: 1,
+			Now:     time.Unix(1710000002, 0),
+		},
+	})
+
+	select {
+	case <-started:
+		t.Fatal("metadata snapshot reload was scheduled for evaluate timeouts; want dirty-only to avoid churn")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	peek := peekControllerMetadataSnapshot(host)
+	if !peek.Ready || !peek.Dirty {
+		t.Fatalf("metadataSnapshot state after evaluate timeouts = (Ready=%v Dirty=%v), want (true true)", peek.Ready, peek.Dirty)
+	}
+	if _, ok := host.metadataSnapshot(); ok {
+		t.Fatal("metadataSnapshot() ok = true after evaluate timeouts dirty, want false")
+	}
+}
+
+func TestControllerHostMetadataSnapshotReloadFailureLeavesDirty(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	seedControllerMetaForSnapshot(t, host)
+
+	host.handleLeaderChange(2, host.localNode)
+	waitForControllerMetadataSnapshotClean(t, host, time.Second)
+	if _, ok := host.metadataSnapshot(); !ok {
+		t.Fatal("metadataSnapshot() ok = false before reload failure, want true")
+	}
+
+	started := make(chan struct{})
+	setControllerMetadataSnapshotLoadFn(host, func(ctx context.Context, store *controllermeta.Store) (controllerMetadataSnapshot, error) {
+		close(started)
+		return controllerMetadataSnapshot{}, context.Canceled
+	})
+	t.Cleanup(func() { setControllerMetadataSnapshotLoadFn(host, nil) })
+
+	host.handleCommittedCommand(slotcontroller.Command{
+		Kind: slotcontroller.CommandKindOperatorRequest,
+		Op: &slotcontroller.OperatorRequest{
+			Kind:   slotcontroller.OperatorResumeNode,
+			NodeID: 1,
+		},
+	})
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("metadata snapshot reload was not scheduled")
+	}
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if _, ok := host.metadataSnapshot(); ok {
+			t.Fatal("metadataSnapshot() ok = true after reload failure, want false")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	peek := peekControllerMetadataSnapshot(host)
+	if !peek.Dirty {
+		t.Fatal("metadata snapshot should remain dirty after reload failure")
+	}
+}
+
+func TestControllerHostMetadataSnapshotReloadRestoresReadyState(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	seedControllerMetaForSnapshot(t, host)
+
+	host.handleLeaderChange(2, host.localNode)
+	waitForControllerMetadataSnapshotClean(t, host, time.Second)
+
+	updated := controllermeta.ClusterNode{
+		NodeID:          1,
+		Addr:            "127.0.0.1:7001",
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Unix(1710000001, 0),
+		CapacityWeight:  2,
+	}
+	requireNoErr(t, host.meta.UpsertNode(context.Background(), updated))
+
+	// Mark dirty and rely on the coalesced async reload to restore readiness.
+	host.handleCommittedCommand(slotcontroller.Command{
+		Kind: slotcontroller.CommandKindOperatorRequest,
+		Op: &slotcontroller.OperatorRequest{
+			Kind:   slotcontroller.OperatorResumeNode,
+			NodeID: 1,
+		},
+	})
+	waitForControllerMetadataSnapshotClean(t, host, time.Second)
+
+	snapshot, ok := host.metadataSnapshot()
+	if !ok {
+		t.Fatal("metadataSnapshot() ok = false after async reload, want true")
+	}
+	if got := snapshot.NodesByID[1].CapacityWeight; got != 2 {
+		t.Fatalf("metadataSnapshot().NodesByID[1].CapacityWeight = %d, want 2", got)
+	}
+}
+
+func TestControllerHostMetadataSnapshotCloneIsDeepReadOnly(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	seedControllerMetaForSnapshot(t, host)
+
+	host.handleLeaderChange(2, host.localNode)
+	waitForControllerMetadataSnapshotClean(t, host, time.Second)
+
+	snapshot, ok := host.metadataSnapshot()
+	if !ok {
+		t.Fatal("metadataSnapshot() ok = false, want true")
+	}
+	if len(snapshot.Assignments) != 1 {
+		t.Fatalf("metadataSnapshot().Assignments len = %d, want 1", len(snapshot.Assignments))
+	}
+	if got := snapshot.Assignments[0].DesiredPeers[0]; got != 1 {
+		t.Fatalf("metadataSnapshot().Assignments[0].DesiredPeers[0] = %d, want 1", got)
+	}
+
+	// Mutate the returned snapshot and ensure it cannot corrupt the cached snapshot state.
+	snapshot.Assignments[0].DesiredPeers[0] = 999
+
+	snapshot2, ok := host.metadataSnapshot()
+	if !ok {
+		t.Fatal("metadataSnapshot() ok = false after mutation, want true")
+	}
+	if got := snapshot2.AssignmentsBySlot[1].DesiredPeers[0]; got != 1 {
+		t.Fatalf("metadataSnapshot() DesiredPeers aliasing detected: got %d, want 1", got)
+	}
+}
+
+func TestControllerHostMetadataSnapshotMarkDirtyDuringReloadIsPreserved(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	seedControllerMetaForSnapshot(t, host)
+
+	host.handleLeaderChange(2, host.localNode)
+	waitForControllerMetadataSnapshotClean(t, host, time.Second)
+	if _, ok := host.metadataSnapshot(); !ok {
+		t.Fatal("metadataSnapshot() ok = false before reload, want true")
+	}
+
+	var calls uint32
+	started1 := make(chan struct{})
+	release1 := make(chan struct{})
+	started2 := make(chan struct{})
+	release2 := make(chan struct{})
+	setControllerMetadataSnapshotLoadFn(host, func(ctx context.Context, store *controllermeta.Store) (controllerMetadataSnapshot, error) {
+		n := atomic.AddUint32(&calls, 1)
+		switch n {
+		case 1:
+			close(started1)
+			<-release1
+		case 2:
+			close(started2)
+			<-release2
+		}
+		return loadControllerMetadataSnapshot(ctx, store)
+	})
+	t.Cleanup(func() { setControllerMetadataSnapshotLoadFn(host, nil) })
+
+	reloadDone := make(chan error, 1)
+	go func() {
+		reloadDone <- host.reloadMetadataSnapshot(context.Background())
+	}()
+
+	select {
+	case <-started1:
+	case <-time.After(time.Second):
+		t.Fatal("manual metadata snapshot reload did not start")
+	}
+	host.handleCommittedCommand(slotcontroller.Command{
+		Kind: slotcontroller.CommandKindOperatorRequest,
+		Op: &slotcontroller.OperatorRequest{
+			Kind:   slotcontroller.OperatorResumeNode,
+			NodeID: 1,
+		},
+	})
+	close(release1)
+
+	requireNoErr(t, <-reloadDone)
+
+	select {
+	case <-started2:
+	case <-time.After(time.Second):
+		t.Fatal("second metadata snapshot reload was not scheduled after dirty during reload")
+	}
+	peek := peekControllerMetadataSnapshot(host)
+	if !peek.Ready || !peek.Dirty {
+		t.Fatalf("metadataSnapshot state after reload = (Ready=%v Dirty=%v), want (true true)", peek.Ready, peek.Dirty)
+	}
+	close(release2)
+	waitForControllerMetadataSnapshotClean(t, host, time.Second)
+}
+
+func seedControllerMetaForSnapshot(t *testing.T, host *controllerHost) {
+	t.Helper()
+	requireNoErr(t, host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          1,
+		Addr:            "127.0.0.1:7001",
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Unix(1710000000, 0),
+		CapacityWeight:  1,
+	}))
+	requireNoErr(t, host.meta.UpsertAssignment(context.Background(), controllermeta.SlotAssignment{
+		SlotID:       1,
+		DesiredPeers: []uint64{1},
+		ConfigEpoch:  1,
+	}))
+	requireNoErr(t, host.meta.UpsertTask(context.Background(), controllermeta.ReconcileTask{
+		SlotID:  1,
+		Kind:    controllermeta.TaskKindBootstrap,
+		Step:    controllermeta.TaskStepAddLearner,
+		Status:  controllermeta.TaskStatusPending,
+		Attempt: 1,
+	}))
+}
+
+func peekControllerMetadataSnapshot(host *controllerHost) controllerMetadataSnapshot {
+	if host == nil {
+		return controllerMetadataSnapshot{}
+	}
+	host.metadataSnapshotState.mu.RLock()
+	defer host.metadataSnapshotState.mu.RUnlock()
+	return host.metadataSnapshotState.snapshot.clone()
+}
+
+func setControllerMetadataSnapshotLoadFn(host *controllerHost, fn func(context.Context, *controllermeta.Store) (controllerMetadataSnapshot, error)) {
+	if host == nil {
+		return
+	}
+	host.metadataSnapshotState.mu.Lock()
+	defer host.metadataSnapshotState.mu.Unlock()
+	host.metadataSnapshotState.loadFn = fn
+}
+
+func waitForControllerMetadataSnapshotClean(t *testing.T, host *controllerHost, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, ok := host.metadataSnapshot(); ok {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("controller metadata snapshot did not become clean before timeout")
+}
+
+func waitForHashSlotTableSnapshot(t *testing.T, host *controllerHost, timeout time.Duration) *HashSlotTable {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if table, ok := host.hashSlotTableSnapshot(); ok {
+			return table
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("hash slot snapshot did not become ready before timeout")
+	return nil
+}
+
+func waitForMirroredNode(t *testing.T, host *controllerHost, nodeID uint64, timeout time.Duration) controllermeta.ClusterNode {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if node, ok := host.healthScheduler.mirroredNode(nodeID); ok {
+			return node
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("mirroredNode(%d) did not become ready before timeout", nodeID)
+	return controllermeta.ClusterNode{}
+}
+
+func setControllerHostHashSlotLoadFn(host *controllerHost, fn func(context.Context) (*HashSlotTable, error)) {
+	if host == nil {
+		return
+	}
+	host.warmupHooksMu.Lock()
+	defer host.warmupHooksMu.Unlock()
+	host.loadHashSlotTableFn = fn
+}
+
+func setControllerHostNodeMirrorLoadFn(host *controllerHost, fn func(context.Context) ([]controllermeta.ClusterNode, error)) {
+	if host == nil {
+		return
+	}
+	host.warmupHooksMu.Lock()
+	defer host.warmupHooksMu.Unlock()
+	host.loadNodeMirrorFn = fn
 }

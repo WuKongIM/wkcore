@@ -111,9 +111,17 @@ func (h *controllerHandler) Handle(ctx context.Context, body []byte) ([]byte, er
 		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
 			return marshalRedirect()
 		}
-		assignments, err := c.controllerMeta.ListAssignments(ctx)
-		if err != nil {
-			return nil, err
+		var assignments []controllermeta.SlotAssignment
+		if c.controllerHost != nil {
+			if snapshot, ok := c.controllerHost.metadataSnapshot(); ok {
+				assignments = snapshot.Assignments
+			}
+		}
+		if assignments == nil {
+			assignments, err = c.controllerMeta.ListAssignments(ctx)
+			if err != nil {
+				return nil, err
+			}
 		}
 		table, err := loadHashSlotTable()
 		if err != nil {
@@ -128,9 +136,17 @@ func (h *controllerHandler) Handle(ctx context.Context, body []byte) ([]byte, er
 		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
 			return marshalRedirect()
 		}
-		nodes, err := c.controllerMeta.ListNodes(ctx)
-		if err != nil {
-			return nil, err
+		var nodes []controllermeta.ClusterNode
+		if c.controllerHost != nil {
+			if snapshot, ok := c.controllerHost.metadataSnapshot(); ok {
+				nodes = snapshot.Nodes
+			}
+		}
+		if nodes == nil {
+			nodes, err = c.controllerMeta.ListNodes(ctx)
+			if err != nil {
+				return nil, err
+			}
 		}
 		return encodeControllerResponse(req.Kind, controllerRPCResponse{Nodes: nodes})
 	case controllerRPCListRuntimeViews:
@@ -147,9 +163,17 @@ func (h *controllerHandler) Handle(ctx context.Context, body []byte) ([]byte, er
 		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
 			return marshalRedirect()
 		}
-		tasks, err := c.controllerMeta.ListTasks(ctx)
-		if err != nil {
-			return nil, err
+		var tasks []controllermeta.ReconcileTask
+		if c.controllerHost != nil {
+			if snapshot, ok := c.controllerHost.metadataSnapshot(); ok {
+				tasks = snapshot.Tasks
+			}
+		}
+		if tasks == nil {
+			tasks, err = c.controllerMeta.ListTasks(ctx)
+			if err != nil {
+				return nil, err
+			}
 		}
 		return encodeControllerResponse(req.Kind, controllerRPCResponse{Tasks: tasks})
 	case controllerRPCOperator:
@@ -174,6 +198,15 @@ func (h *controllerHandler) Handle(ctx context.Context, body []byte) ([]byte, er
 	case controllerRPCGetTask:
 		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
 			return marshalRedirect()
+		}
+		if c.controllerHost != nil {
+			if snapshot, ok := c.controllerHost.metadataSnapshot(); ok {
+				task, exists := snapshot.TasksBySlot[req.SlotID]
+				if !exists {
+					return encodeControllerResponse(req.Kind, controllerRPCResponse{NotFound: true})
+				}
+				return encodeControllerResponse(req.Kind, controllerRPCResponse{Task: &task})
+			}
 		}
 		task, err := c.controllerMeta.GetTask(ctx, req.SlotID)
 		if errors.Is(err, controllermeta.ErrNotFound) {

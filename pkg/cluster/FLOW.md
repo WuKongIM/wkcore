@@ -186,7 +186,10 @@ controllerTickOnce(ctx):
   条件: 本节点是 Controller Leader
   ① 若 leader 仍处于 warmup（尚未收到当前 leader term 下、覆盖全部 alive 节点的 runtime `FullSync=true`）→ 直接跳过
   ② snapshotPlannerState:
-     → ListNodes + ListAssignments + ListTasks + leader-local observation RuntimeViews
+     → 优先读 leader-local metadata snapshot (Nodes / Assignments / Tasks)
+       - snapshot `Ready && !Dirty` → 直接使用内存快照
+       - snapshot cold / dirty → fallback `controllerMeta.ListNodes/ListAssignments/ListTasks`
+     → + leader-local observation RuntimeViews
      → runtime views 来自 `observationCache.runtimeViewsByNode`
         - `FullSync=true`：替换单个 reporting node 的完整快照
         - `FullSync=false`：增量 upsert + `ClosedSlots` 删除
@@ -205,6 +208,8 @@ controllerTickOnce(ctx):
 Tick(ctx):
   ① 快照 assignments → 过滤出本节点参与的 desiredLocalSlots
   ② listControllerNodes → 获取所有节点状态 (alive/draining/dead)
+     → 若本节点是 Controller Leader 且 metadata snapshot clean，则优先读本地 metadata snapshot
+     → 否则走 controller client / fallback store 原逻辑
   ③ listRuntimeViews → 获取 leader 观测到的 Slot 运行时视图（leader-local snapshot）
   ④ 确保本地 Slot:
      遍历本节点分配:
@@ -212,6 +217,8 @@ Tick(ctx):
        → slotManager.ensureLocal [见 5.5]
   ⑤ loadTasks:
      → 并发(受 PoolSize 限制)向 Controller 查询每个 Slot 的 ReconcileTask
+     → 本节点若是 Controller Leader 且 metadata snapshot clean，`getTask` 优先读本地 `TasksBySlot`
+     → snapshot miss / dirty 时回落到当前 Controller 读路径
   ⑥ 保护迁移源 Slot:
      如果 task 的 SourceNode==本节点 且 kind 为 Repair/Rebalance
      → 源 Slot 即使不在 desiredLocalSlots 中也需保持打开
@@ -338,12 +345,17 @@ Delta 转发 (运行时):
        heartbeat         → 更新 leader-local observation / 刷新健康 deadline
                            → 优先读 leader-local HashSlot snapshot 返回版本/表
                            → snapshot miss 时 fallback store 并回填 snapshot
-       list_assignments  → controllerMeta.ListAssignments
+       list_assignments  → 优先读 leader-local metadata snapshot.Assignments
                            + leader-local HashSlot snapshot（miss 时 fallback store）
-       list_nodes        → controllerMeta.ListNodes
+                           → metadata snapshot dirty / cold 时 fallback `controllerMeta.ListAssignments`
+       list_nodes        → 优先读 leader-local metadata snapshot.Nodes
+                           → snapshot dirty / cold 时 fallback `controllerMeta.ListNodes`
        list_runtime_views→ controllerHost.snapshotObservations().RuntimeViews
        operator          → Propose(OperatorRequest)
-       get_task          → controllerMeta.GetTask
+       list_tasks        → 优先读 leader-local metadata snapshot.Tasks
+                           → snapshot dirty / cold 时 fallback `controllerMeta.ListTasks`
+       get_task          → 优先读 leader-local metadata snapshot.TasksBySlot
+                           → snapshot dirty / cold 时 fallback `controllerMeta.GetTask`
        force_reconcile   → forceReconcileOnLeader
        task_result       → Propose(TaskResult)
        start/advance/finalize/abort_migration → Propose(Migration)
@@ -385,6 +397,7 @@ Delta 转发 (运行时):
 - **Controller 观测读语义**: `ListObservedRuntimeViews` 在 leader 上优先读本地 `observationCache`；只有 leader 不可达时才允许降级到本地 `controllerMeta`，且结果可能滞后。
 - **Manager 严格一致读语义**: `ListNodesStrict`、`ListSlotAssignmentsStrict`、`ListObservedRuntimeViewsStrict`、`ListTasksStrict`、`GetReconcileTaskStrict` 只接受 controller leader 结果；本地节点若自身就是 leader 可直接读 leader 本地数据，否则必须经 controller client 读取，禁止降级到本地 `controllerMeta`。
 - **Controller HashSlot 读快路径**: leader 处理 `heartbeat` / `list_assignments` 时优先读 `controllerHost` 持有的 HashSlot snapshot；只有 snapshot cold miss 才会回落到 `controllerMeta.LoadHashSlotTable()`，回填后再继续返回。
+- **Controller metadata 读快路径**: leader-local `controllerMetadataSnapshot` 缓存 Nodes / Assignments / Tasks。planner、调和器本地 leader helper、以及 leader 侧 `list_assignments` / `list_nodes` / `list_tasks` / `get_task` 都优先读 clean snapshot；只要 snapshot dirty / cold 就必须回落到 Pebble-backed `controllerMeta`。
 - **节点健康改为 deadline 驱动**: steady-state 不再由 `controllerTickOnce()` 提案 `EvaluateTimeouts`；leader 本地 `nodeHealthScheduler` 只在 Alive/Suspect/Dead 边沿变化时提案 `NodeStatusUpdate`。
 - **节点健康 mirror 只反映 committed state**: `nodeHealthScheduler` 对 repeated Alive observation 优先读本地 durable node mirror；mirror miss 才 `GetNode()`。mirror 通过 leader change 全量 reload 和 committed command 增量 refresh 维护，不直接信任 proposal payload。
 - **新 leader 先 warmup 再规划**: leader change 会清空旧 observation，等待 fresh observation 后再恢复 Repair/Rebalance 规划，避免把“暂时未观测到”误判为节点故障。
