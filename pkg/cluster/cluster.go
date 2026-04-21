@@ -997,6 +997,26 @@ func (c *Cluster) ListNodes(ctx context.Context) ([]controllermeta.ClusterNode, 
 	return nil, ErrNotStarted
 }
 
+// ListNodesStrict returns the controller leader's node snapshot without local fallback.
+func (c *Cluster) ListNodesStrict(ctx context.Context) ([]controllermeta.ClusterNode, error) {
+	if c != nil && c.controllerMeta != nil && c.isLocalControllerLeader() {
+		return c.controllerMeta.ListNodes(ctx)
+	}
+	if c != nil && c.controllerClient != nil {
+		var nodes []controllermeta.ClusterNode
+		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
+			var err error
+			nodes, err = c.controllerClient.ListNodes(attemptCtx)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+		return nodes, nil
+	}
+	return nil, ErrNotStarted
+}
+
 func (c *Cluster) ListObservedRuntimeViews(ctx context.Context) ([]controllermeta.SlotRuntimeView, error) {
 	if views, ok := c.localObservedRuntimeViews(); ok {
 		return views, nil
@@ -1017,6 +1037,26 @@ func (c *Cluster) ListObservedRuntimeViews(ctx context.Context) ([]controllermet
 	}
 	if c.controllerMeta != nil {
 		return c.controllerMeta.ListRuntimeViews(ctx)
+	}
+	return nil, ErrNotStarted
+}
+
+// ListObservedRuntimeViewsStrict returns the controller leader's observed runtime snapshot without local fallback.
+func (c *Cluster) ListObservedRuntimeViewsStrict(ctx context.Context) ([]controllermeta.SlotRuntimeView, error) {
+	if views, ok := c.localObservedRuntimeViews(); ok {
+		return views, nil
+	}
+	if c != nil && c.controllerClient != nil {
+		var views []controllermeta.SlotRuntimeView
+		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
+			var err error
+			views, err = c.controllerClient.ListRuntimeViews(attemptCtx)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+		return views, nil
 	}
 	return nil, ErrNotStarted
 }
@@ -1075,6 +1115,33 @@ func (c *Cluster) ListSlotAssignments(ctx context.Context) ([]controllermeta.Slo
 		return assignments, nil
 	}
 	return c.ListCachedAssignments(), nil
+}
+
+// ListSlotAssignmentsStrict returns the controller leader's slot assignments without local fallback.
+func (c *Cluster) ListSlotAssignmentsStrict(ctx context.Context) ([]controllermeta.SlotAssignment, error) {
+	if c != nil && c.controllerMeta != nil && c.isLocalControllerLeader() {
+		assignments, err := c.controllerMeta.ListAssignments(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.syncRouterHashSlotTableFromStore(ctx); err != nil {
+			return nil, err
+		}
+		return assignments, nil
+	}
+	if c != nil && c.controllerClient != nil {
+		var assignments []controllermeta.SlotAssignment
+		err := c.retryControllerCommand(ctx, func(attemptCtx context.Context) error {
+			var err error
+			assignments, err = c.controllerClient.RefreshAssignments(attemptCtx)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+		return assignments, nil
+	}
+	return nil, ErrNotStarted
 }
 
 func controllerReadFallbackAllowed(err error) bool {

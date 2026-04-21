@@ -390,6 +390,122 @@ func TestListObservedRuntimeViewsFallsBackToLocalControllerMetaWhenControllerRea
 	}
 }
 
+func TestListNodesStrictReturnsLeaderDataWithoutLocalFallback(t *testing.T) {
+	dir := t.TempDir()
+	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
+	if err != nil {
+		t.Fatalf("open controllermeta: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          99,
+		Addr:            "127.0.0.1:7099",
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Now(),
+		CapacityWeight:  1,
+	}); err != nil {
+		t.Fatalf("UpsertNode() error = %v", err)
+	}
+
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, fakeControllerClient{
+		nodes: []controllermeta.ClusterNode{{
+			NodeID: 1,
+			Addr:   "127.0.0.1:7001",
+		}},
+	})
+
+	nodes, err := cluster.ListNodesStrict(context.Background())
+	if err != nil {
+		t.Fatalf("ListNodesStrict() error = %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].NodeID != 1 {
+		t.Fatalf("ListNodesStrict() = %v, want leader data only", nodes)
+	}
+}
+
+func TestListNodesStrictReturnsLeaderReadErrorWithoutLocalFallback(t *testing.T) {
+	dir := t.TempDir()
+	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
+	if err != nil {
+		t.Fatalf("open controllermeta: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          99,
+		Addr:            "127.0.0.1:7099",
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Now(),
+		CapacityWeight:  1,
+	}); err != nil {
+		t.Fatalf("UpsertNode() error = %v", err)
+	}
+
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, fakeControllerClient{listNodesErr: ErrNoLeader})
+
+	_, err = cluster.ListNodesStrict(context.Background())
+	if !errors.Is(err, ErrNoLeader) {
+		t.Fatalf("ListNodesStrict() error = %v, want %v", err, ErrNoLeader)
+	}
+}
+
+func TestListObservedRuntimeViewsStrictReturnsLeaderReadErrorWithoutLocalFallback(t *testing.T) {
+	dir := t.TempDir()
+	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
+	if err != nil {
+		t.Fatalf("open controllermeta: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertRuntimeView(context.Background(), controllermeta.SlotRuntimeView{
+		SlotID:       9,
+		CurrentPeers: []uint64{9, 9, 9},
+		LastReportAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertRuntimeView() error = %v", err)
+	}
+
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, fakeControllerClient{listRuntimeViewsErr: context.DeadlineExceeded})
+
+	_, err = cluster.ListObservedRuntimeViewsStrict(context.Background())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ListObservedRuntimeViewsStrict() error = %v, want %v", err, context.DeadlineExceeded)
+	}
+}
+
+func TestListSlotAssignmentsStrictReturnsLeaderReadErrorWithoutLocalFallback(t *testing.T) {
+	dir := t.TempDir()
+	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
+	if err != nil {
+		t.Fatalf("open controllermeta: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertAssignment(context.Background(), controllermeta.SlotAssignment{
+		SlotID:       7,
+		DesiredPeers: []uint64{7, 8, 9},
+		ConfigEpoch:  5,
+	}); err != nil {
+		t.Fatalf("UpsertAssignment() error = %v", err)
+	}
+
+	cluster := newTestClusterWithController(store, testControllerLeaderWaitTimeout, fakeControllerClient{assignmentsErr: ErrNoLeader})
+
+	_, err = cluster.ListSlotAssignmentsStrict(context.Background())
+	if !errors.Is(err, ErrNoLeader) {
+		t.Fatalf("ListSlotAssignmentsStrict() error = %v, want %v", err, ErrNoLeader)
+	}
+}
+
 func TestListSlotAssignmentsFallsBackToLocalControllerMetaWhenLeaderUnavailable(t *testing.T) {
 	dir := t.TempDir()
 	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
