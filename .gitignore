@@ -64,3 +64,4 @@ wukongim.conf
 .devdata/
 docker/dev-cluster/
 docker/dev-observability/
+tmp/
