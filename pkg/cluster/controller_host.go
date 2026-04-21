@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
@@ -21,8 +22,26 @@ type controllerHost struct {
 	observations    *observationCache
 	healthScheduler *nodeHealthScheduler
 	localNode       multiraft.NodeID
-	hashSlotMu      sync.RWMutex
-	hashSlotTable   *HashSlotTable
+
+	leaderTerm atomic.Uint64
+
+	hashSlotMu              sync.RWMutex
+	hashSlotTable           *HashSlotTable
+	hashSlotReloadMu        sync.Mutex
+	hashSlotReloadPending   bool
+	hashSlotReloadScheduled bool
+	hashSlotReloadSeq       uint64
+
+	warmupHooksMu       sync.RWMutex
+	loadHashSlotTableFn func(context.Context) (*HashSlotTable, error)
+	loadNodeMirrorFn    func(context.Context) ([]controllermeta.ClusterNode, error)
+	// metadataSnapshotState caches controller meta (nodes/assignments/tasks) as a leader-local fast path.
+	metadataSnapshotState controllerMetadataSnapshotState
+	// bgCtx is canceled on Stop() to stop best-effort background warmups.
+	bgCtx    context.Context
+	bgCancel context.CancelFunc
+	// metadataReloadTimeout bounds Pebble-backed metadata snapshot reload I/O in background workers.
+	metadataReloadTimeout time.Duration
 
 	warmupMu         sync.RWMutex
 	warmupLeaderID   multiraft.NodeID
@@ -62,6 +81,10 @@ func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, erro
 	}
 	timeouts := cfg.Timeouts
 	timeouts.applyDefaults()
+	host.metadataReloadTimeout = timeouts.ControllerRequest
+	host.bgCtx, host.bgCancel = context.WithCancel(context.Background())
+	host.loadHashSlotTableFn = func(ctx context.Context) (*HashSlotTable, error) { return host.meta.LoadHashSlotTable(ctx) }
+	host.loadNodeMirrorFn = func(ctx context.Context) ([]controllermeta.ClusterNode, error) { return host.meta.ListNodes(ctx) }
 	host.observations.runtimeViewTTL = 3 * timeouts.ObservationRuntimeFullSyncInterval
 	host.healthScheduler = newNodeHealthScheduler(nodeHealthSchedulerConfig{
 		suspectTimeout: 3 * time.Second,
@@ -103,6 +126,9 @@ func (h *controllerHost) Start(ctx context.Context) error {
 func (h *controllerHost) Stop() {
 	if h == nil {
 		return
+	}
+	if h.bgCancel != nil {
+		h.bgCancel()
 	}
 	if h.healthScheduler != nil {
 		h.healthScheduler.reset()
@@ -204,6 +230,32 @@ func (h *controllerHost) clearHashSlotTableSnapshot() {
 	h.hashSlotTable = nil
 }
 
+func (h *controllerHost) loadHashSlotTable(ctx context.Context) (*HashSlotTable, error) {
+	if h == nil {
+		return nil, nil
+	}
+	h.warmupHooksMu.RLock()
+	fn := h.loadHashSlotTableFn
+	h.warmupHooksMu.RUnlock()
+	if fn == nil {
+		return nil, nil
+	}
+	return fn(ctx)
+}
+
+func (h *controllerHost) loadNodeMirror(ctx context.Context) ([]controllermeta.ClusterNode, error) {
+	if h == nil {
+		return nil, nil
+	}
+	h.warmupHooksMu.RLock()
+	fn := h.loadNodeMirrorFn
+	h.warmupHooksMu.RUnlock()
+	if fn == nil {
+		return nil, nil
+	}
+	return fn(ctx)
+}
+
 func (h *controllerHost) reloadHashSlotTableSnapshot(ctx context.Context) error {
 	if h == nil || h.meta == nil {
 		return nil
@@ -215,6 +267,20 @@ func (h *controllerHost) reloadHashSlotTableSnapshot(ctx context.Context) error 
 	}
 	h.storeHashSlotTableSnapshot(table)
 	return nil
+}
+
+func (h *controllerHost) metadataSnapshot() (controllerMetadataSnapshot, bool) {
+	if h == nil {
+		return controllerMetadataSnapshot{}, false
+	}
+	return h.metadataSnapshotState.snapshotIfReadyClean()
+}
+
+func (h *controllerHost) reloadMetadataSnapshot(ctx context.Context) error {
+	if h == nil {
+		return nil
+	}
+	return h.metadataSnapshotState.reloadIfLeader(ctx, h.meta, h.localNode)
 }
 
 func (h *controllerHost) warmupComplete() bool {
@@ -318,6 +384,27 @@ func (h *controllerHost) handleLeaderChange(_, to multiraft.NodeID) {
 	if h == nil {
 		return
 	}
+
+	term := h.leaderTerm.Add(1)
+
+	h.warmupMu.Lock()
+	h.warmupLeaderID = to
+	h.warmupReady = false
+	h.warmupFullSyncs = make(map[uint64]struct{})
+	if to == h.localNode {
+		h.warmupGeneration++
+	}
+	h.warmupMu.Unlock()
+
+	h.hashSlotReloadMu.Lock()
+	h.hashSlotReloadPending = false
+	h.hashSlotReloadScheduled = false
+	h.hashSlotReloadSeq++
+	h.hashSlotReloadMu.Unlock()
+
+	// Clear on every leader change so no stale snapshot can be served during async warmups.
+	h.clearHashSlotTableSnapshot()
+
 	if h.observations != nil {
 		h.observations.reset()
 	}
@@ -325,22 +412,11 @@ func (h *controllerHost) handleLeaderChange(_, to multiraft.NodeID) {
 		h.healthScheduler.reset()
 	}
 	if to == h.localNode {
-		if h.healthScheduler != nil {
-			_ = h.healthScheduler.reloadAllNodes(context.Background())
-		}
-		_ = h.reloadHashSlotTableSnapshot(context.Background())
+		h.metadataSnapshotState.onLocalLeaderAcquiredAsync(h.bgCtx, h.meta, h.localNode, h.metadataReloadTimeout)
+		go h.warmupNodeMirror(term)
+		h.enqueueHashSlotTableReload(term)
 	} else {
-		h.clearHashSlotTableSnapshot()
-	}
-
-	h.warmupMu.Lock()
-	defer h.warmupMu.Unlock()
-
-	h.warmupLeaderID = to
-	h.warmupReady = false
-	h.warmupFullSyncs = make(map[uint64]struct{})
-	if to == h.localNode {
-		h.warmupGeneration++
+		h.metadataSnapshotState.invalidate(to)
 	}
 }
 
@@ -349,7 +425,17 @@ func (h *controllerHost) handleCommittedCommand(cmd slotcontroller.Command) {
 		return
 	}
 	if shouldRefreshHashSlotSnapshot(cmd) {
-		_ = h.reloadHashSlotTableSnapshot(context.Background())
+		// Invalidate immediately; leader reads must fall back until reload completes.
+		h.clearHashSlotTableSnapshot()
+		term := h.leaderTerm.Load()
+		h.enqueueHashSlotTableReload(term)
+	}
+	if shouldMarkMetadataSnapshotDirty(cmd) {
+		if shouldEnqueueMetadataSnapshotReload(cmd) {
+			h.metadataSnapshotState.markDirtyAndEnqueueReload(h.bgCtx, h.meta, h.localNode, h.metadataReloadTimeout)
+		} else {
+			h.metadataSnapshotState.markDirtyOnly()
+		}
 	}
 	if h.healthScheduler != nil {
 		h.healthScheduler.handleCommittedCommand(cmd)
@@ -357,6 +443,140 @@ func (h *controllerHost) handleCommittedCommand(cmd slotcontroller.Command) {
 	switch cmd.Kind {
 	case slotcontroller.CommandKindNodeStatusUpdate, slotcontroller.CommandKindOperatorRequest:
 		h.refreshWarmupReady()
+	}
+}
+
+func (h *controllerHost) isLocalLeaderTerm(term uint64) bool {
+	if h == nil {
+		return false
+	}
+	if h.leaderTerm.Load() != term {
+		return false
+	}
+	h.warmupMu.RLock()
+	defer h.warmupMu.RUnlock()
+	return h.warmupLeaderID == h.localNode && h.warmupGeneration > 0
+}
+
+func (h *controllerHost) isTerm(term uint64) bool {
+	return h != nil && h.leaderTerm.Load() == term
+}
+
+func (h *controllerHost) withWarmupTimeout() (context.Context, context.CancelFunc) {
+	ctx := h.bgCtx
+	timeout := h.metadataReloadTimeout
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	if ctx == nil {
+		return context.WithTimeout(context.Background(), timeout)
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func (h *controllerHost) warmupNodeMirror(term uint64) {
+	if h == nil || h.healthScheduler == nil {
+		return
+	}
+	if !h.isLocalLeaderTerm(term) {
+		return
+	}
+	ctx, cancel := h.withWarmupTimeout()
+	nodes, err := h.loadNodeMirror(ctx)
+	cancel()
+	if err != nil {
+		return
+	}
+	nodeMirror := make(map[uint64]controllermeta.ClusterNode, len(nodes))
+	for _, node := range nodes {
+		if node.NodeID == 0 {
+			continue
+		}
+		nodeMirror[node.NodeID] = node
+	}
+	s := h.healthScheduler
+	if !h.isLocalLeaderTerm(term) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !h.isTerm(term) {
+		return
+	}
+	s.nodeMirror = nodeMirror
+}
+
+func (h *controllerHost) enqueueHashSlotTableReload(term uint64) {
+	if h == nil {
+		return
+	}
+	if !h.isLocalLeaderTerm(term) {
+		return
+	}
+	startWorker := false
+	h.hashSlotReloadMu.Lock()
+	h.hashSlotReloadSeq++
+	h.hashSlotReloadPending = true
+	if !h.hashSlotReloadScheduled {
+		h.hashSlotReloadScheduled = true
+		startWorker = true
+	}
+	h.hashSlotReloadMu.Unlock()
+	if startWorker {
+		go h.hashSlotTableReloadWorker(term)
+	}
+}
+
+func (h *controllerHost) hashSlotTableReloadWorker(term uint64) {
+	if h == nil {
+		return
+	}
+	for {
+		var seq uint64
+		h.hashSlotReloadMu.Lock()
+		if !h.hashSlotReloadPending {
+			h.hashSlotReloadScheduled = false
+			h.hashSlotReloadMu.Unlock()
+			return
+		}
+		h.hashSlotReloadPending = false
+		seq = h.hashSlotReloadSeq
+		h.hashSlotReloadMu.Unlock()
+
+		if !h.isLocalLeaderTerm(term) {
+			h.hashSlotReloadMu.Lock()
+			h.hashSlotReloadPending = false
+			h.hashSlotReloadScheduled = false
+			h.hashSlotReloadMu.Unlock()
+			return
+		}
+
+		ctx, cancel := h.withWarmupTimeout()
+		table, err := h.loadHashSlotTable(ctx)
+		cancel()
+		if err != nil || table == nil {
+			continue
+		}
+
+		// Apply only if we're still in the same leader term and no newer reload was requested.
+		h.hashSlotReloadMu.Lock()
+		if h.hashSlotReloadSeq != seq {
+			h.hashSlotReloadMu.Unlock()
+			continue
+		}
+		if !h.isLocalLeaderTerm(term) {
+			h.hashSlotReloadMu.Unlock()
+			return
+		}
+		h.hashSlotMu.Lock()
+		if h.hashSlotReloadSeq != seq || !h.isTerm(term) {
+			h.hashSlotMu.Unlock()
+			h.hashSlotReloadMu.Unlock()
+			return
+		}
+		h.hashSlotTable = table.Clone()
+		h.hashSlotMu.Unlock()
+		h.hashSlotReloadMu.Unlock()
 	}
 }
 
@@ -371,5 +591,34 @@ func shouldRefreshHashSlotSnapshot(cmd slotcontroller.Command) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func shouldMarkMetadataSnapshotDirty(cmd slotcontroller.Command) bool {
+	switch cmd.Kind {
+	case slotcontroller.CommandKindNodeHeartbeat,
+		slotcontroller.CommandKindOperatorRequest,
+		slotcontroller.CommandKindEvaluateTimeouts,
+		slotcontroller.CommandKindTaskResult,
+		slotcontroller.CommandKindAssignmentTaskUpdate,
+		slotcontroller.CommandKindStartMigration,
+		slotcontroller.CommandKindAdvanceMigration,
+		slotcontroller.CommandKindFinalizeMigration,
+		slotcontroller.CommandKindAbortMigration,
+		slotcontroller.CommandKindAddSlot,
+		slotcontroller.CommandKindRemoveSlot,
+		slotcontroller.CommandKindNodeStatusUpdate:
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldEnqueueMetadataSnapshotReload(cmd slotcontroller.Command) bool {
+	switch cmd.Kind {
+	case slotcontroller.CommandKindNodeHeartbeat, slotcontroller.CommandKindEvaluateTimeouts:
+		return false
+	default:
+		return shouldMarkMetadataSnapshotDirty(cmd)
 	}
 }
