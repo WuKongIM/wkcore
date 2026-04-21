@@ -165,10 +165,113 @@ func TestListChannelRuntimeMetaPropagatesAuthoritativeErrors(t *testing.T) {
 	require.ErrorIs(t, err, raftcluster.ErrNoLeader)
 }
 
+func TestGetChannelRuntimeMetaRejectsInvalidChannelType(t *testing.T) {
+	app := New(Options{
+		Cluster: fakeClusterReader{
+			slotForKey: map[string]multiraft.SlotID{"g1": 7},
+			hashSlotForKey: map[string]uint16{
+				"g1": 129,
+			},
+		},
+		ChannelRuntimeMeta: &fakeChannelRuntimeMetaReader{},
+	})
+
+	_, err := app.GetChannelRuntimeMeta(context.Background(), "g1", 0)
+	require.ErrorIs(t, err, metadb.ErrInvalidArgument)
+}
+
+func TestGetChannelRuntimeMetaReturnsDetailWithSlotAndHashSlot(t *testing.T) {
+	reader := &fakeChannelRuntimeMetaReader{
+		metaByKey: map[metadb.ConversationKey]metadb.ChannelRuntimeMeta{
+			{ChannelID: "g1", ChannelType: 2}: {
+				ChannelID:    "g1",
+				ChannelType:  2,
+				ChannelEpoch: 12,
+				LeaderEpoch:  6,
+				Leader:       3,
+				Replicas:     []uint64{3, 5, 8},
+				ISR:          []uint64{3, 5},
+				MinISR:       2,
+				Status:       uint8(channel.StatusActive),
+				Features:     1,
+				LeaseUntilMS: 1700000000000,
+			},
+		},
+	}
+	app := New(Options{
+		Cluster: fakeClusterReader{
+			slotForKey: map[string]multiraft.SlotID{"g1": 7},
+			hashSlotForKey: map[string]uint16{
+				"g1": 129,
+			},
+		},
+		ChannelRuntimeMeta: reader,
+	})
+
+	got, err := app.GetChannelRuntimeMeta(context.Background(), "g1", 2)
+	require.NoError(t, err)
+	require.Equal(t, ChannelRuntimeMetaDetail{
+		ChannelRuntimeMeta: ChannelRuntimeMeta{
+			ChannelID:    "g1",
+			ChannelType:  2,
+			SlotID:       7,
+			ChannelEpoch: 12,
+			LeaderEpoch:  6,
+			Leader:       3,
+			Replicas:     []uint64{3, 5, 8},
+			ISR:          []uint64{3, 5},
+			MinISR:       2,
+			Status:       "active",
+		},
+		HashSlot:     129,
+		Features:     1,
+		LeaseUntilMS: 1700000000000,
+	}, got)
+	require.Equal(t, []channelRuntimeMetaGetCall{{
+		channelID:   "g1",
+		channelType: 2,
+	}}, reader.getCalls)
+}
+
+func TestGetChannelRuntimeMetaPropagatesNotFound(t *testing.T) {
+	reader := &fakeChannelRuntimeMetaReader{getErr: metadb.ErrNotFound}
+	app := New(Options{
+		Cluster: fakeClusterReader{
+			slotForKey: map[string]multiraft.SlotID{"g1": 7},
+			hashSlotForKey: map[string]uint16{
+				"g1": 129,
+			},
+		},
+		ChannelRuntimeMeta: reader,
+	})
+
+	_, err := app.GetChannelRuntimeMeta(context.Background(), "g1", 2)
+	require.ErrorIs(t, err, metadb.ErrNotFound)
+}
+
+func TestGetChannelRuntimeMetaPropagatesAuthoritativeReadErrors(t *testing.T) {
+	reader := &fakeChannelRuntimeMetaReader{getErr: raftcluster.ErrNoLeader}
+	app := New(Options{
+		Cluster: fakeClusterReader{
+			slotForKey: map[string]multiraft.SlotID{"g1": 7},
+			hashSlotForKey: map[string]uint16{
+				"g1": 129,
+			},
+		},
+		ChannelRuntimeMeta: reader,
+	})
+
+	_, err := app.GetChannelRuntimeMeta(context.Background(), "g1", 2)
+	require.ErrorIs(t, err, raftcluster.ErrNoLeader)
+}
+
 type fakeChannelRuntimeMetaReader struct {
 	pages     map[multiraft.SlotID]map[metadb.ChannelRuntimeMetaCursor]fakeChannelRuntimeMetaPage
 	errBySlot map[multiraft.SlotID]error
 	calls     []channelRuntimeMetaScanCall
+	metaByKey map[metadb.ConversationKey]metadb.ChannelRuntimeMeta
+	getErr    error
+	getCalls  []channelRuntimeMetaGetCall
 }
 
 type fakeChannelRuntimeMetaPage struct {
@@ -183,6 +286,11 @@ type channelRuntimeMetaScanCall struct {
 	limit  int
 }
 
+type channelRuntimeMetaGetCall struct {
+	channelID   string
+	channelType int64
+}
+
 func (f *fakeChannelRuntimeMetaReader) ScanChannelRuntimeMetaSlotPage(_ context.Context, slotID multiraft.SlotID, after metadb.ChannelRuntimeMetaCursor, limit int) ([]metadb.ChannelRuntimeMeta, metadb.ChannelRuntimeMetaCursor, bool, error) {
 	f.calls = append(f.calls, channelRuntimeMetaScanCall{slotID: slotID, after: after, limit: limit})
 	if err := f.errBySlot[slotID]; err != nil {
@@ -194,6 +302,18 @@ func (f *fakeChannelRuntimeMetaReader) ScanChannelRuntimeMetaSlotPage(_ context.
 		}
 	}
 	return nil, after, true, nil
+}
+
+func (f *fakeChannelRuntimeMetaReader) GetChannelRuntimeMeta(_ context.Context, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error) {
+	f.getCalls = append(f.getCalls, channelRuntimeMetaGetCall{channelID: channelID, channelType: channelType})
+	if f.getErr != nil {
+		return metadb.ChannelRuntimeMeta{}, f.getErr
+	}
+	meta, ok := f.metaByKey[metadb.ConversationKey{ChannelID: channelID, ChannelType: channelType}]
+	if !ok {
+		return metadb.ChannelRuntimeMeta{}, metadb.ErrNotFound
+	}
+	return meta, nil
 }
 
 func testChannelRuntimeMeta(channelID string, channelType int64, status channel.Status) metadb.ChannelRuntimeMeta {

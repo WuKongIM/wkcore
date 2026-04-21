@@ -14,6 +14,7 @@ import (
 	managementusecase "github.com/WuKongIM/WuKongIM/internal/usecase/management"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1071,6 +1072,172 @@ func TestManagerChannelRuntimeMetaReturnsServiceUnavailableWhenAuthoritativeRead
 	require.JSONEq(t, `{"error":"service_unavailable","message":"slot leader authoritative read unavailable"}`, rec.Body.String())
 }
 
+func TestManagerChannelRuntimeMetaDetailRejectsMissingToken(t *testing.T) {
+	srv := New(Options{
+		Auth:       testAuthConfig(nil),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/channel-runtime-meta/2/g1", nil)
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.JSONEq(t, `{"error":"unauthorized","message":"unauthorized"}`, rec.Body.String())
+}
+
+func TestManagerChannelRuntimeMetaDetailRejectsInsufficientPermission(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "viewer",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.slot",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/channel-runtime-meta/2/g1", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "viewer"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.JSONEq(t, `{"error":"forbidden","message":"forbidden"}`, rec.Body.String())
+}
+
+func TestManagerChannelRuntimeMetaDetailRejectsInvalidChannelType(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.channel",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/channel-runtime-meta/0/g1", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"error":"bad_request","message":"invalid channel_type"}`, rec.Body.String())
+}
+
+func TestManagerChannelRuntimeMetaDetailReturnsNotFound(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.channel",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{channelRuntimeMetaDetailErr: metadb.ErrNotFound},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/channel-runtime-meta/2/g1", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	require.JSONEq(t, `{"error":"not_found","message":"channel runtime meta not found"}`, rec.Body.String())
+}
+
+func TestManagerChannelRuntimeMetaDetailReturnsServiceUnavailableWhenAuthoritativeReadUnavailable(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.channel",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{channelRuntimeMetaDetailErr: raftcluster.ErrNoLeader},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/channel-runtime-meta/2/g1", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.JSONEq(t, `{"error":"service_unavailable","message":"slot leader authoritative read unavailable"}`, rec.Body.String())
+}
+
+func TestManagerChannelRuntimeMetaDetailReturnsObject(t *testing.T) {
+	var received channelRuntimeMetaDetailCall
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.channel",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{
+			channelRuntimeMetaDetailReqSink: &received,
+			channelRuntimeMetaDetail: managementusecase.ChannelRuntimeMetaDetail{
+				ChannelRuntimeMeta: managementusecase.ChannelRuntimeMeta{
+					ChannelID:    "g1",
+					ChannelType:  2,
+					SlotID:       7,
+					ChannelEpoch: 12,
+					LeaderEpoch:  6,
+					Leader:       3,
+					Replicas:     []uint64{3, 5, 8},
+					ISR:          []uint64{3, 5},
+					MinISR:       2,
+					Status:       "active",
+				},
+				HashSlot:     129,
+				Features:     1,
+				LeaseUntilMS: 1700000000000,
+			},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/channel-runtime-meta/2/g1", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, channelRuntimeMetaDetailCall{channelID: "g1", channelType: 2}, received)
+	require.NotContains(t, rec.Body.String(), `"items"`)
+	require.JSONEq(t, `{
+		"channel_id": "g1",
+		"channel_type": 2,
+		"slot_id": 7,
+		"hash_slot": 129,
+		"channel_epoch": 12,
+		"leader_epoch": 6,
+		"leader": 3,
+		"replicas": [3, 5, 8],
+		"isr": [3, 5],
+		"min_isr": 2,
+		"status": "active",
+		"features": 1,
+		"lease_until_ms": 1700000000000
+	}`, rec.Body.String())
+}
+
 func testAuthConfig(users []UserConfig) AuthConfig {
 	return AuthConfig{
 		On:        true,
@@ -1108,19 +1275,22 @@ func mustEncodeChannelRuntimeMetaCursorForTest(t *testing.T, cursor managementus
 }
 
 type managementStub struct {
-	nodes                     []managementusecase.Node
-	nodesErr                  error
-	slots                     []managementusecase.Slot
-	slotsErr                  error
-	slotDetail                managementusecase.SlotDetail
-	slotDetailErr             error
-	tasks                     []managementusecase.Task
-	tasksErr                  error
-	task                      managementusecase.TaskDetail
-	taskErr                   error
-	channelRuntimeMetaReqSink *managementusecase.ListChannelRuntimeMetaRequest
-	channelRuntimeMetaPage    managementusecase.ListChannelRuntimeMetaResponse
-	channelRuntimeMetaErr     error
+	nodes                           []managementusecase.Node
+	nodesErr                        error
+	slots                           []managementusecase.Slot
+	slotsErr                        error
+	slotDetail                      managementusecase.SlotDetail
+	slotDetailErr                   error
+	tasks                           []managementusecase.Task
+	tasksErr                        error
+	task                            managementusecase.TaskDetail
+	taskErr                         error
+	channelRuntimeMetaReqSink       *managementusecase.ListChannelRuntimeMetaRequest
+	channelRuntimeMetaPage          managementusecase.ListChannelRuntimeMetaResponse
+	channelRuntimeMetaErr           error
+	channelRuntimeMetaDetailReqSink *channelRuntimeMetaDetailCall
+	channelRuntimeMetaDetail        managementusecase.ChannelRuntimeMetaDetail
+	channelRuntimeMetaDetailErr     error
 }
 
 func (s managementStub) ListNodes(context.Context) ([]managementusecase.Node, error) {
@@ -1148,6 +1318,18 @@ func (s managementStub) ListChannelRuntimeMeta(_ context.Context, req management
 		*s.channelRuntimeMetaReqSink = req
 	}
 	return s.channelRuntimeMetaPage, s.channelRuntimeMetaErr
+}
+
+func (s managementStub) GetChannelRuntimeMeta(_ context.Context, channelID string, channelType int64) (managementusecase.ChannelRuntimeMetaDetail, error) {
+	if s.channelRuntimeMetaDetailReqSink != nil {
+		*s.channelRuntimeMetaDetailReqSink = channelRuntimeMetaDetailCall{channelID: channelID, channelType: channelType}
+	}
+	return s.channelRuntimeMetaDetail, s.channelRuntimeMetaDetailErr
+}
+
+type channelRuntimeMetaDetailCall struct {
+	channelID   string
+	channelType int64
 }
 
 type loginResponseBody struct {

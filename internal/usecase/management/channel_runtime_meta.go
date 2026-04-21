@@ -33,6 +33,17 @@ type ChannelRuntimeMeta struct {
 	Status string
 }
 
+// ChannelRuntimeMetaDetail is the manager-facing channel runtime metadata detail DTO.
+type ChannelRuntimeMetaDetail struct {
+	ChannelRuntimeMeta
+	// HashSlot is the logical hash slot derived from the channel key.
+	HashSlot uint16
+	// Features is the raw runtime feature bitset.
+	Features uint64
+	// LeaseUntilMS is the leader lease deadline in milliseconds.
+	LeaseUntilMS int64
+}
+
 // ChannelRuntimeMetaListCursor identifies the next manager list position.
 type ChannelRuntimeMetaListCursor struct {
 	// SlotID is the current physical slot position.
@@ -119,6 +130,29 @@ func (a *App) ListChannelRuntimeMeta(ctx context.Context, req ListChannelRuntime
 	return resp, nil
 }
 
+// GetChannelRuntimeMeta returns one manager-facing authoritative channel runtime detail DTO.
+func (a *App) GetChannelRuntimeMeta(ctx context.Context, channelID string, channelType int64) (ChannelRuntimeMetaDetail, error) {
+	if a == nil || a.cluster == nil || a.channelRuntimeMeta == nil {
+		return ChannelRuntimeMetaDetail{}, nil
+	}
+	if channelType <= 0 {
+		return ChannelRuntimeMetaDetail{}, metadb.ErrInvalidArgument
+	}
+
+	meta, err := a.channelRuntimeMeta.GetChannelRuntimeMeta(ctx, channelID, channelType)
+	if err != nil {
+		return ChannelRuntimeMetaDetail{}, err
+	}
+
+	slotID := a.cluster.SlotForKey(channelID)
+	return ChannelRuntimeMetaDetail{
+		ChannelRuntimeMeta: managerChannelRuntimeMeta(slotID, meta),
+		HashSlot:           a.cluster.HashSlotForKey(channelID),
+		Features:           meta.Features,
+		LeaseUntilMS:       meta.LeaseUntilMS,
+	}, nil
+}
+
 func validateChannelRuntimeMetaListCursor(cursor ChannelRuntimeMetaListCursor) error {
 	if cursor.SlotID == 0 {
 		if cursor.ChannelID == "" && cursor.ChannelType == 0 {
@@ -163,20 +197,24 @@ func (a *App) findNextChannelRuntimeMetaSlotWithData(ctx context.Context, slotID
 func managerChannelRuntimeMetaItems(slotID multiraft.SlotID, metas []metadb.ChannelRuntimeMeta) []ChannelRuntimeMeta {
 	out := make([]ChannelRuntimeMeta, 0, len(metas))
 	for _, meta := range metas {
-		out = append(out, ChannelRuntimeMeta{
-			ChannelID:    meta.ChannelID,
-			ChannelType:  meta.ChannelType,
-			SlotID:       uint32(slotID),
-			ChannelEpoch: meta.ChannelEpoch,
-			LeaderEpoch:  meta.LeaderEpoch,
-			Leader:       meta.Leader,
-			Replicas:     append([]uint64(nil), meta.Replicas...),
-			ISR:          append([]uint64(nil), meta.ISR...),
-			MinISR:       meta.MinISR,
-			Status:       managerChannelRuntimeStatus(meta.Status),
-		})
+		out = append(out, managerChannelRuntimeMeta(slotID, meta))
 	}
 	return out
+}
+
+func managerChannelRuntimeMeta(slotID multiraft.SlotID, meta metadb.ChannelRuntimeMeta) ChannelRuntimeMeta {
+	return ChannelRuntimeMeta{
+		ChannelID:    meta.ChannelID,
+		ChannelType:  meta.ChannelType,
+		SlotID:       uint32(slotID),
+		ChannelEpoch: meta.ChannelEpoch,
+		LeaderEpoch:  meta.LeaderEpoch,
+		Leader:       meta.Leader,
+		Replicas:     append([]uint64(nil), meta.Replicas...),
+		ISR:          append([]uint64(nil), meta.ISR...),
+		MinISR:       meta.MinISR,
+		Status:       managerChannelRuntimeStatus(meta.Status),
+	}
 }
 
 func managerChannelRuntimeStatus(status uint8) string {
