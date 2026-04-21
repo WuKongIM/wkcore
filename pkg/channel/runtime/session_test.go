@@ -1551,8 +1551,15 @@ func TestSessionLongPollTimedOutResponseImmediatelyReissuesPoll(t *testing.T) {
 		},
 	})
 
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if session.sendCount() >= 2 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if got := session.sendCount(); got != 2 {
-		t.Fatalf("expected timed-out empty response to immediately reissue poll, got %d sends", got)
+		t.Fatalf("expected timed-out empty response to promptly reissue poll, got %d sends", got)
 	}
 	if session.last.Kind != MessageKindLanePollRequest {
 		t.Fatalf("last kind after timeout = %v, want lane poll request", session.last.Kind)
@@ -1562,6 +1569,80 @@ func TestSessionLongPollTimedOutResponseImmediatelyReissuesPoll(t *testing.T) {
 	}
 	if session.last.LanePollRequest.LaneID != testFollowerLaneFor(key, 4) {
 		t.Fatalf("reissue lane = %d, want %d", session.last.LanePollRequest.LaneID, testFollowerLaneFor(key, 4))
+	}
+}
+
+func TestSessionLongPollTimedOutReissueDoesNotStarveOtherPendingLanes(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.ReplicationMode = "long_poll"
+		cfg.LongPollLaneCount = 2
+		cfg.LongPollMaxWait = 2 * time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+
+	firstKey := testChannelKeyForLane(t, 0, 2, "lp-starve-first")
+	secondKey := testChannelKeyForLane(t, 1, 2, "lp-starve-second")
+	mustEnsureLocal(t, env.runtime, core.Meta{
+		Key:      firstKey,
+		Epoch:    11,
+		Leader:   2,
+		Replicas: []core.NodeID{1, 2, 3},
+		ISR:      []core.NodeID{1, 2, 3},
+		MinISR:   2,
+	})
+	mustEnsureLocal(t, env.runtime, core.Meta{
+		Key:      secondKey,
+		Epoch:    12,
+		Leader:   2,
+		Replicas: []core.NodeID{1, 2, 3},
+		ISR:      []core.NodeID{1, 2, 3},
+		MinISR:   2,
+	})
+
+	session := env.sessions.session(2)
+	var firstLaneResponses int
+	session.afterSend = func() {
+		session.mu.Lock()
+		last := session.last
+		session.mu.Unlock()
+
+		if last.Kind != MessageKindLanePollRequest || last.LanePollRequest == nil {
+			return
+		}
+		if last.LanePollRequest.LaneID != 0 || firstLaneResponses >= 3 {
+			return
+		}
+		firstLaneResponses++
+		env.transport.deliver(Envelope{
+			Peer: 2,
+			Kind: MessageKindLanePollResponse,
+			Sync: true,
+			LanePollResponse: &LanePollResponseEnvelope{
+				LaneID:       0,
+				Status:       LanePollStatusOK,
+				SessionID:    601,
+				SessionEpoch: 1,
+				TimedOut:     true,
+			},
+		})
+	}
+
+	env.runtime.runScheduler()
+
+	session.mu.Lock()
+	sent := append([]Envelope(nil), session.sent...)
+	session.mu.Unlock()
+	if len(sent) < 2 {
+		t.Fatalf("expected at least two long-poll sends, got %d", len(sent))
+	}
+	if sent[0].LanePollRequest == nil || sent[1].LanePollRequest == nil {
+		t.Fatalf("first sends missing lane poll payloads: %+v", sent[:2])
+	}
+	firstTwo := []uint16{sent[0].LanePollRequest.LaneID, sent[1].LanePollRequest.LaneID}
+	if firstTwo[0] == firstTwo[1] {
+		t.Fatalf("timed-out lane reissue monopolized sends before other populated lane opened, got first two lanes %v", firstTwo)
 	}
 }
 
@@ -1669,8 +1750,15 @@ func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
 		},
 	})
 
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if session.sendCount() >= 2 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if got := session.sendCount(); got != 2 {
-		t.Fatalf("expected need_reset response to immediately send a fresh open, got %d sends", got)
+		t.Fatalf("expected need_reset response to promptly send a fresh open, got %d sends", got)
 	}
 	if session.last.Kind != MessageKindLanePollRequest {
 		t.Fatalf("last kind after reset = %v, want lane poll request", session.last.Kind)

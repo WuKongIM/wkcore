@@ -806,26 +806,33 @@ func (r *runtime) handleLanePollResponse(peer core.NodeID, resp LanePollResponse
 	if !reissue {
 		return
 	}
-	req, ok := manager.NextRequest(resp.LaneID)
+	r.reissueLanePoll(peer, resp.LaneID, manager)
+}
+
+func (r *runtime) reissueLanePoll(peer core.NodeID, laneID uint16, manager *PeerLaneManager) {
+	req, ok := manager.NextRequest(laneID)
 	if !ok {
 		return
 	}
-	retryKey, _ := manager.AnyChannel(resp.LaneID)
-	r.sendOrDeferEnvelope(Envelope{
-		Peer:            peer,
-		ChannelKey:      retryKey,
-		RequestID:       r.requestID.Add(1),
-		Kind:            MessageKindLanePollRequest,
-		LanePollRequest: &req,
-	}, func(err error) {
+	retryKey, _ := manager.AnyChannel(laneID)
+	go func() {
+		// Break the synchronous response->reissue recursion so one hot lane
+		// can't monopolize the channel scheduler and starve other pending lanes.
+		err := r.sendEnvelope(Envelope{
+			Peer:            peer,
+			ChannelKey:      retryKey,
+			RequestID:       r.requestID.Add(1),
+			Kind:            MessageKindLanePollRequest,
+			LanePollRequest: &req,
+		})
 		if err == nil {
 			return
 		}
-		manager.SendFailed(resp.LaneID)
+		manager.SendFailed(laneID)
 		if retryKey != "" {
 			r.scheduleFollowerReplication(retryKey, peer)
 		}
-	})
+	}()
 }
 
 func (r *runtime) applyFetchResponseEnvelope(ch *channel, peer core.NodeID, env FetchResponseEnvelope) error {
