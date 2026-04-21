@@ -32,6 +32,8 @@ type Management interface {
 	ListChannelRuntimeMeta(ctx context.Context, req managementusecase.ListChannelRuntimeMetaRequest) (managementusecase.ListChannelRuntimeMetaResponse, error)
 	// GetChannelRuntimeMeta returns one manager-facing channel runtime metadata detail DTO.
 	GetChannelRuntimeMeta(ctx context.Context, channelID string, channelType int64) (managementusecase.ChannelRuntimeMetaDetail, error)
+	// GetOverview returns the manager homepage overview DTO.
+	GetOverview(ctx context.Context) (managementusecase.Overview, error)
 }
 
 // PermissionConfig binds a resource to allowed actions.
