@@ -273,22 +273,19 @@ func TestConfigDefaultsSendPathTuning(t *testing.T) {
 	require.Equal(t, 4, cfg.Cluster.DataPlaneMaxPendingFetch)
 }
 
-func TestConfigLongPollDefaultsAreAppliedInLongPollMode(t *testing.T) {
+func TestConfigAlwaysAppliesLongPollDefaults(t *testing.T) {
 	cfg := validConfig()
-	cfg.Cluster.ReplicationMode = "long_poll"
 
 	require.NoError(t, cfg.ApplyDefaultsAndValidate())
 
-	require.Equal(t, "long_poll", cfg.Cluster.ReplicationMode)
 	require.Equal(t, 8, cfg.Cluster.LongPollLaneCount)
 	require.Equal(t, 1*time.Millisecond, cfg.Cluster.LongPollMaxWait)
 	require.Equal(t, 64*1024, cfg.Cluster.LongPollMaxBytes)
 	require.Equal(t, 64, cfg.Cluster.LongPollMaxChannels)
 }
 
-func TestConfigLongPollPreservesExplicitOverrides(t *testing.T) {
+func TestConfigLongPollPreservesExplicitOverridesWithoutReplicationMode(t *testing.T) {
 	cfg := validConfig()
-	cfg.Cluster.ReplicationMode = "long_poll"
 	cfg.Cluster.LongPollLaneCount = 16
 	cfg.Cluster.LongPollMaxWait = 2 * time.Millisecond
 	cfg.Cluster.LongPollMaxBytes = 128 * 1024
@@ -296,23 +293,10 @@ func TestConfigLongPollPreservesExplicitOverrides(t *testing.T) {
 
 	require.NoError(t, cfg.ApplyDefaultsAndValidate())
 
-	require.Equal(t, "long_poll", cfg.Cluster.ReplicationMode)
 	require.Equal(t, 16, cfg.Cluster.LongPollLaneCount)
 	require.Equal(t, 2*time.Millisecond, cfg.Cluster.LongPollMaxWait)
 	require.Equal(t, 128*1024, cfg.Cluster.LongPollMaxBytes)
 	require.Equal(t, 32, cfg.Cluster.LongPollMaxChannels)
-}
-
-func TestConfigLongPollLeavesUnsetModeUntouched(t *testing.T) {
-	cfg := validConfig()
-
-	require.NoError(t, cfg.ApplyDefaultsAndValidate())
-
-	require.Equal(t, "", cfg.Cluster.ReplicationMode)
-	require.Zero(t, cfg.Cluster.LongPollLaneCount)
-	require.Zero(t, cfg.Cluster.LongPollMaxWait)
-	require.Zero(t, cfg.Cluster.LongPollMaxBytes)
-	require.Zero(t, cfg.Cluster.LongPollMaxChannels)
 }
 
 func TestConfigPreservesExplicitSendPathTuning(t *testing.T) {

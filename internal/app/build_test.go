@@ -139,7 +139,6 @@ func TestLoadRecentConversationMessagesTreatsNotReadyAsEmpty(t *testing.T) {
 
 func TestBuildLongPollForwardsReplicationSettingsIntoChannelConfigs(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.Cluster.ReplicationMode = "long_poll"
 	cfg.Cluster.LongPollLaneCount = 16
 	cfg.Cluster.LongPollMaxWait = 2 * time.Millisecond
 	cfg.Cluster.LongPollMaxBytes = 128 * 1024
@@ -152,18 +151,15 @@ func TestBuildLongPollForwardsReplicationSettingsIntoChannelConfigs(t *testing.T
 	})
 
 	require.Equal(t, channel.Config{
-		ReplicationMode:     "long_poll",
 		LongPollLaneCount:   16,
 		LongPollMaxWait:     2 * time.Millisecond,
 		LongPollMaxBytes:    128 * 1024,
 		LongPollMaxChannels: 32,
 	}, cfg.Cluster.replicationConfig())
-	require.Equal(t, "long_poll", appRuntimeStringField(t, app.isrRuntime, "cfg", "ReplicationMode"))
 	require.Equal(t, 16, appRuntimeIntField(t, app.isrRuntime, "cfg", "LongPollLaneCount"))
 	require.Equal(t, 2*time.Millisecond, appRuntimeDurationField(t, app.isrRuntime, "cfg", "LongPollMaxWait"))
 	require.Equal(t, 128*1024, appRuntimeIntField(t, app.isrRuntime, "cfg", "LongPollMaxBytes"))
 	require.Equal(t, 32, appRuntimeIntField(t, app.isrRuntime, "cfg", "LongPollMaxChannels"))
-	require.Equal(t, "long_poll", appTransportStringField(t, app.isrTransport, "replicationMode"))
 	require.Equal(t, 16, appTransportIntField(t, app.isrTransport, "longPollLaneCount"))
 	require.Equal(t, 2*time.Millisecond, appTransportDurationField(t, app.isrTransport, "longPollMaxWait"))
 	require.Equal(t, 128*1024, appTransportIntField(t, app.isrTransport, "longPollMaxBytes"))

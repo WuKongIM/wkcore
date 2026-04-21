@@ -41,7 +41,6 @@ const (
 	sendStressDialTimeoutEnv       = "WK_SEND_STRESS_DIAL_TIMEOUT"
 	sendStressAckTimeoutEnv        = "WK_SEND_STRESS_ACK_TIMEOUT"
 	sendStressSeedEnv              = "WK_SEND_STRESS_SEED"
-	sendStressReplicationModeEnv   = "WK_CLUSTER_REPLICATION_MODE"
 	sendStressWarmupAckTimeout     = 12 * time.Second
 	sendStressThroughputInflight   = 32
 	sendStressReplicaVerifyTimeout = 20 * time.Second
@@ -936,14 +935,13 @@ func TestSendStressArtifactsAreScenarioSpecific(t *testing.T) {
 	require.Equal(t, "tmp/profiles/send-stress-hot-cold-skew.block.out", hotCold.BlockPath)
 }
 
-func TestSelectSendStressThreeNodeRunHonorsLongPollReplicationEnv(t *testing.T) {
+func TestSelectSendStressThreeNodeRunUsesAcceptancePresetByDefault(t *testing.T) {
 	preset := sendStressAcceptancePreset()
 	applySendStressAcceptanceConfigEnv(t, preset.Benchmark)
-	t.Setenv("WK_CLUSTER_REPLICATION_MODE", "long_poll")
 
 	selection := selectSendStressThreeNodeRun(t)
 
-	require.Equal(t, "long_poll", selection.replicationMode)
+	require.True(t, selection.useAcceptancePreset)
 }
 
 func TestSendStressHotColdLatencySummarySeparatesHotAndColdRecords(t *testing.T) {
@@ -1261,9 +1259,6 @@ func TestSendStressThreeNode(t *testing.T) {
 		if selection.useAcceptancePreset {
 			applySendPathTuning(t, appCfg, preset)
 		}
-		if selection.replicationMode != "" {
-			appCfg.Cluster.ReplicationMode = selection.replicationMode
-		}
 		if cfg.Mode == sendStressModeThroughput {
 			appCfg.Gateway.DefaultSession.AsyncSendDispatch = true
 		}
@@ -1299,9 +1294,6 @@ func TestSendStressSingleHotChannelThreeNode(t *testing.T) {
 	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(appCfg *Config) {
 		if selection.useAcceptancePreset {
 			applySendPathTuning(t, appCfg, preset)
-		}
-		if selection.replicationMode != "" {
-			appCfg.Cluster.ReplicationMode = selection.replicationMode
 		}
 		if cfg.Mode == sendStressModeThroughput {
 			appCfg.Gateway.DefaultSession.AsyncSendDispatch = true
@@ -1340,9 +1332,6 @@ func TestSendStressHotColdSkewThreeNode(t *testing.T) {
 	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(appCfg *Config) {
 		if selection.useAcceptancePreset {
 			applySendPathTuning(t, appCfg, preset)
-		}
-		if selection.replicationMode != "" {
-			appCfg.Cluster.ReplicationMode = selection.replicationMode
 		}
 		if cfg.Mode == sendStressModeThroughput {
 			appCfg.Gateway.DefaultSession.AsyncSendDispatch = true
@@ -1392,7 +1381,6 @@ func selectSendStressThreeNodeRun(t *testing.T) sendStressThreeNodeRunSelection 
 	preset := sendStressAcceptancePreset()
 	cfg := loadSendStressConfig(t)
 	requireSendStressEnabled(t, cfg)
-	replicationMode := strings.TrimSpace(os.Getenv(sendStressReplicationModeEnv))
 
 	expectedAcceptance := preset.Benchmark
 	expectedAcceptance.Enabled = true
@@ -1403,7 +1391,6 @@ func selectSendStressThreeNodeRun(t *testing.T) sendStressThreeNodeRunSelection 
 			cfg:                 cfg,
 			preset:              preset,
 			minISR:              preset.MinISR,
-			replicationMode:     replicationMode,
 			useAcceptancePreset: true,
 		}
 	}
@@ -1412,7 +1399,6 @@ func selectSendStressThreeNodeRun(t *testing.T) sendStressThreeNodeRunSelection 
 		cfg:                 cfg,
 		preset:              preset,
 		minISR:              3,
-		replicationMode:     replicationMode,
 		useAcceptancePreset: false,
 	}
 }
@@ -1421,7 +1407,6 @@ type sendStressThreeNodeRunSelection struct {
 	cfg                 sendStressConfig
 	preset              sendStressAcceptanceSpec
 	minISR              int
-	replicationMode     string
 	useAcceptancePreset bool
 }
 
@@ -1458,7 +1443,6 @@ func clearSendStressConfigEnv(t *testing.T) {
 		sendStressDialTimeoutEnv,
 		sendStressAckTimeoutEnv,
 		sendStressSeedEnv,
-		sendStressReplicationModeEnv,
 	} {
 		name := name
 		if value, ok := os.LookupEnv(name); ok {
@@ -1544,8 +1528,7 @@ func filterSendStressEnv(env []string) []string {
 			strings.HasPrefix(entry, sendStressMaxInflightEnv+"=") ||
 			strings.HasPrefix(entry, sendStressDialTimeoutEnv+"=") ||
 			strings.HasPrefix(entry, sendStressAckTimeoutEnv+"=") ||
-			strings.HasPrefix(entry, sendStressSeedEnv+"=") ||
-			strings.HasPrefix(entry, sendStressReplicationModeEnv+"=") {
+			strings.HasPrefix(entry, sendStressSeedEnv+"=") {
 			continue
 		}
 		filtered = append(filtered, entry)

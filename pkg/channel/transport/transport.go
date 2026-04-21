@@ -21,7 +21,6 @@ type Options struct {
 	LongPollService     LongPollService
 	RPCTimeout          time.Duration
 	MaxPendingFetchRPC  int
-	ReplicationMode     string
 	LongPollLaneCount   int
 	LongPollMaxWait     time.Duration
 	LongPollMaxBytes    int
@@ -34,7 +33,6 @@ type Transport struct {
 	rpcMux              *wktransport.RPCMux
 	rpcTimeout          time.Duration
 	maxPending          int
-	replicationMode     string
 	longPollLaneCount   int
 	longPollMaxWait     time.Duration
 	longPollMaxBytes    int
@@ -45,7 +43,6 @@ type Transport struct {
 	fetchService     runtime.FetchService
 	longPollService  LongPollService
 	reconcileService runtime.ReconcileProbeService
-	statusSource     channel.HandlerRuntime
 	closeOnce        sync.Once
 
 	sessions *sessionManager
@@ -77,16 +74,12 @@ func New(opts Options) (*Transport, error) {
 		rpcMux:              opts.RPCMux,
 		rpcTimeout:          opts.RPCTimeout,
 		maxPending:          opts.MaxPendingFetchRPC,
-		replicationMode:     opts.ReplicationMode,
 		longPollLaneCount:   opts.LongPollLaneCount,
 		longPollMaxWait:     opts.LongPollMaxWait,
 		longPollMaxBytes:    opts.LongPollMaxBytes,
 		longPollMaxChannels: opts.LongPollMaxChannels,
 		fetchService:        opts.FetchService,
 		longPollService:     opts.LongPollService,
-	}
-	if source, ok := opts.FetchService.(channel.HandlerRuntime); ok {
-		transport.statusSource = source
 	}
 	if lp, ok := opts.FetchService.(LongPollService); ok {
 		transport.longPollService = lp
@@ -98,12 +91,7 @@ func New(opts Options) (*Transport, error) {
 	}
 	transport.sessions = newSessionManager(transport)
 	opts.RPCMux.Handle(RPCServiceFetch, transport.handleRPC)
-	opts.RPCMux.Handle(RPCServiceFetchBatch, transport.handleFetchBatchRPC)
-	if transport.replicationMode == "long_poll" {
-		opts.RPCMux.Handle(RPCServiceLongPollFetch, transport.handleLongPollFetchRPC)
-	} else {
-		opts.RPCMux.Handle(RPCServiceProgressAck, transport.handleProgressAckRPC)
-	}
+	opts.RPCMux.Handle(RPCServiceLongPollFetch, transport.handleLongPollFetchRPC)
 	opts.RPCMux.Handle(RPCServiceReconcileProbe, transport.handleReconcileProbeRPC)
 	return transport, nil
 }
@@ -198,8 +186,6 @@ func (t *Transport) Close() error {
 			return
 		}
 		t.rpcMux.Unhandle(RPCServiceFetch)
-		t.rpcMux.Unhandle(RPCServiceFetchBatch)
-		t.rpcMux.Unhandle(RPCServiceProgressAck)
 		t.rpcMux.Unhandle(RPCServiceLongPollFetch)
 		t.rpcMux.Unhandle(RPCServiceReconcileProbe)
 	})
@@ -209,9 +195,6 @@ func (t *Transport) Close() error {
 func (t *Transport) BindFetchService(service runtime.FetchService) {
 	t.mu.Lock()
 	t.fetchService = service
-	if source, ok := service.(channel.HandlerRuntime); ok {
-		t.statusSource = source
-	}
 	if probeService, ok := service.(runtime.ReconcileProbeService); ok {
 		t.reconcileService = probeService
 	} else {
@@ -265,51 +248,6 @@ func (t *Transport) handleRPC(ctx context.Context, body []byte) ([]byte, error) 
 		return nil, err
 	}
 	return encodeFetchResponse(resp)
-}
-
-func (t *Transport) handleFetchBatchRPC(ctx context.Context, body []byte) ([]byte, error) {
-	req, err := decodeFetchBatchRequest(body)
-	if err != nil {
-		return nil, err
-	}
-	service, err := t.boundFetchService()
-	if err != nil {
-		return nil, err
-	}
-	resp := runtime.FetchBatchResponseEnvelope{
-		Items: make([]runtime.FetchBatchResponseItem, 0, len(req.Items)),
-	}
-	for _, item := range req.Items {
-		itemResp := runtime.FetchBatchResponseItem{RequestID: item.RequestID}
-		// Batched fetch RPCs must stay prompt; otherwise one idle channel can
-		// head-of-line block the whole batch while singleton fetches long-poll.
-		fetchResp, fetchErr := service.ServeFetch(runtime.WithoutFetchLongPoll(ctx), item.Request)
-		if fetchErr != nil {
-			itemResp.Error = fetchErr.Error()
-		} else {
-			fetchRespCopy := fetchResp
-			itemResp.Response = &fetchRespCopy
-		}
-		resp.Items = append(resp.Items, itemResp)
-	}
-	return encodeFetchBatchResponse(resp)
-}
-
-func (t *Transport) handleProgressAckRPC(ctx context.Context, body []byte) ([]byte, error) {
-	ack, err := decodeProgressAck(body)
-	if err != nil {
-		return nil, err
-	}
-	t.deliver(runtime.Envelope{
-		Peer:        ack.ReplicaID,
-		ChannelKey:  ack.ChannelKey,
-		Epoch:       ack.Epoch,
-		Generation:  ack.Generation,
-		Kind:        runtime.MessageKindProgressAck,
-		ProgressAck: &ack,
-	})
-	leaderHW, _ := currentLeaderHW(t.statusSource, ack)
-	return encodeProgressAckResponse(progressAckResponseEnvelope{LeaderHW: leaderHW})
 }
 
 func (t *Transport) handleLongPollFetchRPC(ctx context.Context, body []byte) ([]byte, error) {
@@ -393,22 +331,4 @@ func (t *Transport) LongPollFetch(ctx context.Context, peer channel.NodeID, req 
 		return LongPollFetchResponse{}, err
 	}
 	return decodeLongPollFetchResponse(respBody)
-}
-
-func currentLeaderHW(source channel.HandlerRuntime, ack runtime.ProgressAckEnvelope) (uint64, bool) {
-	if source == nil {
-		return 0, false
-	}
-	handle, ok := source.Channel(ack.ChannelKey)
-	if !ok {
-		return 0, false
-	}
-	state := handle.Status()
-	if !state.CommitReady {
-		return 0, false
-	}
-	if state.Epoch != ack.Epoch {
-		return state.HW, false
-	}
-	return state.HW, state.HW >= ack.MatchOffset
 }

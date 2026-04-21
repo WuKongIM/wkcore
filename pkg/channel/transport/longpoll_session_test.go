@@ -40,10 +40,9 @@ func TestLongPollIntegrationPeerSessionDeliversLanePollResponse(t *testing.T) {
 	defer client.Stop()
 
 	adapter, err := New(Options{
-		LocalNode:       1,
-		Client:          client,
-		RPCMux:          baseTransport.NewRPCMux(),
-		ReplicationMode: "long_poll",
+		LocalNode: 1,
+		Client:    client,
+		RPCMux:    baseTransport.NewRPCMux(),
 		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
 			return runtime.FetchResponseEnvelope{}, nil
 		}),
@@ -132,11 +131,10 @@ func TestLongPollPeerSessionUsesConfiguredRPCTimeout(t *testing.T) {
 	defer client.Stop()
 
 	adapter, err := New(Options{
-		LocalNode:        1,
-		Client:           client,
-		RPCMux:           baseTransport.NewRPCMux(),
-		RPCTimeout:       25 * time.Millisecond,
-		ReplicationMode:  "long_poll",
+		LocalNode:         1,
+		Client:            client,
+		RPCMux:            baseTransport.NewRPCMux(),
+		RPCTimeout:        25 * time.Millisecond,
 		LongPollLaneCount: 4,
 		FetchService: fetchServiceFunc(func(ctx context.Context, req runtime.FetchRequestEnvelope) (runtime.FetchResponseEnvelope, error) {
 			return runtime.FetchResponseEnvelope{}, nil

@@ -289,7 +289,7 @@ func laneIDFor(key core.ChannelKey, laneCount int) uint16 {
 }
 
 func (r *runtime) longPollEnabled() bool {
-	return r.cfg.ReplicationMode == "long_poll" && r.cfg.LongPollLaneCount > 0
+	return r.cfg.LongPollLaneCount > 0
 }
 
 func (r *runtime) laneManager(peer core.NodeID) (*PeerLaneManager, bool) {

@@ -11,7 +11,6 @@ import (
 
 func TestRuntimeLongPollServeLanePollTimesOutWhenLaneHasNoReadyItems(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 4
 		cfg.LongPollMaxWait = time.Millisecond
 		cfg.LongPollMaxBytes = 64 * 1024
@@ -41,7 +40,6 @@ func TestRuntimeLongPollServeLanePollTimesOutWhenLaneHasNoReadyItems(t *testing.
 
 func TestApplyMetaUpdatesLaneTargetsForLeaderChannels(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 4
 		cfg.LongPollMaxWait = time.Millisecond
 		cfg.LongPollMaxBytes = 64 * 1024
@@ -63,7 +61,6 @@ func TestApplyMetaUpdatesLaneTargetsForLeaderChannels(t *testing.T) {
 
 func TestRuntimeLongPollLeaderAppendWakesParkedLanePoll(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 4
 		cfg.LongPollMaxWait = time.Second
 		cfg.LongPollMaxBytes = 64 * 1024
@@ -142,7 +139,6 @@ func TestRuntimeLongPollLeaderAppendWakesParkedLanePoll(t *testing.T) {
 
 func TestRuntimeLongPollInitialOpenReturnsAlreadyAppendedData(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 4
 		cfg.LongPollMaxWait = time.Millisecond
 		cfg.LongPollMaxBytes = 64 * 1024
@@ -193,7 +189,6 @@ func TestRuntimeLongPollInitialOpenReturnsAlreadyAppendedData(t *testing.T) {
 
 func TestRuntimeLongPollReopenReturnsAlreadyAppendedData(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 4
 		cfg.LongPollMaxWait = time.Millisecond
 		cfg.LongPollMaxBytes = 64 * 1024
@@ -222,15 +217,15 @@ func TestRuntimeLongPollReopenReturnsAlreadyAppendedData(t *testing.T) {
 	require.NoError(t, err)
 
 	resp, err := env.runtime.ServeLanePoll(context.Background(), LanePollRequestEnvelope{
-		ReplicaID:   2,
-		LaneID:      testFollowerLaneFor(meta.Key, 4),
-		LaneCount:   4,
-		SessionID:   701,
+		ReplicaID:    2,
+		LaneID:       testFollowerLaneFor(meta.Key, 4),
+		LaneCount:    4,
+		SessionID:    701,
 		SessionEpoch: 1,
-		Op:          LanePollOpOpen,
-		MaxWait:     time.Millisecond,
-		MaxBytes:    64 * 1024,
-		MaxChannels: 64,
+		Op:           LanePollOpOpen,
+		MaxWait:      time.Millisecond,
+		MaxBytes:     64 * 1024,
+		MaxChannels:  64,
 		FullMembership: []LaneMembership{
 			{ChannelKey: meta.Key, ChannelEpoch: meta.Epoch},
 		},

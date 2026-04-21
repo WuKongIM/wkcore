@@ -136,7 +136,6 @@ func build(cfg Config) (_ *App, err error) {
 		RPCMux:              app.cluster.RPCMux(),
 		RPCTimeout:          cfg.Cluster.DataPlaneRPCTimeout,
 		MaxPendingFetchRPC:  effectiveDataPlaneMaxPendingFetch(cfg.Cluster.PoolSize, cfg.Cluster.DataPlaneMaxPendingFetch),
-		ReplicationMode:     replicationCfg.ReplicationMode,
 		LongPollLaneCount:   replicationCfg.LongPollLaneCount,
 		LongPollMaxWait:     replicationCfg.LongPollMaxWait,
 		LongPollMaxBytes:    replicationCfg.LongPollMaxBytes,
@@ -153,7 +152,6 @@ func build(cfg Config) (_ *App, err error) {
 		PeerSessions:                     app.isrTransport,
 		AutoRunScheduler:                 true,
 		FollowerReplicationRetryInterval: cfg.Cluster.FollowerReplicationRetryInterval,
-		ReplicationMode:                  replicationCfg.ReplicationMode,
 		LongPollLaneCount:                replicationCfg.LongPollLaneCount,
 		LongPollMaxWait:                  replicationCfg.LongPollMaxWait,
 		LongPollMaxBytes:                 replicationCfg.LongPollMaxBytes,
@@ -476,7 +474,6 @@ func (c ClusterConfig) runtimeConfig(storage StorageConfig, db *metadb.DB, raftD
 
 func (c ClusterConfig) replicationConfig() channel.Config {
 	return channel.Config{
-		ReplicationMode:     c.ReplicationMode,
 		LongPollLaneCount:   c.LongPollLaneCount,
 		LongPollMaxWait:     c.LongPollMaxWait,
 		LongPollMaxBytes:    c.LongPollMaxBytes,

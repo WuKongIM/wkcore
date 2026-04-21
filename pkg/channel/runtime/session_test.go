@@ -151,40 +151,6 @@ func TestSessionReplicationRequestUsesReplicaOffsetEpochInsteadOfChannelMetaEpoc
 	}
 }
 
-func TestSessionReplicationRequestDoesNotForceImmediateFlushWhenPeerSessionAcceptsBatch(t *testing.T) {
-	env := newSessionTestEnv(t)
-	mustEnsureLocal(t, env.runtime, testMetaLocal(2711, 4, 1, []core.NodeID{1, 2}))
-
-	replica := env.factory.replicas[0]
-	replica.mu.Lock()
-	replica.state.LEO = 6
-	replica.state.Epoch = 4
-	replica.state.OffsetEpoch = 4
-	replica.mu.Unlock()
-
-	session := env.sessions.session(2)
-	session.setTryBatch(true)
-
-	env.runtime.enqueueReplication(testChannelKey(2711), 2)
-	env.runtime.runScheduler()
-
-	if got := session.sendCount(); got != 0 {
-		t.Fatalf("expected batched fetch request to avoid direct send, got %d sends", got)
-	}
-	if got := session.batchCount(); got != 1 {
-		t.Fatalf("expected one batched fetch request, got %d", got)
-	}
-	if got := session.flushCount(); got != 0 {
-		t.Fatalf("expected runtime to leave batch flushing to peer session window, got %d flushes", got)
-	}
-	if session.batched[0].Kind != MessageKindFetchRequest {
-		t.Fatalf("batched kind = %v, want fetch request", session.batched[0].Kind)
-	}
-	if session.batched[0].FetchRequest == nil || session.batched[0].FetchRequest.FetchOffset != 6 {
-		t.Fatalf("batched fetch request = %+v", session.batched[0].FetchRequest)
-	}
-}
-
 func TestSessionQueuedReplicationRecomputesReplicaProgressBetweenSends(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(272, 4, 1, []core.NodeID{1, 2}))
@@ -831,7 +797,6 @@ func TestSessionRemoveChannelDuringSendRaceDropsStaleReplication(t *testing.T) {
 
 func TestSessionLongPollApplyMetaDoesNotBlockOnInFlightPoll(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 4
 		cfg.LongPollMaxWait = time.Second
 		cfg.LongPollMaxBytes = 64 * 1024
@@ -910,7 +875,6 @@ func TestSessionLongPollApplyMetaDoesNotBlockOnInFlightPoll(t *testing.T) {
 
 func TestSessionLongPollRemoveChannelDoesNotBlockOnInFlightPoll(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 4
 		cfg.LongPollMaxWait = time.Second
 		cfg.LongPollMaxBytes = 64 * 1024
@@ -1067,116 +1031,6 @@ func TestSessionFetchResponseDecodesPayloadIntoApplyFetch(t *testing.T) {
 	}
 }
 
-func TestSessionFetchResponseSendsProgressAckAfterApplyFetch(t *testing.T) {
-	env := newSessionTestEnv(t)
-	mustEnsureLocal(t, env.runtime, testMetaLocal(250, 4, 2, []core.NodeID{1, 2}))
-
-	env.factory.replicas[0].state.LEO = 9
-	env.transport.deliver(Envelope{
-		Peer:       2,
-		ChannelKey: testChannelKey(250),
-		Generation: 1,
-		Epoch:      4,
-		Kind:       MessageKindFetchResponse,
-		FetchResponse: &FetchResponseEnvelope{
-			LeaderHW: 9,
-			Records:  []core.Record{{Payload: []byte("ok"), SizeBytes: 2}},
-		},
-	})
-
-	session := env.sessions.session(2)
-	session.mu.Lock()
-	sent := append([]Envelope(nil), session.sent...)
-	session.mu.Unlock()
-	if len(sent) < 2 {
-		t.Fatalf("expected progress ack and follow-up fetch, got %d sends", len(sent))
-	}
-	if sent[0].Kind != MessageKindProgressAck {
-		t.Fatalf("first outbound kind = %v, want progress ack", sent[0].Kind)
-	}
-	if sent[0].ProgressAck == nil {
-		t.Fatal("expected progress ack payload")
-	}
-	if sent[0].ProgressAck.MatchOffset != 9 {
-		t.Fatalf("progress ack match offset = %d, want 9", sent[0].ProgressAck.MatchOffset)
-	}
-	if sent[1].Kind != MessageKindFetchRequest {
-		t.Fatalf("second outbound kind = %v, want fetch request", sent[1].Kind)
-	}
-}
-
-func TestSessionFetchResponseReentrantProgressAckDoesNotDeadlock(t *testing.T) {
-	env := newSessionTestEnv(t)
-	mustEnsureLocal(t, env.runtime, testMetaLocal(2501, 4, 2, []core.NodeID{1, 2}))
-
-	env.factory.replicas[0].state.LEO = 9
-	session := env.sessions.session(2)
-
-	delivered := false
-	session.afterSend = func() {
-		if delivered {
-			return
-		}
-		delivered = true
-		env.transport.deliver(Envelope{
-			Peer:       2,
-			ChannelKey: testChannelKey(2501),
-			Generation: 1,
-			Epoch:      4,
-			RequestID:  1,
-			Kind:       MessageKindFetchResponse,
-			Sync:       true,
-			FetchResponse: &FetchResponseEnvelope{
-				LeaderHW: 9,
-				Records:  []core.Record{{Payload: []byte("ok"), SizeBytes: 2}},
-			},
-		})
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		done <- env.runtime.sendEnvelope(Envelope{
-			Peer:       2,
-			ChannelKey: testChannelKey(2501),
-			Epoch:      4,
-			Generation: 1,
-			RequestID:  1,
-			Kind:       MessageKindFetchRequest,
-			FetchRequest: &FetchRequestEnvelope{
-				ChannelKey:  testChannelKey(2501),
-				Epoch:       4,
-				Generation:  1,
-				ReplicaID:   1,
-				FetchOffset: 9,
-				OffsetEpoch: 4,
-				MaxBytes:    defaultFetchMaxBytes,
-			},
-		})
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("sendEnvelope() error = %v", err)
-		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("sendEnvelope deadlocked while handling a synchronous fetch response")
-	}
-
-	session.mu.Lock()
-	sent := append([]Envelope(nil), session.sent...)
-	session.mu.Unlock()
-	if len(sent) < 3 {
-		t.Fatalf("expected initial fetch, progress ack, and follow-up fetch, got %d sends", len(sent))
-	}
-	if sent[1].Kind != MessageKindProgressAck {
-		t.Fatalf("second outbound kind = %v, want progress ack", sent[1].Kind)
-	}
-	if sent[2].Kind != MessageKindFetchRequest {
-		t.Fatalf("third outbound kind = %v, want fetch request", sent[2].Kind)
-	}
-}
-
 func TestSessionFetchResponseReentrantQueuedPeerDrainDoesNotDeadlock(t *testing.T) {
 	env := newSessionTestEnv(t)
 	mustEnsureLocal(t, env.runtime, testMetaLocal(2502, 4, 2, []core.NodeID{1, 2}))
@@ -1264,129 +1118,6 @@ func TestSessionFetchResponseReentrantQueuedPeerDrainDoesNotDeadlock(t *testing.
 	}
 }
 
-func TestSessionFetchResponseDrainsQueuedPeerBeforeDeferredRefetch(t *testing.T) {
-	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.Limits.MaxFetchInflightPeer = 1
-		cfg.FollowerReplicationRetryInterval = time.Hour
-	})
-	first := testChannelKey(25021)
-	second := testChannelKey(25022)
-	mustEnsureLocal(t, env.runtime, testMetaLocal(25021, 4, 2, []core.NodeID{1, 2}))
-	mustEnsureLocal(t, env.runtime, testMetaLocal(25022, 4, 2, []core.NodeID{1, 2}))
-
-	env.factory.replicas[0].state.LEO = 9
-
-	env.runtime.runScheduler()
-	session := env.sessions.session(2)
-	if got := session.sendCount(); got != 1 {
-		t.Fatalf("expected one initial fetch request, got %d sends", got)
-	}
-	if got := env.runtime.queuedPeerRequests(2); got != 1 {
-		t.Fatalf("expected one queued peer request before response, got %d", got)
-	}
-
-	env.transport.deliver(Envelope{
-		Peer:       2,
-		ChannelKey: first,
-		Generation: 1,
-		Epoch:      4,
-		RequestID:  session.sent[0].RequestID,
-		Kind:       MessageKindFetchResponse,
-		Sync:       true,
-		FetchResponse: &FetchResponseEnvelope{
-			LeaderHW: 9,
-			Records:  []core.Record{{Payload: []byte("ok"), SizeBytes: 2}},
-		},
-	})
-
-	session.mu.Lock()
-	sent := append([]Envelope(nil), session.sent...)
-	session.mu.Unlock()
-	if len(sent) != 3 {
-		t.Fatalf("expected initial fetch, progress ack, and queued peer drain send, got %d sends", len(sent))
-	}
-	if sent[1].Kind != MessageKindProgressAck {
-		t.Fatalf("second outbound kind = %v, want progress ack", sent[1].Kind)
-	}
-	if sent[2].Kind != MessageKindFetchRequest {
-		t.Fatalf("third outbound kind = %v, want fetch request", sent[2].Kind)
-	}
-	if sent[2].ChannelKey != second {
-		t.Fatalf("third outbound channel = %q, want queued peer channel %q", sent[2].ChannelKey, second)
-	}
-	if got := env.runtime.queuedPeerRequests(2); got != 1 {
-		t.Fatalf("expected deferred refetch to remain queued behind drained peer request, got %d queued", got)
-	}
-}
-
-func TestSessionAsyncBatchedFlushDrainsDeferredSyncWork(t *testing.T) {
-	env := newSessionTestEnv(t)
-	mustEnsureLocal(t, env.runtime, testMetaLocal(2504, 4, 2, []core.NodeID{1, 2}))
-
-	env.factory.replicas[0].state.LEO = 9
-	session := env.sessions.session(2)
-	session.setTryBatch(true)
-	session.afterFlush = func() {
-		env.transport.deliver(Envelope{
-			Peer:       2,
-			ChannelKey: testChannelKey(2504),
-			Generation: 1,
-			Epoch:      4,
-			RequestID:  1,
-			Kind:       MessageKindFetchResponse,
-			Sync:       true,
-			FetchResponse: &FetchResponseEnvelope{
-				LeaderHW: 9,
-				Records:  []core.Record{{Payload: []byte("ok"), SizeBytes: 2}},
-			},
-		})
-	}
-
-	if err := env.runtime.sendEnvelope(Envelope{
-		Peer:       2,
-		ChannelKey: testChannelKey(2504),
-		Epoch:      4,
-		Generation: 1,
-		RequestID:  1,
-		Kind:       MessageKindFetchRequest,
-		FetchRequest: &FetchRequestEnvelope{
-			ChannelKey:  testChannelKey(2504),
-			Epoch:       4,
-			Generation:  1,
-			ReplicaID:   1,
-			FetchOffset: 9,
-			OffsetEpoch: 4,
-			MaxBytes:    defaultFetchMaxBytes,
-		},
-	}); err != nil {
-		t.Fatalf("sendEnvelope() error = %v", err)
-	}
-
-	if got := session.sendCount(); got != 0 {
-		t.Fatalf("expected batched fetch request to avoid direct send, got %d sends", got)
-	}
-	if got := session.batchCount(); got != 1 {
-		t.Fatalf("expected one queued batched fetch request, got %d", got)
-	}
-
-	if err := session.Flush(); err != nil {
-		t.Fatalf("Flush() error = %v", err)
-	}
-
-	session.mu.Lock()
-	sent := append([]Envelope(nil), session.sent...)
-	session.mu.Unlock()
-	if len(sent) != 1 {
-		t.Fatalf("expected async batch flush to send deferred progress ack, got %d sends", len(sent))
-	}
-	if sent[0].Kind != MessageKindProgressAck {
-		t.Fatalf("first outbound kind = %v, want progress ack", sent[0].Kind)
-	}
-	if got := session.batchCount(); got != 2 {
-		t.Fatalf("expected follow-up fetch to be re-batched after async flush, got %d batched envelopes", got)
-	}
-}
-
 func TestSessionNonEmptyFetchResponseQueuesImmediateFollowerRefetch(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.FollowerReplicationRetryInterval = time.Hour
@@ -1412,8 +1143,8 @@ func TestSessionNonEmptyFetchResponseQueuesImmediateFollowerRefetch(t *testing.T
 		},
 	})
 
-	if got := session.sendCount(); got != 3 {
-		t.Fatalf("expected progress ack plus immediate follower re-fetch after apply, got %d sends", got)
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("expected immediate follower re-fetch after apply, got %d sends", got)
 	}
 	if session.last.Kind != MessageKindFetchRequest {
 		t.Fatalf("last kind = %v, want fetch request", session.last.Kind)
@@ -1423,95 +1154,8 @@ func TestSessionNonEmptyFetchResponseQueuesImmediateFollowerRefetch(t *testing.T
 	}
 }
 
-func TestSessionSyntheticProgressAckFetchResponseDoesNotDrainQueuedSameGroupFetch(t *testing.T) {
-	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.Limits.MaxFetchInflightPeer = 2
-		cfg.FollowerReplicationRetryInterval = time.Hour
-	})
-	key := testChannelKey(2511)
-	mustEnsureLocal(t, env.runtime, testMetaLocal(2511, 4, 2, []core.NodeID{1, 2}))
-
-	session := env.sessions.session(2)
-	env.runtime.runScheduler()
-	if got := session.sendCount(); got != 1 {
-		t.Fatalf("expected initial follower fetch request, got %d sends", got)
-	}
-
-	env.transport.deliver(Envelope{
-		Peer:       2,
-		ChannelKey: key,
-		Generation: 1,
-		Epoch:      4,
-		RequestID:  session.sent[0].RequestID,
-		Kind:       MessageKindFetchResponse,
-		FetchResponse: &FetchResponseEnvelope{
-			LeaderHW: 1,
-			Records:  []core.Record{{Payload: []byte("ok"), SizeBytes: 2}},
-		},
-	})
-
-	if got := session.sendCount(); got != 3 {
-		t.Fatalf("expected progress ack plus immediate follower re-fetch after apply, got %d sends", got)
-	}
-
-	env.runtime.enqueueReplication(key, 2)
-	env.runtime.runScheduler()
-	if got := env.runtime.queuedPeerRequests(2); got != 1 {
-		t.Fatalf("expected same-group fetch to stay queued behind in-flight fetch, got %d", got)
-	}
-
-	env.transport.deliver(Envelope{
-		Peer:       2,
-		ChannelKey: key,
-		Generation: 1,
-		Epoch:      4,
-		RequestID:  0,
-		Kind:       MessageKindFetchResponse,
-		FetchResponse: &FetchResponseEnvelope{
-			LeaderHW: 1,
-		},
-	})
-
-	if got := session.sendCount(); got != 3 {
-		t.Fatalf("synthetic progress-ack fetch response must not drain queued same-group fetch, got %d sends", got)
-	}
-	if got := env.runtime.queuedPeerRequests(2); got != 1 {
-		t.Fatalf("synthetic progress-ack fetch response must keep queued same-group fetch blocked, got %d", got)
-	}
-}
-
-func TestSessionSyntheticProgressAckFetchResponseIgnoresRegressiveLeaderHW(t *testing.T) {
-	env := newSessionTestEnv(t)
-	key := testChannelKey(2512)
-	mustEnsureLocal(t, env.runtime, testMetaLocal(2512, 4, 2, []core.NodeID{1, 2}))
-
-	replica := env.factory.replicas[0]
-	replica.mu.Lock()
-	replica.state.HW = 10
-	replica.state.LEO = 12
-	replica.state.CommitReady = true
-	replica.mu.Unlock()
-
-	env.transport.deliver(Envelope{
-		Peer:       2,
-		ChannelKey: key,
-		Generation: 1,
-		Epoch:      4,
-		RequestID:  0,
-		Kind:       MessageKindFetchResponse,
-		FetchResponse: &FetchResponseEnvelope{
-			LeaderHW: 9,
-		},
-	})
-
-	if got := replica.applyFetchCalls; got != 0 {
-		t.Fatalf("regressive synthetic leader hw should be ignored, got %d apply calls", got)
-	}
-}
-
 func TestSessionLongPollTimedOutResponseImmediatelyReissuesPoll(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 4
 		cfg.LongPollMaxWait = 2 * time.Millisecond
 		cfg.LongPollMaxBytes = 64 * 1024
@@ -1633,7 +1277,6 @@ func waitForSessionSendCount(t *testing.T, session *trackingPeerSession, want in
 
 func TestSessionLongPollTimedOutReissueDoesNotStarveOtherPendingLanes(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 2
 		cfg.LongPollMaxWait = 2 * time.Millisecond
 		cfg.LongPollMaxBytes = 64 * 1024
@@ -1724,7 +1367,6 @@ func TestSessionLongPollTimedOutReissueDoesNotStarveOtherPendingLanes(t *testing
 
 func TestSessionLongPollEnsureChannelStartsInitialOpenForEveryPopulatedLane(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 8
 		cfg.LongPollMaxWait = time.Millisecond
 		cfg.LongPollMaxBytes = 64 * 1024
@@ -1792,7 +1434,6 @@ func TestSessionLongPollEnsureChannelStartsInitialOpenForEveryPopulatedLane(t *t
 
 func TestSessionLongPollFollowerStartupSchedulesDispatcher(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 4
 		cfg.LongPollMaxWait = time.Millisecond
 		cfg.LongPollMaxBytes = 64 * 1024
@@ -1848,7 +1489,6 @@ func TestSessionLongPollFollowerStartupSchedulesDispatcher(t *testing.T) {
 
 func TestSessionLongPollDispatcherDoesNotSerializeBlockedLanes(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 4
 		cfg.LongPollMaxWait = time.Second
 		cfg.LongPollMaxBytes = 64 * 1024
@@ -1933,7 +1573,6 @@ func TestSessionLongPollDispatcherDoesNotSerializeBlockedLanes(t *testing.T) {
 func TestSessionLongPollMembershipChangeSchedulesAffectedLane(t *testing.T) {
 	t.Run("remove", func(t *testing.T) {
 		env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-			cfg.ReplicationMode = "long_poll"
 			cfg.LongPollLaneCount = 4
 			cfg.LongPollMaxWait = time.Millisecond
 			cfg.LongPollMaxBytes = 64 * 1024
@@ -1968,7 +1607,6 @@ func TestSessionLongPollMembershipChangeSchedulesAffectedLane(t *testing.T) {
 
 	t.Run("upsert", func(t *testing.T) {
 		env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-			cfg.ReplicationMode = "long_poll"
 			cfg.LongPollLaneCount = 4
 			cfg.LongPollMaxWait = time.Millisecond
 			cfg.LongPollMaxBytes = 64 * 1024
@@ -2010,7 +1648,6 @@ func TestSessionLongPollMembershipChangeSchedulesAffectedLane(t *testing.T) {
 
 func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 4
 		cfg.LongPollMaxWait = 2 * time.Millisecond
 		cfg.LongPollMaxBytes = 64 * 1024
@@ -2088,7 +1725,6 @@ func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
 
 func TestSessionLongPollBackpressuredReissueSchedulesLaneRetry(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 4
 		cfg.LongPollMaxWait = 2 * time.Millisecond
 		cfg.LongPollMaxBytes = 64 * 1024
@@ -2149,7 +1785,6 @@ func TestSessionLongPollBackpressuredReissueSchedulesLaneRetry(t *testing.T) {
 
 func TestSessionLongPollLaneRetryIsScopedPerLane(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 2
 		cfg.LongPollMaxWait = 2 * time.Millisecond
 		cfg.LongPollMaxBytes = 64 * 1024
@@ -2211,7 +1846,6 @@ func TestSessionLongPollLaneRetryIsScopedPerLane(t *testing.T) {
 
 func TestSessionLongPollRPCTimeoutUsesRecoveryBackoff(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 4
 		cfg.LongPollMaxWait = 2 * time.Millisecond
 		cfg.LongPollMaxBytes = 64 * 1024
@@ -2245,118 +1879,6 @@ func TestSessionLongPollRPCTimeoutUsesRecoveryBackoff(t *testing.T) {
 	}
 
 	t.Fatalf("expected retry after recovery backoff, got %d sends", session.sendCount())
-}
-
-func TestSessionRealEmptyFetchResponseWithRegressiveLeaderHWReportsProgressAndRetries(t *testing.T) {
-	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.AutoRunScheduler = true
-		cfg.FollowerReplicationRetryInterval = 20 * time.Millisecond
-	})
-	key := testChannelKey(2513)
-	mustEnsureLocal(t, env.runtime, testMetaLocal(2513, 4, 2, []core.NodeID{1, 2}))
-
-	session := env.sessions.session(2)
-	env.runtime.runScheduler()
-	if got := session.sendCount(); got != 1 {
-		t.Fatalf("expected initial follower fetch request, got %d sends", got)
-	}
-
-	replica := env.factory.replicas[0]
-	replica.mu.Lock()
-	replica.state.HW = 10
-	replica.state.LEO = 12
-	replica.state.CommitReady = true
-	replica.mu.Unlock()
-
-	env.transport.deliver(Envelope{
-		Peer:       2,
-		ChannelKey: key,
-		Generation: 1,
-		Epoch:      4,
-		RequestID:  session.sent[0].RequestID,
-		Kind:       MessageKindFetchResponse,
-		FetchResponse: &FetchResponseEnvelope{
-			LeaderHW: 9,
-		},
-	})
-
-	if got := replica.applyFetchCalls; got != 1 {
-		t.Fatalf("real empty fetch response should still reach ApplyFetch, got %d apply calls", got)
-	}
-	if got := session.sendCount(); got != 2 {
-		t.Fatalf("expected stale real empty fetch response to send progress ack immediately, got %d sends", got)
-	}
-	if session.last.Kind != MessageKindProgressAck {
-		t.Fatalf("last kind = %v, want progress ack", session.last.Kind)
-	}
-
-	deadline := time.Now().Add(250 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if got := session.sendCount(); got >= 3 {
-			if session.last.Kind != MessageKindFetchRequest {
-				t.Fatalf("last kind after retry = %v, want fetch request", session.last.Kind)
-			}
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	t.Fatalf("expected stale real empty fetch response to trigger delayed follower re-fetch, got %d sends", session.sendCount())
-}
-
-func TestSessionProgressAckEnvelopeRequiresMatchingGeneration(t *testing.T) {
-	env := newSessionTestEnv(t)
-	mustEnsureLocal(t, env.runtime, testMetaLocal(253, 4, 1, []core.NodeID{1, 2}))
-
-	env.transport.deliver(Envelope{
-		Peer:       2,
-		ChannelKey: testChannelKey(253),
-		Generation: 99,
-		Epoch:      4,
-		Kind:       MessageKindProgressAck,
-		ProgressAck: &ProgressAckEnvelope{
-			ChannelKey:  testChannelKey(253),
-			Epoch:       4,
-			Generation:  99,
-			ReplicaID:   2,
-			MatchOffset: 7,
-		},
-	})
-
-	if env.factory.replicas[0].applyProgressAckCalls != 0 {
-		t.Fatalf("unexpected progress ack apply on generation mismatch")
-	}
-}
-
-func TestSessionLeaderAppliesProgressAckWithoutWaitingForNextFetch(t *testing.T) {
-	env := newSessionTestEnv(t)
-	mustEnsureLocal(t, env.runtime, testMetaLocal(254, 4, 1, []core.NodeID{1, 2}))
-
-	env.transport.deliver(Envelope{
-		Peer:       2,
-		ChannelKey: testChannelKey(254),
-		Generation: 1,
-		Epoch:      4,
-		Kind:       MessageKindProgressAck,
-		ProgressAck: &ProgressAckEnvelope{
-			ChannelKey:  testChannelKey(254),
-			Epoch:       4,
-			Generation:  1,
-			ReplicaID:   2,
-			MatchOffset: 7,
-		},
-	})
-
-	replica := env.factory.replicas[0]
-	if replica.applyProgressAckCalls != 1 {
-		t.Fatalf("applyProgressAckCalls = %d, want 1", replica.applyProgressAckCalls)
-	}
-	if replica.lastProgressAck.MatchOffset != 7 {
-		t.Fatalf("lastProgressAck.MatchOffset = %d, want 7", replica.lastProgressAck.MatchOffset)
-	}
-	if replica.fetchCalls != 0 {
-		t.Fatalf("progress ack should not require follow-up fetch, got %d fetch calls", replica.fetchCalls)
-	}
 }
 
 func TestRuntimeStartsLeaderReconcileProbeWhenCommitNotReady(t *testing.T) {
@@ -2457,46 +1979,6 @@ func TestSessionEmptyFetchResponseImmediatelyReopensFollowerFetch(t *testing.T) 
 	}
 
 	t.Fatalf("expected empty fetch response to reopen follower fetch immediately, got %d sends", session.sendCount())
-}
-
-func TestSessionEmptyFetchResponseSendsProgressAckWhenFollowerHasUncommittedData(t *testing.T) {
-	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
-		cfg.FollowerReplicationRetryInterval = time.Hour
-	})
-	mustEnsureLocal(t, env.runtime, testMetaLocal(2521, 4, 2, []core.NodeID{1, 2}))
-
-	replica := env.factory.replicas[0]
-	replica.mu.Lock()
-	replica.state.LEO = 5
-	replica.mu.Unlock()
-
-	env.transport.deliver(Envelope{
-		Peer:       2,
-		ChannelKey: testChannelKey(2521),
-		Generation: 1,
-		Epoch:      4,
-		Kind:       MessageKindFetchResponse,
-		FetchResponse: &FetchResponseEnvelope{
-			LeaderHW: 0,
-		},
-	})
-
-	session := env.sessions.session(2)
-	session.mu.Lock()
-	sent := append([]Envelope(nil), session.sent...)
-	session.mu.Unlock()
-	if len(sent) == 0 {
-		t.Fatal("expected empty fetch response to report follower progress when local LEO exceeds leader HW")
-	}
-	if sent[0].Kind != MessageKindProgressAck {
-		t.Fatalf("first outbound kind = %v, want progress ack", sent[0].Kind)
-	}
-	if sent[0].ProgressAck == nil {
-		t.Fatal("expected progress ack payload")
-	}
-	if sent[0].ProgressAck.MatchOffset != 5 {
-		t.Fatalf("progress ack match offset = %d, want 5", sent[0].ProgressAck.MatchOffset)
-	}
 }
 
 func TestSessionServeFetchReturnsReplicaFetchResult(t *testing.T) {

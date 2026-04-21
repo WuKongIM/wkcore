@@ -352,9 +352,6 @@ func (r *runtime) sendEnvelopeLocked(env Envelope) error {
 		return ErrBackpressured
 	}
 
-	if env.Kind == MessageKindFetchRequest && session.TryBatch(env) {
-		return nil
-	}
 	if env.Kind == MessageKindLanePollRequest {
 		// Long-poll RPCs can legitimately park for maxWait, so don't keep
 		// global send coordination locked across the blocking session.Send.
@@ -497,7 +494,7 @@ func (r *runtime) shouldDropOutboundEnvelope(env Envelope) bool {
 		return true
 	}
 	switch env.Kind {
-	case MessageKindFetchRequest, MessageKindProgressAck, MessageKindReconcileProbeRequest, MessageKindLanePollRequest:
+	case MessageKindFetchRequest, MessageKindReconcileProbeRequest, MessageKindLanePollRequest:
 		return !r.isReplicationPeerValid(ch.metaSnapshot(), env.Peer)
 	}
 	return false
@@ -751,24 +748,7 @@ func (r *runtime) deliverEnvelope(ch *channel, env Envelope) bool {
 		if env.FetchResponse == nil {
 			return false
 		}
-		if env.RequestID == 0 &&
-			env.FetchResponse.TruncateTo == nil &&
-			len(env.FetchResponse.Records) == 0 &&
-			env.FetchResponse.LeaderHW > 0 &&
-			env.FetchResponse.LeaderHW < state.HW {
-			// Synthetic progress-ack responses must not regress follower commit state.
-			return true
-		}
 		return r.applyFetchResponseEnvelope(ch, env.Peer, *env.FetchResponse) == nil
-	case MessageKindProgressAck:
-		state := ch.Status()
-		if env.Epoch != state.Epoch {
-			return true
-		}
-		if env.ProgressAck == nil {
-			return false
-		}
-		return r.applyProgressAckEnvelope(ch, *env.ProgressAck) == nil
 	case MessageKindReconcileProbeResponse:
 		state := ch.Status()
 		if env.Epoch != state.Epoch {
@@ -840,28 +820,6 @@ func (r *runtime) applyFetchResponseEnvelope(ch *channel, peer core.NodeID, env 
 			}
 			return nil
 		}
-		if shouldReportProgress {
-			r.sendOrDeferEnvelope(Envelope{
-				Peer:       meta.Leader,
-				ChannelKey: ch.key,
-				Epoch:      meta.Epoch,
-				Generation: ch.gen,
-				RequestID:  r.requestID.Add(1),
-				Kind:       MessageKindProgressAck,
-				ProgressAck: &ProgressAckEnvelope{
-					ChannelKey:  ch.key,
-					Epoch:       meta.Epoch,
-					Generation:  ch.gen,
-					ReplicaID:   r.cfg.LocalNode,
-					MatchOffset: state.LEO,
-				},
-			}, func(err error) {
-				if err != nil && !errors.Is(err, ErrBackpressured) {
-					r.retryReplication(ch.key, meta.Leader, true)
-				}
-			})
-		}
-
 		if len(env.Records) == 0 && env.TruncateTo == nil {
 			r.retryReplication(ch.key, meta.Leader, true)
 			return nil
@@ -890,15 +848,6 @@ func (r *runtime) applyFetchResponseEnvelope(ch *channel, peer core.NodeID, env 
 		})
 	}
 	return nil
-}
-
-func (r *runtime) applyProgressAckEnvelope(ch *channel, env ProgressAckEnvelope) error {
-	return ch.replica.ApplyProgressAck(context.Background(), core.ReplicaProgressAckRequest{
-		ChannelKey:  env.ChannelKey,
-		Epoch:       env.Epoch,
-		ReplicaID:   env.ReplicaID,
-		MatchOffset: env.MatchOffset,
-	})
 }
 
 func (r *runtime) applyReconcileProbeResponseEnvelope(ch *channel, env ReconcileProbeResponseEnvelope) error {
@@ -1022,7 +971,5 @@ func (nopPeerSessionManager) Session(core.NodeID) PeerSession {
 type nopPeerSession struct{}
 
 func (nopPeerSession) Send(Envelope) error             { return nil }
-func (nopPeerSession) TryBatch(Envelope) bool          { return false }
-func (nopPeerSession) Flush() error                    { return nil }
 func (nopPeerSession) Backpressure() BackpressureState { return BackpressureState{} }
 func (nopPeerSession) Close() error                    { return nil }

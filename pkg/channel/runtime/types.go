@@ -29,7 +29,6 @@ const (
 	MessageKindFetchRequest MessageKind = iota + 1
 	MessageKindFetchResponse
 	MessageKindFetchFailure
-	MessageKindProgressAck
 	MessageKindReconcileProbeRequest
 	MessageKindReconcileProbeResponse
 	MessageKindTruncate
@@ -65,7 +64,6 @@ type Envelope struct {
 
 	FetchRequest           *FetchRequestEnvelope
 	FetchResponse          *FetchResponseEnvelope
-	ProgressAck            *ProgressAckEnvelope
 	ReconcileProbeRequest  *ReconcileProbeRequestEnvelope
 	ReconcileProbeResponse *ReconcileProbeResponseEnvelope
 	LanePollRequest        *LanePollRequestEnvelope
@@ -89,33 +87,6 @@ type FetchResponseEnvelope struct {
 	TruncateTo *uint64
 	LeaderHW   uint64
 	Records    []core.Record
-}
-
-type FetchBatchRequestEnvelope struct {
-	Items []FetchBatchRequestItem
-}
-
-type FetchBatchRequestItem struct {
-	RequestID uint64
-	Request   FetchRequestEnvelope
-}
-
-type FetchBatchResponseEnvelope struct {
-	Items []FetchBatchResponseItem
-}
-
-type FetchBatchResponseItem struct {
-	RequestID uint64
-	Response  *FetchResponseEnvelope
-	Error     string
-}
-
-type ProgressAckEnvelope struct {
-	ChannelKey  core.ChannelKey
-	Epoch       uint64
-	Generation  uint64
-	ReplicaID   core.NodeID
-	MatchOffset uint64
 }
 
 type ReconcileProbeRequestEnvelope struct {
@@ -290,8 +261,6 @@ type PeerSessionManager interface {
 
 type PeerSession interface {
 	Send(env Envelope) error
-	TryBatch(env Envelope) bool
-	Flush() error
 	Backpressure() BackpressureState
 	Close() error
 }
@@ -304,7 +273,6 @@ type Config struct {
 	PeerSessions                     PeerSessionManager
 	AutoRunScheduler                 bool
 	FollowerReplicationRetryInterval time.Duration
-	ReplicationMode                  string
 	LongPollLaneCount                int
 	LongPollMaxWait                  time.Duration
 	LongPollMaxBytes                 int

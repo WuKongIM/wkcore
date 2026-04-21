@@ -55,7 +55,6 @@ type Config struct {
 	Store               any
 	GenerationStore     any
 	MessageIDs          MessageIDGenerator
-	ReplicationMode     string
 	LongPollLaneCount   int
 	LongPollMaxWait     time.Duration
 	LongPollMaxBytes    int
@@ -71,7 +70,6 @@ type TransportConfig struct {
 	RPCMux              any
 	RPCTimeout          time.Duration
 	MaxPendingFetchRPC  int
-	ReplicationMode     string
 	LongPollLaneCount   int
 	LongPollMaxWait     time.Duration
 	LongPollMaxBytes    int
@@ -95,7 +93,6 @@ type RuntimeTombstones struct {
 type RuntimeConfig struct {
 	AutoRunScheduler                 bool
 	FollowerReplicationRetryInterval time.Duration
-	ReplicationMode                  string
 	LongPollLaneCount                int
 	LongPollMaxWait                  time.Duration
 	LongPollMaxBytes                 int
@@ -115,7 +112,6 @@ type TransportBuildConfig struct {
 	RPCMux              any
 	RPCTimeout          time.Duration
 	MaxPendingFetchRPC  int
-	ReplicationMode     string
 	LongPollLaneCount   int
 	LongPollMaxWait     time.Duration
 	LongPollMaxBytes    int
@@ -129,7 +125,6 @@ type RuntimeBuildConfig struct {
 	Transport                        any
 	AutoRunScheduler                 bool
 	FollowerReplicationRetryInterval time.Duration
-	ReplicationMode                  string
 	LongPollLaneCount                int
 	LongPollMaxWait                  time.Duration
 	LongPollMaxBytes                 int
@@ -182,7 +177,6 @@ func New(cfg Config) (Cluster, error) {
 		RPCMux:              cfg.Transport.RPCMux,
 		RPCTimeout:          cfg.Transport.RPCTimeout,
 		MaxPendingFetchRPC:  cfg.Transport.MaxPendingFetchRPC,
-		ReplicationMode:     cfg.ReplicationMode,
 		LongPollLaneCount:   cfg.LongPollLaneCount,
 		LongPollMaxWait:     cfg.LongPollMaxWait,
 		LongPollMaxBytes:    cfg.LongPollMaxBytes,
@@ -200,7 +194,6 @@ func New(cfg Config) (Cluster, error) {
 		Transport:                        transportValue,
 		AutoRunScheduler:                 cfg.Runtime.AutoRunScheduler,
 		FollowerReplicationRetryInterval: cfg.Runtime.FollowerReplicationRetryInterval,
-		ReplicationMode:                  cfg.ReplicationMode,
 		LongPollLaneCount:                cfg.LongPollLaneCount,
 		LongPollMaxWait:                  cfg.LongPollMaxWait,
 		LongPollMaxBytes:                 cfg.LongPollMaxBytes,

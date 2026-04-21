@@ -94,10 +94,6 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 	if err != nil {
 		return app.Config{}, err
 	}
-	replicationMode := strings.ToLower(strings.TrimSpace(stringValue(v, "WK_CLUSTER_REPLICATION_MODE")))
-	if replicationMode != "" && replicationMode != "progress_ack" && replicationMode != "long_poll" {
-		return app.Config{}, fmt.Errorf("%w: WK_CLUSTER_REPLICATION_MODE must be progress_ack or long_poll", app.ErrInvalidConfig)
-	}
 	longPollLaneCount, err := parseInt(v, "WK_CLUSTER_LONG_POLL_LANE_COUNT")
 	if err != nil {
 		return app.Config{}, err
@@ -346,7 +342,6 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 		},
 		Cluster: app.ClusterConfig{
 			ListenAddr:                       stringValue(v, "WK_CLUSTER_LISTEN_ADDR"),
-			ReplicationMode:                  replicationMode,
 			SlotCount:                        slotCount,
 			HashSlotCount:                    hashSlotCount,
 			InitialSlotCount:                 initialSlotCount,
@@ -434,7 +429,6 @@ func buildAppConfig(v *viper.Viper) (app.Config, error) {
 		stringValue(v, "WK_CLUSTER_APPEND_GROUP_COMMIT_MAX_BYTES") != "",
 	)
 	cfg.Cluster.SetReplicationExplicitFlags(
-		stringValue(v, "WK_CLUSTER_REPLICATION_MODE") != "",
 		stringValue(v, "WK_CLUSTER_LONG_POLL_LANE_COUNT") != "",
 		stringValue(v, "WK_CLUSTER_LONG_POLL_MAX_WAIT") != "",
 		stringValue(v, "WK_CLUSTER_LONG_POLL_MAX_BYTES") != "",

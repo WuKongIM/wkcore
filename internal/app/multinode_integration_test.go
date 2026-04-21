@@ -141,7 +141,6 @@ func TestThreeNodeAppGatewaySendUsesDurableCommitWithMinISR2(t *testing.T) {
 
 func TestThreeNodeAppGatewaySendUsesLongPollQuorumCommitWithMinISR2(t *testing.T) {
 	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(cfg *Config) {
-		cfg.Cluster.ReplicationMode = "long_poll"
 	})
 	leaderID := harness.waitForStableLeader(t, 1)
 	leader := harness.apps[leaderID]
@@ -209,7 +208,6 @@ func TestThreeNodeAppGatewaySendUsesLongPollQuorumCommitWithMinISR2(t *testing.T
 
 func TestThreeNodeAppMessageSendUsesLongPollLocalCommitWithoutAdvancingQuorum(t *testing.T) {
 	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(cfg *Config) {
-		cfg.Cluster.ReplicationMode = "long_poll"
 	})
 	leaderID := harness.waitForStableLeader(t, 1)
 	leader := harness.apps[leaderID]

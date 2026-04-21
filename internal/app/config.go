@@ -80,7 +80,6 @@ type StorageConfig struct {
 
 type ClusterConfig struct {
 	ListenAddr                       string
-	ReplicationMode                  string
 	SlotCount                        uint32
 	HashSlotCount                    uint16
 	InitialSlotCount                 uint32
@@ -115,7 +114,6 @@ type ClusterConfig struct {
 	appendGroupCommitMaxWaitSet         bool
 	appendGroupCommitMaxRecordsSet      bool
 	appendGroupCommitMaxBytesSet        bool
-	replicationModeSet                  bool
 	longPollLaneCountSet                bool
 	longPollMaxWaitSet                  bool
 	longPollMaxBytesSet                 bool
@@ -139,11 +137,10 @@ func (c *ClusterConfig) SetExplicitFlags(
 	c.appendGroupCommitMaxBytesSet = appendGroupCommitMaxBytesSet
 }
 
-func (c *ClusterConfig) SetReplicationExplicitFlags(replicationModeSet, longPollLaneCountSet, longPollMaxWaitSet, longPollMaxBytesSet, longPollMaxChannelsSet bool) {
+func (c *ClusterConfig) SetReplicationExplicitFlags(longPollLaneCountSet, longPollMaxWaitSet, longPollMaxBytesSet, longPollMaxChannelsSet bool) {
 	if c == nil {
 		return
 	}
-	c.replicationModeSet = replicationModeSet
 	c.longPollLaneCountSet = longPollLaneCountSet
 	c.longPollMaxWaitSet = longPollMaxWaitSet
 	c.longPollMaxBytesSet = longPollMaxBytesSet
@@ -297,39 +294,29 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	if c.Cluster.AppendGroupCommitMaxBytes <= 0 && c.Cluster.appendGroupCommitMaxBytesSet {
 		return fmt.Errorf("%w: append group commit max bytes must be positive", ErrInvalidConfig)
 	}
-	switch c.Cluster.ReplicationMode {
-	case "":
-	case "progress_ack", "long_poll":
-	default:
-		if c.Cluster.replicationModeSet {
-			return fmt.Errorf("%w: replication mode must be progress_ack or long_poll", ErrInvalidConfig)
+	if c.Cluster.LongPollLaneCount <= 0 {
+		if c.Cluster.longPollLaneCountSet {
+			return fmt.Errorf("%w: long poll lane count must be positive", ErrInvalidConfig)
 		}
+		c.Cluster.LongPollLaneCount = 8
 	}
-	if c.Cluster.ReplicationMode == "long_poll" {
-		if c.Cluster.LongPollLaneCount <= 0 {
-			if c.Cluster.longPollLaneCountSet {
-				return fmt.Errorf("%w: long poll lane count must be positive", ErrInvalidConfig)
-			}
-			c.Cluster.LongPollLaneCount = 8
+	if c.Cluster.LongPollMaxWait <= 0 {
+		if c.Cluster.longPollMaxWaitSet {
+			return fmt.Errorf("%w: long poll max wait must be positive", ErrInvalidConfig)
 		}
-		if c.Cluster.LongPollMaxWait <= 0 {
-			if c.Cluster.longPollMaxWaitSet {
-				return fmt.Errorf("%w: long poll max wait must be positive", ErrInvalidConfig)
-			}
-			c.Cluster.LongPollMaxWait = time.Millisecond
+		c.Cluster.LongPollMaxWait = time.Millisecond
+	}
+	if c.Cluster.LongPollMaxBytes <= 0 {
+		if c.Cluster.longPollMaxBytesSet {
+			return fmt.Errorf("%w: long poll max bytes must be positive", ErrInvalidConfig)
 		}
-		if c.Cluster.LongPollMaxBytes <= 0 {
-			if c.Cluster.longPollMaxBytesSet {
-				return fmt.Errorf("%w: long poll max bytes must be positive", ErrInvalidConfig)
-			}
-			c.Cluster.LongPollMaxBytes = 64 * 1024
+		c.Cluster.LongPollMaxBytes = 64 * 1024
+	}
+	if c.Cluster.LongPollMaxChannels <= 0 {
+		if c.Cluster.longPollMaxChannelsSet {
+			return fmt.Errorf("%w: long poll max channels must be positive", ErrInvalidConfig)
 		}
-		if c.Cluster.LongPollMaxChannels <= 0 {
-			if c.Cluster.longPollMaxChannelsSet {
-				return fmt.Errorf("%w: long poll max channels must be positive", ErrInvalidConfig)
-			}
-			c.Cluster.LongPollMaxChannels = 64
-		}
+		c.Cluster.LongPollMaxChannels = 64
 	}
 
 	if c.Storage.DBPath == "" {
