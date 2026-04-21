@@ -41,6 +41,17 @@ func openCORSMiddleware() gin.HandlerFunc {
 	}
 }
 
-func jsonError(c *gin.Context, status int, message string) {
-	c.AbortWithStatusJSON(status, gin.H{"error": message})
+type errorResponse struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
+}
+
+func jsonError(c *gin.Context, status int, code, message string) {
+	if message == "" {
+		message = code
+	}
+	c.AbortWithStatusJSON(status, errorResponse{
+		Error:   code,
+		Message: message,
+	})
 }

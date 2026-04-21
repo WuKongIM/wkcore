@@ -23,6 +23,7 @@ type managerClaims struct {
 type userPrincipal struct {
 	password    string
 	permissions map[string]map[string]struct{}
+	grants      []PermissionConfig
 }
 
 type authState struct {
@@ -45,18 +46,23 @@ func newAuthState(cfg AuthConfig) authState {
 		state.jwtExpire = 24 * time.Hour
 	}
 	for _, user := range cfg.Users {
+		principal := userPrincipal{}
 		permissions := make(map[string]map[string]struct{}, len(user.Permissions))
 		for _, permission := range user.Permissions {
+			grant := PermissionConfig{
+				Resource: permission.Resource,
+				Actions:  append([]string(nil), permission.Actions...),
+			}
 			actions := make(map[string]struct{}, len(permission.Actions))
 			for _, action := range permission.Actions {
 				actions[action] = struct{}{}
 			}
 			permissions[permission.Resource] = actions
+			principal.grants = append(principal.grants, grant)
 		}
-		state.users[user.Username] = userPrincipal{
-			password:    user.Password,
-			permissions: permissions,
-		}
+		principal.password = user.Password
+		principal.permissions = permissions
+		state.users[user.Username] = principal
 	}
 	return state
 }
@@ -89,6 +95,21 @@ func (a authState) hasPermission(username, resource, action string) bool {
 	return ok
 }
 
+func (a authState) permissionsFor(username string) []PermissionConfig {
+	principal, ok := a.users[username]
+	if !ok {
+		return nil
+	}
+	out := make([]PermissionConfig, 0, len(principal.grants))
+	for _, grant := range principal.grants {
+		out = append(out, PermissionConfig{
+			Resource: grant.Resource,
+			Actions:  append([]string(nil), grant.Actions...),
+		})
+	}
+	return out
+}
+
 func (s *Server) issueToken(username string, now time.Time) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("manager server is nil")
@@ -112,11 +133,11 @@ func (s *Server) requirePermission(resource, action string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		username, err := s.authenticateRequest(c.Request.Header.Get("Authorization"))
 		if err != nil {
-			jsonError(c, http.StatusUnauthorized, "unauthorized")
+			jsonError(c, http.StatusUnauthorized, "unauthorized", "unauthorized")
 			return
 		}
 		if !s.auth.hasPermission(username, resource, action) {
-			jsonError(c, http.StatusForbidden, "forbidden")
+			jsonError(c, http.StatusForbidden, "forbidden", "forbidden")
 			return
 		}
 		c.Set(managerUsernameContextKey, username)

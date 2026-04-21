@@ -287,7 +287,8 @@ WK_MANAGER_USERS=[{"username":"admin","password":"admin123","permissions":[{"res
 {
   "username": "admin",
   "token_type": "Bearer",
-  "token": "<jwt>",
+  "access_token": "<jwt>",
+  "expires_in": 86400,
   "expires_at": "2026-04-22T10:00:00+08:00",
   "permissions": [
     {
@@ -304,6 +305,15 @@ WK_MANAGER_USERS=[{"username":"admin","password":"admin123","permissions":[{"res
 - 请求体非法：`400`
 - manager 鉴权未正确配置：`500`
 
+错误体格式统一为：
+
+```json
+{
+  "error": "invalid_credentials",
+  "message": "invalid credentials"
+}
+```
+
 ## 7.2 `GET /manager/nodes`
 
 请求头：
@@ -316,17 +326,22 @@ Authorization: Bearer <jwt>
 
 ```json
 {
+  "total": 1,
   "items": [
     {
       "node_id": 1,
       "addr": "127.0.0.1:7000",
       "status": "alive",
       "last_heartbeat_at": "2026-04-21T10:00:00+08:00",
-      "controller_role": "leader",
-      "slot_count": 32,
-      "leader_slot_count": 12,
       "is_local": true,
-      "capacity_weight": 1
+      "capacity_weight": 1,
+      "controller": {
+        "role": "leader"
+      },
+      "slot_stats": {
+        "count": 32,
+        "leader_count": 12
+      }
     }
   ]
 }
@@ -338,21 +353,31 @@ Authorization: Bearer <jwt>
 - 权限不足：`403`
 - 底层 cluster 查询失败：`500`
 
+错误体同样使用：
+
+```json
+{
+  "error": "forbidden",
+  "message": "forbidden"
+}
+```
+
 第一版不做分页、过滤、排序参数，避免在框架搭建阶段引入不必要复杂度。
 
 ## 8. 节点列表 DTO 设计
 
 节点列表第一版返回如下字段：
 
-- `node_id`
-- `addr`
-- `status`
-- `last_heartbeat_at`
-- `controller_role`
-- `slot_count`
-- `leader_slot_count`
-- `is_local`
-- `capacity_weight`
+- `total`
+- `items[].node_id`
+- `items[].addr`
+- `items[].status`
+- `items[].last_heartbeat_at`
+- `items[].is_local`
+- `items[].capacity_weight`
+- `items[].controller.role`
+- `items[].slot_stats.count`
+- `items[].slot_stats.leader_count`
 
 字段说明如下。
 
@@ -376,25 +401,25 @@ Authorization: Bearer <jwt>
 
 ## 8.2 角色字段
 
-不建议只返回一个笼统的 `role` 字段，因为节点在控制面与数据面上可能同时扮演多种角色。第一版用两个更明确的聚合视角：
+不建议直接在顶层平铺多个角色字段，因为后续管理接口可能还会继续扩展控制面信息。第一版将控制面角色收敛为 `controller.role`：
 
-- `controller_role`
+- `controller.role`
   - `leader`
   - `follower`
   - `none`
-- `leader_slot_count`
-  - 当前节点作为 slot leader 的数量
 
-这样后台列表既能看到控制面角色，也能看到数据面承载强度。
+这样后续若需要补充 controller peer、leader 任期或其他控制面信息时，可以继续挂在 `controller` 对象下，而不破坏顶层字段布局。
 
 ## 8.3 统计字段
 
-- `slot_count`
+- `slot_stats.count`
   - 节点出现在多少个 slot 的 `CurrentPeers` 中
-- `leader_slot_count`
+- `slot_stats.leader_count`
   - 节点在多少个 slot runtime view 中是 `LeaderID`
 - `is_local`
   - 是否为当前节点
+- `total`
+  - 当前返回的节点总数；第一版虽然不做分页，但先固定外层计数字段，便于后续扩展分页和筛选参数
 
 ## 9. 节点数据聚合设计
 
