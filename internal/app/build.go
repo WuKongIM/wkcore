@@ -146,10 +146,15 @@ func build(cfg Config) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: create channel transport: %w", err)
 	}
+	app.channelMetaSync = &channelMetaSync{
+		localNode:       cfg.Node.ID,
+		refreshInterval: time.Second,
+	}
 	app.isrRuntime, err = channelruntime.New(channelruntime.Config{
 		LocalNode:                        channel.NodeID(cfg.Node.ID),
 		ReplicaFactory:                   newChannelReplicaFactory(app.channelLogDB, channel.NodeID(cfg.Node.ID), nil, cfg.Cluster.AppendGroupCommitMaxWait, cfg.Cluster.AppendGroupCommitMaxRecords, cfg.Cluster.AppendGroupCommitMaxBytes),
 		GenerationStore:                  newMemoryGenerationStore(),
+		Activator:                        app.channelMetaSync,
 		Transport:                        app.isrTransport,
 		PeerSessions:                     app.isrTransport,
 		AutoRunScheduler:                 true,
@@ -204,13 +209,9 @@ func build(cfg Config) (_ *App, err error) {
 		ChannelProbeBatchSize: cfg.Conversation.ChannelProbeBatchSize,
 		Logger:                app.logger.Named("conversation"),
 	})
-	app.channelMetaSync = &channelMetaSync{
-		source:          app.store,
-		cluster:         app.channelLog,
-		bootstrap:       newChannelMetaBootstrapper(app.cluster, app.store, cfg.Cluster.ChannelBootstrapDefaultMinISR, time.Now, app.logger),
-		localNode:       cfg.Node.ID,
-		refreshInterval: time.Second,
-	}
+	app.channelMetaSync.source = app.store
+	app.channelMetaSync.cluster = app.channelLog
+	app.channelMetaSync.bootstrap = newChannelMetaBootstrapper(app.cluster, app.store, cfg.Cluster.ChannelBootstrapDefaultMinISR, time.Now, app.logger)
 	onlineRegistry := online.NewRegistry()
 	authorityClient := &presenceAuthorityClient{
 		cluster:     app.cluster,

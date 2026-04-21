@@ -11,7 +11,6 @@ import (
 	channelreplica "github.com/WuKongIM/WuKongIM/pkg/channel/replica"
 	channelruntime "github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
 	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
-	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 )
 
@@ -39,8 +38,9 @@ type channelReplicaFactory struct {
 }
 
 type channelMetaCluster interface {
-	ApplyMeta(meta channel.Meta) error
-	RemoveLocal(key channel.ChannelKey) error
+	ApplyRoutingMeta(meta channel.Meta) error
+	EnsureLocalRuntime(meta channel.Meta) error
+	RemoveLocalRuntime(key channel.ChannelKey) error
 }
 
 type channelMetaSync struct {
@@ -54,6 +54,7 @@ type channelMetaSync struct {
 	cancel       context.CancelFunc
 	done         chan struct{}
 	appliedLocal map[channel.ChannelKey]struct{}
+	cache        channelActivationCache
 
 	lastHashSlotTableVersion uint64
 }
@@ -125,21 +126,7 @@ func (s channelSnapshotApplier) InstallSnapshot(_ context.Context, snap channel.
 }
 
 func (s *channelMetaSync) RefreshChannelMeta(ctx context.Context, id channel.ChannelID) (channel.Meta, error) {
-	s.observeHashSlotTableVersion()
-	meta, err := s.source.GetChannelRuntimeMeta(ctx, id.ID, int64(id.Type))
-	if err != nil {
-		if errors.Is(err, metadb.ErrNotFound) {
-			meta, err = s.ensureChannelRuntimeMeta(ctx, id)
-		}
-		if err != nil {
-			return channel.Meta{}, err
-		}
-	}
-	meta, err = s.reconcileChannelRuntimeMeta(ctx, meta)
-	if err != nil {
-		return channel.Meta{}, err
-	}
-	return s.apply(meta)
+	return s.ActivateByID(ctx, id, channelruntime.ActivationSourceBusiness)
 }
 
 func (s *channelMetaSync) ensureChannelRuntimeMeta(ctx context.Context, id channel.ChannelID) (metadb.ChannelRuntimeMeta, error) {
@@ -161,45 +148,13 @@ func (s *channelMetaSync) Start() error {
 		s.mu.Unlock()
 		return nil
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	_, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	interval := s.refreshInterval
-	if interval <= 0 {
-		interval = time.Second
-	}
 	s.cancel = cancel
 	s.done = done
 	s.mu.Unlock()
-
-	if err := s.syncOnce(ctx); err != nil && !channelMetaSyncStartupRetryable(err) {
-		cancel()
-		s.mu.Lock()
-		if s.done == done {
-			s.cancel = nil
-			s.done = nil
-		}
-		s.mu.Unlock()
-		return errors.Join(err, s.cleanupAppliedLocal())
-	}
-
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		defer close(done)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				_ = s.syncOnce(ctx)
-			}
-		}
-	}()
+	close(done)
 	return nil
-}
-
-func channelMetaSyncStartupRetryable(err error) bool {
-	return errors.Is(err, raftcluster.ErrNoLeader) || errors.Is(err, raftcluster.ErrSlotNotFound)
 }
 
 func (s *channelMetaSync) Stop() error {
@@ -246,7 +201,7 @@ func (s *channelMetaSync) syncOnce(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		applied, err := s.apply(meta)
+		applied, err := s.applyLocalMeta(meta)
 		if err != nil {
 			return err
 		}
@@ -256,7 +211,7 @@ func (s *channelMetaSync) syncOnce(ctx context.Context) error {
 		if _, ok := currentLocal[key]; ok {
 			continue
 		}
-		if err := s.removeLocal(key); err != nil {
+		if err := s.removeLocalRuntime(key); err != nil {
 			return err
 		}
 	}
@@ -264,21 +219,11 @@ func (s *channelMetaSync) syncOnce(ctx context.Context) error {
 	return nil
 }
 
-func (s *channelMetaSync) apply(meta metadb.ChannelRuntimeMeta) (channel.Meta, error) {
+func (s *channelMetaSync) applyLocalMeta(meta metadb.ChannelRuntimeMeta) (channel.Meta, error) {
 	if !containsUint64(meta.Replicas, s.localNode) {
 		return channel.Meta{}, channel.ErrStaleMeta
 	}
-	rootMeta := projectChannelMeta(meta)
-	if err := s.cluster.ApplyMeta(rootMeta); err != nil {
-		return channel.Meta{}, err
-	}
-	s.mu.Lock()
-	if s.appliedLocal == nil {
-		s.appliedLocal = make(map[channel.ChannelKey]struct{})
-	}
-	s.appliedLocal[rootMeta.Key] = struct{}{}
-	s.mu.Unlock()
-	return rootMeta, nil
+	return s.applyAuthoritativeMeta(meta)
 }
 
 func (s *channelMetaSync) reconcileChannelRuntimeMeta(ctx context.Context, meta metadb.ChannelRuntimeMeta) (metadb.ChannelRuntimeMeta, error) {
@@ -308,12 +253,17 @@ func (s *channelMetaSync) observeHashSlotTableVersion() {
 		return
 	}
 	version := versionSource.HashSlotTableVersion()
+	changed := false
 	s.mu.Lock()
 	if s.lastHashSlotTableVersion != 0 && version != s.lastHashSlotTableVersion {
 		s.appliedLocal = nil
+		changed = true
 	}
 	s.lastHashSlotTableVersion = version
 	s.mu.Unlock()
+	if changed {
+		s.cache.clear()
+	}
 }
 
 func projectChannelMeta(meta metadb.ChannelRuntimeMeta) channel.Meta {
@@ -356,11 +306,11 @@ func containsUint64(values []uint64, target uint64) bool {
 	return false
 }
 
-func (s *channelMetaSync) removeLocal(key channel.ChannelKey) error {
+func (s *channelMetaSync) removeLocalRuntime(key channel.ChannelKey) error {
 	if s.cluster == nil {
 		return nil
 	}
-	if err := s.cluster.RemoveLocal(key); err != nil {
+	if err := s.cluster.RemoveLocalRuntime(key); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -375,7 +325,7 @@ func (s *channelMetaSync) removeLocal(key channel.ChannelKey) error {
 func (s *channelMetaSync) cleanupAppliedLocal() error {
 	var err error
 	for key := range s.snapshotAppliedLocal() {
-		err = errors.Join(err, s.removeLocal(key))
+		err = errors.Join(err, s.removeLocalRuntime(key))
 	}
 	s.mu.Lock()
 	s.appliedLocal = nil

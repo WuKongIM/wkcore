@@ -9,6 +9,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	channelhandler "github.com/WuKongIM/WuKongIM/pkg/channel/handler"
+	channelruntime "github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
@@ -124,7 +125,7 @@ func TestChannelMetaSyncSyncOnceAppliesOnlyLocalReplicaMetas(t *testing.T) {
 	}, cloneAppliedLocalSet(syncer.appliedLocal))
 }
 
-func TestChannelMetaSyncRefreshRejectsNonLocalReplicaMeta(t *testing.T) {
+func TestChannelMetaSyncRefreshCachesNonLocalReplicaMeta(t *testing.T) {
 	source := &fakeChannelMetaSource{
 		get: map[channel.ChannelID]metadb.ChannelRuntimeMeta{
 			{ID: "remote", Type: 1}: {
@@ -148,10 +149,109 @@ func TestChannelMetaSyncRefreshRejectsNonLocalReplicaMeta(t *testing.T) {
 		localNode: 2,
 	}
 
-	_, err := syncer.RefreshChannelMeta(context.Background(), channel.ChannelID{ID: "remote", Type: 1})
-	require.ErrorIs(t, err, channel.ErrStaleMeta)
-	require.Empty(t, cluster.applied)
+	got, err := syncer.RefreshChannelMeta(context.Background(), channel.ChannelID{ID: "remote", Type: 1})
+	require.NoError(t, err)
+	require.Equal(t, channel.ChannelID{ID: "remote", Type: 1}, got.ID)
+	require.Len(t, cluster.applied, 1)
+	require.Empty(t, cluster.runtimeUpserts)
 	require.Nil(t, cloneAppliedLocalSet(syncer.appliedLocal))
+}
+
+func TestChannelMetaSyncRefreshCachesRemoteRoutingMetaWithoutRuntime(t *testing.T) {
+	id := channel.ChannelID{ID: "remote", Type: 1}
+	source := &fakeChannelMetaSource{
+		get: map[channel.ChannelID]metadb.ChannelRuntimeMeta{
+			id: {
+				ChannelID:    id.ID,
+				ChannelType:  int64(id.Type),
+				ChannelEpoch: 2,
+				LeaderEpoch:  3,
+				Replicas:     []uint64{7, 8},
+				ISR:          []uint64{7, 8},
+				Leader:       7,
+				MinISR:       1,
+				Status:       uint8(channel.StatusActive),
+				Features:     uint64(channel.MessageSeqFormatLegacyU32),
+			},
+		},
+	}
+	cluster := &fakeChannelMetaCluster{}
+	syncer := &channelMetaSync{
+		source:    source,
+		cluster:   cluster,
+		localNode: 2,
+	}
+
+	got, err := syncer.RefreshChannelMeta(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, id, got.ID)
+	require.Equal(t, []channel.Meta{got}, cluster.routingApplied)
+	require.Empty(t, cluster.runtimeUpserts)
+	require.Empty(t, cloneAppliedLocalSet(syncer.appliedLocal))
+}
+
+func TestChannelMetaSyncStartDoesNotScanAuthoritativeMetas(t *testing.T) {
+	source := &fakeChannelMetaSource{}
+	cluster := &fakeChannelMetaCluster{}
+	syncer := &channelMetaSync{
+		source:          source,
+		cluster:         cluster,
+		localNode:       2,
+		refreshInterval: time.Millisecond,
+	}
+
+	require.NoError(t, syncer.Start())
+	require.NoError(t, syncer.Stop())
+	require.Equal(t, 0, source.listCalls)
+	require.Empty(t, cluster.applied)
+}
+
+func TestChannelMetaSyncActivateByKeyUsesAuthoritativeLookupAndSingleflight(t *testing.T) {
+	id := channel.ChannelID{ID: "hot", Type: 1}
+	key := channelhandler.KeyFromChannelID(id)
+	block := make(chan struct{})
+	source := &fakeChannelMetaSource{
+		get: map[channel.ChannelID]metadb.ChannelRuntimeMeta{
+			id: {
+				ChannelID:    id.ID,
+				ChannelType:  int64(id.Type),
+				ChannelEpoch: 4,
+				LeaderEpoch:  5,
+				Replicas:     []uint64{2, 3},
+				ISR:          []uint64{2, 3},
+				Leader:       2,
+				MinISR:       1,
+				Status:       uint8(channel.StatusActive),
+			},
+		},
+		getBlock: block,
+	}
+	cluster := &fakeChannelMetaCluster{}
+	syncer := &channelMetaSync{
+		source:    source,
+		cluster:   cluster,
+		localNode: 2,
+	}
+
+	const workers = 8
+	errCh := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := syncer.ActivateByKey(context.Background(), key, channelruntime.ActivationSourceFetch)
+			errCh <- err
+		}()
+	}
+	close(block)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+	require.Equal(t, 1, source.getCalls)
+	require.Len(t, cluster.runtimeUpserts, 1)
 }
 
 func TestChannelMetaSyncRefreshClearsAppliedLocalOnHashSlotTableVersionChange(t *testing.T) {
@@ -878,6 +978,7 @@ func TestChannelMetaBootstrapperLogsMissingBootstrappedAndFailedEvents(t *testin
 }
 
 type fakeChannelMetaSource struct {
+	mu          sync.Mutex
 	get         map[channel.ChannelID]metadb.ChannelRuntimeMeta
 	list        []metadb.ChannelRuntimeMeta
 	getErr      error
@@ -885,6 +986,8 @@ type fakeChannelMetaSource struct {
 	version     uint64
 	getResults  []fakeChannelMetaGetResult
 	getCalls    int
+	listCalls   int
+	getBlock    <-chan struct{}
 	lastGetMeta metadb.ChannelRuntimeMeta
 	upsertErr   error
 	upserts     []metadb.ChannelRuntimeMeta
@@ -896,9 +999,14 @@ type fakeChannelMetaGetResult struct {
 }
 
 func (f *fakeChannelMetaSource) GetChannelRuntimeMeta(_ context.Context, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error) {
-	if f.getCalls < len(f.getResults) {
-		result := f.getResults[f.getCalls]
-		f.getCalls++
+	if f.getBlock != nil {
+		<-f.getBlock
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.getCalls++
+	if f.getCalls <= len(f.getResults) {
+		result := f.getResults[f.getCalls-1]
 		if result.err != nil {
 			return metadb.ChannelRuntimeMeta{}, result.err
 		}
@@ -914,6 +1022,9 @@ func (f *fakeChannelMetaSource) GetChannelRuntimeMeta(_ context.Context, channel
 }
 
 func (f *fakeChannelMetaSource) ListChannelRuntimeMeta(context.Context) ([]metadb.ChannelRuntimeMeta, error) {
+	f.mu.Lock()
+	f.listCalls++
+	f.mu.Unlock()
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -930,11 +1041,14 @@ func (f *fakeChannelMetaSource) UpsertChannelRuntimeMeta(_ context.Context, meta
 }
 
 type fakeChannelMetaCluster struct {
-	mu        sync.Mutex
-	applied   []channel.Meta
-	removed   []channel.ChannelKey
-	applyErr  error
-	removeErr error
+	mu             sync.Mutex
+	applied        []channel.Meta
+	removed        []channel.ChannelKey
+	routingApplied []channel.Meta
+	runtimeUpserts []channel.Meta
+	runtimeRemoved []channel.ChannelKey
+	applyErr       error
+	removeErr      error
 }
 
 func (f *fakeChannelMetaCluster) ApplyMeta(meta channel.Meta) error {
@@ -948,6 +1062,29 @@ func (f *fakeChannelMetaCluster) RemoveLocal(key channel.ChannelKey) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.removed = append(f.removed, key)
+	return f.removeErr
+}
+
+func (f *fakeChannelMetaCluster) ApplyRoutingMeta(meta channel.Meta) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.applied = append(f.applied, meta)
+	f.routingApplied = append(f.routingApplied, meta)
+	return f.applyErr
+}
+
+func (f *fakeChannelMetaCluster) EnsureLocalRuntime(meta channel.Meta) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runtimeUpserts = append(f.runtimeUpserts, meta)
+	return f.applyErr
+}
+
+func (f *fakeChannelMetaCluster) RemoveLocalRuntime(key channel.ChannelKey) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removed = append(f.removed, key)
+	f.runtimeRemoved = append(f.runtimeRemoved, key)
 	return f.removeErr
 }
 
