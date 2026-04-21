@@ -140,7 +140,7 @@ func (r *runtime) startLaneDispatcherWorker() {
 	}()
 }
 
-// runLaneDispatcher drains queued lane work until the queue is empty.
+// runLaneDispatcher launches queued lane work until the queue is empty.
 func (r *runtime) runLaneDispatcher() {
 	if r.isClosed() {
 		return
@@ -150,12 +150,20 @@ func (r *runtime) runLaneDispatcher() {
 		if !ok {
 			return
 		}
-		r.dispatchLanePoll(key)
-		r.laneDispatcher.finish(key)
+		r.dispatchLanePollAsync(key)
 		if r.isClosed() {
 			return
 		}
 	}
+}
+
+func (r *runtime) dispatchLanePollAsync(key laneDispatchWorkKey) {
+	go func() {
+		r.dispatchLanePoll(key)
+		if r.laneDispatcher.finish(key) {
+			r.startLaneDispatcherWorker()
+		}
+	}()
 }
 
 // dispatchLanePoll sends one lane-poll request for a scheduled peer/lane pair.

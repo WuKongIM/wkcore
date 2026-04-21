@@ -105,12 +105,14 @@ Leader 处理响应:
 
 ```
 `ReplicationMode=long_poll`（当前 steady-state 主路径）:
-  ① follower 侧 Runtime 为每个 peer 维护固定 `N lane` 的 `PeerLaneManager`
-  ② lane 首次发送 `open(full membership)`，后续 steady-state 只发 `poll(membershipVersionHint + cursorDelta[])`
-  ③ leader 侧 Runtime 为每个 `(peer,lane)` 维护 `LeaderLaneSession`；频道把复制事件通过 `replicationTargets` 直达对应 lane
-  ④ leader 处理 `ServeLanePoll` 时，先应用 `cursorDelta` 推进 follower progress / HW，再从 lane ready queue 挑选可返回的 channel item
-  ⑤ 若 lane 当前无 ready item，则 park 到 `maxWait` 或新事件；空响应是正常 timeout，follower 收到后立即续下一条 poll
-  ⑥ follower 收到 item 后仍走 `ApplyFetch` 落盘，但 steady-state ACK 不再单独发 `ProgressAck`，而是由下一条 lane poll 的 `cursorDelta` 回传
+  ① follower 侧 Runtime 为每个 peer 维护固定 `N lane` 的 `PeerLaneManager`，并通过 runtime 内部 `lane dispatcher` 统一调度 `(peer,lane)` 的实际发送
+  ② channel startup / membership change / response reissue 只负责标记 lane dirty 或 pending，并把 lane 交给 dispatcher；dispatcher 保证同一 `(peer,lane)` 只会 single-flight 发送一条 poll，但真正会阻塞到 RPC 返回的 send 会异步发车，避免被单个 long-poll park 串住其他 lane
+  ③ lane 首次发送 `open(full membership)`，后续 steady-state 只发 `poll(membershipVersionHint + cursorDelta[])`
+  ④ leader 侧 Runtime 为每个 `(peer,lane)` 维护 `LeaderLaneSession`；频道把复制事件通过 `replicationTargets` 直达对应 lane
+  ⑤ leader 处理 `ServeLanePoll` 时，先应用 `cursorDelta` 推进 follower progress / HW，再从 lane ready queue 挑选可返回的 channel item
+  ⑥ 若 lane 当前无 ready item，则 park 到 `maxWait` 或新事件；空响应是正常 timeout，follower 收到后立即续下一条 poll
+  ⑦ follower 收到 item 后仍走 `ApplyFetch` 落盘，但 steady-state ACK 不再单独发 `ProgressAck`，而是由下一条 lane poll 的 `cursorDelta` 回传
+  ⑧ lane poll 发送失败 / backpressure / RPC timeout 的恢复退避现在按 `(peer,lane)` 维度计时；steady-state 不再回退到 channel 级 retry timer
 ```
 
 ```
@@ -161,6 +163,7 @@ Tombstone (replica.go:230):
 
 - **64 路分片**: Runtime 按 FNV(ChannelKey) 分 64 个 shard，每个 shard 独立 RWMutex → `runtime/runtime.go`
 - **三优先级调度**: High(Leader变更) / Normal(周期复制) / Low(快照) → `runtime/scheduler.go`
+- **lane dispatcher**: `long_poll` steady-state 不再让 channel 直接发下一条 poll；startup / membership / response 事件只调度 `(peer,lane)`，由 dispatcher 统一做 single-flight、异步 send 发车与 dirty requeue，避免阻塞中的 long-poll 把其他 lane 一起串行化 → `runtime/lane_dispatcher.go`
 - **三级背压**: 无背压(立即发送) / 软(批量合并) / 硬(排队+重试调度) → `runtime/backpressure.go`
 - **墓碑管理**: 频道删除后加入墓碑(带TTL)，防止过期响应生效 → `runtime/tombstone.go`
 
@@ -190,4 +193,5 @@ Idempotency (0x14): prefix + key + fromUID + msgNo — 幂等条目
 - **Fetch 批量刷批策略**: 仅 `progress_ack` 模式保留 200µs 定时窗口 + 8 条 / 32 KiB eager flush + 4 条 chunk fallback 的批量 Fetch 策略；`long_poll` steady-state 不再走该批量器。
 - **Legacy empty fetch reopen**: `progress_ack` 模式 follower 收到真实 empty `FetchResponse` 后会立刻重开下一轮 `FetchRequest`；若本地 `LEO > LeaderHW` 还会先补发 `ProgressAck`。同步回调里会优先发非 fetch 消息、再 drain 其他 channel 的 peer queue，最后才处理当前 channel 的 deferred refetch，避免 many-channel 场景下同频道 refetch 抢回 inflight 槽位导致其他频道饥饿。
 - **Leader lane session 是固定规模资源**: ready queue / parked waiter 的规模与 `peer * laneCount` 成正比，不会退化成 per-channel timer / goroutine。
+- **long_poll retry 已切到 lane 维度**: steady-state lane poll 的恢复 backoff 由 `(peer,lane)` timer 驱动；`progress_ack` 模式继续使用原来的 channel 级 replication retry。
 - **`ProgressAck` 只剩 legacy steady-state 路径**: 进程级 `ReplicationMode=long_poll` 时 steady-state ACK 通过 `cursorDelta` 回传；`ReconcileProbe` 仍是独立恢复协议。

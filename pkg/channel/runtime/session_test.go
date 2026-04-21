@@ -1830,6 +1830,90 @@ func TestSessionLongPollFollowerStartupSchedulesDispatcher(t *testing.T) {
 	}
 }
 
+func TestSessionLongPollDispatcherDoesNotSerializeBlockedLanes(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.ReplicationMode = "long_poll"
+		cfg.LongPollLaneCount = 4
+		cfg.LongPollMaxWait = time.Second
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+
+	firstKey := testChannelKeyForLane(t, 0, 4, "lp-dispatch-blocked-first")
+	secondKey := testChannelKeyForLane(t, 1, 4, "lp-dispatch-blocked-second")
+	mustEnsureLocal(t, env.runtime, core.Meta{
+		Key:      firstKey,
+		Epoch:    41,
+		Leader:   2,
+		Replicas: []core.NodeID{1, 2, 3},
+		ISR:      []core.NodeID{1, 2, 3},
+		MinISR:   2,
+	})
+	mustEnsureLocal(t, env.runtime, core.Meta{
+		Key:      secondKey,
+		Epoch:    42,
+		Leader:   2,
+		Replicas: []core.NodeID{1, 2, 3},
+		ISR:      []core.NodeID{1, 2, 3},
+		MinISR:   2,
+	})
+
+	session := env.sessions.session(2)
+	paused := make(chan struct{}, 1)
+	releaseCh := make(chan struct{})
+	var blockFirst sync.Once
+	session.afterSend = func() {
+		session.mu.Lock()
+		last := session.last
+		session.mu.Unlock()
+		if last.Kind != MessageKindLanePollRequest || last.LanePollRequest == nil {
+			return
+		}
+		blockFirst.Do(func() {
+			select {
+			case paused <- struct{}{}:
+			default:
+			}
+			<-releaseCh
+		})
+	}
+
+	done := make(chan struct{})
+	go func() {
+		env.runtime.runScheduler()
+		close(done)
+	}()
+
+	select {
+	case <-paused:
+	case <-time.After(time.Second):
+		t.Fatal("expected first lane send to block")
+	}
+
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := session.sendCount(); got >= 2 {
+			close(releaseCh)
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("runScheduler did not finish after releasing blocked lane send")
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	close(releaseCh)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runScheduler did not finish after releasing blocked lane send")
+	}
+	t.Fatalf("expected another lane send while the first lane send was blocked, got %d sends", session.sendCount())
+}
+
 func TestSessionLongPollMembershipChangeSchedulesAffectedLane(t *testing.T) {
 	t.Run("remove", func(t *testing.T) {
 		env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
