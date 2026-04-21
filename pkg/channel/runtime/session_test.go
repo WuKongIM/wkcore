@@ -1714,6 +1714,168 @@ func TestSessionLongPollEnsureChannelStartsInitialOpenForEveryPopulatedLane(t *t
 	t.Fatalf("initial long-poll opens covered lanes=%v, want all %d lanes", laneOpens, laneCount)
 }
 
+func TestSessionLongPollMembershipChangeSchedulesAffectedLane(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.ReplicationMode = "long_poll"
+		cfg.LongPollLaneCount = 4
+		cfg.LongPollMaxWait = time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+
+	firstKey := testChannelKeyForLane(t, 0, 4, "lp-membership-first")
+	secondKey := testChannelKeyForLane(t, 0, 4, "lp-membership-second")
+
+	mustEnsureLocal(t, env.runtime, core.Meta{
+		Key:      firstKey,
+		Epoch:    11,
+		Leader:   2,
+		Replicas: []core.NodeID{1, 2, 3},
+		ISR:      []core.NodeID{1, 2, 3},
+		MinISR:   2,
+	})
+
+	env.runtime.runScheduler()
+
+	session := env.sessions.session(2)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected initial long poll open, got %d sends", got)
+	}
+
+	initialLane := session.last.LanePollRequest
+	if initialLane == nil {
+		t.Fatal("expected initial lane poll request payload")
+	}
+
+	env.transport.deliver(Envelope{
+		Peer: 2,
+		Kind: MessageKindLanePollResponse,
+		Sync: true,
+		LanePollResponse: &LanePollResponseEnvelope{
+			LaneID: initialLane.LaneID,
+			Status: LanePollStatusClosed,
+		},
+	})
+
+	mustEnsureLocal(t, env.runtime, core.Meta{
+		Key:      secondKey,
+		Epoch:    12,
+		Leader:   2,
+		Replicas: []core.NodeID{1, 2, 3},
+		ISR:      []core.NodeID{1, 2, 3},
+		MinISR:   2,
+	})
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got := session.sendCount(); got >= 2 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("expected membership upsert to wake affected lane, got %d sends", got)
+	}
+	if session.last.Kind != MessageKindLanePollRequest || session.last.LanePollRequest == nil {
+		t.Fatalf("last kind after upsert = %v, want lane poll request", session.last.Kind)
+	}
+	if session.last.LanePollRequest.Op != LanePollOpOpen {
+		t.Fatalf("upsert request op = %v, want open", session.last.LanePollRequest.Op)
+	}
+	if len(session.last.LanePollRequest.FullMembership) != 2 {
+		t.Fatalf("upsert membership = %+v, want both channels", session.last.LanePollRequest.FullMembership)
+	}
+}
+
+func TestSessionLongPollMembershipRemovalQueuesAffectedLane(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.ReplicationMode = "long_poll"
+		cfg.LongPollLaneCount = 4
+		cfg.LongPollMaxWait = time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+
+	firstKey := testChannelKeyForLane(t, 0, 4, "lp-membership-remove-first")
+	secondKey := testChannelKeyForLane(t, 0, 4, "lp-membership-remove-second")
+
+	mustEnsureLocal(t, env.runtime, core.Meta{
+		Key:      firstKey,
+		Epoch:    21,
+		Leader:   2,
+		Replicas: []core.NodeID{1, 2, 3},
+		ISR:      []core.NodeID{1, 2, 3},
+		MinISR:   2,
+	})
+	env.runtime.runScheduler()
+
+	session := env.sessions.session(2)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected initial long poll open, got %d sends", got)
+	}
+	initialLane := session.last.LanePollRequest
+	if initialLane == nil {
+		t.Fatal("expected initial lane poll request payload")
+	}
+	env.transport.deliver(Envelope{
+		Peer: 2,
+		Kind: MessageKindLanePollResponse,
+		Sync: true,
+		LanePollResponse: &LanePollResponseEnvelope{
+			LaneID: initialLane.LaneID,
+			Status: LanePollStatusClosed,
+		},
+	})
+
+	mustEnsureLocal(t, env.runtime, core.Meta{
+		Key:      secondKey,
+		Epoch:    22,
+		Leader:   2,
+		Replicas: []core.NodeID{1, 2, 3},
+		ISR:      []core.NodeID{1, 2, 3},
+		MinISR:   2,
+	})
+	env.runtime.runScheduler()
+
+	if got := session.sendCount(); got != 2 {
+		t.Fatalf("expected second long poll open before removal, got %d sends", got)
+	}
+	env.transport.deliver(Envelope{
+		Peer: 2,
+		Kind: MessageKindLanePollResponse,
+		Sync: true,
+		LanePollResponse: &LanePollResponseEnvelope{
+			LaneID: session.last.LanePollRequest.LaneID,
+			Status: LanePollStatusClosed,
+		},
+	})
+
+	popped := make(chan core.ChannelKey, 1)
+	env.runtime.schedulerPopHook = func(popKey core.ChannelKey) {
+		select {
+		case popped <- popKey:
+		default:
+		}
+	}
+
+	if err := env.runtime.RemoveChannel(firstKey); err != nil {
+		t.Fatalf("RemoveChannel(%q) error = %v", firstKey, err)
+	}
+
+	env.runtime.runScheduler()
+
+	select {
+	case got := <-popped:
+		if got != secondKey {
+			t.Fatalf("removed-lane wake popped %q, want %q", got, secondKey)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected removal to queue dispatcher work for the remaining lane member")
+	}
+}
+
 func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.ReplicationMode = "long_poll"

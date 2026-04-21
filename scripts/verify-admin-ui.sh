@@ -62,11 +62,18 @@ grep -q '风险摘要' ui/assets/app.js || { echo "missing risk section" >&2; ex
 grep -q '集群快照' ui/assets/app.js || { echo "missing cluster snapshot" >&2; exit 1; }
 
 grep -q 'data-page="nodes"' ui/nodes.html || { echo "missing nodes marker" >&2; exit 1; }
-grep -q '节点ID' ui/assets/app.js || { echo "missing node id header" >&2; exit 1; }
-grep -q 'RPC Latency' ui/assets/app.js || { echo "missing latency header" >&2; exit 1; }
-grep -q '查看详情' ui/assets/app.js || { echo "missing drawer trigger" >&2; exit 1; }
-grep -q 'data-node-drawer' ui/assets/app.js || { echo "missing drawer container" >&2; exit 1; }
-grep -q 'Follower replication lag > threshold' ui/assets/data.js || { echo "missing degraded hint" >&2; exit 1; }
+grep -q '节点列表' ui/assets/app.js || { echo "missing nodes heading" >&2; exit 1; }
+grep -q '节点ID / 地址关键词' ui/assets/app.js || { echo "missing node keyword filter" >&2; exit 1; }
+grep -q '程序版本' ui/assets/app.js || { echo "missing program version column" >&2; exit 1; }
+grep -q '配置版本' ui/assets/app.js || { echo "missing config version column" >&2; exit 1; }
+grep -q '离线次数' ui/assets/app.js || { echo "missing offline count column" >&2; exit 1; }
+grep -q '日志' ui/assets/app.js || { echo "missing log action" >&2; exit 1; }
+grep -q 'bindNodeFilters' ui/assets/app.js || { echo "missing node filters binder" >&2; exit 1; }
+! grep -q 'data-open-node' ui/assets/app.js || { echo "unexpected node detail action" >&2; exit 1; }
+! grep -q 'data-node-drawer' ui/assets/app.js || { echo "unexpected node drawer container" >&2; exit 1; }
+grep -q 'programVersion' ui/assets/data.js || { echo "missing node program version data" >&2; exit 1; }
+grep -q 'configVersion' ui/assets/data.js || { echo "missing node config version data" >&2; exit 1; }
+grep -q 'filter-grid' ui/assets/styles.css || { echo "missing node filter grid styles" >&2; exit 1; }
 
 grep -q 'pageHref' ui/assets/app.js || { echo "missing relative path helper" >&2; exit 1; }
 grep -q 'dashboard.html' ui/assets/data.js || { echo "missing dashboard nav target" >&2; exit 1; }
@@ -93,12 +100,12 @@ grep -q 'drawer' ui/assets/styles.css || { echo "missing drawer styles" >&2; exi
 
 grep -q 'data-page="groups"' ui/groups.html || { echo "missing groups page marker" >&2; exit 1; }
 grep -q 'renderGroups' ui/assets/app.js || { echo "missing renderGroups" >&2; exit 1; }
-grep -q '分区管理' ui/assets/app.js || { echo "missing groups heading" >&2; exit 1; }
-grep -q 'Group ID' ui/assets/app.js || { echo "missing groups table header" >&2; exit 1; }
+grep -q '槽管理' ui/assets/app.js || { echo "missing groups heading" >&2; exit 1; }
+grep -q 'Slot ID' ui/assets/app.js || { echo "missing groups table header" >&2; exit 1; }
 grep -q 'Leader 节点' ui/assets/app.js || { echo "missing leader column" >&2; exit 1; }
-grep -q '查看 Group' ui/assets/app.js || { echo "missing group drawer trigger" >&2; exit 1; }
+grep -q '查看 Slot' ui/assets/app.js || { echo "missing group drawer trigger" >&2; exit 1; }
 grep -q 'data-group-drawer' ui/assets/app.js || { echo "missing group drawer container" >&2; exit 1; }
-grep -q 'group-17' ui/assets/data.js || { echo "missing groups sample data" >&2; exit 1; }
+grep -q 'slot-17' ui/assets/data.js || { echo "missing groups sample data" >&2; exit 1; }
 
 grep -q 'data-page="network"' ui/network.html || { echo "missing network page marker" >&2; exit 1; }
 grep -q 'renderNetwork' ui/assets/app.js || { echo "missing renderNetwork" >&2; exit 1; }
@@ -130,7 +137,7 @@ grep -q 'data-page="topology"' ui/topology.html || { echo "missing topology page
 grep -q 'renderTopology' ui/assets/app.js || { echo "missing renderTopology" >&2; exit 1; }
 grep -q '拓扑视图' ui/assets/app.js || { echo "missing topology heading" >&2; exit 1; }
 grep -q '节点拓扑总览' ui/assets/app.js || { echo "missing topology overview section" >&2; exit 1; }
-grep -q 'Group 流向' ui/assets/app.js || { echo "missing topology flow section" >&2; exit 1; }
+grep -q 'Slot 流向' ui/assets/app.js || { echo "missing topology flow section" >&2; exit 1; }
 grep -q '查看拓扑节点' ui/assets/app.js || { echo "missing topology drawer trigger" >&2; exit 1; }
 grep -q 'data-topology-drawer' ui/assets/app.js || { echo "missing topology drawer container" >&2; exit 1; }
 grep -q 'topo-node-3' ui/assets/data.js || { echo "missing topology sample data" >&2; exit 1; }

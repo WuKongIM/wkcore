@@ -76,7 +76,7 @@ function renderTopbar(meta) {
     <div class="topbar-actions">
       <div class="surface-pill search-pill">
         <img class="nav-icon" src="${icon("search")}" alt="" />
-        <span>搜索节点 / Group / 地址</span>
+        <span>搜索节点 / Slot / 地址</span>
       </div>
       <div class="surface-pill">
         <img class="nav-icon" src="${icon("refresh-cw")}" alt="" />
@@ -223,7 +223,7 @@ function renderDashboard() {
           <div class="section-head">
             <div>
               <h2>集群快照</h2>
-              <p>用轻量热度矩阵观察 Group 分布与健康差异</p>
+              <p>用轻量热度矩阵观察 Slot 分布与健康差异</p>
             </div>
           </div>
           <div class="snapshot-grid">${snapshotCells}</div>
@@ -270,20 +270,154 @@ function statusBadge(status) {
   return `<span class="inline-badge ${status}">${status}</span>`;
 }
 
+function renderNodeRole(role) {
+  return role === "Leader" ? "领导" : "副本";
+}
+
+function renderNodeOnlineState(state) {
+  return state === "offline"
+    ? `<span class="node-online-badge offline">离线</span>`
+    : `<span class="node-online-badge online">在线</span>`;
+}
+
+function renderNodeJoinStatus(status) {
+  if (status === "joining") return "加入中";
+  if (status === "left") return "未加入";
+  return "已加入";
+}
+
+function renderNodeVote(hasVote) {
+  return hasVote ? "有" : "无";
+}
+
+function defaultNodeFilters() {
+  const status = queryStatusFilter();
+  return {
+    keyword: "",
+    role: "",
+    onlineState: ["online", "offline"].includes(status) ? status : "",
+    programVersion: "",
+    configVersion: "",
+  };
+}
+
+function uniqueNodeValues(key) {
+  return [...new Set(window.ADMIN_UI_DATA.nodes.map((node) => node[key]).filter(Boolean))];
+}
+
+function renderSelectOptions(values, selectedValue) {
+  const options = ['<option value="">全部</option>'];
+  values.forEach((value) => {
+    const selected = value === selectedValue ? " selected" : "";
+    options.push(`<option value="${value}"${selected}>${value}</option>`);
+  });
+  return options.join("");
+}
+
+function filterNodes(filters) {
+  const keyword = filters.keyword.trim().toLowerCase();
+  return window.ADMIN_UI_DATA.nodes.filter((node) => {
+    const matchesKeyword = !keyword
+      || [String(node.id), node.address]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(keyword));
+    const matchesRole = !filters.role || node.role === filters.role;
+    const matchesOnlineState = !filters.onlineState || node.onlineState === filters.onlineState;
+    const matchesProgramVersion = !filters.programVersion || node.programVersion === filters.programVersion;
+    const matchesConfigVersion = !filters.configVersion || node.configVersion === filters.configVersion;
+    return matchesKeyword && matchesRole && matchesOnlineState && matchesProgramVersion && matchesConfigVersion;
+  });
+}
+
+function renderNodeTableRows(nodes) {
+  if (!nodes.length) {
+    return `
+      <tr>
+        <td class="node-table-empty" colspan="13">没有匹配的节点，请调整筛选条件后重试。</td>
+      </tr>
+    `;
+  }
+
+  return nodes
+    .map(
+      (node) => `
+        <tr>
+          <td><strong class="node-id">${node.id}</strong></td>
+          <td>${renderNodeRole(node.role)}</td>
+          <td>${node.term}</td>
+          <td>${node.slotLeaderCount}/${node.slotCount}</td>
+          <td>${renderNodeVote(node.hasVote)}</td>
+          <td>${renderNodeOnlineState(node.onlineState)}</td>
+          <td>
+            <strong>${node.offlineCount}</strong>
+            <div class="cell-subtle">${node.lastOfflineAt}</div>
+          </td>
+          <td>${node.uptime}</td>
+          <td>${node.address}</td>
+          <td>${node.programVersion}</td>
+          <td>${node.configVersion}</td>
+          <td>${renderNodeJoinStatus(node.joinStatus)}</td>
+          <td><button class="table-action" type="button">日志</button></td>
+        </tr>
+      `,
+    )
+    .join("");
+}
+
+function buildNodeFilterSummary(filters, filteredNodes) {
+  const tags = [];
+  if (filters.keyword.trim()) tags.push(`关键词：${filters.keyword.trim()}`);
+  if (filters.role) tags.push(`角色：${renderNodeRole(filters.role)}`);
+  if (filters.onlineState) tags.push(`在线：${filters.onlineState === "online" ? "在线" : "离线"}`);
+  if (filters.programVersion) tags.push(`程序版本：${filters.programVersion}`);
+  if (filters.configVersion) tags.push(`配置版本：${filters.configVersion}`);
+
+  return {
+    count: `共 ${filteredNodes.length} / ${window.ADMIN_UI_DATA.nodes.length} 个节点`,
+    active: tags.length ? `当前筛选：${tags.join(" · ")}` : "默认显示全部节点",
+    subtle: !tags.length,
+  };
+}
+
+function renderDrawerTable(columns, rows) {
+  if (!rows || !rows.length) {
+    return `<p>暂无可展示的复制进度明细。</p>`;
+  }
+
+  const headerHtml = columns.map((column) => `<th>${column.label}</th>`).join("");
+  const rowHtml = rows
+    .map(
+      (row) => `
+        <tr>
+          ${columns.map((column) => `<td>${row[column.key]}</td>`).join("")}
+        </tr>
+      `,
+    )
+    .join("");
+
+  return `
+    <div class="drawer-table-wrap">
+      <table class="node-table">
+        <thead><tr>${headerHtml}</tr></thead>
+        <tbody>${rowHtml}</tbody>
+      </table>
+    </div>
+  `;
+}
+
 function renderGroupDrawer(group) {
   if (!group) {
     return `
       <div class="drawer-head">
         <div>
-          <h2>Group 详情</h2>
-          <p>选择 Group 后查看详情</p>
+          <h2>Slot 详情</h2>
+          <p>选择 Slot 后查看详情</p>
         </div>
       </div>
     `;
   }
 
-  const members = group.detail.members.map((member) => `<span class="mini-tag">${member}</span>`).join("");
-  const indicators = group.detail.indicators
+  const raftOverview = group.detail.raftOverview
     .map(
       (item) => `
         <div class="drawer-metric">
@@ -293,33 +427,55 @@ function renderGroupDrawer(group) {
       `,
     )
     .join("");
+  const logProgress = group.detail.logProgress
+    .map(
+      (item) => `
+        <div class="drawer-metric">
+          <span>${item.label}</span>
+          <strong>${item.value}</strong>
+        </div>
+      `,
+    )
+    .join("");
+  const replicaProgress = renderDrawerTable(
+    [
+      { key: "node", label: "副本节点" },
+      { key: "role", label: "角色" },
+      { key: "match", label: "Match" },
+      { key: "next", label: "Next" },
+      { key: "lag", label: "Lag" },
+      { key: "state", label: "状态" },
+    ],
+    group.detail.replicaProgress,
+  );
+  const hotChannels = group.detail.hotChannels.map((channel) => `<span class="mini-tag">${channel}</span>`).join("");
   const events = group.detail.events.map((event) => `<li>${event}</li>`).join("");
 
   return `
     <div class="drawer-head">
       <div>
         <h2>${group.id}</h2>
-        <p>${group.leader} · ${group.status} · ${group.term}</p>
+        <p>${group.leader} · ${group.status} · term ${group.term} · epoch ${group.epoch}</p>
       </div>
       <button class="icon-button" type="button" data-close-group-drawer>关闭</button>
     </div>
     <div class="drawer-body">
       <section class="drawer-section">
-        <h3>Group 概览</h3>
+        <h3>Raft 概览</h3>
         <p>${group.detail.summary}</p>
-        <p>Leader 节点 ${group.leader} · Epoch ${group.detail.epoch} · Replica ${group.replicas}</p>
+        <div class="drawer-metrics">${raftOverview}</div>
       </section>
       <section class="drawer-section">
-        <h3>成员状态</h3>
-        <div class="mini-tags">${members}</div>
+        <h3>日志进度</h3>
+        <div class="drawer-metrics">${logProgress}</div>
       </section>
       <section class="drawer-section">
-        <h3>关键指标</h3>
-        <div class="drawer-metrics">${indicators}</div>
+        <h3>副本进度</h3>
+        ${replicaProgress}
       </section>
       <section class="drawer-section">
         <h3>热点 Channel</h3>
-        <p>${group.channels}</p>
+        <div class="mini-tags">${hotChannels}</div>
       </section>
       <section class="drawer-section">
         <h3>最近事件</h3>
@@ -351,6 +507,12 @@ function renderLinkDrawer(link) {
       `,
     )
     .join("");
+  const impactedSlots = (link.detail.impactedSlots || [])
+    .map((slot) => `<span class="mini-tag">${slot}</span>`)
+    .join("");
+  const impactedChannels = (link.detail.impactedChannels || [])
+    .map((channel) => `<span class="mini-tag">${channel}</span>`)
+    .join("");
   const events = link.detail.events.map((event) => `<li>${event}</li>`).join("");
 
   return `
@@ -370,6 +532,14 @@ function renderLinkDrawer(link) {
       <section class="drawer-section">
         <h3>关键指标</h3>
         <div class="drawer-metrics">${metrics}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>受影响 Slot</h3>
+        <div class="mini-tags">${impactedSlots || "<span class=\"mini-tag\">暂无明显影响</span>"}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>受影响 Channel ISR</h3>
+        <div class="mini-tags">${impactedChannels || "<span class=\"mini-tag\">暂无明显影响</span>"}</div>
       </section>
       <section class="drawer-section">
         <h3>最近事件</h3>
@@ -446,6 +616,26 @@ function renderChannelDrawer(channel) {
     `;
   }
 
+  const isrOverview = channel.detail.isrOverview
+    .map(
+      (item) => `
+        <div class="drawer-metric">
+          <span>${item.label}</span>
+          <strong>${item.value}</strong>
+        </div>
+      `,
+    )
+    .join("");
+  const logProgress = channel.detail.logProgress
+    .map(
+      (item) => `
+        <div class="drawer-metric">
+          <span>${item.label}</span>
+          <strong>${item.value}</strong>
+        </div>
+      `,
+    )
+    .join("");
   const metrics = channel.detail.metrics
     .map(
       (item) => `
@@ -457,24 +647,42 @@ function renderChannelDrawer(channel) {
     )
     .join("");
   const tags = channel.detail.tags.map((tag) => `<span class="mini-tag">${tag}</span>`).join("");
+  const replicaProgress = renderDrawerTable(
+    [
+      { key: "node", label: "副本节点" },
+      { key: "role", label: "角色" },
+      { key: "ack", label: "Ack" },
+      { key: "lag", label: "HW Lag" },
+      { key: "state", label: "状态" },
+    ],
+    channel.detail.replicaProgress,
+  );
   const events = channel.detail.events.map((event) => `<li>${event}</li>`).join("");
 
   return `
     <div class="drawer-head">
       <div>
         <h2>${channel.id}</h2>
-        <p>${channel.type} · ${channel.status} · ${channel.group}</p>
+        <p>${channel.type} · ${channel.status} · ${channel.group} · ISR ${channel.replicasLabel}</p>
       </div>
       <button class="icon-button" type="button" data-close-channel-drawer>关闭</button>
     </div>
     <div class="drawer-body">
       <section class="drawer-section">
-        <h3>频道摘要</h3>
+        <h3>ISR 概览</h3>
         <p>${channel.detail.summary}</p>
-        <p>Leader ${channel.leader} · Group ${channel.group} · Subscriber ${channel.subscribers}</p>
+        <div class="drawer-metrics">${isrOverview}</div>
       </section>
       <section class="drawer-section">
-        <h3>关键指标</h3>
+        <h3>日志进度</h3>
+        <div class="drawer-metrics">${logProgress}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>副本确认进度</h3>
+        ${replicaProgress}
+      </section>
+      <section class="drawer-section">
+        <h3>运行指标</h3>
         <div class="drawer-metrics">${metrics}</div>
       </section>
       <section class="drawer-section">
@@ -482,8 +690,8 @@ function renderChannelDrawer(channel) {
         <div class="mini-tags">${tags}</div>
       </section>
       <section class="drawer-section">
-        <h3>运行摘要</h3>
-        <p>Ingress ${channel.ingress} · Backlog ${channel.backlog} · 最近活跃 ${channel.activeAt}</p>
+        <h3>复制摘要</h3>
+        <p>Leader ${channel.leader} · Slot ${channel.group} · HW ${channel.hw} · LEO ${channel.leo} · Ack Lag ${channel.ackLag}</p>
       </section>
       <section class="drawer-section">
         <h3>最近事件</h3>
@@ -515,6 +723,26 @@ function renderTopologyDrawer(node) {
       `,
     )
     .join("");
+  const slotReplication = node.detail.slotReplication
+    .map(
+      (item) => `
+        <div class="drawer-metric">
+          <span>${item.label}</span>
+          <strong>${item.value}</strong>
+        </div>
+      `,
+    )
+    .join("");
+  const channelReplication = node.detail.channelReplication
+    .map(
+      (item) => `
+        <div class="drawer-metric">
+          <span>${item.label}</span>
+          <strong>${item.value}</strong>
+        </div>
+      `,
+    )
+    .join("");
   const links = node.detail.links.map((item) => `<span class="mini-tag">${item}</span>`).join("");
   const events = node.detail.events.map((event) => `<li>${event}</li>`).join("");
 
@@ -522,7 +750,7 @@ function renderTopologyDrawer(node) {
     <div class="drawer-head">
       <div>
         <h2>${node.name}</h2>
-        <p>${node.role} · ${node.status} · ${node.groups} groups</p>
+        <p>${node.role} · ${node.status} · ${node.groups} slots</p>
       </div>
       <button class="icon-button" type="button" data-close-topology-drawer>关闭</button>
     </div>
@@ -530,11 +758,19 @@ function renderTopologyDrawer(node) {
       <section class="drawer-section">
         <h3>节点概览</h3>
         <p>${node.detail.summary}</p>
-        <p>Outbound ${node.outbound} · Groups ${node.groups}</p>
+        <p>Outbound ${node.outbound} · Slots ${node.groups}</p>
       </section>
       <section class="drawer-section">
         <h3>关键指标</h3>
         <div class="drawer-metrics">${metrics}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>Slot MultiRaft 热点</h3>
+        <div class="drawer-metrics">${slotReplication}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>Channel ISR 热点</h3>
+        <div class="drawer-metrics">${channelReplication}</div>
       </section>
       <section class="drawer-section">
         <h3>关键链路</h3>
@@ -598,11 +834,12 @@ function renderChannels() {
           <td>${channel.type}</td>
           <td>${channel.leader}</td>
           <td>${channel.group}</td>
-          <td>${channel.subscribers}</td>
-          <td>${channel.ingress}</td>
-          <td>${channel.backlog}</td>
+          <td>${channel.replicasLabel}</td>
+          <td>${channel.hw}</td>
+          <td>${channel.leo}</td>
+          <td>${channel.ackLag}</td>
+          <td>${channel.minIsr}</td>
           <td>${statusBadge(channel.status)}</td>
-          <td>${channel.activeAt}</td>
           <td><button class="table-link" type="button" data-open-channel="${channel.id}">查看频道</button></td>
         </tr>
       `,
@@ -614,15 +851,15 @@ function renderChannels() {
       <header class="page-header">
         <div>
           <h1>频道管理</h1>
-          <p>从 Channel 维度查看 Leader、Group、订阅规模和消息积压，优先定位热点与异常频道。</p>
+          <p>从 Channel 维度查看 Leader、Slot、订阅规模和消息积压，优先定位热点与异常频道。</p>
         </div>
       </header>
 
       <section class="panel content-panel">
         <div class="section-head">
           <div>
-            <h2>频道运行概况</h2>
-            <p>先看活跃规模、热点数量和当前积压</p>
+            <h2>Channel ISR 概况</h2>
+            <p>先看 leader channels、ISR shrink、MinISR 风险与 ack 延迟热点</p>
           </div>
         </div>
         <div class="metric-grid section-metrics">${metrics}</div>
@@ -642,8 +879,8 @@ function renderChannels() {
         <article class="panel content-panel">
           <div class="section-head">
             <div>
-              <h2>重点频道</h2>
-              <p>优先跟进 backlog 增长或持续高写入的频道</p>
+              <h2>ISR 风险频道</h2>
+              <p>优先处理逼近 MinISR 或 lease 风险升高的频道</p>
             </div>
           </div>
           <div class="rank-list">${watchlist}</div>
@@ -654,7 +891,7 @@ function renderChannels() {
         <div class="toolbar-row">
           <div class="surface-pill search-pill">
             <img class="nav-icon" src="${icon("search")}" alt="" />
-            <span>搜索频道ID / 类型 / Group / Leader</span>
+            <span>搜索频道ID / 类型 / Slot / Leader</span>
           </div>
           <div class="toolbar-actions">
             <button class="filter-pill" type="button">类型：全部</button>
@@ -668,7 +905,7 @@ function renderChannels() {
         <div class="section-head table-head">
           <div>
             <h2>频道列表</h2>
-            <p>按 Leader、Group、订阅量和消息速率快速筛查热点频道</p>
+            <p>按 Slot、ISR、HW / LEO 与 Ack Lag 快速筛查复制风险频道</p>
           </div>
         </div>
         <table class="node-table">
@@ -677,12 +914,13 @@ function renderChannels() {
               <th>频道ID</th>
               <th>类型</th>
               <th>Leader 节点</th>
-              <th>所属 Group</th>
-              <th>订阅数</th>
-              <th>消息速率</th>
-              <th>Backlog</th>
+              <th>所属 Slot</th>
+              <th>Replicas / ISR</th>
+              <th>HW</th>
+              <th>LEO</th>
+              <th>Ack Lag</th>
+              <th>MinISR</th>
               <th>状态</th>
-              <th>最近活跃</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -753,13 +991,52 @@ function renderTopology() {
       `,
     )
     .join("");
+  const slotReplication = topology.slotReplication
+    .map(
+      (item) => `
+        <div class="rank-row">
+          <div>
+            <strong>${item.name}</strong>
+            <span>${item.summary}</span>
+          </div>
+          <span class="inline-badge ${item.status}">${item.status}</span>
+        </div>
+      `,
+    )
+    .join("");
+  const channelReplication = topology.channelReplication
+    .map(
+      (item) => `
+        <div class="rank-row">
+          <div>
+            <strong>${item.name}</strong>
+            <span>${item.summary}</span>
+          </div>
+          <span class="inline-badge ${item.status}">${item.status}</span>
+        </div>
+      `,
+    )
+    .join("");
+  const replicationFlows = topology.replicationFlows
+    .map(
+      (flow) => `
+        <div class="risk-item compact">
+          <span class="risk-level ${flow.tone === "degraded" ? "critical" : "warning"}">${flow.tone}</span>
+          <div class="risk-copy">
+            <strong>${flow.title}</strong>
+            <span>${flow.summary}</span>
+          </div>
+        </div>
+      `,
+    )
+    .join("");
 
   return `
     <section data-view="topology" class="page-shell">
       <header class="page-header">
         <div>
           <h1>拓扑视图</h1>
-          <p>把节点、Leader 分布和 Group 流向放在同一个视图里，帮助定位集中热点和链路风险。</p>
+          <p>把节点、Slot MultiRaft 与 Channel ISR 的复制联动放在同一个视图里，帮助定位跨层热点与链路风险。</p>
         </div>
       </header>
 
@@ -796,11 +1073,33 @@ function renderTopology() {
         <article class="panel content-panel">
           <div class="section-head">
             <div>
-              <h2>Group 流向</h2>
-              <p>观察热点 Group 在节点间的主要方向</p>
+              <h2>Slot MultiRaft 热点</h2>
+              <p>先看 commit / applied 拉开、leader transfer 与 config review 的热点槽</p>
             </div>
           </div>
-          <div class="flow-list">${flows}</div>
+          <div class="rank-list">${slotReplication}</div>
+        </article>
+
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>Channel ISR 热点</h2>
+              <p>关注 ack lag、lease risk 与逼近 MinISR 的频道</p>
+            </div>
+          </div>
+          <div class="rank-list">${channelReplication}</div>
+        </article>
+      </section>
+
+      <section class="dashboard-grid lower-grid">
+        <article class="panel content-panel">
+          <div class="section-head">
+            <div>
+              <h2>复制联动清单</h2>
+              <p>把 Slot MultiRaft 与 Channel ISR 的联动风险串起来看</p>
+            </div>
+          </div>
+          <div class="risk-list">${replicationFlows}</div>
         </article>
 
         <article class="panel content-panel">
@@ -824,6 +1123,16 @@ function renderTopology() {
               .join("")}
           </div>
         </article>
+      </section>
+
+      <section class="panel content-panel">
+        <div class="section-head">
+          <div>
+            <h2>Slot 流向</h2>
+            <p>观察热点 Slot 在节点间的主要方向</p>
+          </div>
+        </div>
+        <div class="flow-list">${flows}</div>
       </section>
 
       <aside class="drawer" data-topology-drawer hidden></aside>
@@ -1067,6 +1376,19 @@ function renderNetwork() {
       `,
     )
     .join("");
+  const replicationImpact = network.replicationImpact
+    .map(
+      (item) => `
+        <div class="risk-item compact">
+          <span class="risk-level ${item.status === "degraded" ? "critical" : "warning"}">${item.status}</span>
+          <div class="risk-copy">
+            <strong>${item.title}</strong>
+            <span>${item.summary}</span>
+          </div>
+        </div>
+      `,
+    )
+    .join("");
 
   const tableRows = network.links
     .map(
@@ -1160,6 +1482,16 @@ function renderNetwork() {
         </article>
       </section>
 
+      <section class="panel content-panel">
+        <div class="section-head">
+          <div>
+            <h2>复制影响摘要</h2>
+            <p>把复制关联链路和受影响的 Slot / Channel ISR 直接串起来看</p>
+          </div>
+        </div>
+        <div class="risk-list">${replicationImpact}</div>
+      </section>
+
       <aside class="drawer" data-link-drawer hidden></aside>
     </section>
   `;
@@ -1190,11 +1522,14 @@ function renderGroups() {
           <td><strong>${group.id}</strong></td>
           <td>${group.leader}</td>
           <td>${group.replicas}</td>
-          <td>${statusBadge(group.status)}</td>
-          <td>${group.lag}</td>
-          <td>${group.throughput}</td>
           <td>${group.term}</td>
-          <td><button class="table-link" type="button" data-open-group="${group.id}">查看 Group</button></td>
+          <td>${group.epoch}</td>
+          <td>${group.commitIndex}</td>
+          <td>${group.appliedIndex}</td>
+          <td>${group.maxReplicaLag}</td>
+          <td>${group.configState}</td>
+          <td>${statusBadge(group.status)}</td>
+          <td><button class="table-link" type="button" data-open-group="${group.id}">查看 Slot</button></td>
         </tr>
       `,
     )
@@ -1207,7 +1542,7 @@ function renderGroups() {
         <div class="rank-row">
           <div>
             <strong>${group.id}</strong>
-            <span>Leader 节点 ${group.leader} · lag ${group.lag} · ${group.channels}</span>
+            <span>Leader ${group.leader} · commit ${group.commitIndex} / applied ${group.appliedIndex} · ${group.configState}</span>
           </div>
           <span class="inline-badge ${group.status}">${group.status}</span>
         </div>
@@ -1219,8 +1554,8 @@ function renderGroups() {
     <section data-view="groups" class="page-shell">
       <header class="page-header">
         <div>
-          <h1>分区管理</h1>
-          <p>查看 Group 的 Leader 分布、复制状态与当前热度，作为集群调度和排障入口。</p>
+          <h1>槽管理</h1>
+          <p>查看 Slot 的 Leader 分布、复制状态与当前热度，作为集群调度和排障入口。</p>
         </div>
       </header>
 
@@ -1230,8 +1565,8 @@ function renderGroups() {
         <article class="panel content-panel">
           <div class="section-head">
             <div>
-              <h2>Leader 热度矩阵</h2>
-              <p>快速观察 Group 分布、风险点和热点集中位置</p>
+              <h2>Raft 复制热度矩阵</h2>
+              <p>快速观察 Slot 分布、风险点和 leader 集中位置</p>
             </div>
           </div>
           <div class="snapshot-grid">${heatmap}</div>
@@ -1244,8 +1579,8 @@ function renderGroups() {
         <article class="panel content-panel">
           <div class="section-head">
             <div>
-              <h2>风险 Group</h2>
-              <p>优先看状态不是 online 的分区</p>
+              <h2>风险 Slot</h2>
+              <p>优先看 commit / applied 拉开或配置变更中的槽</p>
             </div>
           </div>
           <div class="rank-list">${incidents}</div>
@@ -1256,7 +1591,7 @@ function renderGroups() {
         <div class="toolbar-row">
           <div class="surface-pill search-pill">
             <img class="nav-icon" src="${icon("search")}" alt="" />
-            <span>搜索 Group ID / Leader / Replica</span>
+            <span>搜索 Slot ID / Leader / Replica</span>
           </div>
           <div class="toolbar-actions">
             <button class="filter-pill" type="button">状态：全部</button>
@@ -1270,13 +1605,16 @@ function renderGroups() {
         <table class="node-table">
           <thead>
             <tr>
-              <th>Group ID</th>
+              <th>Slot ID</th>
               <th>Leader 节点</th>
               <th>Replica</th>
+              <th>Term</th>
+              <th>Epoch</th>
+              <th>CommitIndex</th>
+              <th>AppliedIndex</th>
+              <th>Max Replica Lag</th>
+              <th>Config State</th>
               <th>状态</th>
-              <th>Commit Lag</th>
-              <th>Write Throughput</th>
-              <th>当前 Term</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -1312,6 +1650,50 @@ function renderNodeDrawer(node) {
     )
     .join("");
   const groups = node.detail.groups.map((group) => `<span class="mini-tag">${group}</span>`).join("");
+  const slotProfile = node.detail.slotProfile
+    .map(
+      (metric) => `
+        <div class="drawer-metric">
+          <span>${metric.label}</span>
+          <strong>${metric.value}</strong>
+        </div>
+      `,
+    )
+    .join("");
+  const channelProfile = node.detail.channelProfile
+    .map(
+      (metric) => `
+        <div class="drawer-metric">
+          <span>${metric.label}</span>
+          <strong>${metric.value}</strong>
+        </div>
+      `,
+    )
+    .join("");
+  const anomalySlots = node.detail.anomalySlots
+    .map(
+      (slot) => `
+        <div class="rank-row">
+          <div>
+            <strong>${slot.id}</strong>
+            <span>${slot.summary}</span>
+          </div>
+        </div>
+      `,
+    )
+    .join("");
+  const anomalyChannels = node.detail.anomalyChannels
+    .map(
+      (channel) => `
+        <div class="rank-row">
+          <div>
+            <strong>${channel.id}</strong>
+            <span>${channel.summary}</span>
+          </div>
+        </div>
+      `,
+    )
+    .join("");
   const events = node.detail.events.map((event) => `<li>${event}</li>`).join("");
 
   return `
@@ -1332,8 +1714,24 @@ function renderNodeDrawer(node) {
         <div class="drawer-metrics">${metrics}</div>
       </section>
       <section class="drawer-section">
-        <h3>重点 Group</h3>
+        <h3>Slot 复制画像</h3>
+        <div class="drawer-metrics">${slotProfile}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>Channel ISR 画像</h3>
+        <div class="drawer-metrics">${channelProfile}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>重点 Slot</h3>
         <div class="mini-tags">${groups}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>异常 Slot</h3>
+        <div class="rank-list">${anomalySlots}</div>
+      </section>
+      <section class="drawer-section">
+        <h3>异常 Channel</h3>
+        <div class="rank-list">${anomalyChannels}</div>
       </section>
       <section class="drawer-section">
         <h3>最近异常事件</h3>
@@ -1341,114 +1739,170 @@ function renderNodeDrawer(node) {
       </section>
       <section class="drawer-section">
         <h3>网络指标摘要</h3>
-        <p>RPC Latency ${node.latency} · 连接数 ${node.connections} · Group 数 ${node.groups}</p>
+        <p>RPC Latency ${node.latency} · 连接数 ${node.connections} · Slot Max Commit Lag ${node.slotLag} · Channel ISR ${node.channelRisk}</p>
       </section>
     </div>
   `;
 }
 
 function renderNodes() {
-  const status = queryStatusFilter();
-  const nodes = status
-    ? window.ADMIN_UI_DATA.nodes.filter((node) => node.status === status)
-    : window.ADMIN_UI_DATA.nodes;
-
-  const activeFilter = status
-    ? `<span class="active-filter">当前筛选：status=${status}</span>`
-    : `<span class="active-filter subtle">默认显示全部节点</span>`;
-
-  const rows = nodes
-    .map((node) => {
-      return `
-        <tr>
-          <td>${node.id}</td>
-          <td>
-            <strong>${node.name}</strong>
-            <div class="cell-subtle">${node.address}</div>
-            ${node.note ? `<div class="cell-alert">${node.note}</div>` : ""}
-          </td>
-          <td>${roleBadge(node.role)}</td>
-          <td>${statusBadge(node.status)}</td>
-          <td>${node.groups}</td>
-          <td>${node.connections}</td>
-          <td>${node.latency}</td>
-          <td><button class="table-link" type="button" data-open-node="${node.id}">查看详情</button></td>
-        </tr>
-      `;
-    })
-    .join("");
+  const filters = defaultNodeFilters();
+  const rows = renderNodeTableRows(filterNodes(filters));
+  const summary = buildNodeFilterSummary(filters, filterNodes(filters));
+  const programVersionOptions = renderSelectOptions(uniqueNodeValues("programVersion"), filters.programVersion);
+  const configVersionOptions = renderSelectOptions(uniqueNodeValues("configVersion"), filters.configVersion);
 
   return `
-    <section data-view="nodes" class="page-shell">
+    <section data-view="nodes" class="page-shell node-page">
       <header class="page-header">
         <div>
-          <h1>节点管理</h1>
-          <p>主表就是入口，先看状态，再看承载，再进入节点详情抽屉。</p>
+          <h1>节点列表</h1>
+          <p>前期只保留基础筛选和节点清单，先把节点信息快速看清楚。</p>
         </div>
-        ${activeFilter}
       </header>
 
-      <section class="panel toolbar-panel">
-        <div class="toolbar-row">
-          <div class="surface-pill search-pill">
-            <img class="nav-icon" src="${icon("search")}" alt="" />
-            <span>搜索节点ID / 地址 / 角色</span>
-          </div>
-          <div class="toolbar-actions">
-            <button class="filter-pill" type="button">角色：全部</button>
-            <button class="filter-pill" type="button">状态：全部</button>
-            <button class="filter-pill" type="button">排序：Latency</button>
+      <section class="panel content-panel node-filter-panel">
+        <div class="section-head">
+          <div>
+            <h2>筛选条件</h2>
+            <p>支持按节点ID、地址、角色、在线状态和版本快速过滤。</p>
           </div>
         </div>
+        <form class="node-filter-form" data-node-filter-form>
+          <div class="filter-grid">
+            <label class="filter-field filter-field-wide">
+              <span>节点ID / 地址关键词</span>
+              <input
+                class="filter-input"
+                data-node-filter="keyword"
+                name="keyword"
+                placeholder="例如 1001 或 node1.wk.local"
+                type="text"
+                value="${filters.keyword}"
+              />
+            </label>
+            <label class="filter-field">
+              <span>角色</span>
+              <select class="filter-select" data-node-filter="role" name="role">
+                <option value="">全部</option>
+                <option value="Leader"${filters.role === "Leader" ? " selected" : ""}>领导</option>
+                <option value="Follower"${filters.role === "Follower" ? " selected" : ""}>副本</option>
+              </select>
+            </label>
+            <label class="filter-field">
+              <span>在线状态</span>
+              <select class="filter-select" data-node-filter="onlineState" name="onlineState">
+                <option value="">全部</option>
+                <option value="online"${filters.onlineState === "online" ? " selected" : ""}>在线</option>
+                <option value="offline"${filters.onlineState === "offline" ? " selected" : ""}>离线</option>
+              </select>
+            </label>
+            <label class="filter-field">
+              <span>程序版本</span>
+              <select class="filter-select" data-node-filter="programVersion" name="programVersion">
+                ${programVersionOptions}
+              </select>
+            </label>
+            <label class="filter-field">
+              <span>配置版本</span>
+              <select class="filter-select" data-node-filter="configVersion" name="configVersion">
+                ${configVersionOptions}
+              </select>
+            </label>
+          </div>
+          <div class="filter-actions">
+            <button class="filter-primary-button" type="submit">查询</button>
+            <button class="filter-secondary-button" data-node-reset type="button">重置</button>
+            <button class="filter-secondary-button" data-node-refresh type="button">刷新</button>
+          </div>
+        </form>
       </section>
 
-      <section class="panel table-panel">
+      <section class="panel table-panel node-list-panel">
+        <div class="node-table-toolbar">
+          <div>
+            <h2>节点列表</h2>
+            <p data-node-filter-summary>${summary.count}</p>
+          </div>
+          <span class="active-filter${summary.subtle ? " subtle" : ""}" data-node-active-filter>${summary.active}</span>
+        </div>
         <table class="node-table">
           <thead>
             <tr>
               <th>节点ID</th>
-              <th>地址</th>
               <th>角色</th>
+              <th>任期</th>
+              <th>槽领导/槽数量</th>
+              <th>投票权</th>
+              <th>在线</th>
+              <th>离线次数</th>
+              <th>运行时间</th>
+              <th>地址</th>
+              <th>程序版本</th>
+              <th>配置版本</th>
               <th>状态</th>
-              <th>Group 数</th>
-              <th>连接数</th>
-              <th>RPC Latency</th>
               <th>操作</th>
             </tr>
           </thead>
-          <tbody>${rows}</tbody>
+          <tbody data-node-table-body>${rows}</tbody>
         </table>
       </section>
-
-      <aside class="drawer" data-node-drawer hidden></aside>
     </section>
   `;
 }
 
-function bindNodeDrawer() {
-  const drawer = document.querySelector("[data-node-drawer]");
-  if (!drawer) return;
+function bindNodeFilters() {
+  const form = document.querySelector("[data-node-filter-form]");
+  if (!form) return;
 
-  const open = (id) => {
-    const node = window.ADMIN_UI_DATA.nodes.find((item) => String(item.id) === String(id));
-    drawer.innerHTML = renderNodeDrawer(node);
-    drawer.hidden = false;
-    document.body.classList.add("drawer-open");
-    const closeButton = drawer.querySelector("[data-close-node-drawer]");
-    if (closeButton) {
-      closeButton.addEventListener("click", close);
-    }
-  };
+  const summary = document.querySelector("[data-node-filter-summary]");
+  const activeFilter = document.querySelector("[data-node-active-filter]");
+  const tableBody = document.querySelector("[data-node-table-body]");
+  const resetButton = form.querySelector("[data-node-reset]");
+  const refreshButton = form.querySelector("[data-node-refresh]");
+  const defaultFilters = defaultNodeFilters();
 
-  const close = () => {
-    drawer.hidden = true;
-    drawer.innerHTML = "";
-    document.body.classList.remove("drawer-open");
-  };
-
-  document.querySelectorAll("[data-open-node]").forEach((button) => {
-    button.addEventListener("click", () => open(button.dataset.openNode));
+  const readFilters = () => ({
+    keyword: form.elements.keyword.value,
+    role: form.elements.role.value,
+    onlineState: form.elements.onlineState.value,
+    programVersion: form.elements.programVersion.value,
+    configVersion: form.elements.configVersion.value,
   });
+
+  const applyFilters = (filters) => {
+    const filteredNodes = filterNodes(filters);
+    const nextSummary = buildNodeFilterSummary(filters, filteredNodes);
+    tableBody.innerHTML = renderNodeTableRows(filteredNodes);
+    summary.textContent = nextSummary.count;
+    activeFilter.textContent = nextSummary.active;
+    activeFilter.classList.toggle("subtle", nextSummary.subtle);
+  };
+
+  const resetFilters = () => {
+    form.reset();
+    form.elements.keyword.value = defaultFilters.keyword;
+    form.elements.role.value = defaultFilters.role;
+    form.elements.onlineState.value = defaultFilters.onlineState;
+    form.elements.programVersion.value = defaultFilters.programVersion;
+    form.elements.configVersion.value = defaultFilters.configVersion;
+    applyFilters(defaultFilters);
+  };
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    applyFilters(readFilters());
+  });
+
+  if (resetButton) {
+    resetButton.addEventListener("click", resetFilters);
+  }
+
+  if (refreshButton) {
+    refreshButton.addEventListener("click", () => {
+      applyFilters(readFilters());
+    });
+  }
 }
 
 function bindGroupDrawer() {
@@ -1631,5 +2085,5 @@ document.addEventListener("DOMContentLoaded", () => {
   bindConnectionDrawer();
   bindLinkDrawer();
   bindGroupDrawer();
-  bindNodeDrawer();
+  bindNodeFilters();
 });
