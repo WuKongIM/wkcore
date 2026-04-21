@@ -28,6 +28,13 @@ func (s *Server) registerRoutes() {
 		slots.Use(s.requirePermission("cluster.slot", "r"))
 	}
 	slots.GET("/slots", s.handleSlots)
+
+	tasks := s.engine.Group("/manager")
+	if s.auth.enabled() {
+		tasks.Use(s.requirePermission("cluster.task", "r"))
+	}
+	tasks.GET("/tasks", s.handleTasks)
+	tasks.GET("/tasks/:slot_id", s.handleTask)
 }
 
 func openCORSMiddleware() gin.HandlerFunc {
