@@ -6,6 +6,7 @@ import (
 	"time"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/stretchr/testify/require"
 )
 
@@ -62,6 +63,7 @@ func TestListNodesSortsByNodeIDAndDefaultsCountsToZero(t *testing.T) {
 
 type fakeClusterReader struct {
 	controllerLeaderID uint64
+	slotIDs            []multiraft.SlotID
 	nodes              []controllermeta.ClusterNode
 	assignments        []controllermeta.SlotAssignment
 	views              []controllermeta.SlotRuntimeView
@@ -69,6 +71,10 @@ type fakeClusterReader struct {
 	taskBySlot         map[uint32]controllermeta.ReconcileTask
 	listTasksErr       error
 	getTaskErr         error
+}
+
+func (f fakeClusterReader) SlotIDs() []multiraft.SlotID {
+	return append([]multiraft.SlotID(nil), f.slotIDs...)
 }
 
 func (f fakeClusterReader) ListNodesStrict(context.Context) ([]controllermeta.ClusterNode, error) {

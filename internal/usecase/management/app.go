@@ -4,10 +4,14 @@ import (
 	"context"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
+	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
 
 // ClusterReader exposes the cluster reads needed by manager queries.
 type ClusterReader interface {
+	// SlotIDs returns the configured physical slot ids.
+	SlotIDs() []multiraft.SlotID
 	// ListNodesStrict returns the controller leader's node snapshot without local fallback.
 	ListNodesStrict(ctx context.Context) ([]controllermeta.ClusterNode, error)
 	// ListSlotAssignmentsStrict returns the controller leader's slot assignments without local fallback.
@@ -21,6 +25,12 @@ type ClusterReader interface {
 	ControllerLeaderID() uint64
 }
 
+// ChannelRuntimeMetaReader exposes authoritative slot-level channel runtime pages.
+type ChannelRuntimeMetaReader interface {
+	// ScanChannelRuntimeMetaSlotPage returns one authoritative page for a physical slot.
+	ScanChannelRuntimeMetaSlotPage(ctx context.Context, slotID multiraft.SlotID, after metadb.ChannelRuntimeMetaCursor, limit int) ([]metadb.ChannelRuntimeMeta, metadb.ChannelRuntimeMetaCursor, bool, error)
+}
+
 // Options configures the management usecase app.
 type Options struct {
 	// LocalNodeID is the node ID of the current process.
@@ -29,13 +39,16 @@ type Options struct {
 	ControllerPeerIDs []uint64
 	// Cluster provides distributed cluster read access.
 	Cluster ClusterReader
+	// ChannelRuntimeMeta provides authoritative slot-level runtime meta pages.
+	ChannelRuntimeMeta ChannelRuntimeMetaReader
 }
 
 // App serves manager-oriented read usecases.
 type App struct {
-	localNodeID       uint64
-	controllerPeerIDs map[uint64]struct{}
-	cluster           ClusterReader
+	localNodeID        uint64
+	controllerPeerIDs  map[uint64]struct{}
+	cluster            ClusterReader
+	channelRuntimeMeta ChannelRuntimeMetaReader
 }
 
 // New constructs the management usecase app.
@@ -48,8 +61,9 @@ func New(opts Options) *App {
 		peers[nodeID] = struct{}{}
 	}
 	return &App{
-		localNodeID:       opts.LocalNodeID,
-		controllerPeerIDs: peers,
-		cluster:           opts.Cluster,
+		localNodeID:        opts.LocalNodeID,
+		controllerPeerIDs:  peers,
+		cluster:            opts.Cluster,
+		channelRuntimeMeta: opts.ChannelRuntimeMeta,
 	}
 }
