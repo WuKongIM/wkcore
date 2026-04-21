@@ -168,24 +168,7 @@ func (r *runtime) processFollowerLongPoll(ch *channel, meta core.Meta) {
 		manager := r.ensureLaneManager(peer)
 		manager.MarkChannelPending(ch.key)
 		laneID := manager.LaneFor(ch.key)
-		req, ok := manager.NextRequest(laneID)
-		if !ok {
-			continue
-		}
-		err := r.sendEnvelope(Envelope{
-			Peer:            peer,
-			ChannelKey:      ch.key,
-			Epoch:           meta.Epoch,
-			Generation:      ch.gen,
-			RequestID:       r.requestID.Add(1),
-			Kind:            MessageKindLanePollRequest,
-			LanePollRequest: &req,
-		})
-		if err == nil {
-			continue
-		}
-		manager.SendFailed(laneID)
-		r.scheduleFollowerReplication(ch.key, peer)
+		r.scheduleLaneDispatch(peer, laneID)
 	}
 }
 

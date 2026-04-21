@@ -1524,6 +1524,7 @@ func TestSessionLongPollTimedOutResponseImmediatelyReissuesPoll(t *testing.T) {
 	env.runtime.runScheduler()
 
 	session := env.sessions.session(2)
+	waitForSessionSendCount(t, session, 1)
 	if got := session.sendCount(); got != 1 {
 		t.Fatalf("expected initial long poll open, got %d sends", got)
 	}
@@ -1537,6 +1538,14 @@ func TestSessionLongPollTimedOutResponseImmediatelyReissuesPoll(t *testing.T) {
 	if first.Op != LanePollOpOpen {
 		t.Fatalf("initial op = %v, want open", first.Op)
 	}
+
+	_, release := blockPeerSessionSend(t, session, func(env Envelope) bool {
+		return env.Kind == MessageKindLanePollRequest &&
+			env.LanePollRequest != nil &&
+			env.LanePollRequest.LaneID == first.LaneID &&
+			env.LanePollRequest.Op == LanePollOpPoll
+	})
+	defer release()
 
 	env.transport.deliver(Envelope{
 		Peer: 2,
@@ -1552,6 +1561,18 @@ func TestSessionLongPollTimedOutResponseImmediatelyReissuesPoll(t *testing.T) {
 	})
 
 	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if laneDispatchHasWork(env.runtime, 2, first.LaneID) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !laneDispatchHasWork(env.runtime, 2, first.LaneID) {
+		t.Fatalf("expected timed-out response to schedule lane %d on the dispatcher", first.LaneID)
+	}
+
+	release()
+	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if session.sendCount() >= 2 {
 			break
@@ -1570,6 +1591,44 @@ func TestSessionLongPollTimedOutResponseImmediatelyReissuesPoll(t *testing.T) {
 	if session.last.LanePollRequest.LaneID != testFollowerLaneFor(key, 4) {
 		t.Fatalf("reissue lane = %d, want %d", session.last.LanePollRequest.LaneID, testFollowerLaneFor(key, 4))
 	}
+}
+
+func laneDispatchHasWork(rt *runtime, peer core.NodeID, lane uint16) bool {
+	rt.laneDispatcher.mu.Lock()
+	defer rt.laneDispatcher.mu.Unlock()
+
+	key := laneDispatchWorkKey{peer: peer, lane: lane}
+	if _, ok := rt.laneDispatcher.queued[key]; ok {
+		return true
+	}
+	if _, ok := rt.laneDispatcher.processing[key]; ok {
+		return true
+	}
+	if _, ok := rt.laneDispatcher.dirty[key]; ok {
+		return true
+	}
+	return false
+}
+
+func laneRetryScheduled(rt *runtime, peer core.NodeID, lane uint16) bool {
+	rt.laneRetryMu.Lock()
+	defer rt.laneRetryMu.Unlock()
+
+	state, ok := rt.laneRetry[PeerLaneKey{Peer: peer, LaneID: lane}]
+	return ok && state.timer != nil
+}
+
+func waitForSessionSendCount(t *testing.T, session *trackingPeerSession, want int) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got := session.sendCount(); got >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("expected at least %d sends, got %d", want, session.sendCount())
 }
 
 func TestSessionLongPollTimedOutReissueDoesNotStarveOtherPendingLanes(t *testing.T) {
@@ -1630,20 +1689,37 @@ func TestSessionLongPollTimedOutReissueDoesNotStarveOtherPendingLanes(t *testing
 	}
 
 	env.runtime.runScheduler()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		session.mu.Lock()
+		sent := append([]Envelope(nil), session.sent...)
+		session.mu.Unlock()
+		if len(sent) < 2 {
+			time.Sleep(time.Millisecond)
+			continue
+		}
+		for _, env := range sent {
+			if env.Kind != MessageKindLanePollRequest || env.LanePollRequest == nil {
+				continue
+			}
+			if env.LanePollRequest.LaneID != 0 {
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
 
 	session.mu.Lock()
 	sent := append([]Envelope(nil), session.sent...)
 	session.mu.Unlock()
-	if len(sent) < 2 {
-		t.Fatalf("expected at least two long-poll sends, got %d", len(sent))
+	lanes := make([]uint16, 0, len(sent))
+	for _, env := range sent {
+		if env.Kind != MessageKindLanePollRequest || env.LanePollRequest == nil {
+			continue
+		}
+		lanes = append(lanes, env.LanePollRequest.LaneID)
 	}
-	if sent[0].LanePollRequest == nil || sent[1].LanePollRequest == nil {
-		t.Fatalf("first sends missing lane poll payloads: %+v", sent[:2])
-	}
-	firstTwo := []uint16{sent[0].LanePollRequest.LaneID, sent[1].LanePollRequest.LaneID}
-	if firstTwo[0] == firstTwo[1] {
-		t.Fatalf("timed-out lane reissue monopolized sends before other populated lane opened, got first two lanes %v", firstTwo)
-	}
+	t.Fatalf("timed-out lane reissue monopolized sends before another populated lane opened, got lanes %v", lanes)
 }
 
 func TestSessionLongPollEnsureChannelStartsInitialOpenForEveryPopulatedLane(t *testing.T) {
@@ -1714,7 +1790,7 @@ func TestSessionLongPollEnsureChannelStartsInitialOpenForEveryPopulatedLane(t *t
 	t.Fatalf("initial long-poll opens covered lanes=%v, want all %d lanes", laneOpens, laneCount)
 }
 
-func TestSessionLongPollMembershipChangeSchedulesAffectedLane(t *testing.T) {
+func TestSessionLongPollFollowerStartupSchedulesDispatcher(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 4
@@ -1723,157 +1799,213 @@ func TestSessionLongPollMembershipChangeSchedulesAffectedLane(t *testing.T) {
 		cfg.LongPollMaxChannels = 64
 		cfg.FollowerReplicationRetryInterval = time.Hour
 	})
-
-	firstKey := testChannelKeyForLane(t, 0, 4, "lp-membership-first")
-	secondKey := testChannelKeyForLane(t, 0, 4, "lp-membership-second")
-
-	mustEnsureLocal(t, env.runtime, core.Meta{
-		Key:      firstKey,
-		Epoch:    11,
-		Leader:   2,
-		Replicas: []core.NodeID{1, 2, 3},
-		ISR:      []core.NodeID{1, 2, 3},
-		MinISR:   2,
-	})
-
-	env.runtime.runScheduler()
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2603, 4, 2, []core.NodeID{1, 2}))
 
 	session := env.sessions.session(2)
+	paused, release := blockPeerSessionSend(t, session, func(env Envelope) bool {
+		return env.Kind == MessageKindLanePollRequest &&
+			env.LanePollRequest != nil &&
+			env.LanePollRequest.Op == LanePollOpOpen
+	})
+	defer release()
+
+	done := make(chan struct{})
+	go func() {
+		env.runtime.runScheduler()
+		close(done)
+	}()
+
+	select {
+	case <-paused:
+	case <-time.After(time.Second):
+		t.Fatal("expected follower startup to begin a lane poll send")
+	}
+
+	session.mu.Lock()
+	last := session.last
+	session.mu.Unlock()
+	if last.LanePollRequest == nil {
+		t.Fatal("expected lane poll request payload")
+	}
+	if !laneDispatchHasWork(env.runtime, 2, last.LanePollRequest.LaneID) {
+		t.Fatalf("expected follower startup to schedule lane %d on the dispatcher before send completion", last.LanePollRequest.LaneID)
+	}
+
+	release()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runScheduler did not complete after releasing the blocked follower startup send")
+	}
+
 	if got := session.sendCount(); got != 1 {
-		t.Fatalf("expected initial long poll open, got %d sends", got)
+		t.Fatalf("expected one follower startup send, got %d", got)
 	}
-
-	initialLane := session.last.LanePollRequest
-	if initialLane == nil {
-		t.Fatal("expected initial lane poll request payload")
-	}
-
-	env.transport.deliver(Envelope{
-		Peer: 2,
-		Kind: MessageKindLanePollResponse,
-		Sync: true,
-		LanePollResponse: &LanePollResponseEnvelope{
-			LaneID: initialLane.LaneID,
-			Status: LanePollStatusClosed,
-		},
-	})
-
-	mustEnsureLocal(t, env.runtime, core.Meta{
-		Key:      secondKey,
-		Epoch:    12,
-		Leader:   2,
-		Replicas: []core.NodeID{1, 2, 3},
-		ISR:      []core.NodeID{1, 2, 3},
-		MinISR:   2,
-	})
-
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if got := session.sendCount(); got >= 2 {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if got := session.sendCount(); got != 2 {
-		t.Fatalf("expected membership upsert to wake affected lane, got %d sends", got)
-	}
-	if session.last.Kind != MessageKindLanePollRequest || session.last.LanePollRequest == nil {
-		t.Fatalf("last kind after upsert = %v, want lane poll request", session.last.Kind)
-	}
-	if session.last.LanePollRequest.Op != LanePollOpOpen {
-		t.Fatalf("upsert request op = %v, want open", session.last.LanePollRequest.Op)
-	}
-	if len(session.last.LanePollRequest.FullMembership) != 2 {
-		t.Fatalf("upsert membership = %+v, want both channels", session.last.LanePollRequest.FullMembership)
+	if session.last.Kind != MessageKindLanePollRequest || session.last.LanePollRequest == nil || session.last.LanePollRequest.Op != LanePollOpOpen {
+		t.Fatalf("last envelope after startup = %+v, want lane poll open", session.last)
 	}
 }
 
-func TestSessionLongPollMembershipRemovalQueuesAffectedLane(t *testing.T) {
+func TestSessionLongPollDispatcherDoesNotSerializeBlockedLanes(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.ReplicationMode = "long_poll"
 		cfg.LongPollLaneCount = 4
-		cfg.LongPollMaxWait = time.Millisecond
+		cfg.LongPollMaxWait = time.Second
 		cfg.LongPollMaxBytes = 64 * 1024
 		cfg.LongPollMaxChannels = 64
 		cfg.FollowerReplicationRetryInterval = time.Hour
 	})
 
-	firstKey := testChannelKeyForLane(t, 0, 4, "lp-membership-remove-first")
-	secondKey := testChannelKeyForLane(t, 0, 4, "lp-membership-remove-second")
-
+	firstKey := testChannelKeyForLane(t, 0, 4, "lp-dispatch-blocked-first")
+	secondKey := testChannelKeyForLane(t, 1, 4, "lp-dispatch-blocked-second")
 	mustEnsureLocal(t, env.runtime, core.Meta{
 		Key:      firstKey,
-		Epoch:    21,
+		Epoch:    41,
 		Leader:   2,
 		Replicas: []core.NodeID{1, 2, 3},
 		ISR:      []core.NodeID{1, 2, 3},
 		MinISR:   2,
 	})
-	env.runtime.runScheduler()
-
-	session := env.sessions.session(2)
-	if got := session.sendCount(); got != 1 {
-		t.Fatalf("expected initial long poll open, got %d sends", got)
-	}
-	initialLane := session.last.LanePollRequest
-	if initialLane == nil {
-		t.Fatal("expected initial lane poll request payload")
-	}
-	env.transport.deliver(Envelope{
-		Peer: 2,
-		Kind: MessageKindLanePollResponse,
-		Sync: true,
-		LanePollResponse: &LanePollResponseEnvelope{
-			LaneID: initialLane.LaneID,
-			Status: LanePollStatusClosed,
-		},
-	})
-
 	mustEnsureLocal(t, env.runtime, core.Meta{
 		Key:      secondKey,
-		Epoch:    22,
+		Epoch:    42,
 		Leader:   2,
 		Replicas: []core.NodeID{1, 2, 3},
 		ISR:      []core.NodeID{1, 2, 3},
 		MinISR:   2,
 	})
-	env.runtime.runScheduler()
 
-	if got := session.sendCount(); got != 2 {
-		t.Fatalf("expected second long poll open before removal, got %d sends", got)
-	}
-	env.transport.deliver(Envelope{
-		Peer: 2,
-		Kind: MessageKindLanePollResponse,
-		Sync: true,
-		LanePollResponse: &LanePollResponseEnvelope{
-			LaneID: session.last.LanePollRequest.LaneID,
-			Status: LanePollStatusClosed,
-		},
-	})
-
-	popped := make(chan core.ChannelKey, 1)
-	env.runtime.schedulerPopHook = func(popKey core.ChannelKey) {
-		select {
-		case popped <- popKey:
-		default:
+	session := env.sessions.session(2)
+	paused := make(chan struct{}, 1)
+	releaseCh := make(chan struct{})
+	var blockFirst sync.Once
+	session.afterSend = func() {
+		session.mu.Lock()
+		last := session.last
+		session.mu.Unlock()
+		if last.Kind != MessageKindLanePollRequest || last.LanePollRequest == nil {
+			return
 		}
+		blockFirst.Do(func() {
+			select {
+			case paused <- struct{}{}:
+			default:
+			}
+			<-releaseCh
+		})
 	}
 
-	if err := env.runtime.RemoveChannel(firstKey); err != nil {
-		t.Fatalf("RemoveChannel(%q) error = %v", firstKey, err)
-	}
-
-	env.runtime.runScheduler()
+	done := make(chan struct{})
+	go func() {
+		env.runtime.runScheduler()
+		close(done)
+	}()
 
 	select {
-	case got := <-popped:
-		if got != secondKey {
-			t.Fatalf("removed-lane wake popped %q, want %q", got, secondKey)
-		}
+	case <-paused:
 	case <-time.After(time.Second):
-		t.Fatal("expected removal to queue dispatcher work for the remaining lane member")
+		t.Fatal("expected first lane send to block")
 	}
+
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := session.sendCount(); got >= 2 {
+			close(releaseCh)
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("runScheduler did not finish after releasing blocked lane send")
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	close(releaseCh)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runScheduler did not finish after releasing blocked lane send")
+	}
+	t.Fatalf("expected another lane send while the first lane send was blocked, got %d sends", session.sendCount())
+}
+
+func TestSessionLongPollMembershipChangeSchedulesAffectedLane(t *testing.T) {
+	t.Run("remove", func(t *testing.T) {
+		env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+			cfg.ReplicationMode = "long_poll"
+			cfg.LongPollLaneCount = 4
+			cfg.LongPollMaxWait = time.Millisecond
+			cfg.LongPollMaxBytes = 64 * 1024
+			cfg.LongPollMaxChannels = 64
+			cfg.FollowerReplicationRetryInterval = time.Hour
+		})
+
+		const peer core.NodeID = 2
+		keep := testChannelKeyForLane(t, 0, 4, "lp-membership-keep")
+		remove := testChannelKeyForLane(t, 0, 4, "lp-membership-remove")
+
+		manager := env.runtime.ensureLaneManager(peer)
+		manager.UpsertChannel(keep, 11)
+		manager.UpsertChannel(remove, 12)
+		laneID := manager.LaneFor(keep)
+		env.runtime.laneDispatcher.reset()
+
+		prev := core.Meta{
+			Key:      remove,
+			Epoch:    12,
+			Leader:   peer,
+			Replicas: []core.NodeID{1, 2, 3},
+			ISR:      []core.NodeID{1, 2, 3},
+			MinISR:   2,
+		}
+		env.runtime.syncFollowerLaneMembership(&prev, core.Meta{})
+
+		if !laneDispatchHasWork(env.runtime, peer, laneID) {
+			t.Fatalf("expected removal to schedule lane %d for peer %d", laneID, peer)
+		}
+	})
+
+	t.Run("upsert", func(t *testing.T) {
+		env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+			cfg.ReplicationMode = "long_poll"
+			cfg.LongPollLaneCount = 4
+			cfg.LongPollMaxWait = time.Millisecond
+			cfg.LongPollMaxBytes = 64 * 1024
+			cfg.LongPollMaxChannels = 64
+			cfg.FollowerReplicationRetryInterval = time.Hour
+		})
+
+		const peer core.NodeID = 2
+		key := testChannelKeyForLane(t, 0, 4, "lp-membership-upsert")
+		manager := env.runtime.ensureLaneManager(peer)
+		manager.UpsertChannel(key, 12)
+		env.runtime.laneDispatcher.reset()
+
+		prev := core.Meta{
+			Key:      key,
+			Epoch:    12,
+			Leader:   peer,
+			Replicas: []core.NodeID{1, 2, 3},
+			ISR:      []core.NodeID{1, 2, 3},
+			MinISR:   2,
+		}
+		next := core.Meta{
+			Key:      key,
+			Epoch:    13,
+			Leader:   peer,
+			Replicas: []core.NodeID{1, 2, 3},
+			ISR:      []core.NodeID{1, 2, 3},
+			MinISR:   2,
+		}
+
+		env.runtime.syncFollowerLaneMembership(&prev, next)
+
+		laneID := manager.LaneFor(key)
+		if !laneDispatchHasWork(env.runtime, peer, laneID) {
+			t.Fatalf("expected upsert to schedule lane %d for peer %d", laneID, peer)
+		}
+	})
 }
 
 func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
@@ -1890,6 +2022,7 @@ func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
 	env.runtime.runScheduler()
 
 	session := env.sessions.session(2)
+	waitForSessionSendCount(t, session, 1)
 	if got := session.sendCount(); got != 1 {
 		t.Fatalf("expected initial long poll open, got %d sends", got)
 	}
@@ -1897,6 +2030,14 @@ func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
 	if first == nil {
 		t.Fatal("expected lane poll request payload")
 	}
+
+	_, release := blockPeerSessionSend(t, session, func(env Envelope) bool {
+		return env.Kind == MessageKindLanePollRequest &&
+			env.LanePollRequest != nil &&
+			env.LanePollRequest.LaneID == first.LaneID &&
+			env.LanePollRequest.Op == LanePollOpOpen
+	})
+	defer release()
 
 	env.transport.deliver(Envelope{
 		Peer: 2,
@@ -1913,6 +2054,18 @@ func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
 	})
 
 	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if laneDispatchHasWork(env.runtime, 2, first.LaneID) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !laneDispatchHasWork(env.runtime, 2, first.LaneID) {
+		t.Fatalf("expected need_reset response to schedule lane %d on the dispatcher", first.LaneID)
+	}
+
+	release()
+	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if session.sendCount() >= 2 {
 			break
@@ -1933,6 +2086,129 @@ func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
 	}
 }
 
+func TestSessionLongPollBackpressuredReissueSchedulesLaneRetry(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.ReplicationMode = "long_poll"
+		cfg.LongPollLaneCount = 4
+		cfg.LongPollMaxWait = 2 * time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+		cfg.FollowerReplicationRetryInterval = 15 * time.Millisecond
+	})
+	key := testChannelKey(2604)
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2604, 4, 2, []core.NodeID{1, 2}))
+
+	env.runtime.runScheduler()
+
+	session := env.sessions.session(2)
+	waitForSessionSendCount(t, session, 1)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected initial long poll open, got %d sends", got)
+	}
+	first := session.last.LanePollRequest
+	if first == nil {
+		t.Fatal("expected lane poll request payload")
+	}
+
+	session.setBackpressure(BackpressureState{Level: BackpressureHard})
+	env.transport.deliver(Envelope{
+		Peer: 2,
+		Kind: MessageKindLanePollResponse,
+		Sync: true,
+		LanePollResponse: &LanePollResponseEnvelope{
+			LaneID:       first.LaneID,
+			Status:       LanePollStatusOK,
+			SessionID:    777,
+			SessionEpoch: 1,
+			TimedOut:     true,
+		},
+	})
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if laneRetryScheduled(env.runtime, 2, first.LaneID) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected backpressured response reissue to stay queued, got %d sends", got)
+	}
+	ch, ok := env.runtime.lookupChannel(key)
+	if !ok {
+		t.Fatal("expected channel to still exist")
+	}
+	if laneRetryScheduled(env.runtime, 2, first.LaneID) {
+		if got := queuedReplicationPeers(ch); got != 0 {
+			t.Fatalf("expected lane retry to avoid channel retry queueing, got %d queued peers", got)
+		}
+		return
+	}
+	t.Fatal("expected backpressured response reissue to schedule a lane retry")
+}
+
+func TestSessionLongPollLaneRetryIsScopedPerLane(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.ReplicationMode = "long_poll"
+		cfg.LongPollLaneCount = 2
+		cfg.LongPollMaxWait = 2 * time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+		cfg.FollowerReplicationRetryInterval = 20 * time.Millisecond
+	})
+
+	firstKey := testChannelKeyForLane(t, 0, 2, "lp-lane-retry-first")
+	secondKey := testChannelKeyForLane(t, 1, 2, "lp-lane-retry-second")
+	mustEnsureLocal(t, env.runtime, core.Meta{
+		Key:      firstKey,
+		Epoch:    31,
+		Leader:   2,
+		Replicas: []core.NodeID{1, 2, 3},
+		ISR:      []core.NodeID{1, 2, 3},
+		MinISR:   2,
+	})
+	mustEnsureLocal(t, env.runtime, core.Meta{
+		Key:      secondKey,
+		Epoch:    32,
+		Leader:   2,
+		Replicas: []core.NodeID{1, 2, 3},
+		ISR:      []core.NodeID{1, 2, 3},
+		MinISR:   2,
+	})
+
+	session := env.sessions.session(2)
+	session.enqueueSendErrors(context.DeadlineExceeded)
+
+	env.runtime.runScheduler()
+	waitForSessionSendCount(t, session, 2)
+
+	session.mu.Lock()
+	sent := append([]Envelope(nil), session.sent...)
+	session.mu.Unlock()
+	if len(sent) < 2 || sent[0].LanePollRequest == nil || sent[1].LanePollRequest == nil {
+		t.Fatalf("expected two lane poll sends, got %+v", sent)
+	}
+	failedLane := sent[0].LanePollRequest.LaneID
+	otherLane := sent[1].LanePollRequest.LaneID
+	if failedLane == otherLane {
+		t.Fatalf("expected different lanes, got %d and %d", failedLane, otherLane)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if laneRetryScheduled(env.runtime, 2, failedLane) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !laneRetryScheduled(env.runtime, 2, failedLane) {
+		t.Fatalf("expected failed lane %d to have a retry scheduled", failedLane)
+	}
+	if laneRetryScheduled(env.runtime, 2, otherLane) {
+		t.Fatalf("expected successful lane %d to avoid retry scheduling", otherLane)
+	}
+}
+
 func TestSessionLongPollRPCTimeoutUsesRecoveryBackoff(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.ReplicationMode = "long_poll"
@@ -1950,6 +2226,7 @@ func TestSessionLongPollRPCTimeoutUsesRecoveryBackoff(t *testing.T) {
 
 	env.runtime.runScheduler()
 
+	waitForSessionSendCount(t, session, 1)
 	if got := session.sendCount(); got != 1 {
 		t.Fatalf("expected only the initial long poll attempt before backoff, got %d sends", got)
 	}

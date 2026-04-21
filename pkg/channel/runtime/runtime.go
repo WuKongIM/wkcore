@@ -31,29 +31,35 @@ type runtime struct {
 	sessions                    peerSessionCache
 	laneMu                      sync.Mutex
 	lanes                       map[core.NodeID]*PeerLaneManager
-	leaderLanes                 *laneDirectory
-	peerRequests                peerRequestState
-	snapshots                   snapshotState
-	snapshotThrottle            snapshotThrottle
-	requestID                   atomic.Uint64
-	sendCoordActive             atomic.Int32
-	replicationRetryMu          sync.Mutex
-	replicationRetry            map[core.ChannelKey]map[core.NodeID]*replicationRetryState
-	backpressureRetry           map[core.NodeID]*backpressureRetryState
-	backpressureMu              sync.Mutex
-	sendCoordMu                 sync.Mutex
-	syncDeliveryMu              sync.Mutex
-	syncDeliveryDepth           int
-	syncDeferredSends           []deferredEnvelope
-	syncDeferredPeerDrains      map[core.NodeID]struct{}
-	schedulerDrainMu            sync.Mutex
-	schedulerWorker             atomic.Bool
-	closed                      atomic.Bool
-	countMu                     sync.Mutex
-	channelCount                int
-	cleanupStop                 chan struct{}
-	cleanupDone                 chan struct{}
-	cleanupOnce                 sync.Once
+	// laneDispatcher holds queued peer/lane work for the lane dispatcher worker.
+	laneDispatcher *laneDispatchQueue
+	// laneDispatcherWorker marks whether the background lane dispatcher is running.
+	laneDispatcherWorker   atomic.Bool
+	leaderLanes            *laneDirectory
+	peerRequests           peerRequestState
+	snapshots              snapshotState
+	snapshotThrottle       snapshotThrottle
+	requestID              atomic.Uint64
+	sendCoordActive        atomic.Int32
+	laneRetryMu            sync.Mutex
+	laneRetry              map[PeerLaneKey]*laneRetryState
+	replicationRetryMu     sync.Mutex
+	replicationRetry       map[core.ChannelKey]map[core.NodeID]*replicationRetryState
+	backpressureRetry      map[core.NodeID]*backpressureRetryState
+	backpressureMu         sync.Mutex
+	sendCoordMu            sync.Mutex
+	syncDeliveryMu         sync.Mutex
+	syncDeliveryDepth      int
+	syncDeferredSends      []deferredEnvelope
+	syncDeferredPeerDrains map[core.NodeID]struct{}
+	schedulerDrainMu       sync.Mutex
+	schedulerWorker        atomic.Bool
+	closed                 atomic.Bool
+	countMu                sync.Mutex
+	channelCount           int
+	cleanupStop            chan struct{}
+	cleanupDone            chan struct{}
+	cleanupOnce            sync.Once
 }
 
 func New(cfg Config) (Runtime, error) {
@@ -93,9 +99,11 @@ func New(cfg Config) (Runtime, error) {
 		scheduler:              newScheduler(),
 		sessions:               newPeerSessionCache(),
 		lanes:                  make(map[core.NodeID]*PeerLaneManager),
+		laneDispatcher:         newLaneDispatchQueue(),
 		leaderLanes:            newLaneDirectory(),
 		peerRequests:           newPeerRequestState(),
 		snapshotThrottle:       newSnapshotThrottle(cfg.Limits.MaxRecoveryBytesPerSecond, time.Sleep),
+		laneRetry:              make(map[PeerLaneKey]*laneRetryState),
 		replicationRetry:       make(map[core.ChannelKey]map[core.NodeID]*replicationRetryState),
 		backpressureRetry:      make(map[core.NodeID]*backpressureRetryState),
 		syncDeferredPeerDrains: make(map[core.NodeID]struct{}),
@@ -546,6 +554,7 @@ func (r *runtime) Close() error {
 
 	r.stopTombstoneCleanup()
 	stopTimers(r.clearAllReplicationRetries())
+	stopTimers(r.clearAllLaneRetries())
 	stopTimers(r.clearAllBackpressureRetries())
 	r.peerRequests.clearAll()
 	r.snapshots.clear()
@@ -575,7 +584,9 @@ func (r *runtime) Close() error {
 	r.sessions.mu.Unlock()
 	r.laneMu.Lock()
 	r.lanes = make(map[core.NodeID]*PeerLaneManager)
+	r.laneDispatcher = newLaneDispatchQueue()
 	r.laneMu.Unlock()
+	r.laneDispatcherWorker.Store(false)
 
 	var err error
 	for _, rep := range reps {
