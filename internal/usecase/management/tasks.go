@@ -77,43 +77,12 @@ func (a *App) GetTask(ctx context.Context, slotID uint32) (TaskDetail, error) {
 		return TaskDetail{}, err
 	}
 
-	assignmentBySlot := make(map[uint32]controllermeta.SlotAssignment, len(assignments))
-	for _, assignment := range assignments {
-		assignmentBySlot[assignment.SlotID] = assignment
-	}
-	viewsBySlot := runtimeViewsBySlot(views)
-	view, hasView := viewsBySlot[task.SlotID]
-
 	detail := TaskDetail{Task: managerTask(task)}
-	if assignment, ok := assignmentBySlot[task.SlotID]; ok {
-		detail.Slot = slotFromAssignmentView(assignment, view, hasView)
+	if slot, ok := managerSlotByID(task.SlotID, assignments, views); ok {
+		detail.Slot = slot
 		return detail, nil
 	}
-	if hasView {
-		detail.Slot = Slot{
-			SlotID: task.SlotID,
-			State: SlotState{
-				Quorum: managerSlotQuorumState(true, view.HasQuorum),
-				Sync:   "unreported",
-			},
-			Runtime: SlotRuntime{
-				CurrentPeers:        append([]uint64(nil), view.CurrentPeers...),
-				LeaderID:            view.LeaderID,
-				HealthyVoters:       view.HealthyVoters,
-				HasQuorum:           view.HasQuorum,
-				ObservedConfigEpoch: view.ObservedConfigEpoch,
-				LastReportAt:        view.LastReportAt,
-			},
-		}
-		return detail, nil
-	}
-	detail.Slot = Slot{
-		SlotID: task.SlotID,
-		State: SlotState{
-			Quorum: "unknown",
-			Sync:   "unreported",
-		},
-	}
+	detail.Slot = slotWithoutObservation(task.SlotID)
 	return detail, nil
 }
 
