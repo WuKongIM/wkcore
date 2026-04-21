@@ -27,9 +27,15 @@ type API interface {
 	WaitForManagedSlotsReady(ctx context.Context) error
 
 	ListNodes(ctx context.Context) ([]controllermeta.ClusterNode, error)
+	// ListNodesStrict returns the controller leader's node snapshot without local fallback.
+	ListNodesStrict(ctx context.Context) ([]controllermeta.ClusterNode, error)
 	ListSlotAssignments(ctx context.Context) ([]controllermeta.SlotAssignment, error)
+	// ListSlotAssignmentsStrict returns the controller leader's slot assignments without local fallback.
+	ListSlotAssignmentsStrict(ctx context.Context) ([]controllermeta.SlotAssignment, error)
 	// ListObservedRuntimeViews returns the controller leader's observed runtime snapshot when available.
 	ListObservedRuntimeViews(ctx context.Context) ([]controllermeta.SlotRuntimeView, error)
+	// ListObservedRuntimeViewsStrict returns the controller leader's observed runtime snapshot without local fallback.
+	ListObservedRuntimeViewsStrict(ctx context.Context) ([]controllermeta.SlotRuntimeView, error)
 	ListTasks(ctx context.Context) ([]controllermeta.ReconcileTask, error)
 	GetMigrationStatus() []HashSlotMigration
 	TransportPoolStats() []transport.PoolPeerStats

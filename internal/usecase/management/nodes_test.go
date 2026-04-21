@@ -63,14 +63,19 @@ func TestListNodesSortsByNodeIDAndDefaultsCountsToZero(t *testing.T) {
 type fakeClusterReader struct {
 	controllerLeaderID uint64
 	nodes              []controllermeta.ClusterNode
+	assignments        []controllermeta.SlotAssignment
 	views              []controllermeta.SlotRuntimeView
 }
 
-func (f fakeClusterReader) ListNodes(context.Context) ([]controllermeta.ClusterNode, error) {
+func (f fakeClusterReader) ListNodesStrict(context.Context) ([]controllermeta.ClusterNode, error) {
 	return append([]controllermeta.ClusterNode(nil), f.nodes...), nil
 }
 
-func (f fakeClusterReader) ListObservedRuntimeViews(context.Context) ([]controllermeta.SlotRuntimeView, error) {
+func (f fakeClusterReader) ListSlotAssignmentsStrict(context.Context) ([]controllermeta.SlotAssignment, error) {
+	return append([]controllermeta.SlotAssignment(nil), f.assignments...), nil
+}
+
+func (f fakeClusterReader) ListObservedRuntimeViewsStrict(context.Context) ([]controllermeta.SlotRuntimeView, error) {
 	return append([]controllermeta.SlotRuntimeView(nil), f.views...), nil
 }
 

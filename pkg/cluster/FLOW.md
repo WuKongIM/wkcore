@@ -30,12 +30,13 @@ API.NodeID() / IsLocal(nodeID)
 API.SlotForKey(key) / HashSlotForKey(key) / HashSlotTableVersion() / ControllerLeaderID()
 API.LeaderOf(slotID) / Propose(ctx, slotID, cmd)
 API.SlotIDs() / PeersForSlot(slotID)
-API.ListNodes(ctx)
+API.ListNodes(ctx) / ListNodesStrict(ctx)
 API.ListTasks(ctx)
 API.WaitForManagedSlotsReady(ctx)
 
 // 运维操作 — operator.go
-API.ListSlotAssignments(ctx) / ListObservedRuntimeViews(ctx)
+API.ListSlotAssignments(ctx) / ListSlotAssignmentsStrict(ctx)
+API.ListObservedRuntimeViews(ctx) / ListObservedRuntimeViewsStrict(ctx)
 API.GetReconcileTask(ctx, slotID) / ForceReconcile(ctx, slotID)
 API.MarkNodeDraining(ctx, nodeID) / ResumeNode(ctx, nodeID)
 API.TransferSlotLeader(ctx, slotID, nodeID) / RecoverSlot(ctx, slotID, strategy)
@@ -382,6 +383,7 @@ Delta 转发 (运行时):
 - **Propose 必须带 HashSlot**: `Propose()` 是兼容旧路径的快捷方式，仅适用于"一个物理 Slot 只有一个 Hash Slot"的场景。一旦 Slot 拥有多个 Hash Slot（AddSlot/Rebalance 后），必须使用 `ProposeWithHashSlot`，否则返回 `ErrHashSlotRequired`。
 - **Forward 重试预算有限**: `ProposeWithHashSlot` 内置 Retry 循环，`ForwardRetryBudget`(默认 300ms) 只重试 `ErrNotLeader`。网络分区或全部 peer 不可达时不会无限重试。
 - **Controller 观测读语义**: `ListObservedRuntimeViews` 在 leader 上优先读本地 `observationCache`；只有 leader 不可达时才允许降级到本地 `controllerMeta`，且结果可能滞后。
+- **Manager 严格一致读语义**: `ListNodesStrict`、`ListSlotAssignmentsStrict`、`ListObservedRuntimeViewsStrict` 只接受 controller leader 结果；本地节点若自身就是 leader 可直接读 leader 本地数据，否则必须经 controller client 读取，禁止降级到本地 `controllerMeta`。
 - **Controller HashSlot 读快路径**: leader 处理 `heartbeat` / `list_assignments` 时优先读 `controllerHost` 持有的 HashSlot snapshot；只有 snapshot cold miss 才会回落到 `controllerMeta.LoadHashSlotTable()`，回填后再继续返回。
 - **节点健康改为 deadline 驱动**: steady-state 不再由 `controllerTickOnce()` 提案 `EvaluateTimeouts`；leader 本地 `nodeHealthScheduler` 只在 Alive/Suspect/Dead 边沿变化时提案 `NodeStatusUpdate`。
 - **节点健康 mirror 只反映 committed state**: `nodeHealthScheduler` 对 repeated Alive observation 优先读本地 durable node mirror；mirror miss 才 `GetNode()`。mirror 通过 leader change 全量 reload 和 committed command 增量 refresh 维护，不直接信任 proposal payload。

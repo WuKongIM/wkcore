@@ -17,11 +17,17 @@ func (s *Server) registerRoutes() {
 	if s.auth.enabled() {
 		s.engine.POST("/manager/login", s.handleLogin)
 	}
-	group := s.engine.Group("/manager")
+	nodes := s.engine.Group("/manager")
 	if s.auth.enabled() {
-		group.Use(s.requirePermission("cluster.node", "r"))
+		nodes.Use(s.requirePermission("cluster.node", "r"))
 	}
-	group.GET("/nodes", s.handleNodes)
+	nodes.GET("/nodes", s.handleNodes)
+
+	slots := s.engine.Group("/manager")
+	if s.auth.enabled() {
+		slots.Use(s.requirePermission("cluster.slot", "r"))
+	}
+	slots.GET("/slots", s.handleSlots)
 }
 
 func openCORSMiddleware() gin.HandlerFunc {

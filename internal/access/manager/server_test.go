@@ -10,6 +10,7 @@ import (
 	"time"
 
 	managementusecase "github.com/WuKongIM/WuKongIM/internal/usecase/management"
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	"github.com/stretchr/testify/require"
 )
 
@@ -175,6 +176,157 @@ func TestManagerNodesReturnsAggregatedList(t *testing.T) {
 	}`, rec.Body.String())
 }
 
+func TestManagerNodesReturnsServiceUnavailableWhenLeaderConsistentReadUnavailable(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{nodesErr: raftcluster.ErrNoLeader},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/nodes", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.JSONEq(t, `{"error":"service_unavailable","message":"controller leader consistent read unavailable"}`, rec.Body.String())
+}
+
+func TestManagerSlotsRejectsMissingToken(t *testing.T) {
+	srv := New(Options{
+		Auth:       testAuthConfig(nil),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/slots", nil)
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.JSONEq(t, `{"error":"unauthorized","message":"unauthorized"}`, rec.Body.String())
+}
+
+func TestManagerSlotsRejectsInsufficientPermission(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "viewer",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/slots", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "viewer"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.JSONEq(t, `{"error":"forbidden","message":"forbidden"}`, rec.Body.String())
+}
+
+func TestManagerSlotsReturnsAggregatedList(t *testing.T) {
+	lastReportAt := time.Date(2026, 4, 21, 16, 0, 0, 0, time.UTC)
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.slot",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{
+			slots: []managementusecase.Slot{{
+				SlotID: 2,
+				State: managementusecase.SlotState{
+					Quorum: "ready",
+					Sync:   "matched",
+				},
+				Assignment: managementusecase.SlotAssignment{
+					DesiredPeers:   []uint64{1, 2, 3},
+					ConfigEpoch:    8,
+					BalanceVersion: 3,
+				},
+				Runtime: managementusecase.SlotRuntime{
+					CurrentPeers:        []uint64{1, 2, 3},
+					LeaderID:            1,
+					HealthyVoters:       3,
+					HasQuorum:           true,
+					ObservedConfigEpoch: 8,
+					LastReportAt:        lastReportAt,
+				},
+			}},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/slots", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{
+		"total": 1,
+		"items": [{
+			"slot_id": 2,
+			"state": {
+				"quorum": "ready",
+				"sync": "matched"
+			},
+			"assignment": {
+				"desired_peers": [1, 2, 3],
+				"config_epoch": 8,
+				"balance_version": 3
+			},
+			"runtime": {
+				"current_peers": [1, 2, 3],
+				"leader_id": 1,
+				"healthy_voters": 3,
+				"has_quorum": true,
+				"observed_config_epoch": 8,
+				"last_report_at": "2026-04-21T16:00:00Z"
+			}
+		}]
+	}`, rec.Body.String())
+}
+
+func TestManagerSlotsReturnsServiceUnavailableWhenLeaderConsistentReadUnavailable(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.slot",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{slotsErr: context.DeadlineExceeded},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/slots", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.JSONEq(t, `{"error":"service_unavailable","message":"controller leader consistent read unavailable"}`, rec.Body.String())
+}
+
 func testAuthConfig(users []UserConfig) AuthConfig {
 	return AuthConfig{
 		On:        true,
@@ -200,12 +352,18 @@ func mustIssueExpiredTestToken(t *testing.T, srv *Server, username string) strin
 }
 
 type managementStub struct {
-	nodes []managementusecase.Node
-	err   error
+	nodes    []managementusecase.Node
+	nodesErr error
+	slots    []managementusecase.Slot
+	slotsErr error
 }
 
 func (s managementStub) ListNodes(context.Context) ([]managementusecase.Node, error) {
-	return append([]managementusecase.Node(nil), s.nodes...), s.err
+	return append([]managementusecase.Node(nil), s.nodes...), s.nodesErr
+}
+
+func (s managementStub) ListSlots(context.Context) ([]managementusecase.Slot, error) {
+	return append([]managementusecase.Slot(nil), s.slots...), s.slotsErr
 }
 
 type loginResponseBody struct {

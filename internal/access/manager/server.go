@@ -20,6 +20,8 @@ var ErrListenAddrRequired = errors.New("access/manager: listen address required"
 type Management interface {
 	// ListNodes returns manager-facing node DTOs.
 	ListNodes(ctx context.Context) ([]managementusecase.Node, error)
+	// ListSlots returns manager-facing slot DTOs.
+	ListSlots(ctx context.Context) ([]managementusecase.Slot, error)
 }
 
 // PermissionConfig binds a resource to allowed actions.

@@ -8,8 +8,12 @@ import (
 
 // ClusterReader exposes the cluster reads needed by manager queries.
 type ClusterReader interface {
-	ListNodes(ctx context.Context) ([]controllermeta.ClusterNode, error)
-	ListObservedRuntimeViews(ctx context.Context) ([]controllermeta.SlotRuntimeView, error)
+	// ListNodesStrict returns the controller leader's node snapshot without local fallback.
+	ListNodesStrict(ctx context.Context) ([]controllermeta.ClusterNode, error)
+	// ListSlotAssignmentsStrict returns the controller leader's slot assignments without local fallback.
+	ListSlotAssignmentsStrict(ctx context.Context) ([]controllermeta.SlotAssignment, error)
+	// ListObservedRuntimeViewsStrict returns the controller leader's runtime views without local fallback.
+	ListObservedRuntimeViewsStrict(ctx context.Context) ([]controllermeta.SlotRuntimeView, error)
 	ControllerLeaderID() uint64
 }
 
