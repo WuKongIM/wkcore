@@ -12,6 +12,10 @@ import (
 type ClusterReader interface {
 	// SlotIDs returns the configured physical slot ids.
 	SlotIDs() []multiraft.SlotID
+	// SlotForKey maps a channel key to its owning physical slot.
+	SlotForKey(key string) multiraft.SlotID
+	// HashSlotForKey maps a channel key to its logical hash slot.
+	HashSlotForKey(key string) uint16
 	// ListNodesStrict returns the controller leader's node snapshot without local fallback.
 	ListNodesStrict(ctx context.Context) ([]controllermeta.ClusterNode, error)
 	// ListSlotAssignmentsStrict returns the controller leader's slot assignments without local fallback.
@@ -29,6 +33,8 @@ type ClusterReader interface {
 type ChannelRuntimeMetaReader interface {
 	// ScanChannelRuntimeMetaSlotPage returns one authoritative page for a physical slot.
 	ScanChannelRuntimeMetaSlotPage(ctx context.Context, slotID multiraft.SlotID, after metadb.ChannelRuntimeMetaCursor, limit int) ([]metadb.ChannelRuntimeMeta, metadb.ChannelRuntimeMetaCursor, bool, error)
+	// GetChannelRuntimeMeta returns one authoritative channel runtime metadata record.
+	GetChannelRuntimeMeta(ctx context.Context, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error)
 }
 
 // Options configures the management usecase app.

@@ -53,6 +53,17 @@ type ChannelRuntimeMetaDTO struct {
 	Status string `json:"status"`
 }
 
+// ChannelRuntimeMetaDetailDTO is the manager-facing channel runtime detail response body.
+type ChannelRuntimeMetaDetailDTO struct {
+	ChannelRuntimeMetaDTO
+	// HashSlot is the logical hash slot derived from the channel key.
+	HashSlot uint16 `json:"hash_slot"`
+	// Features is the raw runtime feature bitset.
+	Features uint64 `json:"features"`
+	// LeaseUntilMS is the leader lease deadline in milliseconds.
+	LeaseUntilMS int64 `json:"lease_until_ms"`
+}
+
 type channelRuntimeMetaCursorPayload struct {
 	Version     int    `json:"v"`
 	SlotID      uint32 `json:"slot_id"`
@@ -105,6 +116,36 @@ func (s *Server) handleChannelRuntimeMeta(c *gin.Context) {
 	})
 }
 
+func (s *Server) handleChannelRuntimeMetaDetail(c *gin.Context) {
+	if s.management == nil {
+		jsonError(c, http.StatusServiceUnavailable, "service_unavailable", "management not configured")
+		return
+	}
+
+	channelType, err := parseChannelRuntimeMetaChannelTypeParam(c.Param("channel_type"))
+	if err != nil {
+		jsonError(c, http.StatusBadRequest, "bad_request", "invalid channel_type")
+		return
+	}
+
+	item, err := s.management.GetChannelRuntimeMeta(c.Request.Context(), c.Param("channel_id"), channelType)
+	if err != nil {
+		switch {
+		case errors.Is(err, metadb.ErrInvalidArgument):
+			jsonError(c, http.StatusBadRequest, "bad_request", "invalid channel_type")
+		case errors.Is(err, metadb.ErrNotFound):
+			jsonError(c, http.StatusNotFound, "not_found", "channel runtime meta not found")
+		case slotLeaderAuthoritativeReadUnavailable(err):
+			jsonError(c, http.StatusServiceUnavailable, "service_unavailable", "slot leader authoritative read unavailable")
+		default:
+			jsonError(c, http.StatusInternalServerError, "internal_error", err.Error())
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, channelRuntimeMetaDetailDTO(item))
+}
+
 func parseChannelRuntimeMetaLimit(raw string) (int, error) {
 	if raw == "" {
 		return defaultChannelRuntimeMetaLimit, nil
@@ -114,6 +155,17 @@ func parseChannelRuntimeMetaLimit(raw string) (int, error) {
 		return 0, strconv.ErrSyntax
 	}
 	return limit, nil
+}
+
+func parseChannelRuntimeMetaChannelTypeParam(raw string) (int64, error) {
+	if raw == "" {
+		return 0, strconv.ErrSyntax
+	}
+	channelType, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || channelType <= 0 {
+		return 0, strconv.ErrSyntax
+	}
+	return channelType, nil
 }
 
 func encodeChannelRuntimeMetaCursor(cursor managementusecase.ChannelRuntimeMetaListCursor) (string, error) {
@@ -173,20 +225,33 @@ func validateChannelRuntimeMetaCursorPayload(payload channelRuntimeMetaCursorPay
 func channelRuntimeMetaDTOs(items []managementusecase.ChannelRuntimeMeta) []ChannelRuntimeMetaDTO {
 	out := make([]ChannelRuntimeMetaDTO, 0, len(items))
 	for _, item := range items {
-		out = append(out, ChannelRuntimeMetaDTO{
-			ChannelID:    item.ChannelID,
-			ChannelType:  item.ChannelType,
-			SlotID:       item.SlotID,
-			ChannelEpoch: item.ChannelEpoch,
-			LeaderEpoch:  item.LeaderEpoch,
-			Leader:       item.Leader,
-			Replicas:     append([]uint64(nil), item.Replicas...),
-			ISR:          append([]uint64(nil), item.ISR...),
-			MinISR:       item.MinISR,
-			Status:       item.Status,
-		})
+		out = append(out, channelRuntimeMetaDTO(item))
 	}
 	return out
+}
+
+func channelRuntimeMetaDTO(item managementusecase.ChannelRuntimeMeta) ChannelRuntimeMetaDTO {
+	return ChannelRuntimeMetaDTO{
+		ChannelID:    item.ChannelID,
+		ChannelType:  item.ChannelType,
+		SlotID:       item.SlotID,
+		ChannelEpoch: item.ChannelEpoch,
+		LeaderEpoch:  item.LeaderEpoch,
+		Leader:       item.Leader,
+		Replicas:     append([]uint64(nil), item.Replicas...),
+		ISR:          append([]uint64(nil), item.ISR...),
+		MinISR:       item.MinISR,
+		Status:       item.Status,
+	}
+}
+
+func channelRuntimeMetaDetailDTO(item managementusecase.ChannelRuntimeMetaDetail) ChannelRuntimeMetaDetailDTO {
+	return ChannelRuntimeMetaDetailDTO{
+		ChannelRuntimeMetaDTO: channelRuntimeMetaDTO(item.ChannelRuntimeMeta),
+		HashSlot:              item.HashSlot,
+		Features:              item.Features,
+		LeaseUntilMS:          item.LeaseUntilMS,
+	}
 }
 
 func slotLeaderAuthoritativeReadUnavailable(err error) bool {

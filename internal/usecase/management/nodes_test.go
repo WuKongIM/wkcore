@@ -64,6 +64,8 @@ func TestListNodesSortsByNodeIDAndDefaultsCountsToZero(t *testing.T) {
 type fakeClusterReader struct {
 	controllerLeaderID uint64
 	slotIDs            []multiraft.SlotID
+	slotForKey         map[string]multiraft.SlotID
+	hashSlotForKey     map[string]uint16
 	nodes              []controllermeta.ClusterNode
 	assignments        []controllermeta.SlotAssignment
 	views              []controllermeta.SlotRuntimeView
@@ -75,6 +77,14 @@ type fakeClusterReader struct {
 
 func (f fakeClusterReader) SlotIDs() []multiraft.SlotID {
 	return append([]multiraft.SlotID(nil), f.slotIDs...)
+}
+
+func (f fakeClusterReader) SlotForKey(key string) multiraft.SlotID {
+	return f.slotForKey[key]
+}
+
+func (f fakeClusterReader) HashSlotForKey(key string) uint16 {
+	return f.hashSlotForKey[key]
 }
 
 func (f fakeClusterReader) ListNodesStrict(context.Context) ([]controllermeta.ClusterNode, error) {
