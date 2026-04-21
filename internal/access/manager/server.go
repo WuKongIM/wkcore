@@ -22,6 +22,8 @@ type Management interface {
 	ListNodes(ctx context.Context) ([]managementusecase.Node, error)
 	// ListSlots returns manager-facing slot DTOs.
 	ListSlots(ctx context.Context) ([]managementusecase.Slot, error)
+	// GetSlot returns one manager-facing slot detail DTO.
+	GetSlot(ctx context.Context, slotID uint32) (managementusecase.SlotDetail, error)
 	// ListTasks returns manager-facing reconcile task DTOs.
 	ListTasks(ctx context.Context) ([]managementusecase.Task, error)
 	// GetTask returns one manager-facing reconcile task detail DTO.

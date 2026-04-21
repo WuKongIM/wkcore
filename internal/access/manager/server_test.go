@@ -328,6 +328,263 @@ func TestManagerSlotsReturnsServiceUnavailableWhenLeaderConsistentReadUnavailabl
 	require.JSONEq(t, `{"error":"service_unavailable","message":"controller leader consistent read unavailable"}`, rec.Body.String())
 }
 
+func TestManagerSlotDetailRejectsMissingToken(t *testing.T) {
+	srv := New(Options{
+		Auth:       testAuthConfig(nil),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/slots/2", nil)
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.JSONEq(t, `{"error":"unauthorized","message":"unauthorized"}`, rec.Body.String())
+}
+
+func TestManagerSlotDetailRejectsInvalidSlotID(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.slot",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/slots/bad", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"error":"bad_request","message":"invalid slot_id"}`, rec.Body.String())
+}
+
+func TestManagerSlotDetailRejectsInsufficientPermission(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "viewer",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/slots/2", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "viewer"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.JSONEq(t, `{"error":"forbidden","message":"forbidden"}`, rec.Body.String())
+}
+
+func TestManagerSlotDetailReturnsDetailWithTaskSummary(t *testing.T) {
+	nextRunAt := time.Date(2026, 4, 21, 16, 5, 0, 0, time.UTC)
+	lastReportAt := time.Date(2026, 4, 21, 16, 0, 0, 0, time.UTC)
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.slot",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{
+			slotDetail: managementusecase.SlotDetail{
+				Slot: managementusecase.Slot{
+					SlotID: 2,
+					State: managementusecase.SlotState{
+						Quorum: "ready",
+						Sync:   "matched",
+					},
+					Assignment: managementusecase.SlotAssignment{
+						DesiredPeers:   []uint64{2, 3, 5},
+						ConfigEpoch:    8,
+						BalanceVersion: 3,
+					},
+					Runtime: managementusecase.SlotRuntime{
+						CurrentPeers:        []uint64{2, 3, 5},
+						LeaderID:            2,
+						HealthyVoters:       3,
+						HasQuorum:           true,
+						ObservedConfigEpoch: 8,
+						LastReportAt:        lastReportAt,
+					},
+				},
+				Task: &managementusecase.Task{
+					SlotID:     2,
+					Kind:       "repair",
+					Step:       "catch_up",
+					Status:     "retrying",
+					SourceNode: 3,
+					TargetNode: 5,
+					Attempt:    1,
+					NextRunAt:  &nextRunAt,
+					LastError:  "learner catch-up timeout",
+				},
+			},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/slots/2", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{
+		"slot_id": 2,
+		"state": {
+			"quorum": "ready",
+			"sync": "matched"
+		},
+		"assignment": {
+			"desired_peers": [2, 3, 5],
+			"config_epoch": 8,
+			"balance_version": 3
+		},
+		"runtime": {
+			"current_peers": [2, 3, 5],
+			"leader_id": 2,
+			"healthy_voters": 3,
+			"has_quorum": true,
+			"observed_config_epoch": 8,
+			"last_report_at": "2026-04-21T16:00:00Z"
+		},
+		"task": {
+			"kind": "repair",
+			"step": "catch_up",
+			"status": "retrying",
+			"source_node": 3,
+			"target_node": 5,
+			"attempt": 1,
+			"next_run_at": "2026-04-21T16:05:00Z",
+			"last_error": "learner catch-up timeout"
+		}
+	}`, rec.Body.String())
+}
+
+func TestManagerSlotDetailReturnsDetailWithNullTask(t *testing.T) {
+	lastReportAt := time.Date(2026, 4, 21, 16, 0, 0, 0, time.UTC)
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.slot",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{
+			slotDetail: managementusecase.SlotDetail{
+				Slot: managementusecase.Slot{
+					SlotID: 7,
+					State: managementusecase.SlotState{
+						Quorum: "lost",
+						Sync:   "unreported",
+					},
+					Runtime: managementusecase.SlotRuntime{
+						CurrentPeers:        []uint64{7, 8, 9},
+						LeaderID:            8,
+						HealthyVoters:       2,
+						HasQuorum:           false,
+						ObservedConfigEpoch: 0,
+						LastReportAt:        lastReportAt,
+					},
+				},
+			},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/slots/7", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{
+		"slot_id": 7,
+		"state": {
+			"quorum": "lost",
+			"sync": "unreported"
+		},
+		"assignment": {
+			"desired_peers": null,
+			"config_epoch": 0,
+			"balance_version": 0
+		},
+		"runtime": {
+			"current_peers": [7, 8, 9],
+			"leader_id": 8,
+			"healthy_voters": 2,
+			"has_quorum": false,
+			"observed_config_epoch": 0,
+			"last_report_at": "2026-04-21T16:00:00Z"
+		},
+		"task": null
+	}`, rec.Body.String())
+}
+
+func TestManagerSlotDetailReturnsNotFound(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.slot",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{slotDetailErr: controllermeta.ErrNotFound},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/slots/2", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	require.JSONEq(t, `{"error":"not_found","message":"slot not found"}`, rec.Body.String())
+}
+
+func TestManagerSlotDetailReturnsServiceUnavailableWhenLeaderConsistentReadUnavailable(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.slot",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{slotDetailErr: context.DeadlineExceeded},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/slots/2", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.JSONEq(t, `{"error":"service_unavailable","message":"controller leader consistent read unavailable"}`, rec.Body.String())
+}
+
 func TestManagerTasksRejectsMissingToken(t *testing.T) {
 	srv := New(Options{
 		Auth:       testAuthConfig(nil),
@@ -658,14 +915,16 @@ func mustIssueExpiredTestToken(t *testing.T, srv *Server, username string) strin
 }
 
 type managementStub struct {
-	nodes    []managementusecase.Node
-	nodesErr error
-	slots    []managementusecase.Slot
-	slotsErr error
-	tasks    []managementusecase.Task
-	tasksErr error
-	task     managementusecase.TaskDetail
-	taskErr  error
+	nodes         []managementusecase.Node
+	nodesErr      error
+	slots         []managementusecase.Slot
+	slotsErr      error
+	slotDetail    managementusecase.SlotDetail
+	slotDetailErr error
+	tasks         []managementusecase.Task
+	tasksErr      error
+	task          managementusecase.TaskDetail
+	taskErr       error
 }
 
 func (s managementStub) ListNodes(context.Context) ([]managementusecase.Node, error) {
@@ -674,6 +933,10 @@ func (s managementStub) ListNodes(context.Context) ([]managementusecase.Node, er
 
 func (s managementStub) ListSlots(context.Context) ([]managementusecase.Slot, error) {
 	return append([]managementusecase.Slot(nil), s.slots...), s.slotsErr
+}
+
+func (s managementStub) GetSlot(context.Context, uint32) (managementusecase.SlotDetail, error) {
+	return s.slotDetail, s.slotDetailErr
 }
 
 func (s managementStub) ListTasks(context.Context) ([]managementusecase.Task, error) {

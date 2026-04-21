@@ -28,6 +28,7 @@ func (s *Server) registerRoutes() {
 		slots.Use(s.requirePermission("cluster.slot", "r"))
 	}
 	slots.GET("/slots", s.handleSlots)
+	slots.GET("/slots/:slot_id", s.handleSlot)
 
 	tasks := s.engine.Group("/manager")
 	if s.auth.enabled() {
