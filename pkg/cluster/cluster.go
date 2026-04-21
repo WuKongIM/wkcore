@@ -719,6 +719,14 @@ func (c *Cluster) HashSlotForKey(key string) uint16 {
 	return c.router.HashSlotForKey(key)
 }
 
+// HashSlotsOf returns the logical hash slots currently assigned to a physical slot.
+func (c *Cluster) HashSlotsOf(slotID multiraft.SlotID) []uint16 {
+	if c == nil || c.router == nil {
+		return nil
+	}
+	return c.router.HashSlotsOf(slotID)
+}
+
 func (c *Cluster) HashSlotTableVersion() uint64 {
 	if c == nil || c.router == nil {
 		return 0

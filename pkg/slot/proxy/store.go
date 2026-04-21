@@ -7,6 +7,7 @@ import (
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	metafsm "github.com/WuKongIM/WuKongIM/pkg/slot/fsm"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
 
 // Store provides business-level distributed storage APIs
@@ -127,6 +128,11 @@ func (s *Store) ListChannelRuntimeMeta(ctx context.Context) ([]metadb.ChannelRun
 		metas = append(metas, groupMetas...)
 	}
 	return metas, nil
+}
+
+// ScanChannelRuntimeMetaSlotPage returns one authoritative page for a physical slot.
+func (s *Store) ScanChannelRuntimeMetaSlotPage(ctx context.Context, slotID multiraft.SlotID, after metadb.ChannelRuntimeMetaCursor, limit int) ([]metadb.ChannelRuntimeMeta, metadb.ChannelRuntimeMetaCursor, bool, error) {
+	return s.scanChannelRuntimeMetaSlotPageAuthoritative(ctx, slotID, after, limit)
 }
 
 func (s *Store) UpsertUser(ctx context.Context, u metadb.User) error {

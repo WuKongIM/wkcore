@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"container/heap"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,21 +18,26 @@ const (
 	runtimeMetaRPCGet      = "get"
 	runtimeMetaRPCBatchGet = "batch_get"
 	runtimeMetaRPCList     = "list"
+	runtimeMetaRPCScanPage = "scan_page"
 )
 
 type runtimeMetaRPCRequest struct {
-	Op          string                   `json:"op"`
-	SlotID      uint64                   `json:"slot_id"`
-	ChannelID   string                   `json:"channel_id,omitempty"`
-	ChannelType int64                    `json:"channel_type,omitempty"`
-	Keys        []metadb.ConversationKey `json:"keys,omitempty"`
+	Op          string                           `json:"op"`
+	SlotID      uint64                           `json:"slot_id"`
+	ChannelID   string                           `json:"channel_id,omitempty"`
+	ChannelType int64                            `json:"channel_type,omitempty"`
+	Keys        []metadb.ConversationKey         `json:"keys,omitempty"`
+	After       *metadb.ChannelRuntimeMetaCursor `json:"after,omitempty"`
+	Limit       int                              `json:"limit,omitempty"`
 }
 
 type runtimeMetaRPCResponse struct {
-	Status   string                      `json:"status"`
-	LeaderID uint64                      `json:"leader_id,omitempty"`
-	Meta     *metadb.ChannelRuntimeMeta  `json:"meta,omitempty"`
-	Metas    []metadb.ChannelRuntimeMeta `json:"metas,omitempty"`
+	Status   string                          `json:"status"`
+	LeaderID uint64                          `json:"leader_id,omitempty"`
+	Meta     *metadb.ChannelRuntimeMeta      `json:"meta,omitempty"`
+	Metas    []metadb.ChannelRuntimeMeta     `json:"metas,omitempty"`
+	Cursor   metadb.ChannelRuntimeMetaCursor `json:"cursor,omitempty"`
+	Done     bool                            `json:"done,omitempty"`
 }
 
 func (r runtimeMetaRPCResponse) rpcStatus() string {
@@ -88,6 +94,23 @@ func (s *Store) listChannelRuntimeMetaAuthoritative(ctx context.Context, slotID 
 		return nil, err
 	}
 	return append([]metadb.ChannelRuntimeMeta(nil), resp.Metas...), nil
+}
+
+func (s *Store) scanChannelRuntimeMetaSlotPageAuthoritative(ctx context.Context, slotID multiraft.SlotID, after metadb.ChannelRuntimeMetaCursor, limit int) ([]metadb.ChannelRuntimeMeta, metadb.ChannelRuntimeMetaCursor, bool, error) {
+	if s.shouldServeSlotLocally(slotID) {
+		return s.scanChannelRuntimeMetaSlotPageLocal(ctx, slotID, after, limit)
+	}
+
+	resp, err := s.callRuntimeMetaRPC(ctx, slotID, runtimeMetaRPCRequest{
+		Op:     runtimeMetaRPCScanPage,
+		SlotID: uint64(slotID),
+		After:  &after,
+		Limit:  limit,
+	})
+	if err != nil {
+		return nil, metadb.ChannelRuntimeMetaCursor{}, false, err
+	}
+	return append([]metadb.ChannelRuntimeMeta(nil), resp.Metas...), resp.Cursor, resp.Done, nil
 }
 
 func (s *Store) BatchGetChannelRuntimeMetas(ctx context.Context, keys []metadb.ConversationKey) (map[metadb.ConversationKey]metadb.ChannelRuntimeMeta, error) {
@@ -178,6 +201,21 @@ func (s *Store) handleRuntimeMetaRPC(ctx context.Context, body []byte) ([]byte, 
 			Status: rpcStatusOK,
 			Metas:  filterChannelRuntimeMetaBySlot(s.cluster, slotID, metas),
 		})
+	case runtimeMetaRPCScanPage:
+		var after metadb.ChannelRuntimeMetaCursor
+		if req.After != nil {
+			after = *req.After
+		}
+		metas, cursor, done, err := s.scanChannelRuntimeMetaSlotPageLocal(ctx, slotID, after, req.Limit)
+		if err != nil {
+			return nil, err
+		}
+		return encodeRuntimeMetaRPCResponse(runtimeMetaRPCResponse{
+			Status: rpcStatusOK,
+			Metas:  metas,
+			Cursor: cursor,
+			Done:   done,
+		})
 	default:
 		return nil, fmt.Errorf("metastore: unknown runtime meta rpc op %q", req.Op)
 	}
@@ -226,6 +264,75 @@ func filterChannelRuntimeMetaBySlot(cluster raftcluster.API, slotID multiraft.Sl
 	return filtered
 }
 
+func (s *Store) scanChannelRuntimeMetaSlotPageLocal(ctx context.Context, slotID multiraft.SlotID, after metadb.ChannelRuntimeMetaCursor, limit int) ([]metadb.ChannelRuntimeMeta, metadb.ChannelRuntimeMetaCursor, bool, error) {
+	if s.cluster == nil {
+		return nil, metadb.ChannelRuntimeMetaCursor{}, false, fmt.Errorf("metastore: cluster not configured")
+	}
+	if limit <= 0 {
+		return nil, metadb.ChannelRuntimeMetaCursor{}, false, metadb.ErrInvalidArgument
+	}
+
+	hashSlots := s.cluster.HashSlotsOf(slotID)
+	if len(hashSlots) == 0 {
+		return nil, metadb.ChannelRuntimeMetaCursor{}, false, raftcluster.ErrSlotNotFound
+	}
+
+	queue := make(runtimeMetaMergeHeap, 0, len(hashSlots))
+	for _, hashSlot := range hashSlots {
+		item, ok, err := s.loadChannelRuntimeMetaMergeItem(ctx, hashSlot, after)
+		if err != nil {
+			return nil, metadb.ChannelRuntimeMetaCursor{}, false, err
+		}
+		if ok {
+			heap.Push(&queue, item)
+		}
+	}
+
+	metas := make([]metadb.ChannelRuntimeMeta, 0, limit)
+	cursor := after
+	for len(metas) < limit && queue.Len() > 0 {
+		item := heap.Pop(&queue).(runtimeMetaMergeItem)
+		metas = append(metas, item.Meta)
+		cursor = metadb.ChannelRuntimeMetaCursor{
+			ChannelID:   item.Meta.ChannelID,
+			ChannelType: item.Meta.ChannelType,
+		}
+
+		if item.Done {
+			continue
+		}
+
+		nextItem, ok, err := s.loadChannelRuntimeMetaMergeItem(ctx, item.HashSlot, item.Cursor)
+		if err != nil {
+			return nil, metadb.ChannelRuntimeMetaCursor{}, false, err
+		}
+		if ok {
+			heap.Push(&queue, nextItem)
+		}
+	}
+
+	if len(metas) == 0 {
+		cursor = after
+	}
+	return metas, cursor, queue.Len() == 0, nil
+}
+
+func (s *Store) loadChannelRuntimeMetaMergeItem(ctx context.Context, hashSlot uint16, after metadb.ChannelRuntimeMetaCursor) (runtimeMetaMergeItem, bool, error) {
+	metas, cursor, done, err := s.db.ForHashSlot(hashSlot).ListChannelRuntimeMetaPage(ctx, after, 1)
+	if err != nil {
+		return runtimeMetaMergeItem{}, false, err
+	}
+	if len(metas) == 0 {
+		return runtimeMetaMergeItem{}, false, nil
+	}
+	return runtimeMetaMergeItem{
+		HashSlot: hashSlot,
+		Meta:     metas[0],
+		Cursor:   cursor,
+		Done:     done,
+	}, true, nil
+}
+
 func (s *Store) singleLocalPeerSlot(slotID multiraft.SlotID) bool {
 	if s.cluster == nil {
 		return false
@@ -244,4 +351,48 @@ func decodeRuntimeMetaRPCResponse(body []byte) (runtimeMetaRPCResponse, error) {
 		return runtimeMetaRPCResponse{}, err
 	}
 	return resp, nil
+}
+
+type runtimeMetaMergeItem struct {
+	HashSlot uint16
+	Meta     metadb.ChannelRuntimeMeta
+	Cursor   metadb.ChannelRuntimeMetaCursor
+	Done     bool
+}
+
+type runtimeMetaMergeHeap []runtimeMetaMergeItem
+
+func (h runtimeMetaMergeHeap) Len() int { return len(h) }
+
+func (h runtimeMetaMergeHeap) Less(i, j int) bool {
+	return channelRuntimeMetaLess(h[i].Meta, h[j].Meta)
+}
+
+func (h runtimeMetaMergeHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+}
+
+func (h *runtimeMetaMergeHeap) Push(x any) {
+	*h = append(*h, x.(runtimeMetaMergeItem))
+}
+
+func (h *runtimeMetaMergeHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[:n-1]
+	return item
+}
+
+func channelRuntimeMetaLess(left, right metadb.ChannelRuntimeMeta) bool {
+	if len(left.ChannelID) != len(right.ChannelID) {
+		return len(left.ChannelID) < len(right.ChannelID)
+	}
+	if left.ChannelID != right.ChannelID {
+		return left.ChannelID < right.ChannelID
+	}
+	if left.ChannelType != right.ChannelType {
+		return left.ChannelType < right.ChannelType
+	}
+	return left.Leader < right.Leader
 }
