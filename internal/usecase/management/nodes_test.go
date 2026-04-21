@@ -62,17 +62,20 @@ func TestListNodesSortsByNodeIDAndDefaultsCountsToZero(t *testing.T) {
 }
 
 type fakeClusterReader struct {
-	controllerLeaderID uint64
-	slotIDs            []multiraft.SlotID
-	slotForKey         map[string]multiraft.SlotID
-	hashSlotForKey     map[string]uint16
-	nodes              []controllermeta.ClusterNode
-	assignments        []controllermeta.SlotAssignment
-	views              []controllermeta.SlotRuntimeView
-	tasks              []controllermeta.ReconcileTask
-	taskBySlot         map[uint32]controllermeta.ReconcileTask
-	listTasksErr       error
-	getTaskErr         error
+	controllerLeaderID          uint64
+	slotIDs                     []multiraft.SlotID
+	slotForKey                  map[string]multiraft.SlotID
+	hashSlotForKey              map[string]uint16
+	nodes                       []controllermeta.ClusterNode
+	listNodesErr                error
+	assignments                 []controllermeta.SlotAssignment
+	listSlotAssignmentsErr      error
+	views                       []controllermeta.SlotRuntimeView
+	listObservedRuntimeViewsErr error
+	tasks                       []controllermeta.ReconcileTask
+	taskBySlot                  map[uint32]controllermeta.ReconcileTask
+	listTasksErr                error
+	getTaskErr                  error
 }
 
 func (f fakeClusterReader) SlotIDs() []multiraft.SlotID {
@@ -88,15 +91,15 @@ func (f fakeClusterReader) HashSlotForKey(key string) uint16 {
 }
 
 func (f fakeClusterReader) ListNodesStrict(context.Context) ([]controllermeta.ClusterNode, error) {
-	return append([]controllermeta.ClusterNode(nil), f.nodes...), nil
+	return append([]controllermeta.ClusterNode(nil), f.nodes...), f.listNodesErr
 }
 
 func (f fakeClusterReader) ListSlotAssignmentsStrict(context.Context) ([]controllermeta.SlotAssignment, error) {
-	return append([]controllermeta.SlotAssignment(nil), f.assignments...), nil
+	return append([]controllermeta.SlotAssignment(nil), f.assignments...), f.listSlotAssignmentsErr
 }
 
 func (f fakeClusterReader) ListObservedRuntimeViewsStrict(context.Context) ([]controllermeta.SlotRuntimeView, error) {
-	return append([]controllermeta.SlotRuntimeView(nil), f.views...), nil
+	return append([]controllermeta.SlotRuntimeView(nil), f.views...), f.listObservedRuntimeViewsErr
 }
 
 func (f fakeClusterReader) ListTasksStrict(context.Context) ([]controllermeta.ReconcileTask, error) {

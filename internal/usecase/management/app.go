@@ -2,6 +2,7 @@ package management
 
 import (
 	"context"
+	"time"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
@@ -47,6 +48,8 @@ type Options struct {
 	Cluster ClusterReader
 	// ChannelRuntimeMeta provides authoritative slot-level runtime meta pages.
 	ChannelRuntimeMeta ChannelRuntimeMetaReader
+	// Now returns the current time for manager aggregations.
+	Now func() time.Time
 }
 
 // App serves manager-oriented read usecases.
@@ -55,6 +58,7 @@ type App struct {
 	controllerPeerIDs  map[uint64]struct{}
 	cluster            ClusterReader
 	channelRuntimeMeta ChannelRuntimeMetaReader
+	now                func() time.Time
 }
 
 // New constructs the management usecase app.
@@ -66,10 +70,15 @@ func New(opts Options) *App {
 		}
 		peers[nodeID] = struct{}{}
 	}
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &App{
 		localNodeID:        opts.LocalNodeID,
 		controllerPeerIDs:  peers,
 		cluster:            opts.Cluster,
 		channelRuntimeMeta: opts.ChannelRuntimeMeta,
+		now:                now,
 	}
 }
