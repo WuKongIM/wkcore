@@ -36,6 +36,7 @@
 - 不传 `-config` 时，程序按 `./wukongim.conf`、`./conf/wukongim.conf`、`/etc/wukongim/wukongim.conf` 顺序查找。
 - 环境变量优先级高于配置文件；列表字段使用 JSON 字符串整体覆盖。
 - 当配置发生变化时 需要把 `wukongim.conf.example` 对齐。
+- 涉及到配置相关的字段必须有详细的英文注释
 
 ## 目录结构
 
