@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"sync"
 
 	core "github.com/WuKongIM/WuKongIM/pkg/channel"
@@ -73,6 +74,13 @@ func (q *laneDispatchQueue) pop() (laneDispatchWorkKey, bool) {
 	}
 }
 
+// hasWork reports whether there is pending lane dispatch work.
+func (q *laneDispatchQueue) hasWork() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.head < len(q.queue)
+}
+
 // finish marks work complete and requeues dirty items once.
 func (q *laneDispatchQueue) finish(key laneDispatchWorkKey) bool {
 	q.mu.Lock()
@@ -92,6 +100,83 @@ func (q *laneDispatchQueue) finish(key laneDispatchWorkKey) bool {
 	q.queued[key] = struct{}{}
 	q.queue = append(q.queue, key)
 	return true
+}
+
+// scheduleLaneDispatch queues a peer/lane pair for asynchronous long-poll reissue.
+func (r *runtime) scheduleLaneDispatch(peer core.NodeID, laneID uint16) {
+	if r.isClosed() {
+		return
+	}
+	r.laneDispatcher.schedule(laneDispatchWorkKey{peer: peer, lane: laneID})
+	r.startLaneDispatcherWorker()
+}
+
+// startLaneDispatcherWorker starts a single background worker for queued lane work.
+func (r *runtime) startLaneDispatcherWorker() {
+	if r.isClosed() {
+		return
+	}
+	if !r.laneDispatcherWorker.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		for {
+			if r.isClosed() {
+				r.laneDispatcherWorker.Store(false)
+				return
+			}
+			r.runLaneDispatcher()
+			r.laneDispatcherWorker.Store(false)
+			if r.isClosed() || !r.laneDispatcher.hasWork() || !r.laneDispatcherWorker.CompareAndSwap(false, true) {
+				return
+			}
+		}
+	}()
+}
+
+// runLaneDispatcher drains queued lane work until the queue is empty.
+func (r *runtime) runLaneDispatcher() {
+	if r.isClosed() {
+		return
+	}
+	for {
+		key, ok := r.laneDispatcher.pop()
+		if !ok {
+			return
+		}
+		r.dispatchLanePoll(key)
+		r.laneDispatcher.finish(key)
+		if r.isClosed() {
+			return
+		}
+	}
+}
+
+// dispatchLanePoll sends one lane-poll request for a scheduled peer/lane pair.
+func (r *runtime) dispatchLanePoll(key laneDispatchWorkKey) {
+	manager, ok := r.laneManager(key.peer)
+	if !ok {
+		return
+	}
+	req, ok := manager.NextRequest(key.lane)
+	if !ok {
+		return
+	}
+	retryKey, _ := manager.AnyChannel(key.lane)
+	err := r.sendEnvelope(Envelope{
+		Peer:            key.peer,
+		ChannelKey:      retryKey,
+		RequestID:       r.requestID.Add(1),
+		Kind:            MessageKindLanePollRequest,
+		LanePollRequest: &req,
+	})
+	if err == nil || errors.Is(err, ErrBackpressured) {
+		return
+	}
+	manager.SendFailed(key.lane)
+	if retryKey != "" {
+		r.scheduleFollowerReplication(retryKey, key.peer)
+	}
 }
 
 // reset clears all queue state.

@@ -1538,6 +1538,14 @@ func TestSessionLongPollTimedOutResponseImmediatelyReissuesPoll(t *testing.T) {
 		t.Fatalf("initial op = %v, want open", first.Op)
 	}
 
+	_, release := blockPeerSessionSend(t, session, func(env Envelope) bool {
+		return env.Kind == MessageKindLanePollRequest &&
+			env.LanePollRequest != nil &&
+			env.LanePollRequest.LaneID == first.LaneID &&
+			env.LanePollRequest.Op == LanePollOpPoll
+	})
+	defer release()
+
 	env.transport.deliver(Envelope{
 		Peer: 2,
 		Kind: MessageKindLanePollResponse,
@@ -1552,6 +1560,18 @@ func TestSessionLongPollTimedOutResponseImmediatelyReissuesPoll(t *testing.T) {
 	})
 
 	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if laneDispatchHasWork(env.runtime, 2, first.LaneID) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !laneDispatchHasWork(env.runtime, 2, first.LaneID) {
+		t.Fatalf("expected timed-out response to schedule lane %d on the dispatcher", first.LaneID)
+	}
+
+	release()
+	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if session.sendCount() >= 2 {
 			break
@@ -1570,6 +1590,23 @@ func TestSessionLongPollTimedOutResponseImmediatelyReissuesPoll(t *testing.T) {
 	if session.last.LanePollRequest.LaneID != testFollowerLaneFor(key, 4) {
 		t.Fatalf("reissue lane = %d, want %d", session.last.LanePollRequest.LaneID, testFollowerLaneFor(key, 4))
 	}
+}
+
+func laneDispatchHasWork(rt *runtime, peer core.NodeID, lane uint16) bool {
+	rt.laneDispatcher.mu.Lock()
+	defer rt.laneDispatcher.mu.Unlock()
+
+	key := laneDispatchWorkKey{peer: peer, lane: lane}
+	if _, ok := rt.laneDispatcher.queued[key]; ok {
+		return true
+	}
+	if _, ok := rt.laneDispatcher.processing[key]; ok {
+		return true
+	}
+	if _, ok := rt.laneDispatcher.dirty[key]; ok {
+		return true
+	}
+	return false
 }
 
 func TestSessionLongPollTimedOutReissueDoesNotStarveOtherPendingLanes(t *testing.T) {
@@ -1736,6 +1773,14 @@ func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
 		t.Fatal("expected lane poll request payload")
 	}
 
+	_, release := blockPeerSessionSend(t, session, func(env Envelope) bool {
+		return env.Kind == MessageKindLanePollRequest &&
+			env.LanePollRequest != nil &&
+			env.LanePollRequest.LaneID == first.LaneID &&
+			env.LanePollRequest.Op == LanePollOpOpen
+	})
+	defer release()
+
 	env.transport.deliver(Envelope{
 		Peer: 2,
 		Kind: MessageKindLanePollResponse,
@@ -1751,6 +1796,18 @@ func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
 	})
 
 	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if laneDispatchHasWork(env.runtime, 2, first.LaneID) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !laneDispatchHasWork(env.runtime, 2, first.LaneID) {
+		t.Fatalf("expected need_reset response to schedule lane %d on the dispatcher", first.LaneID)
+	}
+
+	release()
+	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if session.sendCount() >= 2 {
 			break

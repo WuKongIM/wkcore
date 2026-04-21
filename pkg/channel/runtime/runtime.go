@@ -32,7 +32,9 @@ type runtime struct {
 	laneMu                      sync.Mutex
 	lanes                       map[core.NodeID]*PeerLaneManager
 	// laneDispatcher holds queued peer/lane work for later dispatcher wiring.
-	laneDispatcher         *laneDispatchQueue
+	laneDispatcher *laneDispatchQueue
+	// laneDispatcherWorker marks whether the background lane dispatcher is running.
+	laneDispatcherWorker   atomic.Bool
 	leaderLanes            *laneDirectory
 	peerRequests           peerRequestState
 	snapshots              snapshotState
@@ -580,6 +582,7 @@ func (r *runtime) Close() error {
 	r.lanes = make(map[core.NodeID]*PeerLaneManager)
 	r.laneDispatcher = newLaneDispatchQueue()
 	r.laneMu.Unlock()
+	r.laneDispatcherWorker.Store(false)
 
 	var err error
 	for _, rep := range reps {
