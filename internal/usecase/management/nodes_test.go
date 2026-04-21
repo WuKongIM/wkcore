@@ -65,6 +65,10 @@ type fakeClusterReader struct {
 	nodes              []controllermeta.ClusterNode
 	assignments        []controllermeta.SlotAssignment
 	views              []controllermeta.SlotRuntimeView
+	tasks              []controllermeta.ReconcileTask
+	taskBySlot         map[uint32]controllermeta.ReconcileTask
+	listTasksErr       error
+	getTaskErr         error
 }
 
 func (f fakeClusterReader) ListNodesStrict(context.Context) ([]controllermeta.ClusterNode, error) {
@@ -77,6 +81,20 @@ func (f fakeClusterReader) ListSlotAssignmentsStrict(context.Context) ([]control
 
 func (f fakeClusterReader) ListObservedRuntimeViewsStrict(context.Context) ([]controllermeta.SlotRuntimeView, error) {
 	return append([]controllermeta.SlotRuntimeView(nil), f.views...), nil
+}
+
+func (f fakeClusterReader) ListTasksStrict(context.Context) ([]controllermeta.ReconcileTask, error) {
+	return append([]controllermeta.ReconcileTask(nil), f.tasks...), f.listTasksErr
+}
+
+func (f fakeClusterReader) GetReconcileTaskStrict(_ context.Context, slotID uint32) (controllermeta.ReconcileTask, error) {
+	if f.getTaskErr != nil {
+		return controllermeta.ReconcileTask{}, f.getTaskErr
+	}
+	if task, ok := f.taskBySlot[slotID]; ok {
+		return task, nil
+	}
+	return controllermeta.ReconcileTask{}, controllermeta.ErrNotFound
 }
 
 func (f fakeClusterReader) ControllerLeaderID() uint64 {

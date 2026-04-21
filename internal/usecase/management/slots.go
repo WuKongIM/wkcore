@@ -69,43 +69,52 @@ func (a *App) ListSlots(ctx context.Context) ([]Slot, error) {
 		return nil, err
 	}
 
-	viewsBySlot := make(map[uint32]controllermeta.SlotRuntimeView, len(views))
-	for _, view := range views {
-		viewsBySlot[view.SlotID] = view
-	}
+	viewsBySlot := runtimeViewsBySlot(views)
 
 	slots := make([]Slot, 0, len(assignments))
 	for _, assignment := range assignments {
 		view, ok := viewsBySlot[assignment.SlotID]
-		slot := Slot{
-			SlotID: assignment.SlotID,
-			Assignment: SlotAssignment{
-				DesiredPeers:   append([]uint64(nil), assignment.DesiredPeers...),
-				ConfigEpoch:    assignment.ConfigEpoch,
-				BalanceVersion: assignment.BalanceVersion,
-			},
-		}
-		if ok {
-			slot.Runtime = SlotRuntime{
-				CurrentPeers:        append([]uint64(nil), view.CurrentPeers...),
-				LeaderID:            view.LeaderID,
-				HealthyVoters:       view.HealthyVoters,
-				HasQuorum:           view.HasQuorum,
-				ObservedConfigEpoch: view.ObservedConfigEpoch,
-				LastReportAt:        view.LastReportAt,
-			}
-		}
-		slot.State = SlotState{
-			Quorum: managerSlotQuorumState(ok, slot.Runtime.HasQuorum),
-			Sync:   managerSlotSyncState(assignment, view, ok),
-		}
-		slots = append(slots, slot)
+		slots = append(slots, slotFromAssignmentView(assignment, view, ok))
 	}
 
 	sort.Slice(slots, func(i, j int) bool {
 		return slots[i].SlotID < slots[j].SlotID
 	})
 	return slots, nil
+}
+
+func runtimeViewsBySlot(views []controllermeta.SlotRuntimeView) map[uint32]controllermeta.SlotRuntimeView {
+	viewsBySlot := make(map[uint32]controllermeta.SlotRuntimeView, len(views))
+	for _, view := range views {
+		viewsBySlot[view.SlotID] = view
+	}
+	return viewsBySlot
+}
+
+func slotFromAssignmentView(assignment controllermeta.SlotAssignment, view controllermeta.SlotRuntimeView, hasView bool) Slot {
+	slot := Slot{
+		SlotID: assignment.SlotID,
+		Assignment: SlotAssignment{
+			DesiredPeers:   append([]uint64(nil), assignment.DesiredPeers...),
+			ConfigEpoch:    assignment.ConfigEpoch,
+			BalanceVersion: assignment.BalanceVersion,
+		},
+	}
+	if hasView {
+		slot.Runtime = SlotRuntime{
+			CurrentPeers:        append([]uint64(nil), view.CurrentPeers...),
+			LeaderID:            view.LeaderID,
+			HealthyVoters:       view.HealthyVoters,
+			HasQuorum:           view.HasQuorum,
+			ObservedConfigEpoch: view.ObservedConfigEpoch,
+			LastReportAt:        view.LastReportAt,
+		}
+	}
+	slot.State = SlotState{
+		Quorum: managerSlotQuorumState(hasView, slot.Runtime.HasQuorum),
+		Sync:   managerSlotSyncState(assignment, view, hasView),
+	}
+	return slot
 }
 
 func managerSlotQuorumState(hasView, hasQuorum bool) string {
