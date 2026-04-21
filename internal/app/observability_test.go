@@ -360,6 +360,8 @@ func (f fakeObservabilityCluster) SlotForKey(string) multiraft.SlotID { return 1
 
 func (f fakeObservabilityCluster) HashSlotForKey(string) uint16 { return 1 }
 
+func (f fakeObservabilityCluster) HashSlotsOf(multiraft.SlotID) []uint16 { return []uint16{1} }
+
 func (f fakeObservabilityCluster) HashSlotTableVersion() uint64 { return f.hashSlotTableVersion }
 
 func (f fakeObservabilityCluster) LeaderOf(multiraft.SlotID) (multiraft.NodeID, error) { return 1, nil }

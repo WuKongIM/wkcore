@@ -304,9 +304,10 @@ func build(cfg Config) (_ *App, err error) {
 	})
 	if cfg.Manager.ListenAddr != "" {
 		app.managementApp = managementusecase.New(managementusecase.Options{
-			LocalNodeID:       cfg.Node.ID,
-			ControllerPeerIDs: controllerPeerIDs(cfg.Cluster.DerivedControllerNodes()),
-			Cluster:           app.cluster,
+			LocalNodeID:        cfg.Node.ID,
+			ControllerPeerIDs:  controllerPeerIDs(cfg.Cluster.DerivedControllerNodes()),
+			Cluster:            app.cluster,
+			ChannelRuntimeMeta: app.store,
 		})
 		app.manager = accessmanager.New(accessmanager.Options{
 			ListenAddr: cfg.Manager.ListenAddr,

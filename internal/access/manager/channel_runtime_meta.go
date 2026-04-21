@@ -54,6 +54,7 @@ type ChannelRuntimeMetaDTO struct {
 }
 
 type channelRuntimeMetaCursorPayload struct {
+	Version     int    `json:"v"`
 	SlotID      uint32 `json:"slot_id"`
 	ChannelID   string `json:"channel_id,omitempty"`
 	ChannelType int64  `json:"channel_type,omitempty"`
@@ -120,6 +121,7 @@ func encodeChannelRuntimeMetaCursor(cursor managementusecase.ChannelRuntimeMetaL
 		return "", nil
 	}
 	payload, err := json.Marshal(channelRuntimeMetaCursorPayload{
+		Version:     1,
 		SlotID:      cursor.SlotID,
 		ChannelID:   cursor.ChannelID,
 		ChannelType: cursor.ChannelType,
@@ -153,6 +155,9 @@ func decodeChannelRuntimeMetaCursor(raw string) (managementusecase.ChannelRuntim
 }
 
 func validateChannelRuntimeMetaCursorPayload(payload channelRuntimeMetaCursorPayload) error {
+	if payload.Version != 1 {
+		return strconv.ErrSyntax
+	}
 	if payload.SlotID == 0 {
 		if payload.ChannelID == "" && payload.ChannelType == 0 {
 			return nil

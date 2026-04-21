@@ -961,6 +961,29 @@ func TestManagerChannelRuntimeMetaRejectsInvalidCursor(t *testing.T) {
 	require.JSONEq(t, `{"error":"bad_request","message":"invalid cursor"}`, rec.Body.String())
 }
 
+func TestManagerChannelRuntimeMetaRejectsUnsupportedCursorVersion(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.channel",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/channel-runtime-meta?cursor="+base64.RawURLEncoding.EncodeToString([]byte(`{"v":2,"slot_id":1}`)), nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"error":"bad_request","message":"invalid cursor"}`, rec.Body.String())
+}
+
 func TestManagerChannelRuntimeMetaReturnsPagedList(t *testing.T) {
 	var received managementusecase.ListChannelRuntimeMetaRequest
 	inputCursor := managementusecase.ChannelRuntimeMetaListCursor{SlotID: 1, ChannelID: "g1", ChannelType: 1}
@@ -1075,6 +1098,7 @@ func mustIssueExpiredTestToken(t *testing.T, srv *Server, username string) strin
 func mustEncodeChannelRuntimeMetaCursorForTest(t *testing.T, cursor managementusecase.ChannelRuntimeMetaListCursor) string {
 	t.Helper()
 	payload, err := json.Marshal(channelRuntimeMetaCursorPayload{
+		Version:     1,
 		SlotID:      cursor.SlotID,
 		ChannelID:   cursor.ChannelID,
 		ChannelType: cursor.ChannelType,
