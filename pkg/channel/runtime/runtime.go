@@ -31,7 +31,7 @@ type runtime struct {
 	sessions                    peerSessionCache
 	laneMu                      sync.Mutex
 	lanes                       map[core.NodeID]*PeerLaneManager
-	// laneDispatcher holds queued peer/lane work for later dispatcher wiring.
+	// laneDispatcher holds queued peer/lane work for the lane dispatcher worker.
 	laneDispatcher *laneDispatchQueue
 	// laneDispatcherWorker marks whether the background lane dispatcher is running.
 	laneDispatcherWorker   atomic.Bool

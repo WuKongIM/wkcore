@@ -806,10 +806,10 @@ func (r *runtime) handleLanePollResponse(peer core.NodeID, resp LanePollResponse
 	if !reissue {
 		return
 	}
-	r.reissueLanePoll(peer, resp.LaneID, manager)
+	r.reissueLanePoll(peer, resp.LaneID)
 }
 
-func (r *runtime) reissueLanePoll(peer core.NodeID, laneID uint16, manager *PeerLaneManager) {
+func (r *runtime) reissueLanePoll(peer core.NodeID, laneID uint16) {
 	r.scheduleLaneDispatch(peer, laneID)
 }
 
