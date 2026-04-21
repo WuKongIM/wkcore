@@ -36,11 +36,11 @@ func (a *App) ListNodes(ctx context.Context) ([]Node, error) {
 		return nil, nil
 	}
 
-	clusterNodes, err := a.cluster.ListNodes(ctx)
+	clusterNodes, err := a.cluster.ListNodesStrict(ctx)
 	if err != nil {
 		return nil, err
 	}
-	views, err := a.cluster.ListObservedRuntimeViews(ctx)
+	views, err := a.cluster.ListObservedRuntimeViewsStrict(ctx)
 	if err != nil {
 		return nil, err
 	}
