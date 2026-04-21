@@ -1238,6 +1238,288 @@ func TestManagerChannelRuntimeMetaDetailReturnsObject(t *testing.T) {
 	}`, rec.Body.String())
 }
 
+func TestManagerOverviewRejectsMissingToken(t *testing.T) {
+	srv := New(Options{
+		Auth:       testAuthConfig(nil),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/overview", nil)
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.JSONEq(t, `{"error":"unauthorized","message":"unauthorized"}`, rec.Body.String())
+}
+
+func TestManagerOverviewRejectsInsufficientPermission(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "viewer",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/overview", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "viewer"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.JSONEq(t, `{"error":"forbidden","message":"forbidden"}`, rec.Body.String())
+}
+
+func TestManagerOverviewReturnsServiceUnavailableWhenLeaderConsistentReadUnavailable(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.overview",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{overviewErr: raftcluster.ErrNoLeader},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/overview", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.JSONEq(t, `{"error":"service_unavailable","message":"controller leader consistent read unavailable"}`, rec.Body.String())
+}
+
+func TestManagerOverviewReturnsAggregatedObject(t *testing.T) {
+	generatedAt := time.Date(2026, 4, 21, 22, 0, 0, 0, time.UTC)
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.overview",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{
+			overview: managementusecase.Overview{
+				GeneratedAt: generatedAt,
+				Cluster: managementusecase.OverviewCluster{
+					ControllerLeaderID: 1,
+				},
+				Nodes: managementusecase.OverviewNodes{
+					Total:    5,
+					Alive:    4,
+					Suspect:  0,
+					Dead:     0,
+					Draining: 1,
+				},
+				Slots: managementusecase.OverviewSlots{
+					Total:         64,
+					Ready:         60,
+					QuorumLost:    1,
+					LeaderMissing: 1,
+					Unreported:    1,
+					PeerMismatch:  1,
+					EpochLag:      2,
+				},
+				Tasks: managementusecase.OverviewTasks{
+					Total:    3,
+					Pending:  1,
+					Retrying: 1,
+					Failed:   1,
+				},
+				Anomalies: managementusecase.OverviewAnomalies{
+					Slots: managementusecase.OverviewSlotAnomalies{
+						QuorumLost: managementusecase.OverviewSlotAnomalyGroup{
+							Count: 1,
+							Items: []managementusecase.OverviewSlotAnomalyItem{{
+								SlotID:       7,
+								Quorum:       "lost",
+								Sync:         "matched",
+								LeaderID:     0,
+								DesiredPeers: []uint64{1, 2, 3},
+								CurrentPeers: []uint64{1, 2, 3},
+								LastReportAt: generatedAt.Add(-time.Minute),
+							}},
+						},
+						LeaderMissing: managementusecase.OverviewSlotAnomalyGroup{
+							Count: 1,
+							Items: []managementusecase.OverviewSlotAnomalyItem{{
+								SlotID:       9,
+								Quorum:       "ready",
+								Sync:         "matched",
+								LeaderID:     0,
+								DesiredPeers: []uint64{2, 3, 4},
+								CurrentPeers: []uint64{2, 3, 4},
+								LastReportAt: generatedAt.Add(-2 * time.Minute),
+							}},
+						},
+						SyncMismatch: managementusecase.OverviewSlotAnomalyGroup{
+							Count: 3,
+							Items: []managementusecase.OverviewSlotAnomalyItem{{
+								SlotID:       12,
+								Quorum:       "ready",
+								Sync:         "peer_mismatch",
+								LeaderID:     2,
+								DesiredPeers: []uint64{2, 3, 4},
+								CurrentPeers: []uint64{2, 3},
+								LastReportAt: generatedAt.Add(-3 * time.Minute),
+							}},
+						},
+					},
+					Tasks: managementusecase.OverviewTaskAnomalies{
+						Failed: managementusecase.OverviewTaskAnomalyGroup{
+							Count: 1,
+							Items: []managementusecase.OverviewTaskAnomalyItem{{
+								SlotID:     12,
+								Kind:       "repair",
+								Step:       "catch_up",
+								Status:     "failed",
+								SourceNode: 2,
+								TargetNode: 4,
+								Attempt:    3,
+								LastError:  "learner catch-up timeout",
+							}},
+						},
+						Retrying: managementusecase.OverviewTaskAnomalyGroup{
+							Count: 1,
+							Items: []managementusecase.OverviewTaskAnomalyItem{{
+								SlotID:     18,
+								Kind:       "rebalance",
+								Step:       "transfer_leader",
+								Status:     "retrying",
+								SourceNode: 3,
+								TargetNode: 5,
+								Attempt:    2,
+								NextRunAt:  timePtr(generatedAt.Add(2 * time.Minute)),
+								LastError:  "transfer leader rejected",
+							}},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/overview", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotContains(t, rec.Body.String(), `"total": 0`)
+	require.NotContains(t, rec.Body.String(), `"items":[{"channel_id"`)
+	require.JSONEq(t, `{
+		"generated_at": "2026-04-21T22:00:00Z",
+		"cluster": {
+			"controller_leader_id": 1
+		},
+		"nodes": {
+			"total": 5,
+			"alive": 4,
+			"suspect": 0,
+			"dead": 0,
+			"draining": 1
+		},
+		"slots": {
+			"total": 64,
+			"ready": 60,
+			"quorum_lost": 1,
+			"leader_missing": 1,
+			"unreported": 1,
+			"peer_mismatch": 1,
+			"epoch_lag": 2
+		},
+		"tasks": {
+			"total": 3,
+			"pending": 1,
+			"retrying": 1,
+			"failed": 1
+		},
+		"anomalies": {
+			"slots": {
+				"quorum_lost": {
+					"count": 1,
+					"items": [{
+						"slot_id": 7,
+						"quorum": "lost",
+						"sync": "matched",
+						"leader_id": 0,
+						"desired_peers": [1, 2, 3],
+						"current_peers": [1, 2, 3],
+						"last_report_at": "2026-04-21T21:59:00Z"
+					}]
+				},
+				"leader_missing": {
+					"count": 1,
+					"items": [{
+						"slot_id": 9,
+						"quorum": "ready",
+						"sync": "matched",
+						"leader_id": 0,
+						"desired_peers": [2, 3, 4],
+						"current_peers": [2, 3, 4],
+						"last_report_at": "2026-04-21T21:58:00Z"
+					}]
+				},
+				"sync_mismatch": {
+					"count": 3,
+					"items": [{
+						"slot_id": 12,
+						"quorum": "ready",
+						"sync": "peer_mismatch",
+						"leader_id": 2,
+						"desired_peers": [2, 3, 4],
+						"current_peers": [2, 3],
+						"last_report_at": "2026-04-21T21:57:00Z"
+					}]
+				}
+			},
+			"tasks": {
+				"failed": {
+					"count": 1,
+					"items": [{
+						"slot_id": 12,
+						"kind": "repair",
+						"step": "catch_up",
+						"status": "failed",
+						"source_node": 2,
+						"target_node": 4,
+						"attempt": 3,
+						"next_run_at": null,
+						"last_error": "learner catch-up timeout"
+					}]
+				},
+				"retrying": {
+					"count": 1,
+					"items": [{
+						"slot_id": 18,
+						"kind": "rebalance",
+						"step": "transfer_leader",
+						"status": "retrying",
+						"source_node": 3,
+						"target_node": 5,
+						"attempt": 2,
+						"next_run_at": "2026-04-21T22:02:00Z",
+						"last_error": "transfer leader rejected"
+					}]
+				}
+			}
+		}
+	}`, rec.Body.String())
+}
+
 func testAuthConfig(users []UserConfig) AuthConfig {
 	return AuthConfig{
 		On:        true,
@@ -1291,6 +1573,8 @@ type managementStub struct {
 	channelRuntimeMetaDetailReqSink *channelRuntimeMetaDetailCall
 	channelRuntimeMetaDetail        managementusecase.ChannelRuntimeMetaDetail
 	channelRuntimeMetaDetailErr     error
+	overview                        managementusecase.Overview
+	overviewErr                     error
 }
 
 func (s managementStub) ListNodes(context.Context) ([]managementusecase.Node, error) {
@@ -1327,9 +1611,17 @@ func (s managementStub) GetChannelRuntimeMeta(_ context.Context, channelID strin
 	return s.channelRuntimeMetaDetail, s.channelRuntimeMetaDetailErr
 }
 
+func (s managementStub) GetOverview(context.Context) (managementusecase.Overview, error) {
+	return s.overview, s.overviewErr
+}
+
 type channelRuntimeMetaDetailCall struct {
 	channelID   string
 	channelType int64
+}
+
+func timePtr(value time.Time) *time.Time {
+	return &value
 }
 
 type loginResponseBody struct {
