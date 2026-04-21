@@ -27,7 +27,7 @@
 // api.go — 业务层唯一入口
 API.Start() / Stop()
 API.NodeID() / IsLocal(nodeID)
-API.SlotForKey(key) / HashSlotForKey(key) / HashSlotTableVersion()
+API.SlotForKey(key) / HashSlotForKey(key) / HashSlotTableVersion() / ControllerLeaderID()
 API.LeaderOf(slotID) / Propose(ctx, slotID, cmd)
 API.SlotIDs() / PeersForSlot(slotID)
 API.ListNodes(ctx)
