@@ -1524,6 +1524,7 @@ func TestSessionLongPollTimedOutResponseImmediatelyReissuesPoll(t *testing.T) {
 	env.runtime.runScheduler()
 
 	session := env.sessions.session(2)
+	waitForSessionSendCount(t, session, 1)
 	if got := session.sendCount(); got != 1 {
 		t.Fatalf("expected initial long poll open, got %d sends", got)
 	}
@@ -1609,6 +1610,19 @@ func laneDispatchHasWork(rt *runtime, peer core.NodeID, lane uint16) bool {
 	return false
 }
 
+func waitForSessionSendCount(t *testing.T, session *trackingPeerSession, want int) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got := session.sendCount(); got >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("expected at least %d sends, got %d", want, session.sendCount())
+}
+
 func TestSessionLongPollTimedOutReissueDoesNotStarveOtherPendingLanes(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.ReplicationMode = "long_poll"
@@ -1667,6 +1681,7 @@ func TestSessionLongPollTimedOutReissueDoesNotStarveOtherPendingLanes(t *testing
 	}
 
 	env.runtime.runScheduler()
+	waitForSessionSendCount(t, session, 2)
 
 	session.mu.Lock()
 	sent := append([]Envelope(nil), session.sent...)
@@ -1751,6 +1766,62 @@ func TestSessionLongPollEnsureChannelStartsInitialOpenForEveryPopulatedLane(t *t
 	t.Fatalf("initial long-poll opens covered lanes=%v, want all %d lanes", laneOpens, laneCount)
 }
 
+func TestSessionLongPollFollowerStartupSchedulesDispatcher(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.ReplicationMode = "long_poll"
+		cfg.LongPollLaneCount = 4
+		cfg.LongPollMaxWait = time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+	mustEnsureLocal(t, env.runtime, testMetaLocal(2603, 4, 2, []core.NodeID{1, 2}))
+
+	session := env.sessions.session(2)
+	paused, release := blockPeerSessionSend(t, session, func(env Envelope) bool {
+		return env.Kind == MessageKindLanePollRequest &&
+			env.LanePollRequest != nil &&
+			env.LanePollRequest.Op == LanePollOpOpen
+	})
+	defer release()
+
+	done := make(chan struct{})
+	go func() {
+		env.runtime.runScheduler()
+		close(done)
+	}()
+
+	select {
+	case <-paused:
+	case <-time.After(time.Second):
+		t.Fatal("expected follower startup to begin a lane poll send")
+	}
+
+	session.mu.Lock()
+	last := session.last
+	session.mu.Unlock()
+	if last.LanePollRequest == nil {
+		t.Fatal("expected lane poll request payload")
+	}
+	if !laneDispatchHasWork(env.runtime, 2, last.LanePollRequest.LaneID) {
+		t.Fatalf("expected follower startup to schedule lane %d on the dispatcher before send completion", last.LanePollRequest.LaneID)
+	}
+
+	release()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runScheduler did not complete after releasing the blocked follower startup send")
+	}
+
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected one follower startup send, got %d", got)
+	}
+	if session.last.Kind != MessageKindLanePollRequest || session.last.LanePollRequest == nil || session.last.LanePollRequest.Op != LanePollOpOpen {
+		t.Fatalf("last envelope after startup = %+v, want lane poll open", session.last)
+	}
+}
+
 func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.ReplicationMode = "long_poll"
@@ -1765,6 +1836,7 @@ func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
 	env.runtime.runScheduler()
 
 	session := env.sessions.session(2)
+	waitForSessionSendCount(t, session, 1)
 	if got := session.sendCount(); got != 1 {
 		t.Fatalf("expected initial long poll open, got %d sends", got)
 	}
@@ -1843,6 +1915,7 @@ func TestSessionLongPollBackpressuredReissueSchedulesFollowerRetry(t *testing.T)
 	env.runtime.runScheduler()
 
 	session := env.sessions.session(2)
+	waitForSessionSendCount(t, session, 1)
 	if got := session.sendCount(); got != 1 {
 		t.Fatalf("expected initial long poll open, got %d sends", got)
 	}
@@ -1904,6 +1977,7 @@ func TestSessionLongPollRPCTimeoutUsesRecoveryBackoff(t *testing.T) {
 
 	env.runtime.runScheduler()
 
+	waitForSessionSendCount(t, session, 1)
 	if got := session.sendCount(); got != 1 {
 		t.Fatalf("expected only the initial long poll attempt before backoff, got %d sends", got)
 	}
