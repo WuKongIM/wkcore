@@ -17,6 +17,7 @@ type Config struct {
 	Storage       StorageConfig
 	Cluster       ClusterConfig
 	API           APIConfig
+	Manager       ManagerConfig
 	Gateway       GatewayConfig
 	Conversation  ConversationConfig
 	Observability ObservabilityConfig
@@ -191,6 +192,41 @@ type APIConfig struct {
 	ExternalWSSAddr string
 }
 
+// ManagerConfig configures the manager HTTP service.
+type ManagerConfig struct {
+	// ListenAddr is the manager server listen address. An empty value disables
+	// the manager service entirely.
+	ListenAddr string
+	// AuthOn enables JWT login and permission checks for manager routes.
+	AuthOn bool
+	// JWTSecret is the signing secret used for manager JWT tokens.
+	JWTSecret string
+	// JWTIssuer is the issuer claim embedded in manager JWT tokens.
+	JWTIssuer string
+	// JWTExpire is the manager JWT lifetime.
+	JWTExpire time.Duration
+	// Users defines the static manager users allowed to log in.
+	Users []ManagerUserConfig
+}
+
+// ManagerUserConfig describes one static manager user.
+type ManagerUserConfig struct {
+	// Username is the static login identity.
+	Username string
+	// Password is the static login secret.
+	Password string
+	// Permissions lists the resource actions granted to the user.
+	Permissions []ManagerPermissionConfig
+}
+
+// ManagerPermissionConfig binds one resource to allowed actions.
+type ManagerPermissionConfig struct {
+	// Resource is the manager resource name, such as "cluster.node".
+	Resource string
+	// Actions contains the allowed action codes: r, w, or *.
+	Actions []string
+}
+
 type ConversationConfig struct {
 	SyncEnabled           bool
 	ColdThreshold         time.Duration
@@ -231,6 +267,38 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 	}
 	if c.Gateway.SendTimeout <= 0 && c.Gateway.sendTimeoutSet {
 		return fmt.Errorf("%w: gateway send timeout must be > 0", ErrInvalidConfig)
+	}
+	if c.Manager.ListenAddr != "" && c.Manager.AuthOn {
+		if c.Manager.JWTSecret == "" {
+			return fmt.Errorf("%w: manager jwt secret must be set when auth is enabled", ErrInvalidConfig)
+		}
+		if c.Manager.JWTExpire <= 0 {
+			return fmt.Errorf("%w: manager jwt expire must be positive when auth is enabled", ErrInvalidConfig)
+		}
+		if len(c.Manager.Users) == 0 {
+			return fmt.Errorf("%w: manager users must be set when auth is enabled", ErrInvalidConfig)
+		}
+		for _, user := range c.Manager.Users {
+			if user.Username == "" {
+				return fmt.Errorf("%w: manager username must be set", ErrInvalidConfig)
+			}
+			if user.Password == "" {
+				return fmt.Errorf("%w: manager password must be set", ErrInvalidConfig)
+			}
+			for _, permission := range user.Permissions {
+				if permission.Resource == "" {
+					return fmt.Errorf("%w: manager permission resource must be set", ErrInvalidConfig)
+				}
+				if len(permission.Actions) == 0 {
+					return fmt.Errorf("%w: manager permission action must be set", ErrInvalidConfig)
+				}
+				for _, action := range permission.Actions {
+					if !validManagerPermissionAction(action) {
+						return fmt.Errorf("%w: manager permission action %q must be one of r, w or *", ErrInvalidConfig, action)
+					}
+				}
+			}
+		}
 	}
 	if len(c.Cluster.Slots) > 0 {
 		return fmt.Errorf("%w: Cluster.Slots is no longer supported; remove static slot peers and use Cluster.InitialSlotCount for managed slots", ErrInvalidConfig)
@@ -470,6 +538,15 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 
 func normalizeStoragePath(path string) (string, error) {
 	return filepath.Abs(filepath.Clean(path))
+}
+
+func validManagerPermissionAction(action string) bool {
+	switch action {
+	case "r", "w", "*":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c ClusterConfig) effectiveInitialSlotCount() uint32 {
