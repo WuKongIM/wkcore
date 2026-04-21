@@ -86,6 +86,21 @@
 
 不为了未来所有管理能力提前抽出过重的统一鉴权框架或通用插件体系。
 
+## 3.5 Cluster 级 manager 读接口必须跨节点一致
+
+所有 cluster 相关 manager 读接口都需要满足一个额外约束：
+
+- 从任意节点访问同一个 manager cluster 接口，返回的数据来源必须一致
+- 统一以 controller leader 视角作为 cluster 控制面真相源
+- 当 controller leader 不可达、无 leader、重定向失败或读超时时，接口应直接失败
+- 不允许为了“尽量返回结果”而降级到本地 `controllerMeta` 或本地滞后 observation snapshot
+
+这条约束适用于：
+
+- `GET /manager/nodes`
+- `GET /manager/slots`
+- 后续所有 `cluster / slot / channel runtime meta` 的 manager 只读接口
+
 ## 4. 包结构设计
 
 新增以下结构：
@@ -244,11 +259,12 @@ WK_MANAGER_USERS=[{"username":"admin","password":"admin123","permissions":[{"res
 第一版权限模型保留最小可扩展能力：
 
 - 动作：`r`、`w`、`*`
-- 资源：第一版只定义 `cluster.node`
+- 资源：第一版至少定义 `cluster.node`、`cluster.slot`
 
 接口与权限关系：
 
 - `GET /manager/nodes` -> `cluster.node:r`
+- `GET /manager/slots` -> `cluster.slot:r`
 
 校验过程：
 
@@ -263,7 +279,7 @@ WK_MANAGER_USERS=[{"username":"admin","password":"admin123","permissions":[{"res
 
 建议在 manager 包内定义最小权限常量，例如：
 
-- 资源：`cluster.node`
+- 资源：`cluster.node`、`cluster.slot`
 - 动作：`r`、`w`、`*`
 
 第一版不抽出全仓库共享的 `pkg/auth`，避免在只有一个 manager 接口的阶段引入过重改造。待 manager 能力扩展后再评估是否上提为共用包。
@@ -351,7 +367,7 @@ Authorization: Bearer <jwt>
 
 - 未带 token / token 非法 / token 过期：`401`
 - 权限不足：`403`
-- 底层 cluster 查询失败：`500`
+- controller leader 一致读不可用：`503`
 
 错误体同样使用：
 
@@ -363,6 +379,52 @@ Authorization: Bearer <jwt>
 ```
 
 第一版不做分页、过滤、排序参数，避免在框架搭建阶段引入不必要复杂度。
+
+## 7.3 `GET /manager/slots`
+
+请求头：
+
+```text
+Authorization: Bearer <jwt>
+```
+
+成功响应：
+
+```json
+{
+  "total": 1,
+  "items": [
+    {
+      "slot_id": 1,
+      "state": {
+        "quorum": "ready",
+        "sync": "matched"
+      },
+      "assignment": {
+        "desired_peers": [1, 2, 3],
+        "config_epoch": 8,
+        "balance_version": 3
+      },
+      "runtime": {
+        "current_peers": [1, 2, 3],
+        "leader_id": 1,
+        "healthy_voters": 3,
+        "has_quorum": true,
+        "observed_config_epoch": 8,
+        "last_report_at": "2026-04-21T10:00:00+08:00"
+      }
+    }
+  ]
+}
+```
+
+错误语义：
+
+- 未带 token / token 非法 / token 过期：`401`
+- 权限不足：`403`
+- controller leader 一致读不可用：`503`
+
+第一版不做分页、过滤、排序参数，列表按 `slot_id` 升序返回。
 
 ## 8. 节点列表 DTO 设计
 
@@ -421,7 +483,7 @@ Authorization: Bearer <jwt>
 - `total`
   - 当前返回的节点总数；第一版虽然不做分页，但先固定外层计数字段，便于后续扩展分页和筛选参数
 
-## 9. 节点数据聚合设计
+## 9. 节点与 Slot 数据聚合设计
 
 ## 9.1 数据来源
 
@@ -456,6 +518,32 @@ controller 角色按以下规则计算：
 
 节点列表按 `node_id` 升序返回，保证后台管理系统能得到稳定展示顺序。
 
+## 9.5 Slot 列表数据来源
+
+`internal/usecase/management` 的 slot 聚合查询需要以下输入：
+
+- `cluster.ListSlotAssignments(ctx)`
+- `cluster.ListObservedRuntimeViews(ctx)`
+
+两类数据按 `slot_id` 聚合：
+
+- assignment 侧提供期望副本与配置 epoch
+- runtime 侧提供当前副本、leader、quorum 与观测时间
+
+## 9.6 Slot 状态字段设计
+
+第一版为 slot 列表补两个轻量派生状态，方便后台直接渲染列表：
+
+- `state.quorum`
+  - `ready`：存在 runtime view 且 `has_quorum=true`
+  - `lost`：存在 runtime view 且 `has_quorum=false`
+  - `unknown`：不存在 runtime view
+- `state.sync`
+  - `matched`：`desired_peers` 与 `current_peers` 一致，且 `config_epoch == observed_config_epoch`
+  - `peer_mismatch`：期望副本与当前副本不一致
+  - `epoch_lag`：副本一致，但 `observed_config_epoch` 落后于 `config_epoch`
+  - `unreported`：不存在 runtime view
+
 ## 10. Cluster API 边界调整
 
 为避免 `management` 用例依赖具体 `*cluster.Cluster` 实现，建议给 `pkg/cluster.API` 新增一个很小的只读接口：
@@ -469,6 +557,20 @@ controller 角色按以下规则计算：
 - 可避免在 usecase 层做具体实现类型断言
 
 controller peer 列表则不需要进 `pkg/cluster.API`，第一版直接从 `app.Config` 注入即可，减少改动面。
+
+此外需要为 manager 聚合查询增加一组显式的“严格一致读”边界：
+
+- `ListNodesStrict(ctx)`
+- `ListSlotAssignmentsStrict(ctx)`
+- `ListObservedRuntimeViewsStrict(ctx)`
+
+这些接口的语义是：
+
+- 必须通过 controller leader 返回统一结果
+- 不允许 fallback 到本地 `controllerMeta`
+- leader 不可达、无 leader、读超时或重定向失败时直接返回错误
+
+manager usecase 只使用这组 strict read 接口，不再复用“允许本地降级”的通用运维读语义。
 
 ## 11. `internal/app` 装配设计
 
@@ -512,7 +614,7 @@ manager 服务与现有业务 API 服务并列存在，互不替代。
 - 权限不足返回 `403`
 - cluster 查询失败返回 `500`
 
-节点列表接口在底层数据源查询失败时整体失败，不返回“部分节点成功”的响应，避免把 `slot_count`、`leader_slot_count` 的零值误导为真实状态。
+节点列表与 slot 列表接口在底层数据源查询失败时整体失败，不返回“部分成功”的响应，避免把零值或本地滞后快照误导为真实状态。
 
 ## 13. 测试设计
 
@@ -528,6 +630,11 @@ manager 服务与现有业务 API 服务并列存在，互不替代。
 - `GET /manager/nodes` token 过期
 - `GET /manager/nodes` 权限不足
 - `GET /manager/nodes` 成功返回节点列表
+- `GET /manager/nodes` controller leader 一致读不可用
+- `GET /manager/slots` 未带 token
+- `GET /manager/slots` 权限不足
+- `GET /manager/slots` 成功返回 slot 列表
+- `GET /manager/slots` controller leader 一致读不可用
 
 ## 13.2 `internal/usecase/management`
 
@@ -561,7 +668,8 @@ manager 服务与现有业务 API 服务并列存在，互不替代。
 
 - 静态用户密码直接放配置，适合第一版框架验证，但不适合作为长期企业认证方案
 - JWT 不做吊销与黑名单，权限收紧只能依赖 token 到期或服务端实时按用户名重新判权
-- 节点列表中的 slot 统计依赖 `ListObservedRuntimeViews()`，若观察视图暂时落后，展示会随观察延迟而变化
+- 节点列表中的 slot 统计与 slot 列表中的 runtime 信息依赖 controller leader 的 observation snapshot，展示会随 leader observation 延迟而变化
+- manager cluster 接口不再为了可用性退回本地视图；当 leader 一致读不可用时，接口直接失败
 
 ## 14.2 扩展路径
 

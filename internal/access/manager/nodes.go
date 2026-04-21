@@ -1,10 +1,13 @@
 package manager
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"time"
 
 	managementusecase "github.com/WuKongIM/WuKongIM/internal/usecase/management"
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	"github.com/gin-gonic/gin"
 )
 
@@ -57,6 +60,10 @@ func (s *Server) handleNodes(c *gin.Context) {
 	}
 	items, err := s.management.ListNodes(c.Request.Context())
 	if err != nil {
+		if leaderConsistentReadUnavailable(err) {
+			jsonError(c, http.StatusServiceUnavailable, "service_unavailable", "controller leader consistent read unavailable")
+			return
+		}
 		jsonError(c, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
@@ -86,4 +93,11 @@ func nodeDTOs(items []managementusecase.Node) []NodeDTO {
 		})
 	}
 	return out
+}
+
+func leaderConsistentReadUnavailable(err error) bool {
+	return errors.Is(err, raftcluster.ErrNoLeader) ||
+		errors.Is(err, raftcluster.ErrNotLeader) ||
+		errors.Is(err, raftcluster.ErrNotStarted) ||
+		errors.Is(err, context.DeadlineExceeded)
 }

@@ -382,11 +382,23 @@ func (f fakeObservabilityCluster) ListNodes(context.Context) ([]controllermeta.C
 	return append([]controllermeta.ClusterNode(nil), f.nodes...), nil
 }
 
+func (f fakeObservabilityCluster) ListNodesStrict(context.Context) ([]controllermeta.ClusterNode, error) {
+	return append([]controllermeta.ClusterNode(nil), f.nodes...), nil
+}
+
 func (f fakeObservabilityCluster) ListSlotAssignments(context.Context) ([]controllermeta.SlotAssignment, error) {
 	return append([]controllermeta.SlotAssignment(nil), f.assignments...), nil
 }
 
+func (f fakeObservabilityCluster) ListSlotAssignmentsStrict(context.Context) ([]controllermeta.SlotAssignment, error) {
+	return append([]controllermeta.SlotAssignment(nil), f.assignments...), nil
+}
+
 func (f fakeObservabilityCluster) ListObservedRuntimeViews(context.Context) ([]controllermeta.SlotRuntimeView, error) {
+	return append([]controllermeta.SlotRuntimeView(nil), f.views...), nil
+}
+
+func (f fakeObservabilityCluster) ListObservedRuntimeViewsStrict(context.Context) ([]controllermeta.SlotRuntimeView, error) {
 	return append([]controllermeta.SlotRuntimeView(nil), f.views...), nil
 }
 
