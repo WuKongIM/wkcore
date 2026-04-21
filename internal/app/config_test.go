@@ -268,6 +268,7 @@ func TestConfigDefaultsSendPathTuning(t *testing.T) {
 	require.Equal(t, 1*time.Millisecond, clusterConfigDurationField(t, &cfg.Cluster, "AppendGroupCommitMaxWait"))
 	require.Equal(t, 64, clusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxRecords"))
 	require.Equal(t, 64*1024, clusterConfigIntField(t, &cfg.Cluster, "AppendGroupCommitMaxBytes"))
+	require.Equal(t, 1*time.Second, cfg.Cluster.DataPlaneRPCTimeout)
 	require.Equal(t, 4, cfg.Cluster.DataPlanePoolSize)
 	require.Equal(t, 4, cfg.Cluster.DataPlaneMaxFetchInflight)
 	require.Equal(t, 4, cfg.Cluster.DataPlaneMaxPendingFetch)
@@ -279,7 +280,7 @@ func TestConfigAlwaysAppliesLongPollDefaults(t *testing.T) {
 	require.NoError(t, cfg.ApplyDefaultsAndValidate())
 
 	require.Equal(t, 8, cfg.Cluster.LongPollLaneCount)
-	require.Equal(t, 1*time.Millisecond, cfg.Cluster.LongPollMaxWait)
+	require.Equal(t, 200*time.Millisecond, cfg.Cluster.LongPollMaxWait)
 	require.Equal(t, 64*1024, cfg.Cluster.LongPollMaxBytes)
 	require.Equal(t, 64, cfg.Cluster.LongPollMaxChannels)
 }

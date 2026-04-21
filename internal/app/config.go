@@ -304,7 +304,7 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 		if c.Cluster.longPollMaxWaitSet {
 			return fmt.Errorf("%w: long poll max wait must be positive", ErrInvalidConfig)
 		}
-		c.Cluster.LongPollMaxWait = time.Millisecond
+		c.Cluster.LongPollMaxWait = 200 * time.Millisecond
 	}
 	if c.Cluster.LongPollMaxBytes <= 0 {
 		if c.Cluster.longPollMaxBytesSet {
@@ -436,6 +436,7 @@ func (c *Config) ApplyDefaultsAndValidate() error {
 		c.Log.Console = true
 	}
 	c.Cluster.DataPlanePoolSize = effectiveDataPlanePoolSize(c.Cluster.PoolSize, c.Cluster.DataPlanePoolSize)
+	c.Cluster.DataPlaneRPCTimeout = effectiveDataPlaneRPCTimeout(c.Cluster.DataPlaneRPCTimeout)
 	c.Cluster.DataPlaneMaxFetchInflight = effectiveDataPlaneMaxFetchInflight(c.Cluster.PoolSize, c.Cluster.DataPlaneMaxFetchInflight)
 	c.Cluster.DataPlaneMaxPendingFetch = effectiveDataPlaneMaxPendingFetch(c.Cluster.PoolSize, c.Cluster.DataPlaneMaxPendingFetch)
 	c.Cluster.FollowerReplicationRetryInterval = effectiveFollowerReplicationRetryInterval(c.Cluster.FollowerReplicationRetryInterval)
@@ -505,6 +506,13 @@ func effectiveAppendGroupCommitMaxBytes(configured int) int {
 		return configured
 	}
 	return 64 * 1024
+}
+
+func effectiveDataPlaneRPCTimeout(configured time.Duration) time.Duration {
+	if configured > 0 {
+		return configured
+	}
+	return time.Second
 }
 
 const defaultGatewaySendTimeout = 20 * time.Second
