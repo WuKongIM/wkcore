@@ -36,6 +36,12 @@ func (s *Server) registerRoutes() {
 	}
 	tasks.GET("/tasks", s.handleTasks)
 	tasks.GET("/tasks/:slot_id", s.handleTask)
+
+	channelRuntimeMeta := s.engine.Group("/manager")
+	if s.auth.enabled() {
+		channelRuntimeMeta.Use(s.requirePermission("cluster.channel", "r"))
+	}
+	channelRuntimeMeta.GET("/channel-runtime-meta", s.handleChannelRuntimeMeta)
 }
 
 func openCORSMiddleware() gin.HandlerFunc {

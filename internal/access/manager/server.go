@@ -28,6 +28,8 @@ type Management interface {
 	ListTasks(ctx context.Context) ([]managementusecase.Task, error)
 	// GetTask returns one manager-facing reconcile task detail DTO.
 	GetTask(ctx context.Context, slotID uint32) (managementusecase.TaskDetail, error)
+	// ListChannelRuntimeMeta returns one manager-facing channel runtime metadata page.
+	ListChannelRuntimeMeta(ctx context.Context, req managementusecase.ListChannelRuntimeMetaRequest) (managementusecase.ListChannelRuntimeMetaResponse, error)
 }
 
 // PermissionConfig binds a resource to allowed actions.

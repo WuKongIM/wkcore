@@ -3,7 +3,9 @@ package manager
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -890,6 +892,162 @@ func TestManagerTaskDetailReturnsServiceUnavailableWhenLeaderConsistentReadUnava
 	require.JSONEq(t, `{"error":"service_unavailable","message":"controller leader consistent read unavailable"}`, rec.Body.String())
 }
 
+func TestManagerChannelRuntimeMetaRejectsInsufficientPermission(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "viewer",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.slot",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/channel-runtime-meta", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "viewer"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.JSONEq(t, `{"error":"forbidden","message":"forbidden"}`, rec.Body.String())
+}
+
+func TestManagerChannelRuntimeMetaRejectsInvalidLimit(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.channel",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/channel-runtime-meta?limit=0", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"error":"bad_request","message":"invalid limit"}`, rec.Body.String())
+}
+
+func TestManagerChannelRuntimeMetaRejectsInvalidCursor(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.channel",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/channel-runtime-meta?cursor=not-base64", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"error":"bad_request","message":"invalid cursor"}`, rec.Body.String())
+}
+
+func TestManagerChannelRuntimeMetaReturnsPagedList(t *testing.T) {
+	var received managementusecase.ListChannelRuntimeMetaRequest
+	inputCursor := managementusecase.ChannelRuntimeMetaListCursor{SlotID: 1, ChannelID: "g1", ChannelType: 1}
+	nextCursor := managementusecase.ChannelRuntimeMetaListCursor{SlotID: 2, ChannelID: "g2", ChannelType: 2}
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.channel",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{
+			channelRuntimeMetaReqSink: &received,
+			channelRuntimeMetaPage: managementusecase.ListChannelRuntimeMetaResponse{
+				Items: []managementusecase.ChannelRuntimeMeta{{
+					ChannelID:    "g2",
+					ChannelType:  2,
+					SlotID:       2,
+					ChannelEpoch: 11,
+					LeaderEpoch:  5,
+					Leader:       3,
+					Replicas:     []uint64{3, 4},
+					ISR:          []uint64{3},
+					MinISR:       1,
+					Status:       "active",
+				}},
+				HasMore:    true,
+				NextCursor: nextCursor,
+			},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/channel-runtime-meta?limit=2&cursor="+mustEncodeChannelRuntimeMetaCursorForTest(t, inputCursor), nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, managementusecase.ListChannelRuntimeMetaRequest{
+		Limit:  2,
+		Cursor: inputCursor,
+	}, received)
+	require.NotContains(t, rec.Body.String(), `"total"`)
+	require.JSONEq(t, fmt.Sprintf(`{
+		"items": [{
+			"channel_id": "g2",
+			"channel_type": 2,
+			"slot_id": 2,
+			"channel_epoch": 11,
+			"leader_epoch": 5,
+			"leader": 3,
+			"replicas": [3, 4],
+			"isr": [3],
+			"min_isr": 1,
+			"status": "active"
+		}],
+		"has_more": true,
+		"next_cursor": %q
+	}`, mustEncodeChannelRuntimeMetaCursorForTest(t, nextCursor)), rec.Body.String())
+}
+
+func TestManagerChannelRuntimeMetaReturnsServiceUnavailableWhenAuthoritativeReadUnavailable(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.channel",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{channelRuntimeMetaErr: raftcluster.ErrSlotNotFound},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/channel-runtime-meta", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.JSONEq(t, `{"error":"service_unavailable","message":"slot leader authoritative read unavailable"}`, rec.Body.String())
+}
+
 func testAuthConfig(users []UserConfig) AuthConfig {
 	return AuthConfig{
 		On:        true,
@@ -914,17 +1072,31 @@ func mustIssueExpiredTestToken(t *testing.T, srv *Server, username string) strin
 	return token
 }
 
+func mustEncodeChannelRuntimeMetaCursorForTest(t *testing.T, cursor managementusecase.ChannelRuntimeMetaListCursor) string {
+	t.Helper()
+	payload, err := json.Marshal(channelRuntimeMetaCursorPayload{
+		SlotID:      cursor.SlotID,
+		ChannelID:   cursor.ChannelID,
+		ChannelType: cursor.ChannelType,
+	})
+	require.NoError(t, err)
+	return base64.RawURLEncoding.EncodeToString(payload)
+}
+
 type managementStub struct {
-	nodes         []managementusecase.Node
-	nodesErr      error
-	slots         []managementusecase.Slot
-	slotsErr      error
-	slotDetail    managementusecase.SlotDetail
-	slotDetailErr error
-	tasks         []managementusecase.Task
-	tasksErr      error
-	task          managementusecase.TaskDetail
-	taskErr       error
+	nodes                     []managementusecase.Node
+	nodesErr                  error
+	slots                     []managementusecase.Slot
+	slotsErr                  error
+	slotDetail                managementusecase.SlotDetail
+	slotDetailErr             error
+	tasks                     []managementusecase.Task
+	tasksErr                  error
+	task                      managementusecase.TaskDetail
+	taskErr                   error
+	channelRuntimeMetaReqSink *managementusecase.ListChannelRuntimeMetaRequest
+	channelRuntimeMetaPage    managementusecase.ListChannelRuntimeMetaResponse
+	channelRuntimeMetaErr     error
 }
 
 func (s managementStub) ListNodes(context.Context) ([]managementusecase.Node, error) {
@@ -945,6 +1117,13 @@ func (s managementStub) ListTasks(context.Context) ([]managementusecase.Task, er
 
 func (s managementStub) GetTask(context.Context, uint32) (managementusecase.TaskDetail, error) {
 	return s.task, s.taskErr
+}
+
+func (s managementStub) ListChannelRuntimeMeta(_ context.Context, req managementusecase.ListChannelRuntimeMetaRequest) (managementusecase.ListChannelRuntimeMetaResponse, error) {
+	if s.channelRuntimeMetaReqSink != nil {
+		*s.channelRuntimeMetaReqSink = req
+	}
+	return s.channelRuntimeMetaPage, s.channelRuntimeMetaErr
 }
 
 type loginResponseBody struct {
