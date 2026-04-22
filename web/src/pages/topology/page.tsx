@@ -8,36 +8,35 @@ export function TopologyPage() {
   return (
     <PageContainer>
       <PageHeader
+        title="Topology"
+        description="Replica relationships, node adjacency, and context detail."
         actions={
           <>
             <Button size="sm" variant="outline">
-              Layout lane
+              Refresh
             </Button>
-            <Button size="sm">Focus path</Button>
+            <Button size="sm">Inspect</Button>
           </>
         }
-        description="Replica relationships, node adjacency, and future canvas controls will live here."
-        eyebrow="Observability"
-        title="Topology workspace"
       >
-        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
-            Canvas shell
+        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+          <div className="rounded-md border border-border bg-background px-3 py-2">
+            Scope: cluster graph
           </div>
-          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
-            Selection detail lane
+          <div className="rounded-md border border-border bg-background px-3 py-2">
+            Status: static
           </div>
         </div>
       </PageHeader>
       <section className="grid gap-4 xl:grid-cols-[1.4fr_0.85fr]">
         <SectionCard
-          description="Reserved for the future graph canvas and relationship overlays."
-          title="Topology Canvas"
+          description="Primary placeholder for topology structure and relationship context."
+          title="Topology View"
         >
           <PlaceholderBlock kind="canvas" />
         </SectionCard>
         <SectionCard
-          description="Reserved for selection detail and legend content."
+          description="Secondary placeholder for selected-node context and notes."
           title="Context Detail"
         >
           <PlaceholderBlock kind="detail" />

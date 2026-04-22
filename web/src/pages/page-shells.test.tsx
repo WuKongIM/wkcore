@@ -4,13 +4,13 @@ import { RouterProvider, createMemoryRouter } from "react-router-dom"
 import { routes } from "@/app/router"
 
 it.each([
-  ["/dashboard", "Dashboard", "Operations Snapshot"],
+  ["/dashboard", "Dashboard", "Operations Summary"],
   ["/nodes", "Nodes", "Node Inventory"],
   ["/channels", "Channels", "Channel List"],
   ["/connections", "Connections", "Connection Table"],
-  ["/slots", "Slots", "Slot Health"],
-  ["/network", "Network", "Traffic Overview"],
-  ["/topology", "Topology", "Topology Canvas"],
+  ["/slots", "Slots", "Slot Status"],
+  ["/network", "Network", "Transport Summary"],
+  ["/topology", "Topology", "Topology View"],
 ])("renders %s shell", async (path, title, section) => {
   const router = createMemoryRouter(routes, { initialEntries: [path] })
 
@@ -18,6 +18,7 @@ it.each([
 
   expect(await screen.findByRole("heading", { name: title })).toBeInTheDocument()
   expect(screen.getByText(section)).toBeInTheDocument()
+  expect(screen.queryByText(/workspace/i)).not.toBeInTheDocument()
 })
 
 test("dashboard shows monochrome workbench sections", async () => {

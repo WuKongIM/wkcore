@@ -9,24 +9,23 @@ export function SlotsPage() {
   return (
     <PageContainer>
       <PageHeader
+        title="Slots"
+        description="Slot distribution, leader placement, and movement status."
         actions={
           <>
             <Button size="sm" variant="outline">
-              Filter lanes
+              Refresh
             </Button>
-            <Button size="sm">Leader actions</Button>
+            <Button size="sm">Inspect</Button>
           </>
         }
-        description="Slot ownership, leader placement, and movement controls will land here later."
-        eyebrow="Runtime"
-        title="Slots workspace"
       >
-        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
-            Balance posture reserved
+        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+          <div className="rounded-md border border-border bg-background px-3 py-2">
+            Scope: all slots
           </div>
-          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
-            Movement queue shell
+          <div className="rounded-md border border-border bg-background px-3 py-2">
+            Status: static
           </div>
         </div>
       </PageHeader>
@@ -37,8 +36,8 @@ export function SlotsPage() {
         <MetricPlaceholder hint="Pending move placeholder." label="Moves" />
       </section>
       <SectionCard
-        description="Reserved for slot health summaries and the main slot list."
-        title="Slot Health"
+        description="Primary table placeholder for slot assignment and balance state."
+        title="Slot Status"
       >
         <PlaceholderBlock kind="table" />
       </SectionCard>

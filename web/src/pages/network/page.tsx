@@ -9,24 +9,23 @@ export function NetworkPage() {
   return (
     <PageContainer>
       <PageHeader
+        title="Network"
+        description="Transport summary, throughput placeholders, and runtime detail."
         actions={
           <>
             <Button size="sm" variant="outline">
-              Scope lane
+              Refresh
             </Button>
-            <Button size="sm">Inspect transport</Button>
+            <Button size="sm">Inspect</Button>
           </>
         }
-        description="Transport-level visibility will grow here with throughput, latency, and error views."
-        eyebrow="Observability"
-        title="Network workspace"
       >
-        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
-            Throughput shell
+        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+          <div className="rounded-md border border-border bg-background px-3 py-2">
+            Scope: transport
           </div>
-          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
-            RPC pressure lane
+          <div className="rounded-md border border-border bg-background px-3 py-2">
+            Status: static
           </div>
         </div>
       </PageHeader>
@@ -37,13 +36,13 @@ export function NetworkPage() {
       </section>
       <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
         <SectionCard
-          description="Reserved for throughput, saturation, and transport trend blocks."
-          title="Traffic Overview"
+          description="Primary placeholder for transport summary tables and trends."
+          title="Transport Summary"
         >
           <PlaceholderBlock kind="panel" />
         </SectionCard>
         <SectionCard
-          description="Reserved for anomaly details and retry hints."
+          description="Secondary placeholder for transport detail and anomaly notes."
           title="Transport Detail"
         >
           <PlaceholderBlock kind="detail" />

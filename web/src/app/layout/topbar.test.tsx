@@ -19,8 +19,8 @@ test("removes legacy topbar pills while keeping global actions", async () => {
 
   render(<RouterProvider router={router} />)
 
-  expect(await screen.findByRole("button", { name: /refresh/i })).toBeInTheDocument()
-  expect(screen.getByRole("button", { name: /search/i })).toBeInTheDocument()
+  expect(await within(screen.getByRole("banner")).findByRole("button", { name: /refresh/i })).toBeInTheDocument()
+  expect(within(screen.getByRole("banner")).getByRole("button", { name: /search/i })).toBeInTheDocument()
   expect(screen.queryByText("Control plane")).not.toBeInTheDocument()
   expect(screen.queryByText("Manager shell")).not.toBeInTheDocument()
 })

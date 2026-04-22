@@ -8,29 +8,28 @@ export function NodesPage() {
   return (
     <PageContainer>
       <PageHeader
+        title="Nodes"
+        description="Node inventory, roles, and runtime status."
         actions={
           <>
             <Button size="sm" variant="outline">
-              Filter lanes
+              Refresh
             </Button>
-            <Button size="sm">Inspect nodes</Button>
+            <Button size="sm">Inspect</Button>
           </>
         }
-        description="Node operations land here first: inventory, role, and lifecycle shells."
-        eyebrow="Runtime"
-        title="Nodes workspace"
       >
-        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
-            Role-aware list shell
+        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+          <div className="rounded-md border border-border bg-background px-3 py-2">
+            Scope: all nodes
           </div>
-          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
-            Operator actions reserved
+          <div className="rounded-md border border-border bg-background px-3 py-2">
+            Status: static
           </div>
         </div>
       </PageHeader>
       <SectionCard
-        description="Toolbar, filters, and node list rows will replace this placeholder in later iterations."
+        description="Primary table placeholder for node inventory and role status."
         title="Node Inventory"
       >
         <div className="mb-4 grid gap-3 md:grid-cols-[1.2fr_0.9fr_0.9fr_auto]">

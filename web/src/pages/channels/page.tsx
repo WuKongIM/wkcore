@@ -8,29 +8,28 @@ export function ChannelsPage() {
   return (
     <PageContainer>
       <PageHeader
+        title="Channels"
+        description="Channel lists, filters, and runtime detail placeholders."
         actions={
           <>
             <Button size="sm" variant="outline">
-              Filter lanes
+              Refresh
             </Button>
-            <Button size="sm">Inspect channels</Button>
+            <Button size="sm">Inspect</Button>
           </>
         }
-        description="The channel view will host list filters, health tags, and drill-in actions."
-        eyebrow="Runtime"
-        title="Channels workspace"
       >
-        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
-            Health-tag lane reserved
+        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+          <div className="rounded-md border border-border bg-background px-3 py-2">
+            Scope: all channels
           </div>
-          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
-            Drill-in context shell
+          <div className="rounded-md border border-border bg-background px-3 py-2">
+            Status: static
           </div>
         </div>
       </PageHeader>
       <SectionCard
-        description="Reserved for channel-level list controls and summary strips."
+        description="Primary table placeholder for channel status and drill-in rows."
         title="Channel List"
       >
         <div className="mb-4 grid gap-3 md:grid-cols-[1.3fr_1fr_1fr_auto]">

@@ -8,29 +8,28 @@ export function ConnectionsPage() {
   return (
     <PageContainer>
       <PageHeader
+        title="Connections"
+        description="Connection inventory, occupancy, and transport state."
         actions={
           <>
             <Button size="sm" variant="outline">
-              Filter lanes
+              Refresh
             </Button>
-            <Button size="sm">Refresh shell</Button>
+            <Button size="sm">Inspect</Button>
           </>
         }
-        description="Connection-level occupancy, transport, and client state will appear here."
-        eyebrow="Runtime"
-        title="Connections workspace"
       >
-        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
-            Session list shell
+        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+          <div className="rounded-md border border-border bg-background px-3 py-2">
+            Scope: all clients
           </div>
-          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
-            Transport drill-in reserved
+          <div className="rounded-md border border-border bg-background px-3 py-2">
+            Status: static
           </div>
         </div>
       </PageHeader>
       <SectionCard
-        description="Reserved for query controls and connection row placeholders."
+        description="Primary table placeholder for connection inventory and state."
         title="Connection Table"
       >
         <div className="mb-4 grid gap-3 md:grid-cols-[1.4fr_1fr_1fr_auto]">
