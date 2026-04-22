@@ -202,6 +202,39 @@ func (h *controllerHost) snapshotObservations() observationSnapshot {
 	return h.observations.snapshot()
 }
 
+// leaderGeneration returns the current local leader generation, if this host is the leader.
+func (h *controllerHost) leaderGeneration() uint64 {
+	if h == nil {
+		return 0
+	}
+
+	h.warmupMu.RLock()
+	defer h.warmupMu.RUnlock()
+
+	if h.warmupLeaderID != h.localNode {
+		return 0
+	}
+	return h.warmupGeneration
+}
+
+// buildObservationDelta serves a revision-aware observation snapshot for the current leader generation.
+func (h *controllerHost) buildObservationDelta(req observationDeltaRequest) observationDeltaResponse {
+	if h == nil || h.syncState == nil {
+		return observationDeltaResponse{}
+	}
+
+	currentLeaderID := uint64(h.LeaderID())
+	currentGeneration := h.leaderGeneration()
+	if req.LeaderID != currentLeaderID || req.LeaderGeneration != currentGeneration {
+		req.ForceFullSync = true
+	}
+
+	resp := h.syncState.buildDelta(req)
+	resp.LeaderID = currentLeaderID
+	resp.LeaderGeneration = currentGeneration
+	return resp
+}
+
 func (h *controllerHost) hashSlotTableSnapshot() (*HashSlotTable, bool) {
 	if h == nil {
 		return nil, false

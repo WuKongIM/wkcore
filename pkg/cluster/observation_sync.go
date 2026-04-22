@@ -18,15 +18,19 @@ type observationRevisions struct {
 
 // observationDeltaRequest asks the leader for changes newer than the supplied revisions.
 type observationDeltaRequest struct {
-	Revisions      observationRevisions
-	RequestedSlots []uint32
-	ForceFullSync  bool
+	LeaderID         uint64
+	LeaderGeneration uint64
+	Revisions        observationRevisions
+	RequestedSlots   []uint32
+	ForceFullSync    bool
 }
 
 // observationDeltaResponse carries either an incremental delta or a full snapshot.
 type observationDeltaResponse struct {
-	Revisions observationRevisions
-	FullSync  bool
+	LeaderID         uint64
+	LeaderGeneration uint64
+	Revisions        observationRevisions
+	FullSync         bool
 
 	Assignments  []controllermeta.SlotAssignment
 	Tasks        []controllermeta.ReconcileTask

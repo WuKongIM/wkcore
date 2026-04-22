@@ -19,6 +19,7 @@ type controllerAPI interface {
 	RefreshAssignments(ctx context.Context) ([]controllermeta.SlotAssignment, error)
 	ListRuntimeViews(ctx context.Context) ([]controllermeta.SlotRuntimeView, error)
 	ListTasks(ctx context.Context) ([]controllermeta.ReconcileTask, error)
+	FetchObservationDelta(ctx context.Context, req observationDeltaRequest) (observationDeltaResponse, error)
 	Operator(ctx context.Context, op slotcontroller.OperatorRequest) error
 	GetTask(ctx context.Context, slotID uint32) (controllermeta.ReconcileTask, error)
 	ForceReconcile(ctx context.Context, slotID uint32) error
@@ -107,6 +108,20 @@ func (c *controllerClient) ListTasks(ctx context.Context) ([]controllermeta.Reco
 		return nil, err
 	}
 	return resp.Tasks, nil
+}
+
+func (c *controllerClient) FetchObservationDelta(ctx context.Context, req observationDeltaRequest) (observationDeltaResponse, error) {
+	resp, err := c.call(ctx, controllerRPCRequest{
+		Kind:             controllerRPCFetchObservationDelta,
+		ObservationDelta: &req,
+	})
+	if err != nil {
+		return observationDeltaResponse{}, err
+	}
+	if resp.ObservationDelta == nil {
+		return observationDeltaResponse{}, ErrInvalidConfig
+	}
+	return *resp.ObservationDelta, nil
 }
 
 func (c *controllerClient) Operator(ctx context.Context, op slotcontroller.OperatorRequest) error {

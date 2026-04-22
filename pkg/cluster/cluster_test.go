@@ -2442,6 +2442,9 @@ type fakeControllerClient struct {
 	listTasksFn                 func(context.Context) ([]controllermeta.ReconcileTask, error)
 	listTasks                   []controllermeta.ReconcileTask
 	listTasksErr                error
+	fetchObservationDeltaFn     func(context.Context, observationDeltaRequest) (observationDeltaResponse, error)
+	fetchObservationDelta       observationDeltaResponse
+	fetchObservationDeltaErr    error
 	getTaskFn                   func(context.Context, uint32) (controllermeta.ReconcileTask, error)
 	tasks                       map[uint32]controllermeta.ReconcileTask
 	getTaskErr                  error
@@ -2637,6 +2640,13 @@ func (f fakeControllerClient) ListTasks(ctx context.Context) ([]controllermeta.R
 		return tasks, f.listTasksErr
 	}
 	return append([]controllermeta.ReconcileTask(nil), f.listTasks...), f.listTasksErr
+}
+
+func (f fakeControllerClient) FetchObservationDelta(ctx context.Context, req observationDeltaRequest) (observationDeltaResponse, error) {
+	if f.fetchObservationDeltaFn != nil {
+		return f.fetchObservationDeltaFn(ctx, req)
+	}
+	return f.fetchObservationDelta, f.fetchObservationDeltaErr
 }
 
 func (f fakeControllerClient) Operator(_ context.Context, _ slotcontroller.OperatorRequest) error {
