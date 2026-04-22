@@ -4,7 +4,7 @@ import { RouterProvider, createMemoryRouter } from "react-router-dom"
 import { routes } from "@/app/router"
 
 it.each([
-  ["/dashboard", "Dashboard", "Cluster Summary"],
+  ["/dashboard", "Dashboard", "Operations Snapshot"],
   ["/nodes", "Nodes", "Node Inventory"],
   ["/channels", "Channels", "Channel List"],
   ["/connections", "Connections", "Connection Table"],
@@ -18,4 +18,13 @@ it.each([
 
   expect(await screen.findByRole("heading", { name: title })).toBeInTheDocument()
   expect(screen.getByText(section)).toBeInTheDocument()
+})
+
+test("dashboard shows the operations showcase blocks", async () => {
+  const router = createMemoryRouter(routes, { initialEntries: ["/dashboard"] })
+
+  render(<RouterProvider router={router} />)
+
+  expect(await screen.findByText("Operations Snapshot")).toBeInTheDocument()
+  expect(screen.getByText("Active alerts lane")).toBeInTheDocument()
 })

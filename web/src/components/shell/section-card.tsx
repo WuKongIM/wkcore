@@ -8,6 +8,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { cn } from "@/lib/utils"
 
 type SectionCardProps = PropsWithChildren<{
   title: string
@@ -24,13 +25,18 @@ export function SectionCard({
   children,
 }: SectionCardProps) {
   return (
-    <Card className={className}>
-      <CardHeader className="border-b border-border/70">
-        <CardTitle>{title}</CardTitle>
-        {description ? <CardDescription>{description}</CardDescription> : null}
+    <Card
+      className={cn(
+        "border border-white/65 bg-white/88 shadow-[0_22px_48px_-34px_rgba(15,23,42,0.42)] backdrop-blur-sm",
+        className,
+      )}
+    >
+      <CardHeader className="border-b border-border/60 bg-linear-to-r from-white via-white to-primary/4">
+        <CardTitle className="tracking-[-0.015em] text-foreground">{title}</CardTitle>
+        {description ? <CardDescription className="leading-6">{description}</CardDescription> : null}
         {action ? <CardAction>{action}</CardAction> : null}
       </CardHeader>
-      <CardContent>{children}</CardContent>
+      <CardContent className="pt-5">{children}</CardContent>
     </Card>
   )
 }

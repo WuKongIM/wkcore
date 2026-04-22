@@ -13,3 +13,12 @@ test("marks the current navigation item with aria-current", async () => {
     "page",
   )
 })
+
+test("renders the runtime status panel in the sidebar", async () => {
+  const router = createMemoryRouter(routes, { initialEntries: ["/dashboard"] })
+
+  render(<RouterProvider router={router} />)
+
+  expect(await screen.findByText("Cluster status")).toBeInTheDocument()
+  expect(screen.getByText("Single-node cluster")).toBeInTheDocument()
+})

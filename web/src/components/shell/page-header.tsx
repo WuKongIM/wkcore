@@ -21,23 +21,28 @@ export function PageHeader({
   return (
     <section
       className={cn(
-        "rounded-2xl border border-border/80 bg-card/90 p-6 shadow-sm shadow-slate-950/4",
+        "relative overflow-hidden rounded-[28px] border border-white/70 bg-linear-to-br from-white via-white/95 to-primary/6 p-6 shadow-[0_26px_54px_-34px_rgba(15,23,42,0.35)]",
         className,
       )}
     >
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="space-y-2">
+      <div className="absolute inset-x-0 top-0 h-px bg-linear-to-r from-transparent via-primary/60 to-transparent" />
+      <div className="relative flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+        <div className="space-y-3">
           {eyebrow ? (
-            <p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">
+            <div className="inline-flex items-center rounded-full border border-primary/10 bg-primary/8 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.28em] text-primary">
               {eyebrow}
-            </p>
+            </div>
           ) : null}
-          <div className="text-xl font-semibold tracking-tight text-foreground">{title}</div>
-          <p className="max-w-3xl text-sm leading-6 text-muted-foreground">{description}</p>
+          <div className="space-y-2">
+            <div className="text-[1.65rem] font-semibold tracking-[-0.03em] text-foreground">
+              {title}
+            </div>
+            <p className="max-w-3xl text-sm leading-6 text-muted-foreground">{description}</p>
+          </div>
         </div>
-        {actions ? <div className="flex items-center gap-3">{actions}</div> : null}
+        {actions ? <div className="flex flex-wrap items-center gap-3">{actions}</div> : null}
       </div>
-      {children ? <div className="mt-5">{children}</div> : null}
+      {children ? <div className="relative mt-6">{children}</div> : null}
     </section>
   )
 }

@@ -11,7 +11,7 @@ export function TopologyPage() {
         actions={
           <>
             <Button size="sm" variant="outline">
-              Layout
+              Layout lane
             </Button>
             <Button size="sm">Focus path</Button>
           </>
@@ -19,7 +19,16 @@ export function TopologyPage() {
         description="Replica relationships, node adjacency, and future canvas controls will live here."
         eyebrow="Observability"
         title="Topology workspace"
-      />
+      >
+        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
+            Canvas shell
+          </div>
+          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
+            Selection detail lane
+          </div>
+        </div>
+      </PageHeader>
       <section className="grid gap-4 xl:grid-cols-[1.4fr_0.85fr]">
         <SectionCard
           description="Reserved for the future graph canvas and relationship overlays."
