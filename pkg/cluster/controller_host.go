@@ -29,7 +29,8 @@ type controllerHost struct {
 	healthScheduler *nodeHealthScheduler
 	localNode       multiraft.NodeID
 
-	leaderTerm atomic.Uint64
+	leaderTerm   atomic.Uint64
+	plannerDirty atomic.Bool
 
 	hashSlotMu              sync.RWMutex
 	hashSlotTable           *HashSlotTable
@@ -54,6 +55,12 @@ type controllerHost struct {
 	warmupGeneration uint64
 	warmupReady      bool
 	warmupFullSyncs  map[uint64]struct{}
+
+	plannerWakeMu       sync.Mutex
+	plannerWakeTimer    *time.Timer
+	plannerWakeDebounce time.Duration
+	// plannerWakeCh carries debounced best-effort planner wake signals to the cluster loop.
+	plannerWakeCh chan struct{}
 }
 
 func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, error) {
@@ -86,6 +93,7 @@ func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, erro
 		hintClient:      layer.fwdClient,
 		localNode:       cfg.NodeID,
 		warmupFullSyncs: make(map[uint64]struct{}),
+		plannerWakeCh:   make(chan struct{}, 1),
 	}
 	host.hintPeers = make([]multiraft.NodeID, 0, len(cfg.Nodes))
 	for _, node := range cfg.Nodes {
@@ -97,6 +105,7 @@ func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, erro
 	timeouts := cfg.Timeouts
 	timeouts.applyDefaults()
 	host.metadataReloadTimeout = timeouts.ControllerRequest
+	host.plannerWakeDebounce = timeouts.PlannerWakeDebounce
 	host.bgCtx, host.bgCancel = context.WithCancel(context.Background())
 	host.loadHashSlotTableFn = func(ctx context.Context) (*HashSlotTable, error) { return host.meta.LoadHashSlotTable(ctx) }
 	host.loadNodeMirrorFn = func(ctx context.Context) ([]controllermeta.ClusterNode, error) { return host.meta.ListNodes(ctx) }
@@ -152,6 +161,12 @@ func (h *controllerHost) Stop() {
 	if h.bgCancel != nil {
 		h.bgCancel()
 	}
+	h.plannerWakeMu.Lock()
+	if h.plannerWakeTimer != nil {
+		h.plannerWakeTimer.Stop()
+		h.plannerWakeTimer = nil
+	}
+	h.plannerWakeMu.Unlock()
 	if h.healthScheduler != nil {
 		h.healthScheduler.reset()
 	}
@@ -209,6 +224,7 @@ func (h *controllerHost) applyRuntimeReport(report runtimeObservationReport) {
 		h.markWarmupFullSync(report.NodeID)
 		h.refreshWarmupReady()
 	}
+	h.markPlannerDirty()
 }
 
 func (h *controllerHost) snapshotObservations() observationSnapshot {
@@ -514,6 +530,7 @@ func (h *controllerHost) handleLeaderChange(_, to multiraft.NodeID) {
 	} else {
 		h.metadataSnapshotState.invalidate(to)
 	}
+	h.markPlannerDirty()
 }
 
 func (h *controllerHost) handleCommittedCommand(cmd slotcontroller.Command) {
@@ -539,6 +556,55 @@ func (h *controllerHost) handleCommittedCommand(cmd slotcontroller.Command) {
 	switch cmd.Kind {
 	case slotcontroller.CommandKindNodeStatusUpdate, slotcontroller.CommandKindOperatorRequest:
 		h.refreshWarmupReady()
+	}
+	h.markPlannerDirty()
+}
+
+func (h *controllerHost) plannerWakeChannel() <-chan struct{} {
+	if h == nil {
+		return nil
+	}
+	return h.plannerWakeCh
+}
+
+func (h *controllerHost) consumePlannerDirty() bool {
+	if h == nil {
+		return false
+	}
+	return h.plannerDirty.CompareAndSwap(true, false)
+}
+
+func (h *controllerHost) markPlannerDirty() {
+	if h == nil {
+		return
+	}
+	h.plannerDirty.Store(true)
+	debounce := h.plannerWakeDebounce
+	if debounce <= 0 {
+		h.enqueuePlannerWake()
+		return
+	}
+	h.plannerWakeMu.Lock()
+	if h.plannerWakeTimer != nil {
+		h.plannerWakeMu.Unlock()
+		return
+	}
+	h.plannerWakeTimer = time.AfterFunc(debounce, func() {
+		h.enqueuePlannerWake()
+		h.plannerWakeMu.Lock()
+		h.plannerWakeTimer = nil
+		h.plannerWakeMu.Unlock()
+	})
+	h.plannerWakeMu.Unlock()
+}
+
+func (h *controllerHost) enqueuePlannerWake() {
+	if h == nil || h.plannerWakeCh == nil {
+		return
+	}
+	select {
+	case h.plannerWakeCh <- struct{}{}:
+	default:
 	}
 }
 

@@ -57,12 +57,18 @@ type hashSlotRuntimeResources struct {
 }
 
 type observationResources struct {
-	observer          *observerLoop
-	heartbeatObserver *observerLoop
-	runtimeObserver   *observerLoop
-	runtimeReporter   *runtimeObservationReporter
-	wakeState         *observationWakeState
-	syncInFlight      atomic.Bool
+	observer            *observerLoop
+	heartbeatObserver   *observerLoop
+	runtimeObserver     *observerLoop
+	slowSyncObserver    *observerLoop
+	plannerObserver     *observerLoop
+	migrationObserver   *observerLoop
+	wakeObserver        *signalLoop
+	plannerWakeObserver *signalLoop
+	runtimeReporter     *runtimeObservationReporter
+	wakeState           *observationWakeState
+	wakeSignal          chan struct{}
+	syncInFlight        atomic.Bool
 }
 
 type Cluster struct {
@@ -122,7 +128,8 @@ func NewCluster(cfg Config) (*Cluster, error) {
 			runtimeStateMachines: make(map[multiraft.SlotID]hashSlotOwnershipUpdater),
 		},
 		observationResources: observationResources{
-			wakeState: newObservationWakeState(),
+			wakeState:  newObservationWakeState(),
+			wakeSignal: make(chan struct{}, 1),
 		},
 	}
 	cluster.slotMgr = newSlotManager(cluster)
@@ -343,11 +350,28 @@ func (c *Cluster) startObservationLoop() {
 		c.runtimeObservationOnce(ctx)
 	})
 	c.runtimeObserver.Start(context.Background())
-	c.observer = newObserverLoop(c.controllerObservationInterval(), func(ctx context.Context) {
-		c.observeOnce(ctx)
-		c.controllerTickOnce(ctx)
+	c.wakeObserver = newSignalLoop(c.wakeSignal, func(ctx context.Context) {
+		c.wakeReconcileOnce(ctx)
 	})
-	c.observer.Start(context.Background())
+	c.wakeObserver.Start(context.Background())
+	c.slowSyncObserver = newObserverLoop(c.observationSlowSyncInterval(), func(ctx context.Context) {
+		c.slowSyncOnce(ctx)
+	})
+	c.slowSyncObserver.Start(context.Background())
+	if c.controllerHost != nil {
+		c.plannerWakeObserver = newSignalLoop(c.controllerHost.plannerWakeChannel(), func(ctx context.Context) {
+			c.plannerWakeOnce(ctx)
+		})
+		c.plannerWakeObserver.Start(context.Background())
+	}
+	c.plannerObserver = newObserverLoop(c.plannerSafetyInterval(), func(ctx context.Context) {
+		c.plannerSafetyOnce(ctx)
+	})
+	c.plannerObserver.Start(context.Background())
+	c.migrationObserver = newObserverLoop(c.controllerObservationInterval(), func(ctx context.Context) {
+		c.migrationObserveOnce(ctx)
+	})
+	c.migrationObserver.Start(context.Background())
 }
 
 func (c *Cluster) seedLegacySlotsIfConfigured() error {
@@ -426,6 +450,26 @@ func (c *Cluster) Stop() {
 	if c.runtimeObserver != nil {
 		c.runtimeObserver.Stop()
 		c.runtimeObserver = nil
+	}
+	if c.slowSyncObserver != nil {
+		c.slowSyncObserver.Stop()
+		c.slowSyncObserver = nil
+	}
+	if c.wakeObserver != nil {
+		c.wakeObserver.Stop()
+		c.wakeObserver = nil
+	}
+	if c.plannerWakeObserver != nil {
+		c.plannerWakeObserver.Stop()
+		c.plannerWakeObserver = nil
+	}
+	if c.plannerObserver != nil {
+		c.plannerObserver.Stop()
+		c.plannerObserver = nil
+	}
+	if c.migrationObserver != nil {
+		c.migrationObserver.Stop()
+		c.migrationObserver = nil
 	}
 
 	if c.runtime != nil {
@@ -577,6 +621,23 @@ func (c *Cluster) controllerTickOnce(ctx context.Context) {
 	if hook := c.obs.OnControllerDecision; hook != nil {
 		hook(decision.SlotID, controllerTaskKindName(decision.Task.Kind), observerElapsed(start))
 	}
+}
+
+func (c *Cluster) plannerWakeOnce(ctx context.Context) {
+	if c == nil || c.controllerHost == nil || c.stopped.Load() {
+		return
+	}
+	if !c.controllerHost.consumePlannerDirty() {
+		return
+	}
+	c.controllerTickOnce(ctx)
+}
+
+func (c *Cluster) plannerSafetyOnce(ctx context.Context) {
+	if c == nil || c.stopped.Load() {
+		return
+	}
+	c.controllerTickOnce(ctx)
 }
 
 func (c *Cluster) snapshotPlannerState(ctx context.Context) (slotcontroller.PlannerState, error) {
@@ -1420,7 +1481,11 @@ func (c *Cluster) handleObservationHint(hint observationHint) bool {
 	if c == nil || c.wakeState == nil {
 		return false
 	}
-	return c.wakeState.observeHint(uint64(c.controllerLeaderID()), hint)
+	accepted := c.wakeState.observeHint(uint64(c.controllerLeaderID()), hint)
+	if accepted {
+		c.signalObservationWake()
+	}
+	return accepted
 }
 
 func (c *Cluster) controllerLeaderID() multiraft.NodeID {
@@ -1469,4 +1534,38 @@ func (c *Cluster) syncObservationDeltaOnce(ctx context.Context, hint observation
 	_ = c.agent.ApplyAssignments(ctx)
 	_ = c.observeHashSlotMigrations(ctx)
 	return nil
+}
+
+func (c *Cluster) migrationObserveOnce(ctx context.Context) {
+	if c == nil || c.stopped.Load() {
+		return
+	}
+	if !c.hasActiveMigrationObservationWork() {
+		return
+	}
+	_ = c.observeHashSlotMigrations(ctx)
+}
+
+func (c *Cluster) hasActiveMigrationObservationWork() bool {
+	if c == nil || c.migrationWorker == nil {
+		return false
+	}
+	if len(c.pendingHashSlotAborts) > 0 {
+		return true
+	}
+	if len(c.migrationWorker.ActiveMigrations()) > 0 {
+		return true
+	}
+	table := c.GetHashSlotTable()
+	return table != nil && len(table.ActiveMigrations()) > 0
+}
+
+func (c *Cluster) signalObservationWake() {
+	if c == nil || c.wakeSignal == nil {
+		return
+	}
+	select {
+	case c.wakeSignal <- struct{}{}:
+	default:
+	}
 }

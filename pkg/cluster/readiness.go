@@ -57,6 +57,18 @@ func (c *Cluster) observationRuntimeFullSyncInterval() time.Duration {
 	return c.timeoutConfig().ObservationRuntimeFullSyncInterval
 }
 
+func (c *Cluster) observationSlowSyncInterval() time.Duration {
+	return c.timeoutConfig().ObservationSlowSyncInterval
+}
+
+func (c *Cluster) plannerSafetyInterval() time.Duration {
+	return c.timeoutConfig().PlannerSafetyInterval
+}
+
+func (c *Cluster) plannerWakeDebounce() time.Duration {
+	return c.timeoutConfig().PlannerWakeDebounce
+}
+
 func (c *Cluster) forwardRetryInterval() time.Duration {
 	return scaleDerivedInterval(c.timeoutConfig().ForwardRetryBudget, defaultForwardRetryBudget, defaultForwardRetryInterval)
 }

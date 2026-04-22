@@ -515,6 +515,67 @@ func TestControllerTickOnceDoesNotProposeEvaluateTimeouts(t *testing.T) {
 	}
 }
 
+func TestControllerPlannerRunsOnDirtyWake(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	cluster.cfg.SlotReplicaN = 1
+	if err := host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          uint64(cluster.cfg.NodeID),
+		Addr:            cluster.cfg.Nodes[0].Addr,
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Now(),
+		CapacityWeight:  1,
+	}); err != nil {
+		t.Fatalf("UpsertNode() error = %v", err)
+	}
+	host.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     uint64(cluster.cfg.NodeID),
+		ObservedAt: time.Unix(1710000801, 0),
+		FullSync:   true,
+	})
+
+	cluster.plannerWakeOnce(context.Background())
+
+	tasks, err := host.meta.ListTasks(context.Background())
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) == 0 {
+		t.Fatalf("ListTasks() = %#v, want planner wake to schedule work", tasks)
+	}
+}
+
+func TestControllerPlannerSafetyTickStillEvaluatesWhenNoHintArrives(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	cluster.cfg.SlotReplicaN = 1
+	if err := host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          uint64(cluster.cfg.NodeID),
+		Addr:            cluster.cfg.Nodes[0].Addr,
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Now(),
+		CapacityWeight:  1,
+	}); err != nil {
+		t.Fatalf("UpsertNode() error = %v", err)
+	}
+	host.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     uint64(cluster.cfg.NodeID),
+		ObservedAt: time.Unix(1710000901, 0),
+		FullSync:   true,
+	})
+	if !host.consumePlannerDirty() {
+		t.Fatal("consumePlannerDirty() = false, want runtime full sync to mark the planner dirty first")
+	}
+
+	cluster.plannerSafetyOnce(context.Background())
+
+	tasks, err := host.meta.ListTasks(context.Background())
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) == 0 {
+		t.Fatalf("ListTasks() = %#v, want planner safety tick to evaluate even without a wake", tasks)
+	}
+}
+
 func TestListObservedRuntimeViewsFallsBackToLocalControllerMetaWhenLeaderUnavailable(t *testing.T) {
 	dir := t.TempDir()
 	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
@@ -2184,6 +2245,24 @@ func TestSlowSyncLoopRecoversDroppedHint(t *testing.T) {
 	assignments := cluster.assignments.Snapshot()
 	if got, want := len(assignments), 1; got != want {
 		t.Fatalf("cached assignments len = %d, want %d", got, want)
+	}
+}
+
+func TestIdleClusterSkipsMigrationObserveWithoutActiveWork(t *testing.T) {
+	worker := &fakeHashSlotMigrationWorker{}
+	cluster := &Cluster{
+		cfg:             Config{NodeID: 1},
+		router:          NewRouter(NewHashSlotTable(8, 2), 1, nil),
+		migrationWorker: worker,
+	}
+
+	cluster.migrationObserveOnce(context.Background())
+
+	if worker.ticks != 0 {
+		t.Fatalf("migration worker ticks = %d, want 0 when there is no active migration work", worker.ticks)
+	}
+	if len(worker.started) != 0 {
+		t.Fatalf("migration worker started = %#v, want no work started", worker.started)
 	}
 }
 

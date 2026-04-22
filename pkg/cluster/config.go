@@ -32,6 +32,9 @@ const (
 	defaultObservationRuntimeScan       = 1 * time.Second
 	defaultObservationFlushDebounce     = 200 * time.Millisecond
 	defaultObservationFullSyncInterval  = 60 * time.Second
+	defaultObservationSlowSyncInterval  = 2 * time.Second
+	defaultPlannerSafetyInterval        = 1 * time.Second
+	defaultPlannerWakeDebounce          = 100 * time.Millisecond
 )
 
 type Config struct {
@@ -76,6 +79,12 @@ type Timeouts struct {
 	ObservationRuntimeScanInterval     time.Duration
 	ObservationRuntimeFlushDebounce    time.Duration
 	ObservationRuntimeFullSyncInterval time.Duration
+	// ObservationSlowSyncInterval controls the fallback full-scope observation sync cadence when hint wakes are lost.
+	ObservationSlowSyncInterval time.Duration
+	// PlannerSafetyInterval controls the minimum planner reevaluation cadence even when no dirty wake is queued.
+	PlannerSafetyInterval time.Duration
+	// PlannerWakeDebounce coalesces bursts of controller dirty signals before waking the planner loop.
+	PlannerWakeDebounce time.Duration
 }
 
 type ObserverHooks struct {
@@ -276,6 +285,15 @@ func (t *Timeouts) applyDefaults() {
 	}
 	if t.ObservationRuntimeFullSyncInterval == 0 {
 		t.ObservationRuntimeFullSyncInterval = defaultObservationFullSyncInterval
+	}
+	if t.ObservationSlowSyncInterval == 0 {
+		t.ObservationSlowSyncInterval = defaultObservationSlowSyncInterval
+	}
+	if t.PlannerSafetyInterval == 0 {
+		t.PlannerSafetyInterval = defaultPlannerSafetyInterval
+	}
+	if t.PlannerWakeDebounce == 0 {
+		t.PlannerWakeDebounce = defaultPlannerWakeDebounce
 	}
 }
 
