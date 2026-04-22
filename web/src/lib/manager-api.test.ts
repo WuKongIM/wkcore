@@ -263,7 +263,7 @@ describe("manager api client", () => {
       task: null,
     }
     const recoverResult = {
-      strategy: "force-current-leader",
+      strategy: "latest_live_replica",
       result: "scheduled",
       slot: slotDetail,
     }
@@ -283,10 +283,10 @@ describe("manager api client", () => {
     expect(JSON.parse(requestInit.body)).toEqual({ target_node_id: 2 })
     expect(requestInit.headers.get("Content-Type")).toBe("application/json")
 
-    await expect(recoverSlot(9, { strategy: "force-current-leader" })).resolves.toEqual(recoverResult)
+    await expect(recoverSlot(9, { strategy: "latest_live_replica" })).resolves.toEqual(recoverResult)
     requestInit = fetchMock.mock.calls[1]?.[1] as { method: string; body: string }
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/manager/slots/9/recover")
-    expect(JSON.parse(requestInit.body)).toEqual({ strategy: "force-current-leader" })
+    expect(JSON.parse(requestInit.body)).toEqual({ strategy: "latest_live_replica" })
 
     await expect(rebalanceSlots()).resolves.toEqual(rebalanceResult)
     requestInit = fetchMock.mock.calls[2]?.[1] as { method: string }

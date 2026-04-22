@@ -1,13 +1,6 @@
 import type { ReactNode } from "react"
 
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet"
+import { Button } from "@/components/ui/button"
 
 type DetailSheetProps = {
   open: boolean
@@ -26,16 +19,37 @@ export function DetailSheet({
   children,
   footer,
 }: DetailSheetProps) {
+  if (!open) {
+    return null
+  }
+
+  const titleId = "manager-detail-sheet-title"
+
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-full max-w-2xl overflow-y-auto" side="right">
-        <SheetHeader>
-          <SheetTitle>{title}</SheetTitle>
-          {description ? <SheetDescription>{description}</SheetDescription> : null}
-        </SheetHeader>
-        <div className="flex-1 px-4 pb-4">{children}</div>
-        {footer ? <SheetFooter>{footer}</SheetFooter> : null}
-      </SheetContent>
-    </Sheet>
+    <div
+      aria-labelledby={titleId}
+      className="fixed inset-0 z-40 flex justify-end bg-black/10"
+      role="dialog"
+    >
+      <div className="flex h-full w-full max-w-2xl flex-col border-l border-border bg-background shadow-lg">
+        <div className="border-b border-border px-4 py-4 pr-14">
+          <h2 className="text-base font-medium text-foreground" id={titleId}>
+            {title}
+          </h2>
+          {description ? <p className="mt-1 text-sm text-muted-foreground">{description}</p> : null}
+          <Button
+            className="absolute right-3 top-3"
+            onClick={() => onOpenChange(false)}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            Close
+          </Button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-4 py-4">{children}</div>
+        {footer ? <div className="border-t border-border px-4 py-4">{footer}</div> : null}
+      </div>
+    </div>
   )
 }

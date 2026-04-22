@@ -1,13 +1,109 @@
 import { render, screen } from "@testing-library/react"
 import { RouterProvider, createMemoryRouter } from "react-router-dom"
-import { beforeEach } from "vitest"
+import { beforeEach, vi } from "vitest"
 
 import { AppProviders } from "@/app/providers"
 import { routes } from "@/app/router"
 import { useAuthStore } from "@/auth/auth-store"
 
+const getOverviewMock = vi.fn()
+const getTasksMock = vi.fn()
+const getNodesMock = vi.fn()
+const getChannelRuntimeMetaMock = vi.fn()
+const getSlotsMock = vi.fn()
+
+vi.mock("@/lib/manager-api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/manager-api")>()
+  return {
+    ...actual,
+    getOverview: (...args: unknown[]) => getOverviewMock(...args),
+    getTasks: (...args: unknown[]) => getTasksMock(...args),
+    getNodes: (...args: unknown[]) => getNodesMock(...args),
+    getChannelRuntimeMeta: (...args: unknown[]) => getChannelRuntimeMetaMock(...args),
+    getSlots: (...args: unknown[]) => getSlotsMock(...args),
+  }
+})
+
 beforeEach(() => {
   localStorage.clear()
+  getOverviewMock.mockReset()
+  getTasksMock.mockReset()
+  getNodesMock.mockReset()
+  getChannelRuntimeMetaMock.mockReset()
+  getSlotsMock.mockReset()
+
+  getOverviewMock.mockResolvedValue({
+    generated_at: "2026-04-23T08:00:00Z",
+    cluster: { controller_leader_id: 1 },
+    nodes: { total: 1, alive: 1, suspect: 0, dead: 0, draining: 0 },
+    slots: {
+      total: 1,
+      ready: 1,
+      quorum_lost: 0,
+      leader_missing: 0,
+      unreported: 0,
+      peer_mismatch: 0,
+      epoch_lag: 0,
+    },
+    tasks: { total: 0, pending: 0, retrying: 0, failed: 0 },
+    anomalies: {
+      slots: {
+        quorum_lost: { count: 0, items: [] },
+        leader_missing: { count: 0, items: [] },
+        sync_mismatch: { count: 0, items: [] },
+      },
+      tasks: {
+        failed: { count: 0, items: [] },
+        retrying: { count: 0, items: [] },
+      },
+    },
+  })
+  getTasksMock.mockResolvedValue({ total: 0, items: [] })
+  getNodesMock.mockResolvedValue({
+    total: 1,
+    items: [{
+      node_id: 1,
+      addr: "127.0.0.1:7000",
+      status: "alive",
+      last_heartbeat_at: "2026-04-23T08:00:00Z",
+      is_local: true,
+      capacity_weight: 1,
+      controller: { role: "leader" },
+      slot_stats: { count: 1, leader_count: 1 },
+    }],
+  })
+  getChannelRuntimeMetaMock.mockResolvedValue({
+    items: [{
+      channel_id: "alpha",
+      channel_type: 1,
+      slot_id: 9,
+      channel_epoch: 11,
+      leader_epoch: 5,
+      leader: 2,
+      replicas: [1, 2, 3],
+      isr: [1, 2],
+      min_isr: 2,
+      status: "active",
+    }],
+    has_more: false,
+  })
+  getSlotsMock.mockResolvedValue({
+    total: 1,
+    items: [{
+      slot_id: 9,
+      state: { quorum: "ready", sync: "in_sync" },
+      assignment: { desired_peers: [1, 2, 3], config_epoch: 7, balance_version: 4 },
+      runtime: {
+        current_peers: [1, 2, 3],
+        leader_id: 2,
+        healthy_voters: 3,
+        has_quorum: true,
+        observed_config_epoch: 7,
+        last_report_at: "2026-04-23T08:00:00Z",
+      },
+    }],
+  })
+
   useAuthStore.setState({
     status: "authenticated",
     isHydrated: true,
@@ -22,11 +118,8 @@ beforeEach(() => {
 it.each([
   ["/dashboard", "Dashboard", "Operations Summary"],
   ["/nodes", "Nodes", "Node Inventory"],
-  ["/channels", "Channels", "Channel List"],
-  ["/connections", "Connections", "Connection Table"],
-  ["/slots", "Slots", "Slot Status"],
-  ["/network", "Network", "Transport Summary"],
-  ["/topology", "Topology", "Topology View"],
+  ["/channels", "Channels", "Channel Runtime"],
+  ["/slots", "Slots", "Slot Inventory"],
 ])("renders %s shell", async (path, title, section) => {
   const router = createMemoryRouter(routes, { initialEntries: [path] })
 
@@ -41,6 +134,24 @@ it.each([
   expect(screen.queryByText(/workspace/i)).not.toBeInTheDocument()
 })
 
+it.each([
+  ["/connections", "Connections", /does not expose connection inventory/i],
+  ["/network", "Network", /does not expose transport or throughput endpoints/i],
+  ["/topology", "Topology", /does not expose replica topology endpoints/i],
+])("renders %s unavailable manager scope", async (path, title, message) => {
+  const router = createMemoryRouter(routes, { initialEntries: [path] })
+
+  render(
+    <AppProviders>
+      <RouterProvider router={router} />
+    </AppProviders>,
+  )
+
+  expect(await screen.findByRole("heading", { name: title })).toBeInTheDocument()
+  expect(screen.getByText("Manager API Coverage")).toBeInTheDocument()
+  expect(screen.getByText(message)).toBeInTheDocument()
+})
+
 test("dashboard shows monochrome workbench sections", async () => {
   const router = createMemoryRouter(routes, { initialEntries: ["/dashboard"] })
 
@@ -52,7 +163,7 @@ test("dashboard shows monochrome workbench sections", async () => {
 
   expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument()
   expect(screen.getByText("Operations Summary")).toBeInTheDocument()
-  expect(screen.getByText("Alert List")).toBeInTheDocument()
-  expect(screen.getByText("Control Queue")).toBeInTheDocument()
+  expect(screen.getAllByText("Alert List").length).toBeGreaterThan(0)
+  expect(screen.getAllByText("Control Queue").length).toBeGreaterThan(0)
   expect(screen.queryByText("Pin board")).not.toBeInTheDocument()
 })
