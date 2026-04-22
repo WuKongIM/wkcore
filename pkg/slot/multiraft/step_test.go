@@ -551,15 +551,16 @@ func (f *blockingStateMachine) unblock() {
 }
 
 type internalFakeStorage struct {
-	mu             sync.Mutex
-	state          BootstrapState
-	entries        []raftpb.Entry
-	snapshot       raftpb.Snapshot
-	saveCount      int
-	saveErr        error
-	lastSavedIndex uint64
-	lastApplied    uint64
-	markAppliedErr error
+	mu               sync.Mutex
+	state            BootstrapState
+	entries          []raftpb.Entry
+	snapshot         raftpb.Snapshot
+	saveCount        int
+	saveErr          error
+	lastSavedIndex   uint64
+	lastApplied      uint64
+	markAppliedCount int
+	markAppliedErr   error
 }
 
 func (f *internalFakeStorage) InitialState(ctx context.Context) (BootstrapState, error) {
@@ -651,6 +652,7 @@ func (f *internalFakeStorage) MarkApplied(ctx context.Context, index uint64) err
 		return f.markAppliedErr
 	}
 
+	f.markAppliedCount++
 	f.lastApplied = index
 	f.state.AppliedIndex = index
 	return nil

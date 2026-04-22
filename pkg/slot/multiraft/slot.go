@@ -295,6 +295,7 @@ func (g *slot) processReady(ctx context.Context, transport Transport) bool {
 	}
 
 	lastApplied := g.appliedIndex()
+	appliedBeforeReady := lastApplied
 	resolutions := g.takeResolutionBuffer()
 	defer func() {
 		g.releaseResolutionBuffer(resolutions)
@@ -317,7 +318,7 @@ func (g *slot) processReady(ctx context.Context, transport Transport) bool {
 		return false
 	}
 
-	if lastApplied > 0 {
+	if lastApplied > appliedBeforeReady {
 		if err := g.storage.MarkApplied(ctx, lastApplied); err != nil {
 			g.fail(err)
 			return false

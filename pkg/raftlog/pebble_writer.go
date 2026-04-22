@@ -86,9 +86,17 @@ func (db *DB) flushWriteRequests(reqs []*writeRequest) error {
 	batch := db.db.NewBatch()
 	defer batch.Close()
 
+	scopeCloneEntries := make(map[Scope]bool, len(reqs))
+	for _, req := range reqs {
+		if req == nil || req.op == nil {
+			continue
+		}
+		scopeCloneEntries[req.scope] = scopeCloneEntries[req.scope] || writeOpTouchesEntries(req.op)
+	}
+
 	stateCache := make(map[Scope]*scopeWriteState, len(reqs))
 	for _, req := range reqs {
-		state, err := db.loadScopeWriteState(stateCache, req.scope)
+		state, err := db.loadScopeWriteState(stateCache, req.scope, scopeCloneEntries[req.scope])
 		if err != nil {
 			return err
 		}
@@ -103,18 +111,18 @@ func (db *DB) flushWriteRequests(reqs []*writeRequest) error {
 		return err
 	}
 	for scope, state := range stateCache {
-		db.stateCache[scope] = cloneScopeWriteState(*state)
+		db.stateCache[scope] = cloneScopeWriteState(*state, false)
 	}
 	return nil
 }
 
-func (db *DB) loadScopeWriteState(cache map[Scope]*scopeWriteState, scope Scope) (*scopeWriteState, error) {
+func (db *DB) loadScopeWriteState(cache map[Scope]*scopeWriteState, scope Scope, cloneEntries bool) (*scopeWriteState, error) {
 	if state, ok := cache[scope]; ok {
 		return state, nil
 	}
 
 	if cached, ok := db.stateCache[scope]; ok {
-		state := cloneScopeWriteState(cached)
+		state := cloneScopeWriteState(cached, cloneEntries)
 		cache[scope] = &state
 		return &state, nil
 	}
@@ -145,6 +153,15 @@ func (db *DB) loadScopeWriteState(cache map[Scope]*scopeWriteState, scope Scope)
 	}
 	cache[scope] = state
 	return state, nil
+}
+
+func writeOpTouchesEntries(op writeOp) bool {
+	switch typed := op.(type) {
+	case saveOp:
+		return len(typed.state.Entries) > 0 || typed.state.Snapshot != nil
+	default:
+		return false
+	}
 }
 
 func (op saveOp) apply(batch *pebble.Batch, state *scopeWriteState, store *pebbleStore) error {
@@ -241,7 +258,7 @@ func (op markAppliedOp) apply(batch *pebble.Batch, state *scopeWriteState, store
 	return store.setMeta(batch, state.meta)
 }
 
-func cloneScopeWriteState(state scopeWriteState) scopeWriteState {
+func cloneScopeWriteState(state scopeWriteState, cloneEntries bool) scopeWriteState {
 	cloned := scopeWriteState{
 		hardState: state.hardState,
 		snapshot:  cloneSnapshot(state.snapshot),
@@ -255,9 +272,13 @@ func cloneScopeWriteState(state scopeWriteState) scopeWriteState {
 		},
 	}
 	if len(state.entries) > 0 {
-		cloned.entries = make([]raftpb.Entry, len(state.entries))
-		for i, entry := range state.entries {
-			cloned.entries[i] = cloneEntry(entry)
+		if cloneEntries {
+			cloned.entries = make([]raftpb.Entry, len(state.entries))
+			for i, entry := range state.entries {
+				cloned.entries[i] = cloneEntry(entry)
+			}
+		} else {
+			cloned.entries = state.entries
 		}
 	}
 	return cloned

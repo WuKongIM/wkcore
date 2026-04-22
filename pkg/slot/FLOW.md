@@ -111,7 +111,7 @@ Worker 循环:
        - transport.Send(ready.Messages)
        - applyCommittedEntries: 连续 Normal Entry 批量 ApplyBatch (均摊 fsync)
                                 遇到 ConfChange 先 flush 再 ApplyConfChange
-       - storage.MarkApplied(lastApplied)
+       - when `lastApplied` advances, `storage.MarkApplied(lastApplied)`
        - rawNode.Advance(ready)
        - 通过 Future 通知提案者
     ⑥ refreshStatus → 检测 Leader 丢失，清理 pending 提案

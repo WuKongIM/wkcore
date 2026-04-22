@@ -105,6 +105,28 @@ func TestThreeNodeClusterTransfersLeadershipAndReplicatesAgain(t *testing.T) {
 	cluster.waitForAllApplied(t, slotID, []byte("set c=3"))
 }
 
+func TestThreeNodeClusterIdleDoesNotRemarkApplied(t *testing.T) {
+	cluster := newAsyncTestCluster(t, []NodeID{1, 2, 3}, asyncNetworkConfig{
+		MaxDelay: 5 * time.Millisecond,
+		Seed:     4,
+	})
+	slotID := SlotID(103)
+
+	cluster.bootstrapSlot(t, slotID, []NodeID{1, 2, 3})
+	cluster.waitForBootstrapApplied(t, slotID, 3)
+	cluster.waitForLeader(t, slotID)
+
+	before := cluster.markAppliedCounts(slotID)
+	time.Sleep(300 * time.Millisecond)
+	after := cluster.markAppliedCounts(slotID)
+
+	for nodeID, count := range after {
+		if count != before[nodeID] {
+			t.Fatalf("node %d MarkApplied() count = %d, want %d while idle", nodeID, count, before[nodeID])
+		}
+	}
+}
+
 type testCluster struct {
 	mu         sync.RWMutex
 	network    *asyncTestNetwork
@@ -529,6 +551,23 @@ func (c *testCluster) waitForCondition(t testing.TB, fn func() bool) {
 
 	c.requireHealthyNetwork(t)
 	t.Fatal("cluster condition not satisfied before timeout")
+}
+
+func (c *testCluster) markAppliedCounts(slotID SlotID) map[NodeID]int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	counts := make(map[NodeID]int, len(c.stores))
+	for nodeID, slots := range c.stores {
+		store := slots[slotID]
+		if store == nil {
+			continue
+		}
+		store.mu.Lock()
+		counts[nodeID] = store.markAppliedCount
+		store.mu.Unlock()
+	}
+	return counts
 }
 
 func (c *testCluster) requireHealthyNetwork(t testing.TB) {

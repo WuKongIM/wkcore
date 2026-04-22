@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"unsafe"
 
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/cockroachdb/pebble/v2"
@@ -887,6 +888,44 @@ func TestPebbleSameGroupSaveThenMarkAppliedPreservesOrder(t *testing.T) {
 	}
 }
 
+func TestPebbleMarkAppliedMetadataWriteKeepsCachedEntriesBacking(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "raft")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	store := db.ForSlot(52)
+	hs := raftpb.HardState{Term: 2, Commit: 4}
+	if err := store.Save(ctx, multiraft.PersistentState{
+		HardState: &hs,
+		Entries:   benchEntries(1, 4, 2, 16),
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	scope := SlotScope(52)
+	before := cachedEntriesBackingPtr(db.stateCache[scope].entries)
+	if before == 0 {
+		t.Fatal("cached entries backing pointer = 0")
+	}
+
+	if err := store.MarkApplied(ctx, 4); err != nil {
+		t.Fatalf("MarkApplied() error = %v", err)
+	}
+
+	after := cachedEntriesBackingPtr(db.stateCache[scope].entries)
+	if after != before {
+		t.Fatalf("cached entries backing changed after metadata-only MarkApplied(): got %x want %x", after, before)
+	}
+}
+
 func TestPebbleMetadataTracksTailReplaceAndSnapshotTrim(t *testing.T) {
 	ctx := context.Background()
 	store := openTestPebbleStore(t, 52)
@@ -921,6 +960,13 @@ func TestPebbleMetadataTracksTailReplaceAndSnapshotTrim(t *testing.T) {
 	if first != 9 || last != 9 {
 		t.Fatalf("FirstIndex()/LastIndex() = %d/%d, want 9/9", first, last)
 	}
+}
+
+func cachedEntriesBackingPtr(entries []raftpb.Entry) uintptr {
+	if len(entries) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(unsafe.SliceData(entries)))
 }
 
 func TestPebbleReturnsClonedData(t *testing.T) {
