@@ -245,3 +245,7 @@ func (f *fakeNodeOperatorCluster) ResumeNode(_ context.Context, nodeID uint64) e
 	}
 	return controllermeta.ErrNotFound
 }
+
+func (f *fakeNodeOperatorCluster) TransferSlotLeader(context.Context, uint32, multiraft.NodeID) error {
+	return nil
+}

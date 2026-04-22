@@ -31,6 +31,8 @@ type ClusterReader interface {
 	MarkNodeDraining(ctx context.Context, nodeID uint64) error
 	// ResumeNode marks a node back to alive through the controller leader.
 	ResumeNode(ctx context.Context, nodeID uint64) error
+	// TransferSlotLeader transfers one slot leader to the target node.
+	TransferSlotLeader(ctx context.Context, slotID uint32, nodeID multiraft.NodeID) error
 	ControllerLeaderID() uint64
 }
 

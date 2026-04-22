@@ -134,6 +134,7 @@ type fakeClusterReader struct {
 	getTaskErr                  error
 	markNodeDrainingErr         error
 	resumeNodeErr               error
+	transferSlotLeaderErr       error
 }
 
 func (f fakeClusterReader) SlotIDs() []multiraft.SlotID {
@@ -184,6 +185,10 @@ func (f fakeClusterReader) MarkNodeDraining(context.Context, uint64) error {
 
 func (f fakeClusterReader) ResumeNode(context.Context, uint64) error {
 	return f.resumeNodeErr
+}
+
+func (f fakeClusterReader) TransferSlotLeader(context.Context, uint32, multiraft.NodeID) error {
+	return f.transferSlotLeaderErr
 }
 
 type nodeSummary struct {
