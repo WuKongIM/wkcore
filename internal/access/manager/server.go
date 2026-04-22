@@ -22,6 +22,10 @@ type Management interface {
 	ListNodes(ctx context.Context) ([]managementusecase.Node, error)
 	// GetNode returns one manager-facing node detail DTO.
 	GetNode(ctx context.Context, nodeID uint64) (managementusecase.NodeDetail, error)
+	// MarkNodeDraining marks a node as draining and returns the latest detail DTO.
+	MarkNodeDraining(ctx context.Context, nodeID uint64) (managementusecase.NodeDetail, error)
+	// ResumeNode marks a node as alive and returns the latest detail DTO.
+	ResumeNode(ctx context.Context, nodeID uint64) (managementusecase.NodeDetail, error)
 	// ListSlots returns manager-facing slot DTOs.
 	ListSlots(ctx context.Context) ([]managementusecase.Slot, error)
 	// GetSlot returns one manager-facing slot detail DTO.
