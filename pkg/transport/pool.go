@@ -31,7 +31,7 @@ type Pool struct {
 }
 
 type nodeConnSet struct {
-	addr  string
+	addr  atomic.Value
 	slots []*connSlot
 	conns []atomic.Pointer[MuxConn]
 }
@@ -171,11 +171,18 @@ func (p *Pool) acquire(nodeID NodeID, shardKey uint64) (*MuxConn, error) {
 		slot.ready = ready
 		slot.mu.Unlock()
 
+		addr, resolveErr := p.cfg.Discovery.Resolve(nodeID)
+		if resolveErr != nil {
+			slot.finishDial(nil, resolveErr, ready)
+			return nil, resolveErr
+		}
+		set.addr.Store(addr)
+
 		dial := p.cfg.Dial
 		if dial == nil {
 			dial = net.DialTimeout
 		}
-		raw, dialErr := dial("tcp", set.addr, p.cfg.DialTimeout)
+		raw, dialErr := dial("tcp", addr, p.cfg.DialTimeout)
 		if dialErr != nil {
 			slot.finishDial(nil, dialErr, ready)
 			return nil, dialErr
@@ -198,10 +205,10 @@ func (p *Pool) getOrCreateNodeSet(nodeID NodeID) (*nodeConnSet, error) {
 	}
 
 	created := &nodeConnSet{
-		addr:  addr,
 		slots: make([]*connSlot, p.cfg.Size),
 		conns: make([]atomic.Pointer[MuxConn], p.cfg.Size),
 	}
+	created.addr.Store(addr)
 	for i := range created.slots {
 		created.slots[i] = &connSlot{mirror: &created.conns[i]}
 	}

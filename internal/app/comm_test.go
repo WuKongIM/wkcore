@@ -340,6 +340,48 @@ func TestThreeNodeAppHarnessUsesSendPathTuning(t *testing.T) {
 	}
 }
 
+func TestThreeNodeAppHarnessRestartNodeRestartsClusterTransportOnConfiguredAddr(t *testing.T) {
+	harness := newThreeNodeAppHarness(t)
+	const nodeID = uint64(3)
+
+	wantAddr := harness.specs[nodeID].cfg.Cluster.ListenAddr
+	harness.stopNode(t, nodeID)
+
+	app := harness.restartNode(t, nodeID)
+	server := app.Cluster().Server()
+	require.NotNil(t, server)
+	require.NotNil(t, server.Listener())
+	require.Equal(t, wantAddr, server.Listener().Addr().String())
+
+	conn, err := net.DialTimeout("tcp", wantAddr, time.Second)
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+}
+
+func TestThreeNodeAppHarnessRestartedFormerLeaderAcceptsClusterDialsAfterLeaderChange(t *testing.T) {
+	harness := newThreeNodeAppHarness(t)
+
+	leaderID := harness.waitForStableLeader(t, 1)
+	wantAddr := harness.specs[leaderID].cfg.Cluster.ListenAddr
+
+	harness.stopNode(t, leaderID)
+	newLeaderID := harness.waitForLeaderChange(t, 1, leaderID)
+	harness.restartNode(t, leaderID)
+
+	addr, err := harness.apps[newLeaderID].Cluster().Discovery().Resolve(leaderID)
+	require.NoError(t, err)
+	require.Equal(t, wantAddr, addr)
+
+	require.Eventually(t, func() bool {
+		conn, err := net.DialTimeout("tcp", wantAddr, 100*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}, 5*time.Second, 50*time.Millisecond)
+}
+
 func (h *threeNodeAppHarness) runningApps() []*App {
 	apps := make([]*App, 0, len(h.apps))
 	for _, nodeID := range []uint64{1, 2, 3} {

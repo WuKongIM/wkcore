@@ -1912,6 +1912,56 @@ func TestRuntimeStartsLeaderReconcileProbeWhenCommitNotReady(t *testing.T) {
 	t.Fatal("expected runtime to start a leader reconcile probe while commit-ready is false")
 }
 
+func TestRuntimeLeaderSchedulesWakeUpProbeForColdFollower(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.LongPollLaneCount = 4
+		cfg.LongPollMaxWait = time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+	})
+	meta := testMetaLocal(257, 4, 1, []core.NodeID{1, 2})
+	mustEnsureLocal(t, env.runtime, meta)
+
+	handle, ok := env.runtime.Channel(meta.Key)
+	if !ok {
+		t.Fatalf("Channel(%q) not found", meta.Key)
+	}
+
+	_, err := handle.Append(context.Background(), []core.Record{
+		{Payload: []byte("wake"), SizeBytes: len("wake")},
+	})
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	env.runtime.runScheduler()
+
+	session := env.sessions.session(2)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected one wake-up probe send, got %d", got)
+	}
+	if session.last.Kind != MessageKindReconcileProbeRequest {
+		t.Fatalf("last kind = %v, want reconcile probe request", session.last.Kind)
+	}
+	if session.last.ReconcileProbeRequest == nil {
+		t.Fatal("expected reconcile probe payload")
+	}
+
+	_, err = handle.Append(context.Background(), []core.Record{
+		{Payload: []byte("wake-again"), SizeBytes: len("wake-again")},
+	})
+	if err != nil {
+		t.Fatalf("second Append() error = %v", err)
+	}
+	env.runtime.runScheduler()
+
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected wake-up probe dedupe to keep one outstanding send, got %d", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 0 {
+		t.Fatalf("expected wake-up probe dedupe to avoid queued duplicates, got %d", got)
+	}
+}
+
 func TestSessionFetchFailureEnvelopeReleasesInflightAndRetriesReplication(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.AutoRunScheduler = true

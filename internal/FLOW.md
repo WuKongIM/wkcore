@@ -131,7 +131,7 @@ New(Config):
 Start():
   ① startCluster → cluster.Start()
   ② waitForManagedSlotsReady (超时 10s)
-  ③ startChannelMetaSync → channelMetaSync.Start()
+  ③ startChannelMetaSync → channelMetaSync.Start()（启动轻量 active-slot leader watcher；不再做全量 channel runtime meta scan）
   ④ startPresence → presenceWorker.Start()
   ⑤ startConversationProjector → conversationProjector.Start()
   ⑥ startGateway → gateway.Start()
@@ -404,7 +404,8 @@ handleRecvAck(ctx, pkt):
 - **Person 频道 ID 规范化**: 发送到 Person 频道时，`NormalizePersonChannel(fromUID, channelID)` 会将两个 UID 排序拼接为统一的 channelID。直接使用原始 channelID 会导致同一对话产生两个不同的 Channel。
 - **sendWithMetaRefreshRetry 只解决路由/权威元数据一致性**: 消息 Append 遇到 `ErrStaleMeta`、`ErrNotLeader` 或 `ErrRerouted` 时会触发一次刷新重试。若权威 `ChannelRuntimeMeta` 读到 `ErrNotFound`，刷新路径会先按 Slot 拓扑 bootstrap 缺失的运行时元数据；若读到的权威元数据 lease 已过期/即将过期，或 leader / replicas 已落后于当前 Slot 拓扑，则会先做一次权威 reconcile，再重新读取权威结果、应用到本地 ISR runtime，然后只重试一次 Append。重试后的本地 `Append` 若发现当前节点只是 Follower，会按最新 meta 中的 Leader 走 node RPC 转发。
 - **权威 runtime-meta reconcile ≠ replica reconcile**: `channelMetaSync` / `sendWithMetaRefreshRetry` 里的 reconcile 负责把权威 `ChannelRuntimeMeta` 与 Slot 拓扑、lease 对齐；`pkg/channel` 里的 replica reconcile probe 则负责在启动或 leader transfer 后重建 quorum-safe `CommitHW`，把副本从 `CommitReady=false` 拉到可服务状态。前者解决“该写到谁”，后者解决“现在是否安全可写”。
-- **channelMetaSync 不只是被动 apply**: `syncOnce()` 除了把权威 `ChannelRuntimeMeta` 投影到本地 ISR runtime，还会对本节点参与副本的 channel 做一次权威 reconcile：当 lease 即将过期，或 leader / replicas / ISR / MinISR 落后于当前 Slot 拓扑时，就先续租并对齐权威元数据，减少 idle channel 因 lease 过期而首次写失败。
+- **channelMetaSync 不再做每秒全量 scan**: steady-state 不再 `ListChannelRuntimeMeta()` 预热本地所有副本频道；业务路径按 `ChannelID` 激活，复制路径按 `ChannelKey` 激活，只保留热 runtime。
+- **active-slot leader watcher 只盯热 slot**: `channelMetaSync.Start()` 现在只轮询当前热本地 runtime 所在的 physical slot leader；检测到 slot leader 变化后，仅刷新该 slot 下已激活 channel 的权威 `ChannelRuntimeMeta`，把 leader / replicas / ISR / lease 对齐到当前 Slot 拓扑。
 - **runtime-meta bootstrap / reconcile 只依赖拓扑**: runtime-meta 的 bootstrap 与后续 reconcile 都仅依赖 `SlotForKey`、Slot peers 和当前 Slot leader，不依赖业务 `channel-info` 是否存在。通用读路径仍保持纯读取语义，写路径和主动同步路径负责把权威运行时元数据补齐并续租。
 - **asyncCommittedDispatcher 的 preferLocal**: 已提交消息优先在本地节点投递。如果本节点不是 Channel Leader，会通过 nodeClient RPC 转发。这避免了所有投递都经过 Leader 的瓶颈。
 - **投递 Actor 按 Channel 隔离**: 每个 Channel 有独立的 Actor，通过 shard 分片减少锁竞争。Actor 空闲超过 1 分钟会被回收。

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,6 +20,27 @@ func (d staticDiscovery) Resolve(nodeID NodeID) (string, error) {
 		return "", ErrNodeNotFound
 	}
 	return addr, nil
+}
+
+type mutableDiscovery struct {
+	mu    sync.RWMutex
+	addrs map[NodeID]string
+}
+
+func (d *mutableDiscovery) Resolve(nodeID NodeID) (string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	addr, ok := d.addrs[nodeID]
+	if !ok {
+		return "", ErrNodeNotFound
+	}
+	return addr, nil
+}
+
+func (d *mutableDiscovery) Set(nodeID NodeID, addr string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.addrs[nodeID] = addr
 }
 
 func TestPoolSendDeliversMessage(t *testing.T) {
@@ -509,6 +531,235 @@ func TestPoolAcquireClosedSlotTriggersSingleRewarm(t *testing.T) {
 
 	_ = rewarmLn.Close()
 	<-rewarmDone
+}
+
+func TestPoolAcquireClosedSlotRefreshesDiscoveryAddressAfterRestart(t *testing.T) {
+	oldLn := mustListenOnAddr(t, reserveTCPAddr(t))
+	defer oldLn.Close()
+
+	oldAccepted := make(chan struct{}, 1)
+	go func() {
+		conn, err := oldLn.Accept()
+		if err != nil {
+			return
+		}
+		oldAccepted <- struct{}{}
+		drainConn(conn)
+	}()
+
+	newLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer newLn.Close()
+
+	newAccepted := make(chan struct{}, 1)
+	go func() {
+		conn, err := newLn.Accept()
+		if err != nil {
+			return
+		}
+		newAccepted <- struct{}{}
+		drainConn(conn)
+	}()
+
+	discovery := &mutableDiscovery{addrs: map[NodeID]string{2: oldLn.Addr().String()}}
+	pool := NewPool(PoolConfig{
+		Discovery:   discovery,
+		Size:        1,
+		DialTimeout: time.Second,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRaft,
+	})
+	defer pool.Close()
+
+	mc, err := pool.acquire(2, 0)
+	if err != nil {
+		t.Fatalf("initial acquire error = %v", err)
+	}
+	select {
+	case <-oldAccepted:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for old listener accept")
+	}
+
+	discovery.Set(2, newLn.Addr().String())
+	if err := oldLn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	mc.Close()
+
+	rewarmed, err := pool.acquire(2, 0)
+	if err != nil {
+		t.Fatalf("acquire after restart error = %v, want redial using refreshed discovery address", err)
+	}
+	if rewarmed == mc {
+		t.Fatal("acquire after restart reused closed connection")
+	}
+	select {
+	case <-newAccepted:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for new listener accept")
+	}
+}
+
+func TestPoolSendRecoversAfterPeerRestartOnSameAddress(t *testing.T) {
+	addr := reserveTCPAddr(t)
+	firstLn := mustListenOnAddr(t, addr)
+
+	firstAccepted := make(chan net.Conn, 1)
+	firstReceived := make(chan []byte, 1)
+	go func() {
+		conn, err := firstLn.Accept()
+		if err != nil {
+			return
+		}
+		firstAccepted <- conn
+		msgType, body, release, err := readFrame(conn)
+		if err == nil && msgType == 1 {
+			firstReceived <- append([]byte(nil), body...)
+			release()
+		}
+	}()
+
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: addr}},
+		Size:        1,
+		DialTimeout: time.Second,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRaft,
+	})
+	defer pool.Close()
+
+	if err := pool.Send(2, 0, 1, []byte("first")); err != nil {
+		t.Fatalf("first Send() error = %v", err)
+	}
+	select {
+	case body := <-firstReceived:
+		if string(body) != "first" {
+			t.Fatalf("first body = %q, want %q", body, "first")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for first send")
+	}
+
+	var firstConn net.Conn
+	select {
+	case firstConn = <-firstAccepted:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for first accept")
+	}
+	if err := firstLn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := firstConn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	secondLn := mustListenOnAddr(t, addr)
+	defer secondLn.Close()
+
+	secondReceived := make(chan []byte, 1)
+	go func() {
+		conn, err := secondLn.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		msgType, body, release, err := readFrame(conn)
+		if err == nil && msgType == 1 {
+			secondReceived <- append([]byte(nil), body...)
+			release()
+		}
+	}()
+
+	requireEventually(t, func() bool {
+		if err := pool.Send(2, 0, 1, []byte("second")); err != nil {
+			return false
+		}
+		select {
+		case body := <-secondReceived:
+			return string(body) == "second"
+		default:
+			return false
+		}
+	})
+}
+
+func TestPoolSendRecoversAfterRepeatedDialFailuresOnSameAddress(t *testing.T) {
+	addr := reserveTCPAddr(t)
+	firstLn := mustListenOnAddr(t, addr)
+
+	firstAccepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := firstLn.Accept()
+		if err != nil {
+			return
+		}
+		firstAccepted <- conn
+		drainConn(conn)
+	}()
+
+	pool := NewPool(PoolConfig{
+		Discovery:   staticDiscovery{addrs: map[NodeID]string{2: addr}},
+		Size:        1,
+		DialTimeout: 50 * time.Millisecond,
+		QueueSizes:  [numPriorities]int{4, 4, 4},
+		DefaultPri:  PriorityRaft,
+	})
+	defer pool.Close()
+
+	if err := pool.Send(2, 0, 1, []byte("first")); err != nil {
+		t.Fatalf("first Send() error = %v", err)
+	}
+
+	var firstConn net.Conn
+	select {
+	case firstConn = <-firstAccepted:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for first accept")
+	}
+	if err := firstLn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := firstConn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		_ = pool.Send(2, 0, 1, []byte("during-downtime"))
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	secondLn := mustListenOnAddr(t, addr)
+	defer secondLn.Close()
+
+	secondReceived := make(chan []byte, 1)
+	go func() {
+		conn, err := secondLn.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		msgType, body, release, err := readFrame(conn)
+		if err == nil && msgType == 1 {
+			secondReceived <- append([]byte(nil), body...)
+			release()
+		}
+	}()
+
+	requireEventually(t, func() bool {
+		if err := pool.Send(2, 0, 1, []byte("after-restart")); err != nil {
+			return false
+		}
+		select {
+		case body := <-secondReceived:
+			return string(body) == "after-restart"
+		default:
+			return false
+		}
+	})
 }
 
 func TestPoolCloseFailsPendingRPC(t *testing.T) {

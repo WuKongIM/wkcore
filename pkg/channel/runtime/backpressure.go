@@ -109,6 +109,13 @@ func (s *peerRequestState) releaseChannel(key core.ChannelKey, peer core.NodeID)
 	delete(s.groups, channelPeerKey{channelKey: key, peer: peer})
 }
 
+func (s *peerRequestState) hasChannelInflight(key core.ChannelKey, peer core.NodeID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.groups[channelPeerKey{channelKey: key, peer: peer}]
+	return ok
+}
+
 func (s *peerRequestState) clearChannel(key core.ChannelKey) []core.NodeID {
 	s.mu.Lock()
 	defer s.mu.Unlock()

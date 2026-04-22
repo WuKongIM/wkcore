@@ -94,11 +94,20 @@ func build(cfg Config) (_ *App, err error) {
 
 	clusterCfg := cfg.Cluster.runtimeConfig(cfg.Storage, app.db, app.raftDB, cfg.Node.ID, app.logger.Named("cluster"))
 	var transportObserver transport.ObserverHooks
+	clusterObserver := raftcluster.ObserverHooks{
+		OnLeaderChange: func(slotID uint32, _, _ multiraft.NodeID) {
+			if app.channelMetaSync == nil {
+				return
+			}
+			app.channelMetaSync.scheduleSlotLeaderRefresh(multiraft.SlotID(slotID))
+		},
+	}
 	if app.metrics != nil {
-		clusterCfg.Observer = clusterMetricsObserver{metrics: app.metrics}.Hooks()
+		clusterObserver = mergeClusterObserverHooks(clusterObserver, clusterMetricsObserver{metrics: app.metrics}.Hooks())
 		transportObserver = transportMetricsObserver{metrics: app.metrics}.Hooks()
 		clusterCfg.TransportObserver = transportObserver
 	}
+	clusterCfg.Observer = clusterObserver
 	app.cluster, err = raftcluster.NewCluster(clusterCfg)
 	if err != nil {
 		return nil, fmt.Errorf("app: create cluster: %w", err)
@@ -891,4 +900,73 @@ func (r presenceRouter) SlotForKey(key string) uint64 {
 		return 0
 	}
 	return uint64(r.cluster.SlotForKey(key))
+}
+
+func mergeClusterObserverHooks(left, right raftcluster.ObserverHooks) raftcluster.ObserverHooks {
+	return raftcluster.ObserverHooks{
+		OnControllerCall: func(kind string, dur time.Duration, err error) {
+			if left.OnControllerCall != nil {
+				left.OnControllerCall(kind, dur, err)
+			}
+			if right.OnControllerCall != nil {
+				right.OnControllerCall(kind, dur, err)
+			}
+		},
+		OnControllerDecision: func(slotID uint32, kind string, dur time.Duration) {
+			if left.OnControllerDecision != nil {
+				left.OnControllerDecision(slotID, kind, dur)
+			}
+			if right.OnControllerDecision != nil {
+				right.OnControllerDecision(slotID, kind, dur)
+			}
+		},
+		OnReconcileStep: func(slotID uint32, step string, dur time.Duration, err error) {
+			if left.OnReconcileStep != nil {
+				left.OnReconcileStep(slotID, step, dur, err)
+			}
+			if right.OnReconcileStep != nil {
+				right.OnReconcileStep(slotID, step, dur, err)
+			}
+		},
+		OnForwardPropose: func(slotID uint32, attempts int, dur time.Duration, err error) {
+			if left.OnForwardPropose != nil {
+				left.OnForwardPropose(slotID, attempts, dur, err)
+			}
+			if right.OnForwardPropose != nil {
+				right.OnForwardPropose(slotID, attempts, dur, err)
+			}
+		},
+		OnSlotEnsure: func(slotID uint32, action string, err error) {
+			if left.OnSlotEnsure != nil {
+				left.OnSlotEnsure(slotID, action, err)
+			}
+			if right.OnSlotEnsure != nil {
+				right.OnSlotEnsure(slotID, action, err)
+			}
+		},
+		OnTaskResult: func(slotID uint32, kind string, result string) {
+			if left.OnTaskResult != nil {
+				left.OnTaskResult(slotID, kind, result)
+			}
+			if right.OnTaskResult != nil {
+				right.OnTaskResult(slotID, kind, result)
+			}
+		},
+		OnHashSlotMigration: func(hashSlot uint16, source, target multiraft.SlotID, result string) {
+			if left.OnHashSlotMigration != nil {
+				left.OnHashSlotMigration(hashSlot, source, target, result)
+			}
+			if right.OnHashSlotMigration != nil {
+				right.OnHashSlotMigration(hashSlot, source, target, result)
+			}
+		},
+		OnLeaderChange: func(slotID uint32, from, to multiraft.NodeID) {
+			if left.OnLeaderChange != nil {
+				left.OnLeaderChange(slotID, from, to)
+			}
+			if right.OnLeaderChange != nil {
+				right.OnLeaderChange(slotID, from, to)
+			}
+		},
+	}
 }

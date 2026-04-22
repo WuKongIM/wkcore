@@ -96,10 +96,7 @@ func (s *channelMetaSync) applyAuthoritativeMeta(meta metadb.ChannelRuntimeMeta)
 			return channel.Meta{}, err
 		}
 		s.mu.Lock()
-		if s.appliedLocal == nil {
-			s.appliedLocal = make(map[channel.ChannelKey]struct{})
-		}
-		s.appliedLocal[rootMeta.Key] = struct{}{}
+		s.trackAppliedLocalKeyLocked(rootMeta.Key)
 		s.mu.Unlock()
 		return rootMeta, nil
 	}
