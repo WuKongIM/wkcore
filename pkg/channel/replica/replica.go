@@ -56,6 +56,7 @@ type replica struct {
 	probeSource         ReconcileProbeSource
 	now                 func() time.Time
 	onLeaderLocalAppend func()
+	onLeaderHWAdvance   func()
 	logger              wklog.Logger
 
 	meta         channel.Meta
@@ -179,6 +180,12 @@ func (r *replica) SetLeaderLocalAppendNotifier(fn func()) {
 	r.mu.Unlock()
 }
 
+func (r *replica) SetLeaderHWAdvanceNotifier(fn func()) {
+	r.mu.Lock()
+	r.onLeaderHWAdvance = fn
+	r.mu.Unlock()
+}
+
 func (r *replica) ApplyMeta(meta channel.Meta) error {
 	r.appendMu.Lock()
 	defer r.appendMu.Unlock()
@@ -250,8 +257,9 @@ func (r *replica) BecomeLeader(meta channel.Meta) error {
 	r.state.LEO = leo
 	r.state.OffsetEpoch = offsetEpochForLEO(r.epochHistory, leo)
 	r.seedLeaderProgressLocked(normalized.ISR, leo, r.state.HW)
+	needsLeaderReconcile := r.needsLeaderReconcileLocked()
 	r.beginLeaderReconcileLocked()
-	needsLocalReconcile := !r.state.CommitReady && len(r.reconcilePending) == 0
+	needsLocalReconcile := needsLeaderReconcile && len(r.reconcilePending) == 0
 	if !r.now().Before(normalized.LeaseUntil) {
 		r.state.Role = channel.ReplicaRoleFencedLeader
 		r.publishStateLocked()
@@ -261,7 +269,7 @@ func (r *replica) BecomeLeader(meta channel.Meta) error {
 	}
 	r.publishStateLocked()
 	probeSource := r.probeSource
-	needsReconcile := !r.state.CommitReady && probeSource != nil
+	needsReconcile := needsLeaderReconcile && probeSource != nil
 	r.mu.Unlock()
 	r.appendMu.Unlock()
 	if needsLocalReconcile {

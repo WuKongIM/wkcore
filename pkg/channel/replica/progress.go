@@ -64,6 +64,7 @@ func (r *replica) advanceHWOnce() (bool, uint64, error) {
 	r.advanceMu.Lock()
 	defer r.advanceMu.Unlock()
 
+	var notifyLeaderHWAdvance func()
 	r.mu.Lock()
 	checkpoint, candidate, err := r.nextHWCheckpointLocked()
 	if err != nil || checkpoint == nil {
@@ -83,7 +84,11 @@ func (r *replica) advanceHWOnce() (bool, uint64, error) {
 	r.notifyReadyWaitersLocked()
 	r.scheduleCheckpointLocked(*checkpoint)
 	r.publishStateLocked()
+	notifyLeaderHWAdvance = r.onLeaderHWAdvance
 	r.mu.Unlock()
+	if notifyLeaderHWAdvance != nil {
+		notifyLeaderHWAdvance()
+	}
 	return true, candidate, nil
 }
 

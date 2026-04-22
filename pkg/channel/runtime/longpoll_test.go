@@ -186,6 +186,111 @@ func TestRuntimeLongPollLeaderAppendWakesParkedLanePoll(t *testing.T) {
 	}
 }
 
+func TestRuntimeLongPollLeaderCommitAdvanceWakesParkedLanePollWithHWOnly(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.LongPollLaneCount = 4
+		cfg.LongPollMaxWait = 150 * time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+	})
+	meta := testMetaLocal(27031, 4, 1, []core.NodeID{1, 2})
+	mustEnsureLocal(t, env.runtime, meta)
+
+	replica := env.factory.replicas[0]
+	replica.mu.Lock()
+	replica.state.LEO = 1
+	replica.state.HW = 0
+	replica.fetchResult = core.ReplicaFetchResult{
+		HW: 0,
+		Records: []core.Record{
+			{Payload: []byte("wake"), SizeBytes: len("wake")},
+		},
+	}
+	replica.mu.Unlock()
+
+	laneID := testFollowerLaneFor(meta.Key, 4)
+	openResp, err := env.runtime.ServeLanePoll(context.Background(), LanePollRequestEnvelope{
+		ReplicaID:   2,
+		LaneID:      laneID,
+		LaneCount:   4,
+		Op:          LanePollOpOpen,
+		MaxWait:     time.Millisecond,
+		MaxBytes:    64 * 1024,
+		MaxChannels: 64,
+		FullMembership: []LaneMembership{
+			{ChannelKey: meta.Key, ChannelEpoch: meta.Epoch},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, LanePollStatusOK, openResp.Status)
+	require.Len(t, openResp.Items, 1)
+	require.Equal(t, LanePollItemFlagData, openResp.Items[0].Flags)
+	require.Equal(t, uint64(0), openResp.Items[0].LeaderHW)
+
+	session, ok := env.runtime.leaderLanes.Session(PeerLaneKey{Peer: 2, LaneID: laneID})
+	require.True(t, ok)
+	session.mu.Lock()
+	session.cursor[meta.Key] = LaneCursorDelta{
+		ChannelKey:   meta.Key,
+		ChannelEpoch: meta.Epoch,
+		MatchOffset:  1,
+		OffsetEpoch:  meta.Epoch,
+	}
+	session.mu.Unlock()
+
+	replica.mu.Lock()
+	replica.fetchResult = core.ReplicaFetchResult{HW: 1}
+	replica.mu.Unlock()
+
+	respCh := make(chan struct {
+		resp LanePollResponseEnvelope
+		err  error
+	}, 1)
+	go func() {
+		resp, err := env.runtime.ServeLanePoll(context.Background(), LanePollRequestEnvelope{
+			ReplicaID:    2,
+			LaneID:       laneID,
+			LaneCount:    4,
+			SessionID:    openResp.SessionID,
+			SessionEpoch: openResp.SessionEpoch,
+			Op:           LanePollOpPoll,
+			MaxWait:      150 * time.Millisecond,
+			MaxBytes:     64 * 1024,
+			MaxChannels:  64,
+		})
+		respCh <- struct {
+			resp LanePollResponseEnvelope
+			err  error
+		}{resp: resp, err: err}
+	}()
+
+	require.Eventually(t, func() bool {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		return session.parked != nil
+	}, time.Second, time.Millisecond)
+
+	require.NoError(t, replica.ApplyProgressAck(context.Background(), core.ReplicaProgressAckRequest{
+		ChannelKey:  meta.Key,
+		Epoch:       meta.Epoch,
+		ReplicaID:   2,
+		MatchOffset: 1,
+	}))
+
+	select {
+	case got := <-respCh:
+		require.NoError(t, got.err)
+		require.False(t, got.resp.TimedOut)
+		require.Len(t, got.resp.Items, 1)
+		require.Equal(t, meta.Key, got.resp.Items[0].ChannelKey)
+		require.Equal(t, LanePollItemFlagHWOnly, got.resp.Items[0].Flags)
+		require.Equal(t, uint64(1), got.resp.Items[0].LeaderHW)
+		require.Empty(t, got.resp.Items[0].Records)
+	case <-time.After(time.Second):
+		t.Fatal("expected parked long poll to wake after leader commit advance")
+	}
+}
+
 func TestRuntimeLongPollInitialOpenReturnsAlreadyAppendedData(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.LongPollLaneCount = 4

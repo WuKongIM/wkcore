@@ -2443,6 +2443,7 @@ type sessionReplica struct {
 	mu                    sync.Mutex
 	state                 core.ReplicaState
 	onStateChange         func()
+	onLeaderHWAdvance     func()
 	applyFetchCalls       int
 	lastApplyFetch        core.ReplicaApplyFetchRequest
 	applyFetchErr         error
@@ -2523,6 +2524,13 @@ func (r *sessionReplica) notifyStateChange() {
 		r.onStateChange()
 	}
 }
+
+func (r *sessionReplica) SetLeaderHWAdvanceNotifier(fn func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onLeaderHWAdvance = fn
+}
+
 func (r *sessionReplica) ApplyFetch(ctx context.Context, req core.ReplicaApplyFetchRequest) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -2531,11 +2539,24 @@ func (r *sessionReplica) ApplyFetch(ctx context.Context, req core.ReplicaApplyFe
 	return r.applyFetchErr
 }
 func (r *sessionReplica) ApplyProgressAck(ctx context.Context, req core.ReplicaProgressAckRequest) error {
+	var notify func()
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.applyProgressAckCalls++
 	r.lastProgressAck = req
-	return r.applyProgressAckErr
+	if r.applyProgressAckErr != nil {
+		err := r.applyProgressAckErr
+		r.mu.Unlock()
+		return err
+	}
+	if req.MatchOffset > r.state.HW {
+		r.state.HW = req.MatchOffset
+		notify = r.onLeaderHWAdvance
+	}
+	r.mu.Unlock()
+	if notify != nil {
+		notify()
+	}
+	return nil
 }
 func (r *sessionReplica) ApplyReconcileProof(ctx context.Context, proof core.ReplicaReconcileProof) error {
 	r.mu.Lock()

@@ -7,7 +7,12 @@ import (
 )
 
 func (r *replica) beginLeaderReconcileLocked() {
-	if r.state.CommitReady {
+	if !r.needsLeaderReconcileLocked() {
+		r.reconcilePending = nil
+		return
+	}
+	r.state.CommitReady = false
+	if !r.needsLeaderProofsLocked() {
 		r.reconcilePending = nil
 		return
 	}
@@ -20,6 +25,20 @@ func (r *replica) beginLeaderReconcileLocked() {
 		pending[id] = struct{}{}
 	}
 	r.reconcilePending = pending
+}
+
+func (r *replica) needsLeaderReconcileLocked() bool {
+	if !r.state.CommitReady {
+		return true
+	}
+	if r.state.LEO > r.state.HW {
+		return true
+	}
+	return r.state.CheckpointHW < r.state.HW
+}
+
+func (r *replica) needsLeaderProofsLocked() bool {
+	return r.state.LEO > r.state.HW
 }
 
 func (r *replica) runConfiguredLeaderReconcile(ctx context.Context, meta channel.Meta, source ReconcileProbeSource) error {
@@ -72,7 +91,7 @@ func (r *replica) ApplyReconcileProof(_ context.Context, proof channel.ReplicaRe
 		return nil
 	}
 	delete(r.reconcilePending, proof.ReplicaID)
-	if len(r.reconcilePending) != 0 {
+	if len(r.reconcilePending) != 0 && !r.localTailFullyProvenLocked() {
 		r.publishStateLocked()
 		return nil
 	}
@@ -123,6 +142,17 @@ func (r *replica) completeLeaderReconcileLocked() error {
 	r.reconcilePending = nil
 	r.publishStateLocked()
 	return nil
+}
+
+func (r *replica) localTailFullyProvenLocked() bool {
+	if r.state.LEO <= r.state.HW {
+		return true
+	}
+	checkpoint, candidate, err := r.nextHWCheckpointLocked()
+	if err != nil || checkpoint == nil {
+		return false
+	}
+	return candidate == r.state.LEO
 }
 
 func (r *replica) reconcileMatchOffsetLocked(proof channel.ReplicaReconcileProof) (uint64, error) {

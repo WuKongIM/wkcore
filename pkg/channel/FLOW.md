@@ -171,6 +171,7 @@ Idempotency (0x14): prefix + key + fromUID + msgNo — 幂等条目
 - **Lease 过期自动降级**: Leader Lease 过期后自动变为 FencedLeader，拒绝所有写入但不影响读取。见 `replica/append.go:appendableLocked`。
 - **Cross-channel durable batching**: `store/commit.go` 使用 200µs 窗口跨频道合并 Pebble durable 写入；Leader 的 synced Append 和 Follower 的 ApplyFetch 都走同一个 coordinator。单频道的 `writeMu` 仍然串行，且 sync 完成前不会发布新的 LEO。
 - **Checkpoint 不再阻塞 sendack**: leader 在 quorum commit 后先完成 Append waiter，Checkpoint 持久化走后台 coalescing；若 checkpoint 写盘长期失败，当前实现还缺少显式 health / metrics 暴露。
+- **leader reconcile 先区分“需要 peer 证明”与“只差本地 checkpoint”**: 若 leader transfer 后只是 `CheckpointHW < HW`、本地没有 `LEO > HW` 的 provisional tail，则会直接做本地 reconcile，不等待 peer probe；若已经拿到足以证明本地 tail 全量 quorum-safe 的 proof，也不会继续卡在离线 ISR peer 上。
 - **Transport RPC 分片**: steady-state lane poll 按 `laneID` 路由，保证同一 `(peer,lane)` 有序；辅助 `Fetch` / `ReconcileProbe` 继续按 FNV-64a(ChannelKey) 路由。见 `transport/session.go`。
 - **Leader lane session 是固定规模资源**: ready queue / parked waiter 的规模与 `peer * laneCount` 成正比，不会退化成 per-channel timer / goroutine。
 - **复制 ingress 允许一次按 key 激活重试**: `ServeFetch` / `ServeReconcileProbe` 遇到 runtime miss 时会先走 activator 按 `ChannelKey` 拉权威 meta、确保本地 runtime，再重试一次；它不是后台全量预热。

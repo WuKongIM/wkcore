@@ -131,7 +131,7 @@ func (r *runtime) processReplication(key core.ChannelKey) {
 }
 
 func (r *runtime) processLeaderLongPoll(ch *channel, meta core.Meta) {
-	r.markLeaderLaneReady(ch)
+	r.markLeaderLaneReady(ch, laneReadyData)
 
 	state := ch.Status()
 	var failedPeers []core.NodeID
@@ -185,18 +185,31 @@ func (r *runtime) processLeaderLongPoll(ch *channel, meta core.Meta) {
 	}
 }
 
-func (r *runtime) markLeaderLaneReady(ch *channel) {
+func (r *runtime) markLeaderLaneReady(ch *channel, ready laneReadyMask) {
 	state := ch.Status()
 	for _, target := range ch.replicationTargetsSnapshot() {
 		session, ok := r.leaderLanes.Session(target)
 		if !ok {
 			continue
 		}
-		session.MarkDataReady(ch.key, state.Epoch)
+		switch ready {
+		case laneReadyHWOnly:
+			session.MarkHWOnlyReady(ch.key, state.Epoch)
+		default:
+			session.MarkDataReady(ch.key, state.Epoch)
+		}
 	}
 }
 
 func (r *runtime) onChannelAppend(key core.ChannelKey) {
+	r.onChannelReady(key, laneReadyData)
+}
+
+func (r *runtime) onChannelCommit(key core.ChannelKey) {
+	r.onChannelReady(key, laneReadyHWOnly)
+}
+
+func (r *runtime) onChannelReady(key core.ChannelKey, ready laneReadyMask) {
 	if !r.longPollEnabled() {
 		return
 	}
@@ -208,7 +221,7 @@ func (r *runtime) onChannelAppend(key core.ChannelKey) {
 	if meta.Leader != r.cfg.LocalNode {
 		return
 	}
-	r.markLeaderLaneReady(ch)
+	r.markLeaderLaneReady(ch, ready)
 	state := ch.Status()
 	queuedWakeUp := false
 	for _, target := range ch.replicationTargetsSnapshot() {

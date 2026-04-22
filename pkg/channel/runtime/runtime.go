@@ -163,6 +163,11 @@ func (r *runtime) EnsureChannel(meta core.Meta) error {
 			r.onChannelAppend(meta.Key)
 		})
 	}
+	if notifier, ok := rep.(interface{ SetLeaderHWAdvanceNotifier(func()) }); ok {
+		notifier.SetLeaderHWAdvanceNotifier(func() {
+			go r.onChannelCommit(meta.Key)
+		})
+	}
 	if err := applyReplicaMeta(rep, r.cfg.LocalNode, meta); err != nil {
 		shard.mu.Unlock()
 		if reserved {

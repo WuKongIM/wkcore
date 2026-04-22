@@ -113,6 +113,10 @@ func (s *LeaderLaneSession) MarkDataReady(key core.ChannelKey, epoch uint64) {
 	s.markReady(key, epoch, laneReadyData)
 }
 
+func (s *LeaderLaneSession) MarkHWOnlyReady(key core.ChannelKey, epoch uint64) {
+	s.markReady(key, epoch, laneReadyHWOnly)
+}
+
 func (s *LeaderLaneSession) markReady(key core.ChannelKey, epoch uint64, mask laneReadyMask) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
