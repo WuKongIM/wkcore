@@ -15,11 +15,13 @@ import (
 )
 
 type controllerHost struct {
-	meta            *controllermeta.Store
-	raftDB          *raftstorage.DB
-	sm              *slotcontroller.StateMachine
-	service         *controllerraft.Service
-	observations    *observationCache
+	meta         *controllermeta.Store
+	raftDB       *raftstorage.DB
+	sm           *slotcontroller.StateMachine
+	service      *controllerraft.Service
+	observations *observationCache
+	// syncState tracks leader-local observation revisions and delta-ready snapshots.
+	syncState       *observationSyncState
 	healthScheduler *nodeHealthScheduler
 	localNode       multiraft.NodeID
 
@@ -76,6 +78,7 @@ func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, erro
 		raftDB:          logDB,
 		sm:              sm,
 		observations:    newObservationCache(),
+		syncState:       newObservationSyncState(),
 		localNode:       cfg.NodeID,
 		warmupFullSyncs: make(map[uint64]struct{}),
 	}
@@ -85,6 +88,11 @@ func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, erro
 	host.bgCtx, host.bgCancel = context.WithCancel(context.Background())
 	host.loadHashSlotTableFn = func(ctx context.Context) (*HashSlotTable, error) { return host.meta.LoadHashSlotTable(ctx) }
 	host.loadNodeMirrorFn = func(ctx context.Context) ([]controllermeta.ClusterNode, error) { return host.meta.ListNodes(ctx) }
+	host.metadataSnapshotState.onLoaded = func(snapshot controllerMetadataSnapshot) {
+		if host.syncState != nil {
+			host.syncState.replaceMetadataSnapshot(snapshot)
+		}
+	}
 	host.observations.runtimeViewTTL = 3 * timeouts.ObservationRuntimeFullSyncInterval
 	host.healthScheduler = newNodeHealthScheduler(nodeHealthSchedulerConfig{
 		suspectTimeout: 3 * time.Second,
@@ -178,6 +186,9 @@ func (h *controllerHost) applyRuntimeReport(report runtimeObservationReport) {
 	}
 	h.syncLeaderWarmupState()
 	h.observations.applyRuntimeReport(report)
+	if h.syncState != nil {
+		h.syncState.replaceRuntimeViews(h.observations.snapshotRuntimeViews())
+	}
 	if report.FullSync {
 		h.markWarmupFullSync(report.NodeID)
 		h.refreshWarmupReady()
@@ -407,6 +418,9 @@ func (h *controllerHost) handleLeaderChange(_, to multiraft.NodeID) {
 
 	if h.observations != nil {
 		h.observations.reset()
+	}
+	if h.syncState != nil {
+		h.syncState.reset()
 	}
 	if h.healthScheduler != nil {
 		h.healthScheduler.reset()

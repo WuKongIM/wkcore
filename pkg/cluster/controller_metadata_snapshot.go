@@ -107,6 +107,8 @@ type controllerMetadataSnapshotState struct {
 
 	// loadFn can be overridden by tests to deterministically block reloads.
 	loadFn func(ctx context.Context, store *controllermeta.Store) (controllerMetadataSnapshot, error)
+	// onLoaded observes snapshots that were successfully installed for the active leader generation.
+	onLoaded func(controllerMetadataSnapshot)
 }
 
 func (s *controllerMetadataSnapshotState) snapshotIfReadyClean() (controllerMetadataSnapshot, bool) {
@@ -299,12 +301,18 @@ func (s *controllerMetadataSnapshotState) reload(ctx context.Context, store *con
 	loaded.Ready = true
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	loaded.Dirty = s.dirtySeq != startDirtySeq
 	if s.snapshot.LeaderID != leader || s.snapshot.Generation != generation {
+		s.mu.Unlock()
 		return nil
 	}
 	s.snapshot = loaded
+	onLoaded := s.onLoaded
+	installed := loaded.clone()
+	s.mu.Unlock()
+	if onLoaded != nil {
+		onLoaded(installed)
+	}
 	return nil
 }
 
