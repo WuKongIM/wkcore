@@ -1,12 +1,13 @@
 import { NavLink } from "react-router-dom"
 
+import { cn } from "@/lib/utils"
 import { navigationGroups } from "@/lib/navigation"
 
 export function SidebarNav() {
   return (
     <nav
       aria-label="Primary navigation"
-      className="flex w-72 shrink-0 flex-col border-r border-border bg-sidebar px-4 py-6"
+      className="flex w-72 shrink-0 flex-col border-r border-sidebar-border bg-sidebar px-4 py-6"
     >
       <div className="mb-8 px-3">
         <div className="text-lg font-semibold text-foreground">WuKongIM</div>
@@ -22,7 +23,14 @@ export function SidebarNav() {
               {group.items.map((item) => (
                 <NavLink
                   key={item.href}
-                  className="block rounded-lg px-3 py-2 text-sm text-muted-foreground transition hover:bg-background hover:text-foreground"
+                  className={({ isActive }) =>
+                    cn(
+                      "block rounded-lg px-3 py-2 text-sm transition",
+                      isActive
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:bg-background hover:text-foreground",
+                    )
+                  }
                   to={item.href}
                 >
                   {item.title}
