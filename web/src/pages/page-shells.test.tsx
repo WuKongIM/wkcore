@@ -20,11 +20,14 @@ it.each([
   expect(screen.getByText(section)).toBeInTheDocument()
 })
 
-test("dashboard shows the operations showcase blocks", async () => {
+test("dashboard shows monochrome workbench sections", async () => {
   const router = createMemoryRouter(routes, { initialEntries: ["/dashboard"] })
 
   render(<RouterProvider router={router} />)
 
-  expect(await screen.findByText("Operations Snapshot")).toBeInTheDocument()
-  expect(screen.getByText("Active alerts lane")).toBeInTheDocument()
+  expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument()
+  expect(screen.getByText("Operations Summary")).toBeInTheDocument()
+  expect(screen.getByText("Alert List")).toBeInTheDocument()
+  expect(screen.getByText("Control Queue")).toBeInTheDocument()
+  expect(screen.queryByText("Pin board")).not.toBeInTheDocument()
 })
