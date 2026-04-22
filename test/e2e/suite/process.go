@@ -3,6 +3,7 @@
 package suite
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -90,7 +91,7 @@ func (p *NodeProcess) Stop() error {
 	select {
 	case err := <-waitCh:
 		p.closeLogs()
-		return err
+		return normalizeStopError(err)
 	case <-time.After(timeout):
 		if err := p.Cmd.Process.Kill(); err != nil {
 			p.closeLogs()
@@ -98,7 +99,7 @@ func (p *NodeProcess) Stop() error {
 		}
 		err := <-waitCh
 		p.closeLogs()
-		return err
+		return normalizeStopError(err)
 	}
 }
 
@@ -132,4 +133,15 @@ func appendLog(b *strings.Builder, name, path string) {
 	if len(data) > 0 && data[len(data)-1] != '\n' {
 		b.WriteByte('\n')
 	}
+}
+
+func normalizeStopError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return nil
+	}
+	return err
 }
