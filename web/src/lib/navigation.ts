@@ -1,7 +1,19 @@
+import type { LucideIcon } from "lucide-react"
+import {
+  Cable,
+  Database,
+  LayoutDashboard,
+  MessageSquare,
+  Radar,
+  Server,
+  Waypoints,
+} from "lucide-react"
+
 export type NavigationItem = {
   href: string
   title: string
   description: string
+  icon: LucideIcon
 }
 
 export type NavigationGroup = {
@@ -16,7 +28,8 @@ export const navigationGroups: NavigationGroup[] = [
       {
         href: "/dashboard",
         title: "Dashboard",
-        description: "Cluster summary and entry point.",
+        description: "Runtime summary and operator entry points.",
+        icon: LayoutDashboard,
       },
     ],
   },
@@ -26,22 +39,26 @@ export const navigationGroups: NavigationGroup[] = [
       {
         href: "/nodes",
         title: "Nodes",
-        description: "Node inventory and lifecycle shell.",
+        description: "Node inventory, roles, and lifecycle status.",
+        icon: Server,
       },
       {
         href: "/channels",
         title: "Channels",
-        description: "Channel list and drill-in shell.",
+        description: "Channel lists and runtime drill-in status.",
+        icon: MessageSquare,
       },
       {
         href: "/connections",
         title: "Connections",
-        description: "Connection inventory shell.",
+        description: "Connection inventory and transport state.",
+        icon: Cable,
       },
       {
         href: "/slots",
         title: "Slots",
-        description: "Slot distribution and status shell.",
+        description: "Slot distribution and runtime status.",
+        icon: Database,
       },
     ],
   },
@@ -51,12 +68,14 @@ export const navigationGroups: NavigationGroup[] = [
       {
         href: "/network",
         title: "Network",
-        description: "Cluster traffic and transport observation shell.",
+        description: "Transport summary and runtime status.",
+        icon: Radar,
       },
       {
         href: "/topology",
         title: "Topology",
-        description: "Replica and node relationship shell.",
+        description: "Replica relationships and topology context.",
+        icon: Waypoints,
       },
     ],
   },

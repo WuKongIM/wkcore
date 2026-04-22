@@ -8,19 +8,19 @@ test("shows the current route title and description", async () => {
 
   render(<RouterProvider router={router} />)
 
-  expect(await screen.findByRole("heading", { name: "Network" })).toBeInTheDocument()
+  expect(within(screen.getByRole("banner")).getByText("Network")).toBeInTheDocument()
   expect(
-    within(screen.getByRole("banner")).getByText(
-      "Cluster traffic and transport observation shell.",
-    ),
+    within(screen.getByRole("banner")).getByText("Transport summary and runtime status."),
   ).toBeInTheDocument()
 })
 
-test("shows topbar environment and control pills", async () => {
+test("removes legacy topbar pills while keeping global actions", async () => {
   const router = createMemoryRouter(routes, { initialEntries: ["/network"] })
 
   render(<RouterProvider router={router} />)
 
-  expect(await screen.findByText("Control plane")).toBeInTheDocument()
-  expect(screen.getByText("Manager shell")).toBeInTheDocument()
+  expect(await screen.findByRole("button", { name: /refresh/i })).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: /search/i })).toBeInTheDocument()
+  expect(screen.queryByText("Control plane")).not.toBeInTheDocument()
+  expect(screen.queryByText("Manager shell")).not.toBeInTheDocument()
 })

@@ -14,7 +14,16 @@ test("marks the current navigation item with aria-current", async () => {
   )
 })
 
-test("renders the runtime status panel in the sidebar", async () => {
+test("renders sidebar links without description copy", async () => {
+  const router = createMemoryRouter(routes, { initialEntries: ["/slots"] })
+
+  render(<RouterProvider router={router} />)
+
+  expect(await screen.findByRole("link", { name: "Slots" })).toBeInTheDocument()
+  expect(screen.queryAllByText("Slot distribution and status shell.")).toHaveLength(0)
+})
+
+test("keeps the cluster context visible in the sidebar", async () => {
   const router = createMemoryRouter(routes, { initialEntries: ["/dashboard"] })
 
   render(<RouterProvider router={router} />)
