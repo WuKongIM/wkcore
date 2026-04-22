@@ -16,7 +16,7 @@ import (
 // ErrListenAddrRequired reports that the manager listen address is missing.
 var ErrListenAddrRequired = errors.New("access/manager: listen address required")
 
-// Management exposes the manager read usecases needed by HTTP handlers.
+// Management exposes the manager usecases needed by HTTP handlers.
 type Management interface {
 	// ListNodes returns manager-facing node DTOs.
 	ListNodes(ctx context.Context) ([]managementusecase.Node, error)
@@ -32,6 +32,10 @@ type Management interface {
 	GetSlot(ctx context.Context, slotID uint32) (managementusecase.SlotDetail, error)
 	// TransferSlotLeader transfers one slot leader and returns the latest detail DTO.
 	TransferSlotLeader(ctx context.Context, slotID uint32, targetNodeID uint64) (managementusecase.SlotDetail, error)
+	// RecoverSlot runs one slot recover flow and returns the latest outcome DTO.
+	RecoverSlot(ctx context.Context, slotID uint32, strategy managementusecase.SlotRecoverStrategy) (managementusecase.SlotRecoverResult, error)
+	// RebalanceSlots starts one slot rebalance flow and returns the started plan DTO.
+	RebalanceSlots(ctx context.Context) (managementusecase.SlotRebalanceResult, error)
 	// ListTasks returns manager-facing reconcile task DTOs.
 	ListTasks(ctx context.Context) ([]managementusecase.Task, error)
 	// GetTask returns one manager-facing reconcile task detail DTO.

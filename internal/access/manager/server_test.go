@@ -2030,6 +2030,10 @@ type managementStub struct {
 	nodeResumeErr                   error
 	slotLeaderTransfer              managementusecase.SlotDetail
 	slotLeaderTransferErr           error
+	slotRecover                     managementusecase.SlotRecoverResult
+	slotRecoverErr                  error
+	slotRebalance                   managementusecase.SlotRebalanceResult
+	slotRebalanceErr                error
 	slots                           []managementusecase.Slot
 	slotsErr                        error
 	slotDetail                      managementusecase.SlotDetail
@@ -2070,6 +2074,14 @@ func (s managementStub) ListSlots(context.Context) ([]managementusecase.Slot, er
 
 func (s managementStub) GetSlot(context.Context, uint32) (managementusecase.SlotDetail, error) {
 	return s.slotDetail, s.slotDetailErr
+}
+
+func (s managementStub) RecoverSlot(context.Context, uint32, managementusecase.SlotRecoverStrategy) (managementusecase.SlotRecoverResult, error) {
+	return s.slotRecover, s.slotRecoverErr
+}
+
+func (s managementStub) RebalanceSlots(context.Context) (managementusecase.SlotRebalanceResult, error) {
+	return s.slotRebalance, s.slotRebalanceErr
 }
 
 func (s managementStub) ListTasks(context.Context) ([]managementusecase.Task, error) {

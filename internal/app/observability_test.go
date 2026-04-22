@@ -449,6 +449,14 @@ func (f fakeObservabilityCluster) RecoverSlot(context.Context, uint32, raftclust
 	return nil
 }
 
+func (f fakeObservabilityCluster) RecoverSlotStrict(context.Context, uint32, raftcluster.RecoverStrategy) error {
+	return nil
+}
+
+func (f fakeObservabilityCluster) Rebalance(context.Context) ([]raftcluster.MigrationPlan, error) {
+	return nil, nil
+}
+
 func (f fakeObservabilityCluster) Server() *transport.Server { return nil }
 
 func (f fakeObservabilityCluster) RPCMux() *transport.RPCMux { return nil }

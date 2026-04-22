@@ -50,6 +50,9 @@ type API interface {
 	ResumeNode(ctx context.Context, nodeID uint64) error
 	TransferSlotLeader(ctx context.Context, slotID uint32, nodeID multiraft.NodeID) error
 	RecoverSlot(ctx context.Context, slotID uint32, strategy RecoverStrategy) error
+	// RecoverSlotStrict runs slot recovery against controller-leader assignments only.
+	RecoverSlotStrict(ctx context.Context, slotID uint32, strategy RecoverStrategy) error
+	Rebalance(ctx context.Context) ([]MigrationPlan, error)
 
 	Server() *transport.Server
 	RPCMux() *transport.RPCMux

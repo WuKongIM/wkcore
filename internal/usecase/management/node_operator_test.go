@@ -249,3 +249,15 @@ func (f *fakeNodeOperatorCluster) ResumeNode(_ context.Context, nodeID uint64) e
 func (f *fakeNodeOperatorCluster) TransferSlotLeader(context.Context, uint32, multiraft.NodeID) error {
 	return nil
 }
+
+func (f *fakeNodeOperatorCluster) RecoverSlotStrict(context.Context, uint32, raftcluster.RecoverStrategy) error {
+	return nil
+}
+
+func (f *fakeNodeOperatorCluster) GetMigrationStatus() []raftcluster.HashSlotMigration {
+	return nil
+}
+
+func (f *fakeNodeOperatorCluster) Rebalance(context.Context) ([]raftcluster.MigrationPlan, error) {
+	return nil, nil
+}

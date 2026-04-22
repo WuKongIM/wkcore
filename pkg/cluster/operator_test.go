@@ -7,6 +7,8 @@ import (
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	slotcontroller "github.com/WuKongIM/WuKongIM/pkg/controller/plane"
+	"github.com/WuKongIM/WuKongIM/pkg/transport"
+	"github.com/stretchr/testify/require"
 )
 
 const testControllerLeaderWaitTimeout = 25 * time.Millisecond
@@ -56,6 +58,84 @@ func TestRetryControllerCommandUsesScaledRetryInterval(t *testing.T) {
 	if attempts != 2 {
 		t.Fatalf("retryControllerCommand() attempts = %d, want 2", attempts)
 	}
+}
+
+func TestRecoverSlotStrictUsesLeaderAssignments(t *testing.T) {
+	managedSlotServer := transport.NewServer()
+	managedSlotMux := transport.NewRPCMux()
+	managedSlotMux.Handle(rpcServiceManagedSlot, func(_ context.Context, body []byte) ([]byte, error) {
+		req, err := decodeManagedSlotRequest(body)
+		require.NoError(t, err)
+		require.Equal(t, managedSlotRPCStatus, req.Kind)
+		require.Equal(t, uint32(1), req.SlotID)
+		return encodeManagedSlotResponse(managedSlotRPCResponse{})
+	})
+	managedSlotServer.HandleRPCMux(managedSlotMux)
+	require.NoError(t, managedSlotServer.Start("127.0.0.1:0"))
+	t.Cleanup(managedSlotServer.Stop)
+
+	discovery := &controllerClientTestDiscovery{
+		addrs: map[uint64]string{
+			2: managedSlotServer.Listener().Addr().String(),
+		},
+	}
+	pool := transport.NewPool(discovery, 1, 50*time.Millisecond)
+	t.Cleanup(pool.Close)
+
+	client := transport.NewClient(pool)
+	t.Cleanup(client.Stop)
+
+	cluster := &Cluster{
+		cfg: Config{NodeID: 1},
+		transportResources: transportResources{
+			fwdClient: client,
+		},
+		controllerResources: controllerResources{
+			controllerLeaderWaitTimeout: testControllerLeaderWaitTimeout,
+			controllerClient: fakeControllerClient{
+				assignments: []controllermeta.SlotAssignment{
+					{SlotID: 1, DesiredPeers: []uint64{2}},
+				},
+			},
+		},
+	}
+
+	err := cluster.RecoverSlotStrict(context.Background(), 1, RecoverStrategyLatestLiveReplica)
+	require.NoError(t, err)
+}
+
+func TestRecoverSlotStrictReturnsManualRecoveryRequiredWhenQuorumLost(t *testing.T) {
+	cluster := &Cluster{
+		cfg: Config{NodeID: 1},
+		controllerResources: controllerResources{
+			controllerLeaderWaitTimeout: testControllerLeaderWaitTimeout,
+			controllerClient: fakeControllerClient{
+				assignments: []controllermeta.SlotAssignment{
+					{SlotID: 1, DesiredPeers: []uint64{2, 3, 4}},
+				},
+			},
+		},
+	}
+
+	err := cluster.RecoverSlotStrict(context.Background(), 1, RecoverStrategyLatestLiveReplica)
+	require.ErrorIs(t, err, ErrManualRecoveryRequired)
+}
+
+func TestRecoverSlotStrictReturnsNotFoundWhenStrictAssignmentsMissSlot(t *testing.T) {
+	cluster := &Cluster{
+		cfg: Config{NodeID: 1},
+		controllerResources: controllerResources{
+			controllerLeaderWaitTimeout: testControllerLeaderWaitTimeout,
+			controllerClient: fakeControllerClient{
+				assignments: []controllermeta.SlotAssignment{
+					{SlotID: 2, DesiredPeers: []uint64{2}},
+				},
+			},
+		},
+	}
+
+	err := cluster.RecoverSlotStrict(context.Background(), 1, RecoverStrategyLatestLiveReplica)
+	require.ErrorIs(t, err, ErrSlotNotFound)
 }
 
 func TestAddSlotChoosesNextSlotIDAndCurrentPeers(t *testing.T) {

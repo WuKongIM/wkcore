@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
@@ -33,6 +34,12 @@ type ClusterReader interface {
 	ResumeNode(ctx context.Context, nodeID uint64) error
 	// TransferSlotLeader transfers one slot leader to the target node.
 	TransferSlotLeader(ctx context.Context, slotID uint32, nodeID multiraft.NodeID) error
+	// RecoverSlotStrict runs slot recovery against controller-leader assignments only.
+	RecoverSlotStrict(ctx context.Context, slotID uint32, strategy raftcluster.RecoverStrategy) error
+	// Rebalance starts the current hash-slot rebalance plan.
+	Rebalance(ctx context.Context) ([]raftcluster.MigrationPlan, error)
+	// GetMigrationStatus returns the currently active hash-slot migrations.
+	GetMigrationStatus() []raftcluster.HashSlotMigration
 	ControllerLeaderID() uint64
 }
 
