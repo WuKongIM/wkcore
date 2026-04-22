@@ -38,6 +38,12 @@ func (s *Server) registerRoutes() {
 	slots.GET("/slots", s.handleSlots)
 	slots.GET("/slots/:slot_id", s.handleSlot)
 
+	slotWrites := s.engine.Group("/manager")
+	if s.auth.enabled() {
+		slotWrites.Use(s.requirePermission("cluster.slot", "w"))
+	}
+	slotWrites.POST("/slots/:slot_id/leader/transfer", s.handleSlotLeaderTransfer)
+
 	tasks := s.engine.Group("/manager")
 	if s.auth.enabled() {
 		tasks.Use(s.requirePermission("cluster.task", "r"))

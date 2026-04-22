@@ -30,6 +30,8 @@ type Management interface {
 	ListSlots(ctx context.Context) ([]managementusecase.Slot, error)
 	// GetSlot returns one manager-facing slot detail DTO.
 	GetSlot(ctx context.Context, slotID uint32) (managementusecase.SlotDetail, error)
+	// TransferSlotLeader transfers one slot leader and returns the latest detail DTO.
+	TransferSlotLeader(ctx context.Context, slotID uint32, targetNodeID uint64) (managementusecase.SlotDetail, error)
 	// ListTasks returns manager-facing reconcile task DTOs.
 	ListTasks(ctx context.Context) ([]managementusecase.Task, error)
 	// GetTask returns one manager-facing reconcile task detail DTO.

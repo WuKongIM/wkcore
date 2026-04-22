@@ -2028,6 +2028,8 @@ type managementStub struct {
 	nodeDrainingErr                 error
 	nodeResume                      managementusecase.NodeDetail
 	nodeResumeErr                   error
+	slotLeaderTransfer              managementusecase.SlotDetail
+	slotLeaderTransferErr           error
 	slots                           []managementusecase.Slot
 	slotsErr                        error
 	slotDetail                      managementusecase.SlotDetail
