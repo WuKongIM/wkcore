@@ -7,5 +7,14 @@
 - `bun run build`
 
 ## Scope
-This first pass only provides the management shell and page skeletons.
-It does not call backend APIs or include auth, data fetching, charts, or topology rendering.
+The web app now includes the first authenticated manager shell flow:
+
+- `/login` authenticates against `POST /manager/login`
+- protected routes require a valid persisted JWT session
+- `VITE_API_BASE_URL` optionally overrides the default same-origin `/manager/*` base
+
+It still keeps the rest of the admin experience intentionally lightweight:
+
+- no real nodes/slots/overview data fetching yet
+- no charts or topology rendering
+- no permission-based navigation trimming yet

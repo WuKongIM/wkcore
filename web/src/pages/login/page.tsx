@@ -75,7 +75,9 @@ export function LoginPage() {
           <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
             Cluster access
           </div>
-          <h2 className="mt-3 text-2xl font-semibold tracking-tight text-foreground">Sign in</h2>
+          <h2 className="mt-3 text-2xl font-semibold tracking-tight text-foreground">
+            Manager credentials
+          </h2>
           <p className="mt-2 text-sm text-muted-foreground">
             Use the static manager account configured by the server.
           </p>

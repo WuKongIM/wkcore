@@ -1,12 +1,32 @@
 import { render, screen } from "@testing-library/react"
 import { RouterProvider, createMemoryRouter } from "react-router-dom"
+import { beforeEach } from "vitest"
 
+import { AppProviders } from "@/app/providers"
 import { routes } from "@/app/router"
+import { useAuthStore } from "@/auth/auth-store"
+
+beforeEach(() => {
+  localStorage.clear()
+  useAuthStore.setState({
+    status: "authenticated",
+    isHydrated: true,
+    username: "admin",
+    tokenType: "Bearer",
+    accessToken: "token-1",
+    expiresAt: "2099-04-22T12:00:00Z",
+    permissions: [],
+  })
+})
 
 test("marks the current navigation item with aria-current", async () => {
   const router = createMemoryRouter(routes, { initialEntries: ["/slots"] })
 
-  render(<RouterProvider router={router} />)
+  render(
+    <AppProviders>
+      <RouterProvider router={router} />
+    </AppProviders>,
+  )
 
   expect(await screen.findByRole("link", { name: "Slots" })).toHaveAttribute(
     "aria-current",
@@ -17,7 +37,11 @@ test("marks the current navigation item with aria-current", async () => {
 test("renders sidebar links without description copy", async () => {
   const router = createMemoryRouter(routes, { initialEntries: ["/slots"] })
 
-  render(<RouterProvider router={router} />)
+  render(
+    <AppProviders>
+      <RouterProvider router={router} />
+    </AppProviders>,
+  )
 
   expect(await screen.findByRole("link", { name: "Slots" })).toBeInTheDocument()
   expect(screen.queryAllByText("Slot distribution and status shell.")).toHaveLength(0)
@@ -26,7 +50,11 @@ test("renders sidebar links without description copy", async () => {
 test("keeps the cluster context visible in the sidebar", async () => {
   const router = createMemoryRouter(routes, { initialEntries: ["/dashboard"] })
 
-  render(<RouterProvider router={router} />)
+  render(
+    <AppProviders>
+      <RouterProvider router={router} />
+    </AppProviders>,
+  )
 
   expect(await screen.findByText("Cluster status")).toBeInTheDocument()
   expect(screen.getByText("Single-node cluster")).toBeInTheDocument()
