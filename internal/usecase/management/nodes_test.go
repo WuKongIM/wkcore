@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/stretchr/testify/require"
@@ -135,6 +136,10 @@ type fakeClusterReader struct {
 	markNodeDrainingErr         error
 	resumeNodeErr               error
 	transferSlotLeaderErr       error
+	recoverSlotStrictErr        error
+	migrationStatus             []raftcluster.HashSlotMigration
+	rebalancePlan               []raftcluster.MigrationPlan
+	rebalanceErr                error
 }
 
 func (f fakeClusterReader) SlotIDs() []multiraft.SlotID {
@@ -189,6 +194,18 @@ func (f fakeClusterReader) ResumeNode(context.Context, uint64) error {
 
 func (f fakeClusterReader) TransferSlotLeader(context.Context, uint32, multiraft.NodeID) error {
 	return f.transferSlotLeaderErr
+}
+
+func (f fakeClusterReader) RecoverSlotStrict(context.Context, uint32, raftcluster.RecoverStrategy) error {
+	return f.recoverSlotStrictErr
+}
+
+func (f fakeClusterReader) GetMigrationStatus() []raftcluster.HashSlotMigration {
+	return append([]raftcluster.HashSlotMigration(nil), f.migrationStatus...)
+}
+
+func (f fakeClusterReader) Rebalance(context.Context) ([]raftcluster.MigrationPlan, error) {
+	return append([]raftcluster.MigrationPlan(nil), f.rebalancePlan...), f.rebalanceErr
 }
 
 type nodeSummary struct {
