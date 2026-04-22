@@ -249,7 +249,12 @@ func (c *controllerClient) call(ctx context.Context, req controllerRPCRequest) (
 		// consume the entire controller retry window before we reach the current
 		// leader.
 		rpcCtx, cancel := c.cluster.withControllerTimeout(ctx)
-		respBody, err := c.cluster.RPCService(rpcCtx, target, controllerRPCShardKey, rpcServiceController, body)
+		var respBody []byte
+		if target == c.cluster.cfg.NodeID {
+			respBody, err = c.cluster.handleControllerRPC(rpcCtx, body)
+		} else {
+			respBody, err = c.cluster.RPCService(rpcCtx, target, controllerRPCShardKey, rpcServiceController, body)
+		}
 		cancel()
 		if err != nil {
 			if c.cachedLeader() == target {

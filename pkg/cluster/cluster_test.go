@@ -780,6 +780,28 @@ func TestListTasksUsesControllerClientWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestListTasksUsesLocalControllerFastPathWithoutSelfRPC(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	task := controllermeta.ReconcileTask{
+		SlotID:    1,
+		Kind:      controllermeta.TaskKindRepair,
+		Step:      controllermeta.TaskStepAddLearner,
+		Status:    controllermeta.TaskStatusPending,
+		NextRunAt: time.Now(),
+	}
+	requireNoErr(t, host.meta.UpsertTask(context.Background(), task))
+
+	cluster.controllerClient = newControllerClient(cluster, cluster.cfg.Nodes, nil)
+
+	tasks, err := cluster.ListTasks(context.Background())
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].SlotID != task.SlotID || tasks[0].Kind != task.Kind {
+		t.Fatalf("ListTasks() = %#v, want local controller task for slot %d", tasks, task.SlotID)
+	}
+}
+
 func TestListTasksFallsBackToLocalControllerMetaWhenLeaderUnavailable(t *testing.T) {
 	dir := t.TempDir()
 	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
@@ -2606,6 +2628,13 @@ func (f fakeControllerClient) ListRuntimeViews(ctx context.Context) ([]controlle
 func (f fakeControllerClient) ListTasks(ctx context.Context) ([]controllermeta.ReconcileTask, error) {
 	if f.listTasksFn != nil {
 		return f.listTasksFn(ctx)
+	}
+	if len(f.listTasks) == 0 && len(f.tasks) > 0 {
+		tasks := make([]controllermeta.ReconcileTask, 0, len(f.tasks))
+		for _, task := range f.tasks {
+			tasks = append(tasks, task)
+		}
+		return tasks, f.listTasksErr
 	}
 	return append([]controllermeta.ReconcileTask(nil), f.listTasks...), f.listTasksErr
 }

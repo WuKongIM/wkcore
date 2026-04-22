@@ -216,9 +216,8 @@ Tick(ctx):
        ensureManagedSlotLocal(slotID, desiredPeers, hasView, false)
        → slotManager.ensureLocal [见 5.5]
   ⑤ loadTasks:
-     → 并发(受 PoolSize 限制)向 Controller 查询每个 Slot 的 ReconcileTask
-     → 本节点若是 Controller Leader 且 metadata snapshot clean，`getTask` 优先读本地 `TasksBySlot`
-     → snapshot miss / dirty 时回落到当前 Controller 读路径
+     → 先批量读取 Controller Tasks 快照（leader-local metadata snapshot / controller client `list_tasks` / fallback `controllerMeta.ListTasks`）
+     → 与 pendingTaskReport 合并成 slotID → task map，steady-state 无 task 时不再对每个 Slot 单独 `get_task`
   ⑥ 保护迁移源 Slot:
      如果 task 的 SourceNode==本节点 且 kind 为 Repair/Rebalance
      → 源 Slot 即使不在 desiredLocalSlots 中也需保持打开
@@ -332,7 +331,8 @@ Delta 转发 (运行时):
 客户端 call(ctx, req):
   ① targets(): 缓存的 Leader 优先 → localLeaderHint → 所有 peers
   ② 逐 peer 探测:
-     → RPCService(target, rpcServiceController=14, body)
+     → 若 target 是本地节点：直接走 `handleControllerRPC(ctx, body)`，避免 controller self-RPC
+     → 否则走 `RPCService(target, rpcServiceController=14, body)`
      → decodeControllerResponse:
         NotLeader + LeaderID → 更新缓存，插入 leader 为首重试
         NotLeader + 无 LeaderID → 清除缓存，尝试下一个

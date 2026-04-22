@@ -824,16 +824,21 @@ func TestGroupAgentApplyAssignmentsRetriesTransientGetTaskTimeoutWithoutLocalCon
 		NextRunAt: time.Now(),
 	}
 
+	listTasksCalls := 0
 	getTaskCalls := 0
 	client := fakeControllerClient{
 		assignments: []controllermeta.SlotAssignment{assignment},
+		listTasksFn: func(context.Context) ([]controllermeta.ReconcileTask, error) {
+			listTasksCalls++
+			if listTasksCalls == 1 {
+				return nil, context.DeadlineExceeded
+			}
+			return []controllermeta.ReconcileTask{task}, nil
+		},
 		getTaskFn: func(_ context.Context, slotID uint32) (controllermeta.ReconcileTask, error) {
 			getTaskCalls++
 			if slotID != 1 {
 				t.Fatalf("GetTask() slotID = %d, want 1", slotID)
-			}
-			if getTaskCalls == 1 {
-				return controllermeta.ReconcileTask{}, context.DeadlineExceeded
 			}
 			return task, nil
 		},
@@ -848,8 +853,11 @@ func TestGroupAgentApplyAssignmentsRetriesTransientGetTaskTimeoutWithoutLocalCon
 	if err := harness.cluster.agent.ApplyAssignments(context.Background()); err != nil {
 		t.Fatalf("ApplyAssignments() error = %v", err)
 	}
-	if getTaskCalls < 2 {
-		t.Fatalf("GetTask() calls = %d, want >= 2", getTaskCalls)
+	if listTasksCalls < 2 {
+		t.Fatalf("ListTasks() calls = %d, want >= 2 retry attempts", listTasksCalls)
+	}
+	if getTaskCalls == 0 {
+		t.Fatal("GetTask() was not called for fresh confirmation")
 	}
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -956,12 +964,13 @@ func TestGroupAgentRetriesPendingTaskReportWithoutRefreshingTask(t *testing.T) {
 	reportCalls := 0
 	client := fakeControllerClient{
 		assignments: []controllermeta.SlotAssignment{assignment},
+		tasks:       map[uint32]controllermeta.ReconcileTask{1: task},
 		getTaskFn: func(_ context.Context, slotID uint32) (controllermeta.ReconcileTask, error) {
 			getTaskCalls++
 			if slotID != 1 {
 				t.Fatalf("GetTask() slotID = %d, want 1", slotID)
 			}
-			if getTaskCalls <= 2 {
+			if getTaskCalls == 1 {
 				return task, nil
 			}
 			return controllermeta.ReconcileTask{}, context.DeadlineExceeded
@@ -1005,8 +1014,8 @@ func TestGroupAgentRetriesPendingTaskReportWithoutRefreshingTask(t *testing.T) {
 	if reportCalls != 2 {
 		t.Fatalf("ReportTaskResult() calls after second ApplyAssignments() = %d, want 2", reportCalls)
 	}
-	if getTaskCalls < 2 {
-		t.Fatalf("GetTask() calls = %d, want >= 2", getTaskCalls)
+	if getTaskCalls != 1 {
+		t.Fatalf("GetTask() calls = %d, want 1 because pending replay skips task refresh", getTaskCalls)
 	}
 }
 
@@ -1039,13 +1048,11 @@ func TestGroupAgentReusesKnownTaskWhenFreshConfirmationTimesOut(t *testing.T) {
 	reportCalls := 0
 	client := fakeControllerClient{
 		assignments: []controllermeta.SlotAssignment{assignment},
+		tasks:       map[uint32]controllermeta.ReconcileTask{1: task},
 		getTaskFn: func(_ context.Context, slotID uint32) (controllermeta.ReconcileTask, error) {
 			getTaskCalls++
 			if slotID != 1 {
 				t.Fatalf("GetTask() slotID = %d, want 1", slotID)
-			}
-			if getTaskCalls == 1 {
-				return task, nil
 			}
 			return controllermeta.ReconcileTask{}, context.DeadlineExceeded
 		},
@@ -1073,8 +1080,8 @@ func TestGroupAgentReusesKnownTaskWhenFreshConfirmationTimesOut(t *testing.T) {
 	if err := harness.cluster.agent.ApplyAssignments(context.Background()); err != nil {
 		t.Fatalf("ApplyAssignments() error = %v", err)
 	}
-	if getTaskCalls < 2 {
-		t.Fatalf("GetTask() calls = %d, want >= 2", getTaskCalls)
+	if getTaskCalls == 0 {
+		t.Fatal("GetTask() was not called for fresh confirmation")
 	}
 	if execCalls != 1 {
 		t.Fatalf("execution calls = %d, want 1 when fresh confirmation times out transiently", execCalls)

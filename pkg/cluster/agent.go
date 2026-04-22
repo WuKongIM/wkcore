@@ -153,6 +153,30 @@ func (a *slotAgent) listRuntimeViews(ctx context.Context) ([]controllermeta.Slot
 	return views, false, err
 }
 
+func (a *slotAgent) listTasks(ctx context.Context) ([]controllermeta.ReconcileTask, error) {
+	if a == nil || a.client == nil {
+		return nil, ErrNotStarted
+	}
+	if a.cluster != nil && a.cluster.controllerHost != nil && a.cluster.controllerHost.IsLeader(a.cluster.cfg.NodeID) {
+		if snapshot, ok := a.cluster.controllerHost.metadataSnapshot(); ok {
+			return snapshot.Tasks, nil
+		}
+	}
+	if a.cluster != nil && a.cluster.controllerMeta != nil && a.cluster.isLocalControllerLeader() {
+		return a.cluster.controllerMeta.ListTasks(ctx)
+	}
+	var tasks []controllermeta.ReconcileTask
+	err := a.retryControllerCall(ctx, func(attemptCtx context.Context) error {
+		var err error
+		tasks, err = a.client.ListTasks(attemptCtx)
+		return err
+	})
+	if err == nil || !controllerReadFallbackAllowed(err) || a.cluster == nil || a.cluster.controllerMeta == nil {
+		return tasks, err
+	}
+	return a.cluster.controllerMeta.ListTasks(ctx)
+}
+
 func (a *slotAgent) getTask(ctx context.Context, slotID uint32) (controllermeta.ReconcileTask, error) {
 	if a == nil || a.client == nil {
 		return controllermeta.ReconcileTask{}, ErrNotStarted

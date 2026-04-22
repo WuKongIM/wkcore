@@ -131,11 +131,9 @@ func TestReconcilerTickUsesKnownTaskWhenFreshTaskConfirmationTimesOut(t *testing
 	agent := &slotAgent{
 		cluster: cluster,
 		client: fakeControllerClient{
+			listTasks: []controllermeta.ReconcileTask{task},
 			getTaskFn: func(context.Context, uint32) (controllermeta.ReconcileTask, error) {
 				getTaskCalls++
-				if getTaskCalls == 1 {
-					return task, nil
-				}
 				return controllermeta.ReconcileTask{}, context.DeadlineExceeded
 			},
 			reportTaskResultFn: func(_ context.Context, gotTask controllermeta.ReconcileTask, gotErr error) error {
@@ -155,8 +153,8 @@ func TestReconcilerTickUsesKnownTaskWhenFreshTaskConfirmationTimesOut(t *testing
 	if err := newReconciler(agent).Tick(context.Background()); err != nil {
 		t.Fatalf("Tick() error = %v", err)
 	}
-	if getTaskCalls < 2 {
-		t.Fatalf("GetTask() calls = %d, want >= 2 for fresh confirmation", getTaskCalls)
+	if getTaskCalls == 0 {
+		t.Fatal("GetTask() was not called for fresh confirmation")
 	}
 	if execCalls != 1 {
 		t.Fatalf("execution calls = %d, want 1 when fresh confirmation times out transiently", execCalls)
@@ -166,13 +164,92 @@ func TestReconcilerTickUsesKnownTaskWhenFreshTaskConfirmationTimesOut(t *testing
 	}
 }
 
-func TestReconcilerTickLoadsTasksWithBoundedConcurrency(t *testing.T) {
+func TestReconcilerTickLoadsTasksViaListTasksBeforePerSlotConfirmation(t *testing.T) {
+	cluster, err := NewCluster(Config{
+		NodeID:       1,
+		ListenAddr:   "127.0.0.1:0",
+		SlotCount:    2,
+		SlotReplicaN: 1,
+		PoolSize:     1,
+		Nodes: []NodeConfig{
+			{NodeID: 1, Addr: "127.0.0.1:0"},
+		},
+		NewStorage: func(multiraft.SlotID) (multiraft.Storage, error) {
+			return &observerTestStorage{}, nil
+		},
+		NewStateMachine: func(multiraft.SlotID) (multiraft.StateMachine, error) {
+			return observerTestStateMachine{}, nil
+		},
+		NewStateMachineWithHashSlots: func(multiraft.SlotID, []uint16) (multiraft.StateMachine, error) {
+			return observerTestStateMachine{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewCluster() error = %v", err)
+	}
+
+	rt, err := multiraft.New(multiraft.Options{
+		NodeID:       1,
+		TickInterval: 10 * time.Millisecond,
+		Workers:      1,
+		Transport:    observerTestTransport{},
+		Raft: multiraft.RaftOptions{
+			ElectionTick:  3,
+			HeartbeatTick: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("multiraft.New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = rt.Close()
+	})
+	cluster.runtime = rt
+	cluster.router = NewRouter(
+		NewHashSlotTable(cluster.cfg.effectiveHashSlotCount(), int(cluster.cfg.effectiveInitialSlotCount())),
+		cluster.cfg.NodeID,
+		rt,
+	)
+
+	cluster.assignments.SetAssignments([]controllermeta.SlotAssignment{
+		{SlotID: 1, DesiredPeers: []uint64{1}, ConfigEpoch: 1},
+		{SlotID: 2, DesiredPeers: []uint64{1}, ConfigEpoch: 1},
+	})
+
+	var listTasksCalls int32
+	var getTaskCalls int32
+	agent := &slotAgent{
+		cluster: cluster,
+		client: fakeControllerClient{
+			listTasksFn: func(context.Context) ([]controllermeta.ReconcileTask, error) {
+				atomic.AddInt32(&listTasksCalls, 1)
+				return nil, nil
+			},
+			getTaskFn: func(context.Context, uint32) (controllermeta.ReconcileTask, error) {
+				atomic.AddInt32(&getTaskCalls, 1)
+				return controllermeta.ReconcileTask{}, controllermeta.ErrNotFound
+			},
+		},
+		cache: cluster.assignments,
+	}
+
+	if err := newReconciler(agent).Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	if got := atomic.LoadInt32(&listTasksCalls); got != 1 {
+		t.Fatalf("ListTasks() calls = %d, want 1 bulk read", got)
+	}
+	if got := atomic.LoadInt32(&getTaskCalls); got != 0 {
+		t.Fatalf("GetTask() calls = %d, want 0 without runnable tasks", got)
+	}
+}
+
+func TestReconcilerTickLoadsTasksOnceForMultipleAssignments(t *testing.T) {
 	cluster, err := NewCluster(Config{
 		NodeID:       1,
 		ListenAddr:   "127.0.0.1:0",
 		SlotCount:    4,
 		SlotReplicaN: 1,
-		PoolSize:     2,
 		Nodes: []NodeConfig{
 			{NodeID: 1, Addr: "127.0.0.1:0"},
 		},
@@ -221,47 +298,31 @@ func TestReconcilerTickLoadsTasksWithBoundedConcurrency(t *testing.T) {
 	}
 	cluster.assignments.SetAssignments(assignments)
 
-	var current int32
-	var maxConcurrent int32
-	release := make(chan struct{})
+	var listTasksCalls int32
+	var getTaskCalls int32
 
 	agent := &slotAgent{
 		cluster: cluster,
 		client: fakeControllerClient{
+			listTasksFn: func(context.Context) ([]controllermeta.ReconcileTask, error) {
+				atomic.AddInt32(&listTasksCalls, 1)
+				return nil, nil
+			},
 			getTaskFn: func(_ context.Context, _ uint32) (controllermeta.ReconcileTask, error) {
-				cur := atomic.AddInt32(&current, 1)
-				for {
-					prev := atomic.LoadInt32(&maxConcurrent)
-					if cur <= prev || atomic.CompareAndSwapInt32(&maxConcurrent, prev, cur) {
-						break
-					}
-				}
-				<-release
-				atomic.AddInt32(&current, -1)
+				atomic.AddInt32(&getTaskCalls, 1)
 				return controllermeta.ReconcileTask{}, controllermeta.ErrNotFound
 			},
 		},
 		cache: cluster.assignments,
 	}
 
-	done := make(chan error, 1)
-	go func() {
-		done <- newReconciler(agent).Tick(context.Background())
-	}()
-
-	deadline := time.Now().Add(200 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if atomic.LoadInt32(&maxConcurrent) >= 2 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	close(release)
-
-	if err := <-done; err != nil {
+	if err := newReconciler(agent).Tick(context.Background()); err != nil {
 		t.Fatalf("Tick() error = %v", err)
 	}
-	if got := atomic.LoadInt32(&maxConcurrent); got != 2 {
-		t.Fatalf("max concurrent task reads = %d, want 2", got)
+	if got := atomic.LoadInt32(&listTasksCalls); got != 1 {
+		t.Fatalf("ListTasks() calls = %d, want 1 bulk read", got)
+	}
+	if got := atomic.LoadInt32(&getTaskCalls); got != 0 {
+		t.Fatalf("GetTask() calls = %d, want 0 without runnable tasks", got)
 	}
 }

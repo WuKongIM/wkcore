@@ -3,7 +3,6 @@ package cluster
 import (
 	"context"
 	"errors"
-	"sync"
 	"time"
 
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
@@ -202,71 +201,28 @@ func (r *reconciler) loadTasks(ctx context.Context, assignments []controllermeta
 		return taskByGroup, nil
 	}
 
-	readCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	results := make(chan reconcileTaskLoadResult, len(assignments))
-	limit := r.controllerReadConcurrency(len(assignments))
-	sem := make(chan struct{}, limit)
-	var wg sync.WaitGroup
-
+	assignedSlots := make(map[uint32]struct{}, len(assignments))
 	for _, assignment := range assignments {
+		assignedSlots[assignment.SlotID] = struct{}{}
 		if pending, ok := r.agent.pendingTaskReport(assignment.SlotID); ok {
 			taskByGroup[assignment.SlotID] = pending.task
-			continue
 		}
-
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(slotID uint32) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			task, err := r.agent.getTask(readCtx, slotID)
-			select {
-			case results <- reconcileTaskLoadResult{slotID: slotID, task: task, err: err}:
-			case <-readCtx.Done():
-			}
-		}(assignment.SlotID)
 	}
 
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	var firstErr error
-	for result := range results {
-		if errors.Is(result.err, controllermeta.ErrNotFound) {
-			continue
-		}
-		if result.err != nil {
-			if firstErr == nil {
-				firstErr = result.err
-				cancel()
-			}
-			continue
-		}
-		taskByGroup[result.slotID] = result.task
+	tasks, err := r.agent.listTasks(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if firstErr != nil {
-		return nil, firstErr
+	for _, task := range tasks {
+		if _, ok := assignedSlots[task.SlotID]; !ok {
+			continue
+		}
+		if _, pending := taskByGroup[task.SlotID]; pending {
+			continue
+		}
+		taskByGroup[task.SlotID] = task
 	}
 	return taskByGroup, nil
-}
-
-func (r *reconciler) controllerReadConcurrency(total int) int {
-	if total <= 1 || r == nil || r.agent == nil || r.agent.cluster == nil {
-		return 1
-	}
-	limit := r.agent.cluster.cfg.PoolSize
-	if limit <= 0 {
-		limit = 1
-	}
-	if limit > total {
-		limit = total
-	}
-	return limit
 }
 
 func (r *reconciler) shouldExecuteTask(assignment controllermeta.SlotAssignment, task controllermeta.ReconcileTask, nodes map[uint64]controllermeta.ClusterNode) bool {
