@@ -130,13 +130,25 @@ func (c *Cluster) TransferSlotLeader(ctx context.Context, slotID uint32, nodeID 
 }
 
 func (c *Cluster) RecoverSlot(ctx context.Context, slotID uint32, strategy RecoverStrategy) error {
-	if strategy != RecoverStrategyLatestLiveReplica {
-		return ErrInvalidConfig
-	}
-
 	assignments, err := c.ListSlotAssignments(ctx)
 	if err != nil {
 		return err
+	}
+	return c.recoverSlotWithAssignments(ctx, slotID, strategy, assignments)
+}
+
+// RecoverSlotStrict runs slot recovery against controller-leader assignments only.
+func (c *Cluster) RecoverSlotStrict(ctx context.Context, slotID uint32, strategy RecoverStrategy) error {
+	assignments, err := c.ListSlotAssignmentsStrict(ctx)
+	if err != nil {
+		return err
+	}
+	return c.recoverSlotWithAssignments(ctx, slotID, strategy, assignments)
+}
+
+func (c *Cluster) recoverSlotWithAssignments(ctx context.Context, slotID uint32, strategy RecoverStrategy, assignments []controllermeta.SlotAssignment) error {
+	if strategy != RecoverStrategyLatestLiveReplica {
+		return ErrInvalidConfig
 	}
 
 	var peers []uint64
