@@ -332,6 +332,340 @@ func TestManagerNodeDetailReturnsServiceUnavailableWhenLeaderConsistentReadUnava
 	require.JSONEq(t, `{"error":"service_unavailable","message":"controller leader consistent read unavailable"}`, rec.Body.String())
 }
 
+func TestManagerNodeDrainingRejectsMissingToken(t *testing.T) {
+	srv := New(Options{
+		Auth:       testAuthConfig(nil),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/manager/nodes/2/draining", nil)
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.JSONEq(t, `{"error":"unauthorized","message":"unauthorized"}`, rec.Body.String())
+}
+
+func TestManagerNodeDrainingRejectsInsufficientPermission(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "viewer",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/manager/nodes/2/draining", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "viewer"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.JSONEq(t, `{"error":"forbidden","message":"forbidden"}`, rec.Body.String())
+}
+
+func TestManagerNodeDrainingRejectsInvalidNodeID(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"w"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/manager/nodes/bad/draining", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"error":"bad_request","message":"invalid node_id"}`, rec.Body.String())
+}
+
+func TestManagerNodeDrainingReturnsNotFound(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"w"},
+			}},
+		}}),
+		Management: managementStub{nodeDrainingErr: controllermeta.ErrNotFound},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/manager/nodes/2/draining", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	require.JSONEq(t, `{"error":"not_found","message":"node not found"}`, rec.Body.String())
+}
+
+func TestManagerNodeDrainingReturnsServiceUnavailableWhenLeaderUnavailable(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"w"},
+			}},
+		}}),
+		Management: managementStub{nodeDrainingErr: raftcluster.ErrNoLeader},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/manager/nodes/2/draining", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.JSONEq(t, `{"error":"service_unavailable","message":"controller leader unavailable"}`, rec.Body.String())
+}
+
+func TestManagerNodeDrainingReturnsUpdatedNodeDetail(t *testing.T) {
+	lastHeartbeatAt := time.Date(2026, 4, 22, 2, 4, 5, 0, time.UTC)
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"w"},
+			}},
+		}}),
+		Management: managementStub{
+			nodeDraining: managementusecase.NodeDetail{
+				Node: managementusecase.Node{
+					NodeID:          2,
+					Addr:            "127.0.0.1:7002",
+					Status:          "draining",
+					LastHeartbeatAt: lastHeartbeatAt,
+					ControllerRole:  "follower",
+					SlotCount:       3,
+					LeaderSlotCount: 0,
+					IsLocal:         false,
+					CapacityWeight:  2,
+				},
+				Slots: managementusecase.NodeSlots{
+					HostedIDs: []uint32{2, 4, 7},
+					LeaderIDs: []uint32{},
+				},
+			},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/manager/nodes/2/draining", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{
+		"node_id": 2,
+		"addr": "127.0.0.1:7002",
+		"status": "draining",
+		"last_heartbeat_at": "2026-04-22T02:04:05Z",
+		"is_local": false,
+		"capacity_weight": 2,
+		"controller": {
+			"role": "follower"
+		},
+		"slot_stats": {
+			"count": 3,
+			"leader_count": 0
+		},
+		"slots": {
+			"hosted_ids": [2, 4, 7],
+			"leader_ids": []
+		}
+	}`, rec.Body.String())
+}
+
+func TestManagerNodeResumeRejectsMissingToken(t *testing.T) {
+	srv := New(Options{
+		Auth:       testAuthConfig(nil),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/manager/nodes/2/resume", nil)
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.JSONEq(t, `{"error":"unauthorized","message":"unauthorized"}`, rec.Body.String())
+}
+
+func TestManagerNodeResumeRejectsInsufficientPermission(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "viewer",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/manager/nodes/2/resume", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "viewer"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.JSONEq(t, `{"error":"forbidden","message":"forbidden"}`, rec.Body.String())
+}
+
+func TestManagerNodeResumeRejectsInvalidNodeID(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"w"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/manager/nodes/bad/resume", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"error":"bad_request","message":"invalid node_id"}`, rec.Body.String())
+}
+
+func TestManagerNodeResumeReturnsNotFound(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"w"},
+			}},
+		}}),
+		Management: managementStub{nodeResumeErr: controllermeta.ErrNotFound},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/manager/nodes/2/resume", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	require.JSONEq(t, `{"error":"not_found","message":"node not found"}`, rec.Body.String())
+}
+
+func TestManagerNodeResumeReturnsServiceUnavailableWhenLeaderUnavailable(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"w"},
+			}},
+		}}),
+		Management: managementStub{nodeResumeErr: raftcluster.ErrNotLeader},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/manager/nodes/2/resume", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.JSONEq(t, `{"error":"service_unavailable","message":"controller leader unavailable"}`, rec.Body.String())
+}
+
+func TestManagerNodeResumeReturnsUpdatedNodeDetail(t *testing.T) {
+	lastHeartbeatAt := time.Date(2026, 4, 22, 2, 5, 6, 0, time.UTC)
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"w"},
+			}},
+		}}),
+		Management: managementStub{
+			nodeResume: managementusecase.NodeDetail{
+				Node: managementusecase.Node{
+					NodeID:          2,
+					Addr:            "127.0.0.1:7002",
+					Status:          "alive",
+					LastHeartbeatAt: lastHeartbeatAt,
+					ControllerRole:  "follower",
+					SlotCount:       3,
+					LeaderSlotCount: 0,
+					IsLocal:         false,
+					CapacityWeight:  2,
+				},
+				Slots: managementusecase.NodeSlots{
+					HostedIDs: []uint32{2, 4, 7},
+					LeaderIDs: []uint32{},
+				},
+			},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/manager/nodes/2/resume", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{
+		"node_id": 2,
+		"addr": "127.0.0.1:7002",
+		"status": "alive",
+		"last_heartbeat_at": "2026-04-22T02:05:06Z",
+		"is_local": false,
+		"capacity_weight": 2,
+		"controller": {
+			"role": "follower"
+		},
+		"slot_stats": {
+			"count": 3,
+			"leader_count": 0
+		},
+		"slots": {
+			"hosted_ids": [2, 4, 7],
+			"leader_ids": []
+		}
+	}`, rec.Body.String())
+}
+
 func TestManagerSlotsRejectsMissingToken(t *testing.T) {
 	srv := New(Options{
 		Auth:       testAuthConfig(nil),
@@ -1690,6 +2024,10 @@ type managementStub struct {
 	nodesErr                        error
 	nodeDetail                      managementusecase.NodeDetail
 	nodeDetailErr                   error
+	nodeDraining                    managementusecase.NodeDetail
+	nodeDrainingErr                 error
+	nodeResume                      managementusecase.NodeDetail
+	nodeResumeErr                   error
 	slots                           []managementusecase.Slot
 	slotsErr                        error
 	slotDetail                      managementusecase.SlotDetail
@@ -1714,6 +2052,14 @@ func (s managementStub) ListNodes(context.Context) ([]managementusecase.Node, er
 
 func (s managementStub) GetNode(context.Context, uint64) (managementusecase.NodeDetail, error) {
 	return s.nodeDetail, s.nodeDetailErr
+}
+
+func (s managementStub) MarkNodeDraining(context.Context, uint64) (managementusecase.NodeDetail, error) {
+	return s.nodeDraining, s.nodeDrainingErr
+}
+
+func (s managementStub) ResumeNode(context.Context, uint64) (managementusecase.NodeDetail, error) {
+	return s.nodeResume, s.nodeResumeErr
 }
 
 func (s managementStub) ListSlots(context.Context) ([]managementusecase.Slot, error) {

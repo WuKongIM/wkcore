@@ -58,8 +58,8 @@ func nodeDetailDTO(item managementusecase.NodeDetail) NodeDetailDTO {
 	return NodeDetailDTO{
 		NodeDTO: nodeDTO(item.Node),
 		Slots: NodeSlotsDTO{
-			HostedIDs: append([]uint32(nil), item.Slots.HostedIDs...),
-			LeaderIDs: append([]uint32(nil), item.Slots.LeaderIDs...),
+			HostedIDs: cloneUint32s(item.Slots.HostedIDs),
+			LeaderIDs: cloneUint32s(item.Slots.LeaderIDs),
 		},
 	}
 }
@@ -91,4 +91,11 @@ func parseNodeIDParam(raw string) (uint64, error) {
 		return 0, strconv.ErrSyntax
 	}
 	return value, nil
+}
+
+func cloneUint32s(values []uint32) []uint32 {
+	if len(values) == 0 {
+		return []uint32{}
+	}
+	return append([]uint32(nil), values...)
 }

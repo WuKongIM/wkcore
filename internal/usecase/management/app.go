@@ -27,6 +27,10 @@ type ClusterReader interface {
 	ListTasksStrict(ctx context.Context) ([]controllermeta.ReconcileTask, error)
 	// GetReconcileTaskStrict returns the controller leader's task detail without local fallback.
 	GetReconcileTaskStrict(ctx context.Context, slotID uint32) (controllermeta.ReconcileTask, error)
+	// MarkNodeDraining marks a node as draining through the controller leader.
+	MarkNodeDraining(ctx context.Context, nodeID uint64) error
+	// ResumeNode marks a node back to alive through the controller leader.
+	ResumeNode(ctx context.Context, nodeID uint64) error
 	ControllerLeaderID() uint64
 }
 

@@ -24,6 +24,13 @@ func (s *Server) registerRoutes() {
 	nodes.GET("/nodes", s.handleNodes)
 	nodes.GET("/nodes/:node_id", s.handleNode)
 
+	nodeWrites := s.engine.Group("/manager")
+	if s.auth.enabled() {
+		nodeWrites.Use(s.requirePermission("cluster.node", "w"))
+	}
+	nodeWrites.POST("/nodes/:node_id/draining", s.handleNodeDraining)
+	nodeWrites.POST("/nodes/:node_id/resume", s.handleNodeResume)
+
 	slots := s.engine.Group("/manager")
 	if s.auth.enabled() {
 		slots.Use(s.requirePermission("cluster.slot", "r"))
