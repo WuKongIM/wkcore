@@ -1,4 +1,22 @@
 import { getManagerApiBaseUrl } from "@/lib/env"
+import type {
+  ChannelRuntimeMetaListParams,
+  ManagerChannelRuntimeMetaDetailResponse,
+  ManagerChannelRuntimeMetaListResponse,
+  ManagerLoginResponse,
+  ManagerNodeDetailResponse,
+  ManagerNodesResponse,
+  ManagerOverviewResponse,
+  ManagerPermission,
+  ManagerSlotDetailResponse,
+  ManagerSlotRecoverResponse,
+  ManagerSlotRebalanceResponse,
+  ManagerSlotsResponse,
+  ManagerTaskDetailResponse,
+  ManagerTasksResponse,
+  RecoverSlotInput,
+  TransferSlotLeaderInput,
+} from "@/lib/manager-api.types"
 
 export type ManagerAuthConfig = {
   getAccessToken: () => string
@@ -8,11 +26,6 @@ export type ManagerAuthConfig = {
 export type ManagerLoginCredentials = {
   username: string
   password: string
-}
-
-export type ManagerPermission = {
-  resource: string
-  actions: string[]
 }
 
 export type ManagerSession = {
@@ -26,14 +39,6 @@ export type ManagerSession = {
 type ManagerErrorResponse = {
   error?: string
   message?: string
-}
-
-type ManagerLoginResponse = {
-  username: string
-  token_type: string
-  access_token: string
-  expires_at: string
-  permissions: ManagerPermission[]
 }
 
 export class ManagerApiError extends Error {
@@ -83,6 +88,24 @@ async function parseManagerError(response: Response) {
   )
 }
 
+async function jsonManagerFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await managerFetch(path, init)
+  return (await response.json()) as T
+}
+
+function buildChannelRuntimeMetaPath(params?: ChannelRuntimeMetaListParams) {
+  const search = new URLSearchParams()
+  if (typeof params?.limit === "number") {
+    search.set("limit", String(params.limit))
+  }
+  if (params?.cursor) {
+    search.set("cursor", params.cursor)
+  }
+
+  const query = search.toString()
+  return query ? `/manager/channel-runtime-meta?${query}` : "/manager/channel-runtime-meta"
+}
+
 export async function managerFetch(path: string, init?: RequestInit) {
   const headers = new Headers(init?.headers)
   headers.set("Accept", "application/json")
@@ -113,11 +136,10 @@ export async function managerFetch(path: string, init?: RequestInit) {
 }
 
 export async function loginManager(credentials: ManagerLoginCredentials): Promise<ManagerSession> {
-  const response = await managerFetch("/manager/login", {
+  const payload = await jsonManagerFetch<ManagerLoginResponse>("/manager/login", {
     method: "POST",
     body: JSON.stringify(credentials),
   })
-  const payload = (await response.json()) as ManagerLoginResponse
 
   return {
     username: payload.username,
@@ -126,4 +148,74 @@ export async function loginManager(credentials: ManagerLoginCredentials): Promis
     expiresAt: payload.expires_at,
     permissions: payload.permissions,
   }
+}
+
+export function getOverview() {
+  return jsonManagerFetch<ManagerOverviewResponse>("/manager/overview")
+}
+
+export function getNodes() {
+  return jsonManagerFetch<ManagerNodesResponse>("/manager/nodes")
+}
+
+export function getNode(nodeId: number) {
+  return jsonManagerFetch<ManagerNodeDetailResponse>(`/manager/nodes/${nodeId}`)
+}
+
+export function markNodeDraining(nodeId: number) {
+  return jsonManagerFetch<ManagerNodeDetailResponse>(`/manager/nodes/${nodeId}/draining`, {
+    method: "POST",
+  })
+}
+
+export function resumeNode(nodeId: number) {
+  return jsonManagerFetch<ManagerNodeDetailResponse>(`/manager/nodes/${nodeId}/resume`, {
+    method: "POST",
+  })
+}
+
+export function getSlots() {
+  return jsonManagerFetch<ManagerSlotsResponse>("/manager/slots")
+}
+
+export function getSlot(slotId: number) {
+  return jsonManagerFetch<ManagerSlotDetailResponse>(`/manager/slots/${slotId}`)
+}
+
+export function transferSlotLeader(slotId: number, input: TransferSlotLeaderInput) {
+  return jsonManagerFetch<ManagerSlotDetailResponse>(`/manager/slots/${slotId}/leader/transfer`, {
+    method: "POST",
+    body: JSON.stringify({ target_node_id: input.targetNodeId }),
+  })
+}
+
+export function recoverSlot(slotId: number, input: RecoverSlotInput) {
+  return jsonManagerFetch<ManagerSlotRecoverResponse>(`/manager/slots/${slotId}/recover`, {
+    method: "POST",
+    body: JSON.stringify({ strategy: input.strategy }),
+  })
+}
+
+export function rebalanceSlots() {
+  return jsonManagerFetch<ManagerSlotRebalanceResponse>("/manager/slots/rebalance", {
+    method: "POST",
+  })
+}
+
+export function getTasks() {
+  return jsonManagerFetch<ManagerTasksResponse>("/manager/tasks")
+}
+
+export function getTask(slotId: number) {
+  return jsonManagerFetch<ManagerTaskDetailResponse>(`/manager/tasks/${slotId}`)
+}
+
+export function getChannelRuntimeMeta(params?: ChannelRuntimeMetaListParams) {
+  return jsonManagerFetch<ManagerChannelRuntimeMetaListResponse>(buildChannelRuntimeMetaPath(params))
+}
+
+export function getChannelRuntimeMetaDetail(channelType: number, channelId: string) {
+  return jsonManagerFetch<ManagerChannelRuntimeMetaDetailResponse>(
+    `/manager/channel-runtime-meta/${channelType}/${encodeURIComponent(channelId)}`,
+  )
 }
