@@ -1532,7 +1532,6 @@ func (c *Cluster) syncObservationDeltaOnce(ctx context.Context, hint observation
 		return err
 	}
 	_ = c.agent.ApplyAssignments(ctx)
-	_ = c.observeHashSlotMigrations(ctx)
 	return nil
 }
 

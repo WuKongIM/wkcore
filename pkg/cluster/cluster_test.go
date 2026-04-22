@@ -2248,6 +2248,83 @@ func TestSlowSyncLoopRecoversDroppedHint(t *testing.T) {
 	}
 }
 
+func TestWakeReconcileOnceLeavesMigrationProgressToDedicatedLoop(t *testing.T) {
+	cluster := newUnitObservationTestCluster(t)
+
+	controllerClient := newControllerClient(cluster, []NodeConfig{{NodeID: 1}, {NodeID: 2}}, nil)
+	controllerClient.setLeader(2)
+	cluster.controllerClient = controllerClient
+	cluster.migrationWorker = &fakeHashSlotMigrationWorker{}
+	cluster.router = NewRouter(NewHashSlotTable(8, 2), 1, cluster.runtime)
+
+	if ok := cluster.wakeState.observeHint(2, observationHint{
+		LeaderID:         2,
+		LeaderGeneration: 1,
+		Revisions:        observationRevisions{Assignments: 1},
+		AffectedSlots:    []uint32{1},
+	}); !ok {
+		t.Fatal("observeHint() = false, want true")
+	}
+
+	worker := cluster.migrationWorker.(*fakeHashSlotMigrationWorker)
+	cluster.agent = &slotAgent{
+		cluster: cluster,
+		client: fakeControllerClient{
+			fetchObservationDeltaFn: func(_ context.Context, _ observationDeltaRequest) (observationDeltaResponse, error) {
+				return observationDeltaResponse{
+					LeaderID:         2,
+					LeaderGeneration: 1,
+					Revisions:        observationRevisions{Assignments: 1},
+					FullSync:         true,
+					Assignments:      []controllermeta.SlotAssignment{testObservationAssignment(1, 1)},
+					Nodes:            []controllermeta.ClusterNode{testObservationNode(1, controllermeta.NodeStatusAlive)},
+				}, nil
+			},
+		},
+		cache: cluster.assignments,
+	}
+
+	cluster.wakeReconcileOnce(context.Background())
+
+	if worker.ticks != 0 {
+		t.Fatalf("migration worker ticks = %d, want 0 for wake reconcile path", worker.ticks)
+	}
+}
+
+func TestSlowSyncOnceLeavesMigrationProgressToDedicatedLoop(t *testing.T) {
+	cluster := newUnitObservationTestCluster(t)
+
+	controllerClient := newControllerClient(cluster, []NodeConfig{{NodeID: 1}, {NodeID: 2}}, nil)
+	controllerClient.setLeader(2)
+	cluster.controllerClient = controllerClient
+	cluster.migrationWorker = &fakeHashSlotMigrationWorker{}
+	cluster.router = NewRouter(NewHashSlotTable(8, 2), 1, cluster.runtime)
+
+	worker := cluster.migrationWorker.(*fakeHashSlotMigrationWorker)
+	cluster.agent = &slotAgent{
+		cluster: cluster,
+		client: fakeControllerClient{
+			fetchObservationDeltaFn: func(_ context.Context, _ observationDeltaRequest) (observationDeltaResponse, error) {
+				return observationDeltaResponse{
+					LeaderID:         2,
+					LeaderGeneration: 1,
+					Revisions:        observationRevisions{Assignments: 1},
+					FullSync:         true,
+					Assignments:      []controllermeta.SlotAssignment{testObservationAssignment(1, 1)},
+					Nodes:            []controllermeta.ClusterNode{testObservationNode(1, controllermeta.NodeStatusAlive)},
+				}, nil
+			},
+		},
+		cache: cluster.assignments,
+	}
+
+	cluster.slowSyncOnce(context.Background())
+
+	if worker.ticks != 0 {
+		t.Fatalf("migration worker ticks = %d, want 0 for slow sync path", worker.ticks)
+	}
+}
+
 func TestIdleClusterSkipsMigrationObserveWithoutActiveWork(t *testing.T) {
 	worker := &fakeHashSlotMigrationWorker{}
 	cluster := &Cluster{
