@@ -11,7 +11,7 @@ export function ConnectionsPage() {
         actions={
           <>
             <Button size="sm" variant="outline">
-              Filter set
+              Filter lanes
             </Button>
             <Button size="sm">Refresh shell</Button>
           </>
@@ -19,7 +19,16 @@ export function ConnectionsPage() {
         description="Connection-level occupancy, transport, and client state will appear here."
         eyebrow="Runtime"
         title="Connections workspace"
-      />
+      >
+        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
+            Session list shell
+          </div>
+          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
+            Transport drill-in reserved
+          </div>
+        </div>
+      </PageHeader>
       <SectionCard
         description="Reserved for query controls and connection row placeholders."
         title="Connection Table"
@@ -28,7 +37,7 @@ export function ConnectionsPage() {
           <PlaceholderBlock className="min-h-14" kind="panel" />
           <PlaceholderBlock className="min-h-14" kind="panel" />
           <PlaceholderBlock className="min-h-14" kind="panel" />
-          <PlaceholderBlock className="min-h-14" kind="panel" />
+          <PlaceholderBlock className="min-h-14" kind="detail" />
         </div>
         <PlaceholderBlock kind="table" />
       </SectionCard>

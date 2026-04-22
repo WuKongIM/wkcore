@@ -11,15 +11,24 @@ export function ChannelsPage() {
         actions={
           <>
             <Button size="sm" variant="outline">
-              Filter set
+              Filter lanes
             </Button>
-            <Button size="sm">Inspect</Button>
+            <Button size="sm">Inspect channels</Button>
           </>
         }
         description="The channel view will host list filters, health tags, and drill-in actions."
         eyebrow="Runtime"
         title="Channels workspace"
-      />
+      >
+        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
+            Health-tag lane reserved
+          </div>
+          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
+            Drill-in context shell
+          </div>
+        </div>
+      </PageHeader>
       <SectionCard
         description="Reserved for channel-level list controls and summary strips."
         title="Channel List"
@@ -28,7 +37,7 @@ export function ChannelsPage() {
           <PlaceholderBlock className="min-h-14" kind="panel" />
           <PlaceholderBlock className="min-h-14" kind="panel" />
           <PlaceholderBlock className="min-h-14" kind="panel" />
-          <PlaceholderBlock className="min-h-14" kind="panel" />
+          <PlaceholderBlock className="min-h-14" kind="detail" />
         </div>
         <PlaceholderBlock kind="table" />
       </SectionCard>

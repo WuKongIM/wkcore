@@ -12,7 +12,7 @@ export function SlotsPage() {
         actions={
           <>
             <Button size="sm" variant="outline">
-              Filter set
+              Filter lanes
             </Button>
             <Button size="sm">Leader actions</Button>
           </>
@@ -20,8 +20,17 @@ export function SlotsPage() {
         description="Slot ownership, leader placement, and movement controls will land here later."
         eyebrow="Runtime"
         title="Slots workspace"
-      />
-      <section className="grid gap-4 md:grid-cols-3 xl:grid-cols-4">
+      >
+        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
+            Balance posture reserved
+          </div>
+          <div className="rounded-full border border-white/70 bg-white/75 px-3 py-1.5 shadow-sm">
+            Movement queue shell
+          </div>
+        </div>
+      </PageHeader>
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricPlaceholder hint="Leader coverage placeholder." label="Leaders" />
         <MetricPlaceholder hint="Follower coverage placeholder." label="Followers" />
         <MetricPlaceholder hint="Replica balance placeholder." label="Replicas" />
