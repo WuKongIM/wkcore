@@ -7,7 +7,8 @@ import (
 
 // Raft message types used when registering with transport.Server.
 const (
-	msgTypeRaft uint8 = 1
+	msgTypeRaft            uint8 = 1
+	msgTypeObservationHint uint8 = 2
 )
 
 // Forward error codes (encoded within RPC payload, not wire-level).

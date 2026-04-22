@@ -176,6 +176,18 @@ func (h *controllerHandler) Handle(ctx context.Context, body []byte) ([]byte, er
 			}
 		}
 		return encodeControllerResponse(req.Kind, controllerRPCResponse{Tasks: tasks})
+	case controllerRPCFetchObservationDelta:
+		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
+			return marshalRedirect()
+		}
+		if req.ObservationDelta == nil {
+			return nil, ErrInvalidConfig
+		}
+		if c.controllerHost == nil {
+			return nil, ErrNotStarted
+		}
+		delta := c.controllerHost.buildObservationDelta(*req.ObservationDelta)
+		return encodeControllerResponse(req.Kind, controllerRPCResponse{ObservationDelta: &delta})
 	case controllerRPCOperator:
 		if leaderID := c.controller.LeaderID(); leaderID != uint64(c.cfg.NodeID) {
 			return marshalRedirect()

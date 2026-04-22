@@ -254,3 +254,116 @@ func TestControllerCodecRuntimeObservationReportRoundTrip(t *testing.T) {
 		t.Fatalf("decoded runtime report = %+v", req.RuntimeReport)
 	}
 }
+
+func TestControllerCodecObservationDeltaRoundTrip(t *testing.T) {
+	reportedAt := time.Unix(1710006666, 0)
+	reqBody, err := encodeControllerRequest(controllerRPCRequest{
+		Kind: controllerRPCFetchObservationDelta,
+		ObservationDelta: &observationDeltaRequest{
+			LeaderID:         9,
+			LeaderGeneration: 3,
+			Revisions: observationRevisions{
+				Assignments: 1,
+				Tasks:       2,
+				Nodes:       3,
+				Runtime:     4,
+			},
+			RequestedSlots: []uint32{7, 8},
+			ForceFullSync:  true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("encodeControllerRequest() error = %v", err)
+	}
+
+	req, err := decodeControllerRequest(reqBody)
+	if err != nil {
+		t.Fatalf("decodeControllerRequest() error = %v", err)
+	}
+	if req.Kind != controllerRPCFetchObservationDelta {
+		t.Fatalf("req.Kind = %q, want %q", req.Kind, controllerRPCFetchObservationDelta)
+	}
+	if req.ObservationDelta == nil {
+		t.Fatal("req.ObservationDelta = nil, want payload")
+	}
+	if !reflect.DeepEqual(*req.ObservationDelta, observationDeltaRequest{
+		LeaderID:         9,
+		LeaderGeneration: 3,
+		Revisions: observationRevisions{
+			Assignments: 1,
+			Tasks:       2,
+			Nodes:       3,
+			Runtime:     4,
+		},
+		RequestedSlots: []uint32{7, 8},
+		ForceFullSync:  true,
+	}) {
+		t.Fatalf("decoded observation delta request = %+v", req.ObservationDelta)
+	}
+
+	respBody, err := encodeControllerResponse(controllerRPCFetchObservationDelta, controllerRPCResponse{
+		ObservationDelta: &observationDeltaResponse{
+			LeaderID:         9,
+			LeaderGeneration: 3,
+			Revisions: observationRevisions{
+				Assignments: 5,
+				Tasks:       6,
+				Nodes:       7,
+				Runtime:     8,
+			},
+			FullSync: true,
+			Assignments: []controllermeta.SlotAssignment{
+				testObservationAssignment(7, 9),
+			},
+			Tasks: []controllermeta.ReconcileTask{
+				testObservationTask(7, 2),
+			},
+			Nodes: []controllermeta.ClusterNode{
+				testObservationNode(3, controllermeta.NodeStatusSuspect),
+			},
+			RuntimeViews: []controllermeta.SlotRuntimeView{
+				testObservationRuntimeView(7, 3, []uint64{3, 5, 7}, 9, reportedAt),
+			},
+			DeletedTasks:        []uint32{1},
+			DeletedRuntimeSlots: []uint32{2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("encodeControllerResponse() error = %v", err)
+	}
+
+	resp, err := decodeControllerResponse(controllerRPCFetchObservationDelta, respBody)
+	if err != nil {
+		t.Fatalf("decodeControllerResponse() error = %v", err)
+	}
+	if resp.ObservationDelta == nil {
+		t.Fatal("resp.ObservationDelta = nil, want payload")
+	}
+	if !reflect.DeepEqual(*resp.ObservationDelta, observationDeltaResponse{
+		LeaderID:         9,
+		LeaderGeneration: 3,
+		Revisions: observationRevisions{
+			Assignments: 5,
+			Tasks:       6,
+			Nodes:       7,
+			Runtime:     8,
+		},
+		FullSync: true,
+		Assignments: []controllermeta.SlotAssignment{
+			testObservationAssignment(7, 9),
+		},
+		Tasks: []controllermeta.ReconcileTask{
+			testObservationTask(7, 2),
+		},
+		Nodes: []controllermeta.ClusterNode{
+			testObservationNode(3, controllermeta.NodeStatusSuspect),
+		},
+		RuntimeViews: []controllermeta.SlotRuntimeView{
+			testObservationRuntimeView(7, 3, []uint64{3, 5, 7}, 9, reportedAt),
+		},
+		DeletedTasks:        []uint32{1},
+		DeletedRuntimeSlots: []uint32{2},
+	}) {
+		t.Fatalf("decoded observation delta response = %+v", resp.ObservationDelta)
+	}
+}

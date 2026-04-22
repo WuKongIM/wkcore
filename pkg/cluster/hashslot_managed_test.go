@@ -313,8 +313,7 @@ func seedUsersPerHashSlot(t *testing.T, node *testNode, perHashSlot int, prefix 
 	require.Positive(t, hashSlotCount)
 	require.Positive(t, perHashSlot)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	seedDeadline := time.Now().Add(20 * time.Second)
 
 	counts := make(map[uint16]int, hashSlotCount)
 	fixtures := make([]managedUserFixture, 0, hashSlotCount*perHashSlot)
@@ -326,10 +325,22 @@ func seedUsersPerHashSlot(t *testing.T, node *testNode, perHashSlot int, prefix 
 		}
 
 		token := fmt.Sprintf("token-%d", i)
-		require.NoError(t, node.store.UpsertUser(ctx, metadb.User{
+		remaining := time.Until(seedDeadline)
+		if remaining <= 0 {
+			t.Fatalf("seedUsersPerHashSlot() timed out before populating all hash slots")
+		}
+		if remaining > 5*time.Second {
+			remaining = 5 * time.Second
+		}
+
+		// Give each write its own budget so suite-wide load does not consume the entire seed window.
+		writeCtx, cancel := context.WithTimeout(context.Background(), remaining)
+		err := node.store.UpsertUser(writeCtx, metadb.User{
 			UID:   uid,
 			Token: token,
-		}))
+		})
+		cancel()
+		require.NoError(t, err)
 
 		fixtures = append(fixtures, managedUserFixture{
 			uid:         uid,

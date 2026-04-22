@@ -319,6 +319,34 @@ func TestControllerClientRuntimeReportFallsThroughRedirectToCurrentLeader(t *tes
 	require.EqualValues(t, 1, atomic.LoadInt32(&seen))
 }
 
+func TestControllerClientFetchObservationDeltaUsesLocalFastPathWithoutSelfRPC(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	cluster.fwdClient = nil
+
+	host.syncState.reset()
+	host.syncState.replaceMetadataSnapshot(controllerMetadataSnapshot{
+		Assignments: []controllermeta.SlotAssignment{testObservationAssignment(1, 1)},
+		Tasks:       []controllermeta.ReconcileTask{testObservationTask(1, 1)},
+		Nodes:       []controllermeta.ClusterNode{testObservationNode(1, controllermeta.NodeStatusAlive)},
+	})
+
+	host.warmupMu.RLock()
+	leaderGeneration := host.warmupGeneration
+	host.warmupMu.RUnlock()
+
+	controllerClient := newControllerClient(cluster, []NodeConfig{{NodeID: cluster.cfg.NodeID}}, nil)
+
+	resp, err := controllerClient.FetchObservationDelta(context.Background(), observationDeltaRequest{
+		LeaderID:         uint64(cluster.cfg.NodeID),
+		LeaderGeneration: leaderGeneration,
+		ForceFullSync:    true,
+	})
+	require.NoError(t, err)
+	require.True(t, resp.FullSync)
+	require.Len(t, resp.Assignments, 1)
+	require.Equal(t, uint64(cluster.cfg.NodeID), resp.LeaderID)
+}
+
 func TestControllerClientRuntimeReportRedirectMarksReporterForFullSync(t *testing.T) {
 	staleLeader := transport.NewServer()
 	staleLeaderMux := transport.NewRPCMux()

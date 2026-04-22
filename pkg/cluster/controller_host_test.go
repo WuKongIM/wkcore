@@ -421,6 +421,68 @@ func TestControllerHostMetadataSnapshotReloadsOnLocalLeaderChange(t *testing.T) 
 	}
 }
 
+func TestControllerHostMetadataSnapshotReloadUpdatesObservationSyncState(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	seedControllerMetaForSnapshot(t, host)
+
+	host.handleLeaderChange(2, host.localNode)
+	waitForControllerMetadataSnapshotClean(t, host, time.Second)
+
+	if host.syncState == nil {
+		t.Fatal("controllerHost.syncState = nil, want initialized")
+	}
+	if got, want := host.syncState.currentRevisions(), (observationRevisions{
+		Assignments: 1,
+		Tasks:       1,
+		Nodes:       1,
+	}); got != want {
+		t.Fatalf("syncState.currentRevisions() = %+v, want %+v", got, want)
+	}
+
+	resp := host.syncState.buildDelta(observationDeltaRequest{ForceFullSync: true})
+	if !resp.FullSync {
+		t.Fatal("buildDelta(...).FullSync = false, want true")
+	}
+	if got, want := len(resp.Assignments), 1; got != want {
+		t.Fatalf("len(resp.Assignments) = %d, want %d", got, want)
+	}
+	if got, want := len(resp.Tasks), 1; got != want {
+		t.Fatalf("len(resp.Tasks) = %d, want %d", got, want)
+	}
+	if got, want := len(resp.Nodes), 1; got != want {
+		t.Fatalf("len(resp.Nodes) = %d, want %d", got, want)
+	}
+}
+
+func TestControllerHostApplyRuntimeReportUpdatesObservationSyncState(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	host.handleLeaderChange(2, host.localNode)
+
+	host.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     1,
+		ObservedAt: time.Unix(1710001200, 0),
+		FullSync:   true,
+		Views: []controllermeta.SlotRuntimeView{
+			testObservationRuntimeView(1, 1, []uint64{1, 2, 3}, 1, time.Unix(1710001200, 0)),
+		},
+	})
+
+	if host.syncState == nil {
+		t.Fatal("controllerHost.syncState = nil, want initialized")
+	}
+	if got, want := host.syncState.currentRevisions().Runtime, uint64(1); got != want {
+		t.Fatalf("syncState.currentRevisions().Runtime = %d, want %d", got, want)
+	}
+
+	resp := host.syncState.buildDelta(observationDeltaRequest{ForceFullSync: true})
+	if got, want := len(resp.RuntimeViews), 1; got != want {
+		t.Fatalf("len(resp.RuntimeViews) = %d, want %d", got, want)
+	}
+	if got, want := resp.RuntimeViews[0].LeaderID, uint64(1); got != want {
+		t.Fatalf("resp.RuntimeViews[0].LeaderID = %d, want %d", got, want)
+	}
+}
+
 func TestControllerHostMetadataSnapshotLeaderChangeCallbackIsNonBlocking(t *testing.T) {
 	_, host, _ := newTestLocalControllerCluster(t, false)
 	seedControllerMetaForSnapshot(t, host)

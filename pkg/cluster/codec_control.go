@@ -10,24 +10,25 @@ import (
 )
 
 const (
-	rpcServiceController           uint8            = 14
-	controllerRPCShardKey          multiraft.SlotID = multiraft.SlotID(^uint32(0))
-	controllerRPCHeartbeat         string           = "heartbeat"
-	controllerRPCRuntimeReport     string           = "runtime_report"
-	controllerRPCListAssignments   string           = "list_assignments"
-	controllerRPCListNodes         string           = "list_nodes"
-	controllerRPCListRuntimeViews  string           = "list_runtime_views"
-	controllerRPCListTasks         string           = "list_tasks"
-	controllerRPCOperator          string           = "operator"
-	controllerRPCGetTask           string           = "get_task"
-	controllerRPCForceReconcile    string           = "force_reconcile"
-	controllerRPCTaskResult        string           = "task_result"
-	controllerRPCStartMigration    string           = "start_migration"
-	controllerRPCAdvanceMigration  string           = "advance_migration"
-	controllerRPCFinalizeMigration string           = "finalize_migration"
-	controllerRPCAbortMigration    string           = "abort_migration"
-	controllerRPCAddSlot           string           = "add_slot"
-	controllerRPCRemoveSlot        string           = "remove_slot"
+	rpcServiceController               uint8            = 14
+	controllerRPCShardKey              multiraft.SlotID = multiraft.SlotID(^uint32(0))
+	controllerRPCHeartbeat             string           = "heartbeat"
+	controllerRPCRuntimeReport         string           = "runtime_report"
+	controllerRPCListAssignments       string           = "list_assignments"
+	controllerRPCListNodes             string           = "list_nodes"
+	controllerRPCListRuntimeViews      string           = "list_runtime_views"
+	controllerRPCListTasks             string           = "list_tasks"
+	controllerRPCFetchObservationDelta string           = "fetch_observation_delta"
+	controllerRPCOperator              string           = "operator"
+	controllerRPCGetTask               string           = "get_task"
+	controllerRPCForceReconcile        string           = "force_reconcile"
+	controllerRPCTaskResult            string           = "task_result"
+	controllerRPCStartMigration        string           = "start_migration"
+	controllerRPCAdvanceMigration      string           = "advance_migration"
+	controllerRPCFinalizeMigration     string           = "finalize_migration"
+	controllerRPCAbortMigration        string           = "abort_migration"
+	controllerRPCAddSlot               string           = "add_slot"
+	controllerRPCRemoveSlot            string           = "remove_slot"
 )
 
 const (
@@ -45,6 +46,7 @@ const (
 	controllerKindListNodes
 	controllerKindListRuntimeViews
 	controllerKindListTasks
+	controllerKindFetchObservationDelta
 	controllerKindOperator
 	controllerKindGetTask
 	controllerKindForceReconcile
@@ -58,15 +60,16 @@ const (
 )
 
 type controllerRPCRequest struct {
-	Kind          string
-	SlotID        uint32
-	Report        *slotcontroller.AgentReport
-	RuntimeReport *runtimeObservationReport
-	Op            *slotcontroller.OperatorRequest
-	Advance       *controllerTaskAdvance
-	Migration     *slotcontroller.MigrationRequest
-	AddSlot       *slotcontroller.AddSlotRequest
-	RemoveSlot    *slotcontroller.RemoveSlotRequest
+	Kind             string
+	SlotID           uint32
+	Report           *slotcontroller.AgentReport
+	RuntimeReport    *runtimeObservationReport
+	ObservationDelta *observationDeltaRequest
+	Op               *slotcontroller.OperatorRequest
+	Advance          *controllerTaskAdvance
+	Migration        *slotcontroller.MigrationRequest
+	AddSlot          *slotcontroller.AddSlotRequest
+	RemoveSlot       *slotcontroller.RemoveSlotRequest
 }
 
 type controllerTaskAdvance struct {
@@ -92,6 +95,7 @@ type controllerRPCResponse struct {
 	Assignments          []controllermeta.SlotAssignment
 	RuntimeViews         []controllermeta.SlotRuntimeView
 	Tasks                []controllermeta.ReconcileTask
+	ObservationDelta     *observationDeltaResponse
 	Task                 *controllermeta.ReconcileTask
 	HashSlotTableVersion uint64
 	HashSlotTable        []byte
@@ -207,6 +211,11 @@ func encodeControllerRequestPayload(req controllerRPCRequest) ([]byte, error) {
 			return nil, ErrInvalidConfig
 		}
 		return encodeRuntimeObservationReport(*req.RuntimeReport), nil
+	case controllerRPCFetchObservationDelta:
+		if req.ObservationDelta == nil {
+			return nil, ErrInvalidConfig
+		}
+		return encodeObservationDeltaRequest(*req.ObservationDelta), nil
 	case controllerRPCOperator:
 		if req.Op == nil {
 			return nil, ErrInvalidConfig
@@ -254,6 +263,13 @@ func decodeControllerRequestPayload(req *controllerRPCRequest, payload []byte) e
 			return err
 		}
 		req.RuntimeReport = &report
+		return nil
+	case controllerRPCFetchObservationDelta:
+		delta, err := decodeObservationDeltaRequest(payload)
+		if err != nil {
+			return err
+		}
+		req.ObservationDelta = &delta
 		return nil
 	case controllerRPCOperator:
 		op, err := decodeOperatorRequest(payload)
@@ -308,6 +324,11 @@ func encodeControllerResponsePayload(kind string, resp controllerRPCResponse) ([
 		controllerRPCStartMigration, controllerRPCAdvanceMigration, controllerRPCFinalizeMigration,
 		controllerRPCAbortMigration, controllerRPCAddSlot, controllerRPCRemoveSlot:
 		return nil, nil
+	case controllerRPCFetchObservationDelta:
+		if resp.ObservationDelta == nil {
+			return nil, nil
+		}
+		return encodeObservationDeltaResponse(*resp.ObservationDelta), nil
 	case controllerRPCListAssignments:
 		return encodeAssignmentsWithHashSlotTable(resp.Assignments, resp.HashSlotTableVersion, resp.HashSlotTable), nil
 	case controllerRPCListNodes:
@@ -342,6 +363,16 @@ func decodeControllerResponsePayload(kind string, resp *controllerRPCResponse, p
 		if len(payload) != 0 {
 			return ErrInvalidConfig
 		}
+		return nil
+	case controllerRPCFetchObservationDelta:
+		if len(payload) == 0 {
+			return nil
+		}
+		delta, err := decodeObservationDeltaResponse(payload)
+		if err != nil {
+			return err
+		}
+		resp.ObservationDelta = &delta
 		return nil
 	case controllerRPCListAssignments:
 		assignments, version, table, err := decodeAssignmentsWithHashSlotTable(payload)
@@ -402,6 +433,8 @@ func controllerKindCode(kind string) (byte, error) {
 		return controllerKindListRuntimeViews, nil
 	case controllerRPCListTasks:
 		return controllerKindListTasks, nil
+	case controllerRPCFetchObservationDelta:
+		return controllerKindFetchObservationDelta, nil
 	case controllerRPCOperator:
 		return controllerKindOperator, nil
 	case controllerRPCGetTask:
@@ -441,6 +474,8 @@ func controllerKindName(kind byte) (string, error) {
 		return controllerRPCListRuntimeViews, nil
 	case controllerKindListTasks:
 		return controllerRPCListTasks, nil
+	case controllerKindFetchObservationDelta:
+		return controllerRPCFetchObservationDelta, nil
 	case controllerKindOperator:
 		return controllerRPCOperator, nil
 	case controllerKindGetTask:
@@ -624,6 +659,140 @@ func decodeTaskAdvance(slotID uint32, body []byte) (controllerTaskAdvance, error
 		Attempt: attempt,
 		Now:     time.Unix(0, nowUnix),
 		Err:     taskErr,
+	}, nil
+}
+
+func encodeObservationDeltaRequest(req observationDeltaRequest) []byte {
+	body := make([]byte, 0, 8*6+1+len(req.RequestedSlots)*4)
+	body = binary.BigEndian.AppendUint64(body, req.LeaderID)
+	body = binary.BigEndian.AppendUint64(body, req.LeaderGeneration)
+	body = appendObservationRevisions(body, req.Revisions)
+	if req.ForceFullSync {
+		body = append(body, 1)
+	} else {
+		body = append(body, 0)
+	}
+	return appendUint32Slice(body, req.RequestedSlots)
+}
+
+func decodeObservationDeltaRequest(body []byte) (observationDeltaRequest, error) {
+	leaderID, rest, err := readUint64(body)
+	if err != nil {
+		return observationDeltaRequest{}, err
+	}
+	leaderGeneration, rest, err := readUint64(rest)
+	if err != nil {
+		return observationDeltaRequest{}, err
+	}
+	revisions, rest, err := readObservationRevisions(rest)
+	if err != nil {
+		return observationDeltaRequest{}, err
+	}
+	if len(rest) < 1 {
+		return observationDeltaRequest{}, ErrInvalidConfig
+	}
+	forceFullSync := rest[0] == 1
+	requestedSlots, rest, err := readUint32Slice(rest[1:])
+	if err != nil || len(rest) != 0 {
+		return observationDeltaRequest{}, ErrInvalidConfig
+	}
+	return observationDeltaRequest{
+		LeaderID:         leaderID,
+		LeaderGeneration: leaderGeneration,
+		Revisions:        revisions,
+		RequestedSlots:   requestedSlots,
+		ForceFullSync:    forceFullSync,
+	}, nil
+}
+
+func encodeObservationDeltaResponse(resp observationDeltaResponse) []byte {
+	body := make([]byte, 0, 8*6+1)
+	body = binary.BigEndian.AppendUint64(body, resp.LeaderID)
+	body = binary.BigEndian.AppendUint64(body, resp.LeaderGeneration)
+	body = appendObservationRevisions(body, resp.Revisions)
+	if resp.FullSync {
+		body = append(body, 1)
+	} else {
+		body = append(body, 0)
+	}
+	body = appendBytes(body, encodeAssignments(resp.Assignments))
+	body = appendBytes(body, encodeReconcileTasks(resp.Tasks))
+	body = appendBytes(body, encodeClusterNodes(resp.Nodes))
+	body = appendBytes(body, encodeRuntimeViews(resp.RuntimeViews))
+	body = appendUint32Slice(body, resp.DeletedTasks)
+	return appendUint32Slice(body, resp.DeletedRuntimeSlots)
+}
+
+func decodeObservationDeltaResponse(body []byte) (observationDeltaResponse, error) {
+	leaderID, rest, err := readUint64(body)
+	if err != nil {
+		return observationDeltaResponse{}, err
+	}
+	leaderGeneration, rest, err := readUint64(rest)
+	if err != nil {
+		return observationDeltaResponse{}, err
+	}
+	revisions, rest, err := readObservationRevisions(rest)
+	if err != nil {
+		return observationDeltaResponse{}, err
+	}
+	if len(rest) < 1 {
+		return observationDeltaResponse{}, ErrInvalidConfig
+	}
+	fullSync := rest[0] == 1
+	rest = rest[1:]
+
+	assignmentsBody, rest, err := readBytes(rest)
+	if err != nil {
+		return observationDeltaResponse{}, err
+	}
+	assignments, err := decodeAssignments(assignmentsBody)
+	if err != nil {
+		return observationDeltaResponse{}, err
+	}
+	tasksBody, rest, err := readBytes(rest)
+	if err != nil {
+		return observationDeltaResponse{}, err
+	}
+	tasks, err := decodeReconcileTasks(tasksBody)
+	if err != nil {
+		return observationDeltaResponse{}, err
+	}
+	nodesBody, rest, err := readBytes(rest)
+	if err != nil {
+		return observationDeltaResponse{}, err
+	}
+	nodes, err := decodeClusterNodes(nodesBody)
+	if err != nil {
+		return observationDeltaResponse{}, err
+	}
+	runtimeViewsBody, rest, err := readBytes(rest)
+	if err != nil {
+		return observationDeltaResponse{}, err
+	}
+	runtimeViews, err := decodeRuntimeViews(runtimeViewsBody)
+	if err != nil {
+		return observationDeltaResponse{}, err
+	}
+	deletedTasks, rest, err := readUint32Slice(rest)
+	if err != nil {
+		return observationDeltaResponse{}, err
+	}
+	deletedRuntimeSlots, rest, err := readUint32Slice(rest)
+	if err != nil || len(rest) != 0 {
+		return observationDeltaResponse{}, ErrInvalidConfig
+	}
+	return observationDeltaResponse{
+		LeaderID:            leaderID,
+		LeaderGeneration:    leaderGeneration,
+		Revisions:           revisions,
+		FullSync:            fullSync,
+		Assignments:         assignments,
+		Tasks:               tasks,
+		Nodes:               nodes,
+		RuntimeViews:        runtimeViews,
+		DeletedTasks:        deletedTasks,
+		DeletedRuntimeSlots: deletedRuntimeSlots,
 	}, nil
 }
 
@@ -1112,6 +1281,38 @@ func readUint32Slice(src []byte) ([]uint32, []byte, error) {
 		rest = next
 	}
 	return values, rest, nil
+}
+
+func appendObservationRevisions(dst []byte, revisions observationRevisions) []byte {
+	dst = binary.BigEndian.AppendUint64(dst, revisions.Assignments)
+	dst = binary.BigEndian.AppendUint64(dst, revisions.Tasks)
+	dst = binary.BigEndian.AppendUint64(dst, revisions.Nodes)
+	return binary.BigEndian.AppendUint64(dst, revisions.Runtime)
+}
+
+func readObservationRevisions(src []byte) (observationRevisions, []byte, error) {
+	assignments, rest, err := readUint64(src)
+	if err != nil {
+		return observationRevisions{}, nil, err
+	}
+	tasks, rest, err := readUint64(rest)
+	if err != nil {
+		return observationRevisions{}, nil, err
+	}
+	nodes, rest, err := readUint64(rest)
+	if err != nil {
+		return observationRevisions{}, nil, err
+	}
+	runtime, rest, err := readUint64(rest)
+	if err != nil {
+		return observationRevisions{}, nil, err
+	}
+	return observationRevisions{
+		Assignments: assignments,
+		Tasks:       tasks,
+		Nodes:       nodes,
+		Runtime:     runtime,
+	}, rest, nil
 }
 
 func appendInt64(dst []byte, value int64) []byte {

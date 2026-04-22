@@ -17,9 +17,9 @@
 | `slotExecutor` | `slot_executor.go:11` | 任务执行器：Bootstrap / Repair / Rebalance 三种任务的分步执行 |
 | `controllerClient` | `controller_client.go:31` | Controller RPC 客户端：Leader 发现 + 重试 + 读写操作 |
 | `controllerHandler` | `controller_handler.go:12` | Controller RPC 服务端：请求分发到 Propose / Meta 查询 |
-| `controllerHost` | `controller_host.go` | Controller 本地宿主：管理 Controller Raft + 状态机 + 元数据库 + leader-local observation cache |
+| `controllerHost` | `controller_host.go` | Controller 本地宿主：管理 Controller Raft + 状态机 + 元数据库 + leader-local observation cache / delta snapshot / planner dirty wake |
 | `runtimeObservationReporter` | `runtime_observation_reporter.go` | 本地 runtime 镜像：扫描 cached status、生成 dirty delta / tombstone / full sync |
-| `observerLoop` | `observer.go:8` | 周期循环基础设施；当前拆成 heartbeatLoop / runtimeObservationLoop / observerLoop 三条节拍 |
+| `observerLoop` / `signalLoop` | `observer.go` | 周期 / 事件驱动循环基础设施；当前拆成 heartbeat / runtime scan / slow sync / planner safety / migration progress / wake loops |
 
 ## 3. 对外接口
 
@@ -53,7 +53,7 @@ API.Server() / RPCMux() / Discovery() / RPCService(ctx, nodeID, slotID, serviceI
 |------|------|------|
 | `Cluster` | cluster.go:59 | 核心结构体，聚合传输/Controller/Agent/ManagedSlot/迁移等全部资源 |
 | `Config` | config.go:32 | 配置容器：NodeID, ListenAddr, SlotCount, HashSlotCount, 工厂函数, 超时参数, Observer / TransportObserver 等 |
-| `Timeouts` | config.go:59 | 9 个可配超时：ControllerObservation/Request/LeaderWait, Forward/ConfigChange/LeaderTransfer 重试预算等 |
+| `Timeouts` | config.go:59 | 控制器请求 / 重试预算 + observation cadence：heartbeat、runtime scan、slow sync、planner safety、planner wake debounce 等 |
 | `Router` | router.go:9 | 路由器：持有 HashSlotTable(atomic), 负责 key→slot→leader 映射 |
 | `HashSlotTable` | hashslottable.go | Hash Slot 路由表：hashSlot→物理SlotID 映射 + 迁移状态 |
 | `slotAgent` | agent.go:21 | 节点代理：持有 Cluster + controllerAPI + assignmentCache |
@@ -110,7 +110,11 @@ Start():
      → 创建 runtimeObservationReporter
      → 周期 ObservationHeartbeatInterval 启动 heartbeatLoop（仅 node heartbeat）
      → 周期 ObservationRuntimeScanInterval 启动 runtimeObservationLoop（delta scan + runtime_report flush）
-     → 周期 ControllerObservation 间隔启动 observerLoop（assignment sync / reconcile / migration / controllerTick）
+     → signalLoop 监听 observationHint → wakeReconcileLoop（按 hint 触发 delta sync + reconcile）
+     → 周期 ObservationSlowSyncInterval 启动 slowSyncLoop（hint 丢失时的全量/宽范围自愈）
+     → signalLoop 监听 controllerHost planner dirty wake → plannerWakeLoop
+     → 周期 PlannerSafetyInterval 启动 plannerSafetyLoop（无 wake 时也会兜底评估）
+     → 周期 ControllerObservation 启动 migrationProgressLoop（仅在有 active migration / pending abort 时推进）
   ⑧ seedLegacySlotsIfConfigured():
      条件: !ControllerEnabled()（静态部署模式）
      → 遍历 cfg.Slots → openOrBootstrapSlot (根据持久化状态决定 Open 还是 Bootstrap)
@@ -173,14 +177,42 @@ runtimeObservationOnce(ctx):
      → flush 成功后更新本地 mirror，失败则保留 dirty 状态
      → leader redirect / leader change / 定期自愈 时发送 `FullSync=true`
 
-observeOnce(ctx):
-  ① agent.SyncAssignments(ctx):
-     → client.RefreshAssignments() 从 Controller Leader 拉取最新分配
-     → 写入 assignmentCache
-     → 失败 fallback: 直接读本地 controllerMeta
-  ③ agent.ApplyAssignments(ctx):
-     → reconciler.Tick(ctx) [见 5.4]
-  ④ observeHashSlotMigrations(ctx) [见 5.7]
+wakeReconcileLoop（signalLoop，收到 hint 时立即执行）:
+  ① follower 收到 `msgTypeObservationHint`
+     → decodeObservationHint → `wakeState.observeHint(...)`
+     → cluster.signalObservationWake() 唤醒 wake loop
+  ② wakeReconcileOnce(ctx):
+     → takePending() 取出 coalesced hint
+     → `agent.SyncObservationDelta(ctx, hint)`
+        - 调用 controller RPC `fetch_observation_delta`
+        - 带上 follower 已应用的 revisions / leader generation / affected slots
+        - leader 按 revision 返回增量，必要时 fallback full sync
+     → applyObservationDelta:
+        - 更新 follower 本地 assignments / tasks / nodes / runtime views cache
+        - 记录本次 delta 的 scoped reconcile slots（若 delta 不含 nodes 变化）
+     → `agent.ApplyAssignments(ctx)` → `reconciler.Tick(ctx)` [见 5.4]
+     → `observeHashSlotMigrations(ctx)` [见 5.7]
+
+slowSyncLoop（周期兜底）:
+  ① slowSyncOnce(ctx):
+     → 即使没有 hint，也调用 `agent.SyncObservationDelta(ctx, observationHint{})`
+     → 以空 scope 请求 leader 当前 revision，对 dropped hint / missed wake 做低频修复
+     → 成功后继续 `ApplyAssignments + observeHashSlotMigrations`
+
+plannerWakeLoop（signalLoop，controller leader dirty wake）:
+  ① `controllerHost.markPlannerDirty()` 在以下场景置 dirty:
+     - runtime observation report
+     - committed controller command（assignment/task/task-result/migration/operator 等）
+     - leader ownership change
+  ② dirty wake 经过 PlannerWakeDebounce 去抖后发到 plannerWakeLoop
+  ③ plannerWakeOnce(ctx):
+     → `controllerHost.consumePlannerDirty()`
+     → dirty=true 时立即执行 `controllerTickOnce(ctx)`
+
+plannerSafetyLoop（周期兜底）:
+  ① plannerSafetyOnce(ctx):
+     → 无论是否有 dirty wake，都执行一次 `controllerTickOnce(ctx)`
+     → 避免 wake 丢失后 planner 永久不评估
 
 controllerTickOnce(ctx):
   条件: 本节点是 Controller Leader
@@ -206,26 +238,31 @@ controllerTickOnce(ctx):
 
 ```
 Tick(ctx):
-  ① 快照 assignments → 过滤出本节点参与的 desiredLocalSlots
-  ② listControllerNodes → 获取所有节点状态 (alive/draining/dead)
+  ① 快照 assignments
+     → 若上一个 observation delta 提供了 safe scoped slots（仅 slot-scoped 变化、无 node 变化）
+       则只保留受影响 slots；否则走全量 assignments
+  ② 过滤出本节点参与的 desiredLocalSlots
+  ③ listControllerNodes → 获取所有节点状态 (alive/draining/dead)
      → 若本节点是 Controller Leader 且 metadata snapshot clean，则优先读本地 metadata snapshot
+     → follower steady-state 优先读本地已应用的 observation delta cache
      → 否则走 controller client / fallback store 原逻辑
-  ③ listRuntimeViews → 获取 leader 观测到的 Slot 运行时视图（leader-local snapshot）
-  ④ 确保本地 Slot:
+  ④ listRuntimeViews → 获取 leader 观测到的 Slot 运行时视图（leader-local snapshot / follower applied cache）
+  ⑤ 确保本地 Slot:
      遍历本节点分配:
        ensureManagedSlotLocal(slotID, desiredPeers, hasView, false)
        → slotManager.ensureLocal [见 5.5]
-  ⑤ loadTasks:
-     → 先批量读取 Controller Tasks 快照（leader-local metadata snapshot / controller client `list_tasks` / fallback `controllerMeta.ListTasks`）
+  ⑥ loadTasks:
+     → 先批量读取 Controller Tasks 快照（leader-local metadata snapshot / follower applied cache / controller client `list_tasks` / fallback `controllerMeta.ListTasks`）
      → 与 pendingTaskReport 合并成 slotID → task map，steady-state 无 task 时不再对每个 Slot 单独 `get_task`
-  ⑥ 保护迁移源 Slot:
+  ⑦ 保护迁移源 Slot:
      如果 task 的 SourceNode==本节点 且 kind 为 Repair/Rebalance
      → 源 Slot 即使不在 desiredLocalSlots 中也需保持打开
-  ⑦ 关闭多余 Slot:
+  ⑧ 关闭多余 Slot:
      遍历 runtime.Slots():
+       scoped reconcile 时仅处理 scoped slots；否则处理全部本地 runtime slots
        不在 desiredLocalSlots 且不在 protectedSourceSlots → runtime.CloseSlot
        → deleteRuntimePeers + unregisterRuntimeStateMachine
-  ⑧ 执行任务:
+  ⑨ 执行任务:
      遍历 assignments → 取出对应 task:
        a. reconcileTaskRunnable(now, task): 检查 Pending 或 Retrying+到时间
        b. shouldExecuteTask: 确定由哪个节点执行

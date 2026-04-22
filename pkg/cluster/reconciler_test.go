@@ -164,6 +164,52 @@ func TestReconcilerTickUsesKnownTaskWhenFreshTaskConfirmationTimesOut(t *testing
 	}
 }
 
+func TestReconcilerTickScopesToAffectedLocalSlotsWhenDeltaIsScoped(t *testing.T) {
+	ensuredSlots := make([]uint32, 0, 2)
+	cluster := newObserverTestCluster(t, ObserverHooks{
+		OnSlotEnsure: func(slotID uint32, action string, err error) {
+			if err != nil {
+				t.Fatalf("OnSlotEnsure() err = %v, want nil", err)
+			}
+			if action == "bootstrap" || action == "open" {
+				ensuredSlots = append(ensuredSlots, slotID)
+			}
+		},
+	})
+	cluster.assignments.SetAssignments([]controllermeta.SlotAssignment{
+		{SlotID: 1, DesiredPeers: []uint64{1}, ConfigEpoch: 1},
+		{SlotID: 2, DesiredPeers: []uint64{1}, ConfigEpoch: 1},
+	})
+
+	agent := &slotAgent{
+		cluster: cluster,
+		client: fakeControllerClient{
+			nodes: []controllermeta.ClusterNode{
+				{NodeID: 1, Status: controllermeta.NodeStatusAlive},
+			},
+			runtimeViews: []controllermeta.SlotRuntimeView{
+				{SlotID: 1, CurrentPeers: []uint64{1}, LeaderID: 1, HasQuorum: true},
+				{SlotID: 2, CurrentPeers: []uint64{1}, LeaderID: 1, HasQuorum: true},
+			},
+		},
+		cache: cluster.assignments,
+	}
+	agent.setPendingReconcileScope([]uint32{1})
+
+	if err := newReconciler(agent).Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	if len(ensuredSlots) != 1 || ensuredSlots[0] != 1 {
+		t.Fatalf("ensured slots = %v, want only slot 1 from the scoped delta", ensuredSlots)
+	}
+	if _, err := cluster.runtime.Status(1); err != nil {
+		t.Fatalf("runtime.Status(1) error = %v, want slot 1 opened", err)
+	}
+	if _, err := cluster.runtime.Status(2); !errors.Is(err, multiraft.ErrSlotNotFound) {
+		t.Fatalf("runtime.Status(2) error = %v, want %v when slot 2 is outside the scoped delta", err, multiraft.ErrSlotNotFound)
+	}
+}
+
 func TestReconcilerTickLoadsTasksViaListTasksBeforePerSlotConfirmation(t *testing.T) {
 	cluster, err := NewCluster(Config{
 		NodeID:       1,

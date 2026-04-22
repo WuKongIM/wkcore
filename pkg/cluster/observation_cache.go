@@ -135,27 +135,24 @@ func (c *observationCache) snapshot() observationSnapshot {
 	for _, node := range c.nodes {
 		snapshot.Nodes = append(snapshot.Nodes, node)
 	}
-	runtimeViews := make(map[uint32]controllermeta.SlotRuntimeView)
-	for _, nodeViews := range c.runtimeViewsByNode {
-		for slotID, view := range nodeViews {
-			current, ok := runtimeViews[slotID]
-			if ok && current.LastReportAt.After(view.LastReportAt) {
-				continue
-			}
-			runtimeViews[slotID] = cloneRuntimeView(view)
-		}
-	}
-	snapshot.RuntimeViews = make([]controllermeta.SlotRuntimeView, 0, len(runtimeViews))
-	for _, view := range runtimeViews {
-		snapshot.RuntimeViews = append(snapshot.RuntimeViews, view)
-	}
+	snapshot.RuntimeViews = c.snapshotRuntimeViewsLocked()
 	sort.Slice(snapshot.Nodes, func(i, j int) bool {
 		return snapshot.Nodes[i].NodeID < snapshot.Nodes[j].NodeID
 	})
-	sort.Slice(snapshot.RuntimeViews, func(i, j int) bool {
-		return snapshot.RuntimeViews[i].SlotID < snapshot.RuntimeViews[j].SlotID
-	})
 	return snapshot
+}
+
+// snapshotRuntimeViews returns the latest slot-scoped runtime view aggregation.
+func (c *observationCache) snapshotRuntimeViews() []controllermeta.SlotRuntimeView {
+	if c == nil {
+		return nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.evictStaleRuntimeViewsLocked()
+	return c.snapshotRuntimeViewsLocked()
 }
 
 func (c *observationCache) reset() {
@@ -188,6 +185,28 @@ func (c *observationCache) evictStaleRuntimeViewsLocked() {
 		delete(c.runtimeReceivedAt, nodeID)
 		delete(c.runtimeViewsByNode, nodeID)
 	}
+}
+
+func (c *observationCache) snapshotRuntimeViewsLocked() []controllermeta.SlotRuntimeView {
+	runtimeViews := make(map[uint32]controllermeta.SlotRuntimeView)
+	for _, nodeViews := range c.runtimeViewsByNode {
+		for slotID, view := range nodeViews {
+			current, ok := runtimeViews[slotID]
+			if ok && current.LastReportAt.After(view.LastReportAt) {
+				continue
+			}
+			runtimeViews[slotID] = cloneRuntimeView(view)
+		}
+	}
+
+	out := make([]controllermeta.SlotRuntimeView, 0, len(runtimeViews))
+	for _, view := range runtimeViews {
+		out = append(out, view)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].SlotID < out[j].SlotID
+	})
+	return out
 }
 
 func runtimeViewEquivalent(left, right controllermeta.SlotRuntimeView) bool {

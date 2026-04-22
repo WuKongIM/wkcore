@@ -27,7 +27,11 @@ func (r *reconciler) Tick(ctx context.Context) error {
 	}
 
 	assignments := a.cache.Snapshot()
-	if len(assignments) == 0 {
+	scope, scoped := a.takePendingReconcileScope()
+	if scoped {
+		assignments = filterAssignmentsByScope(assignments, scope)
+	}
+	if len(assignments) == 0 && !scoped {
 		return nil
 	}
 	now := time.Now()
@@ -93,6 +97,9 @@ func (r *reconciler) Tick(ctx context.Context) error {
 		}
 	}
 	for _, slotID := range a.cluster.runtime.Slots() {
+		if scoped && !slotRequested(scope, uint32(slotID)) {
+			continue
+		}
 		if _, ok := desiredLocalSlots[uint32(slotID)]; ok {
 			continue
 		}
@@ -184,6 +191,20 @@ func (r *reconciler) Tick(ctx context.Context) error {
 		a.clearPendingTaskReport(assignment.SlotID)
 	}
 	return nil
+}
+
+func filterAssignmentsByScope(assignments []controllermeta.SlotAssignment, scope map[uint32]struct{}) []controllermeta.SlotAssignment {
+	if len(assignments) == 0 || len(scope) == 0 {
+		return assignments
+	}
+	filtered := make([]controllermeta.SlotAssignment, 0, len(assignments))
+	for _, assignment := range assignments {
+		if !slotRequested(scope, assignment.SlotID) {
+			continue
+		}
+		filtered = append(filtered, assignment)
+	}
+	return filtered
 }
 
 type reconcileTaskLoadResult struct {

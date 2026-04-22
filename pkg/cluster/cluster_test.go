@@ -515,6 +515,67 @@ func TestControllerTickOnceDoesNotProposeEvaluateTimeouts(t *testing.T) {
 	}
 }
 
+func TestControllerPlannerRunsOnDirtyWake(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	cluster.cfg.SlotReplicaN = 1
+	if err := host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          uint64(cluster.cfg.NodeID),
+		Addr:            cluster.cfg.Nodes[0].Addr,
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Now(),
+		CapacityWeight:  1,
+	}); err != nil {
+		t.Fatalf("UpsertNode() error = %v", err)
+	}
+	host.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     uint64(cluster.cfg.NodeID),
+		ObservedAt: time.Unix(1710000801, 0),
+		FullSync:   true,
+	})
+
+	cluster.plannerWakeOnce(context.Background())
+
+	tasks, err := host.meta.ListTasks(context.Background())
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) == 0 {
+		t.Fatalf("ListTasks() = %#v, want planner wake to schedule work", tasks)
+	}
+}
+
+func TestControllerPlannerSafetyTickStillEvaluatesWhenNoHintArrives(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	cluster.cfg.SlotReplicaN = 1
+	if err := host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          uint64(cluster.cfg.NodeID),
+		Addr:            cluster.cfg.Nodes[0].Addr,
+		Status:          controllermeta.NodeStatusAlive,
+		LastHeartbeatAt: time.Now(),
+		CapacityWeight:  1,
+	}); err != nil {
+		t.Fatalf("UpsertNode() error = %v", err)
+	}
+	host.applyRuntimeReport(runtimeObservationReport{
+		NodeID:     uint64(cluster.cfg.NodeID),
+		ObservedAt: time.Unix(1710000901, 0),
+		FullSync:   true,
+	})
+	if !host.consumePlannerDirty() {
+		t.Fatal("consumePlannerDirty() = false, want runtime full sync to mark the planner dirty first")
+	}
+
+	cluster.plannerSafetyOnce(context.Background())
+
+	tasks, err := host.meta.ListTasks(context.Background())
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) == 0 {
+		t.Fatalf("ListTasks() = %#v, want planner safety tick to evaluate even without a wake", tasks)
+	}
+}
+
 func TestListObservedRuntimeViewsFallsBackToLocalControllerMetaWhenLeaderUnavailable(t *testing.T) {
 	dir := t.TempDir()
 	store, err := controllermeta.Open(filepath.Join(dir, "controller-meta"))
@@ -1988,6 +2049,300 @@ func TestSlotAgentHeartbeatOnceSendsNodeHeartbeatOnly(t *testing.T) {
 	}
 }
 
+func TestObserveOnceUsesObservationDeltaBeforeSeparateListReads(t *testing.T) {
+	cluster := newUnitObservationTestCluster(t)
+
+	controllerClient := newControllerClient(cluster, []NodeConfig{{NodeID: 1}, {NodeID: 2}}, nil)
+	controllerClient.setLeader(2)
+	cluster.controllerClient = controllerClient
+
+	accepted := cluster.wakeState.observeHint(2, observationHint{
+		LeaderID:         2,
+		LeaderGeneration: 1,
+		Revisions: observationRevisions{
+			Assignments: 1,
+			Nodes:       1,
+		},
+		AffectedSlots: []uint32{1},
+	})
+	if !accepted {
+		t.Fatal("observeHint() = false, want true")
+	}
+
+	deltaCalls := 0
+	refreshCalls := 0
+	listNodesCalls := 0
+	listRuntimeViewsCalls := 0
+	listTasksCalls := 0
+	cluster.agent = &slotAgent{
+		cluster: cluster,
+		client: fakeControllerClient{
+			fetchObservationDeltaFn: func(_ context.Context, req observationDeltaRequest) (observationDeltaResponse, error) {
+				deltaCalls++
+				if got, want := req.RequestedSlots, []uint32{1}; !reflect.DeepEqual(got, want) {
+					t.Fatalf("FetchObservationDelta() requested slots = %v, want %v", got, want)
+				}
+				return observationDeltaResponse{
+					LeaderID:         2,
+					LeaderGeneration: 1,
+					Revisions: observationRevisions{
+						Assignments: 1,
+						Nodes:       1,
+					},
+					FullSync: true,
+					Assignments: []controllermeta.SlotAssignment{
+						testObservationAssignment(1, 1),
+					},
+					Nodes: []controllermeta.ClusterNode{
+						testObservationNode(1, controllermeta.NodeStatusAlive),
+					},
+				}, nil
+			},
+			refreshAssignmentsFn: func(context.Context) ([]controllermeta.SlotAssignment, error) {
+				refreshCalls++
+				return nil, errors.New("RefreshAssignments should not be called when delta wake is pending")
+			},
+			listNodesFn: func(context.Context) ([]controllermeta.ClusterNode, error) {
+				listNodesCalls++
+				return nil, errors.New("ListNodes should not be called when delta cache is warm")
+			},
+			listRuntimeViewsFn: func(context.Context) ([]controllermeta.SlotRuntimeView, error) {
+				listRuntimeViewsCalls++
+				return nil, errors.New("ListRuntimeViews should not be called when delta cache is warm")
+			},
+			listTasksFn: func(context.Context) ([]controllermeta.ReconcileTask, error) {
+				listTasksCalls++
+				return nil, errors.New("ListTasks should not be called when delta cache is warm")
+			},
+		},
+		cache: cluster.assignments,
+	}
+
+	cluster.observeOnce(context.Background())
+
+	if got, want := deltaCalls, 1; got != want {
+		t.Fatalf("FetchObservationDelta() calls = %d, want %d", got, want)
+	}
+	if refreshCalls != 0 || listNodesCalls != 0 || listRuntimeViewsCalls != 0 || listTasksCalls != 0 {
+		t.Fatalf("unexpected hot reads: refresh=%d nodes=%d runtime=%d tasks=%d", refreshCalls, listNodesCalls, listRuntimeViewsCalls, listTasksCalls)
+	}
+	assignments := cluster.assignments.Snapshot()
+	if got, want := len(assignments), 1; got != want {
+		t.Fatalf("cached assignments len = %d, want %d", got, want)
+	}
+}
+
+func TestWakeReconcileLoopSingleflightsConcurrentHints(t *testing.T) {
+	cluster := newUnitObservationTestCluster(t)
+
+	controllerClient := newControllerClient(cluster, []NodeConfig{{NodeID: 1}, {NodeID: 2}}, nil)
+	controllerClient.setLeader(2)
+	cluster.controllerClient = controllerClient
+
+	if ok := cluster.wakeState.observeHint(2, observationHint{
+		LeaderID:         2,
+		LeaderGeneration: 1,
+		Revisions:        observationRevisions{Assignments: 1},
+		AffectedSlots:    []uint32{1},
+	}); !ok {
+		t.Fatal("observeHint(first) = false, want true")
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	deltaCalls := 0
+	cluster.agent = &slotAgent{
+		cluster: cluster,
+		client: fakeControllerClient{
+			fetchObservationDeltaFn: func(_ context.Context, req observationDeltaRequest) (observationDeltaResponse, error) {
+				deltaCalls++
+				close(started)
+				<-release
+				return observationDeltaResponse{
+					LeaderID:         2,
+					LeaderGeneration: 1,
+					Revisions:        observationRevisions{Assignments: 1},
+					FullSync:         true,
+					Assignments:      []controllermeta.SlotAssignment{testObservationAssignment(1, 1)},
+					Nodes:            []controllermeta.ClusterNode{testObservationNode(1, controllermeta.NodeStatusAlive)},
+				}, nil
+			},
+		},
+		cache: cluster.assignments,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		cluster.wakeReconcileOnce(context.Background())
+		close(done)
+	}()
+
+	<-started
+
+	if ok := cluster.handleObservationHint(observationHint{
+		LeaderID:         2,
+		LeaderGeneration: 1,
+		Revisions:        observationRevisions{Assignments: 2},
+		AffectedSlots:    []uint32{1},
+	}); !ok {
+		t.Fatal("handleObservationHint(newer) = false, want true")
+	}
+
+	cluster.wakeReconcileOnce(context.Background())
+
+	close(release)
+	<-done
+
+	if got, want := deltaCalls, 1; got != want {
+		t.Fatalf("FetchObservationDelta() calls = %d, want %d", got, want)
+	}
+	snapshot := cluster.wakeState.snapshot()
+	if !snapshot.Pending {
+		t.Fatal("snapshot.Pending = false, want true for the coalesced newer hint")
+	}
+	if got, want := snapshot.Hint.Revisions.Assignments, uint64(2); got != want {
+		t.Fatalf("snapshot.Hint.Revisions.Assignments = %d, want %d", got, want)
+	}
+}
+
+func TestSlowSyncLoopRecoversDroppedHint(t *testing.T) {
+	cluster := newUnitObservationTestCluster(t)
+
+	controllerClient := newControllerClient(cluster, []NodeConfig{{NodeID: 1}, {NodeID: 2}}, nil)
+	controllerClient.setLeader(2)
+	cluster.controllerClient = controllerClient
+
+	deltaCalls := 0
+	cluster.agent = &slotAgent{
+		cluster: cluster,
+		client: fakeControllerClient{
+			fetchObservationDeltaFn: func(_ context.Context, req observationDeltaRequest) (observationDeltaResponse, error) {
+				deltaCalls++
+				if len(req.RequestedSlots) != 0 {
+					t.Fatalf("FetchObservationDelta() requested slots = %v, want full slow-sync scope", req.RequestedSlots)
+				}
+				return observationDeltaResponse{
+					LeaderID:         2,
+					LeaderGeneration: 1,
+					Revisions:        observationRevisions{Assignments: 1, Nodes: 1},
+					FullSync:         true,
+					Assignments:      []controllermeta.SlotAssignment{testObservationAssignment(1, 1)},
+					Nodes:            []controllermeta.ClusterNode{testObservationNode(1, controllermeta.NodeStatusAlive)},
+				}, nil
+			},
+			refreshAssignmentsFn: func(context.Context) ([]controllermeta.SlotAssignment, error) {
+				return nil, errors.New("RefreshAssignments should not be used for slow sync")
+			},
+		},
+		cache: cluster.assignments,
+	}
+
+	cluster.slowSyncOnce(context.Background())
+
+	if got, want := deltaCalls, 1; got != want {
+		t.Fatalf("FetchObservationDelta() calls = %d, want %d", got, want)
+	}
+	assignments := cluster.assignments.Snapshot()
+	if got, want := len(assignments), 1; got != want {
+		t.Fatalf("cached assignments len = %d, want %d", got, want)
+	}
+}
+
+func TestWakeReconcileOnceLeavesMigrationProgressToDedicatedLoop(t *testing.T) {
+	cluster := newUnitObservationTestCluster(t)
+
+	controllerClient := newControllerClient(cluster, []NodeConfig{{NodeID: 1}, {NodeID: 2}}, nil)
+	controllerClient.setLeader(2)
+	cluster.controllerClient = controllerClient
+	cluster.migrationWorker = &fakeHashSlotMigrationWorker{}
+	cluster.router = NewRouter(NewHashSlotTable(8, 2), 1, cluster.runtime)
+
+	if ok := cluster.wakeState.observeHint(2, observationHint{
+		LeaderID:         2,
+		LeaderGeneration: 1,
+		Revisions:        observationRevisions{Assignments: 1},
+		AffectedSlots:    []uint32{1},
+	}); !ok {
+		t.Fatal("observeHint() = false, want true")
+	}
+
+	worker := cluster.migrationWorker.(*fakeHashSlotMigrationWorker)
+	cluster.agent = &slotAgent{
+		cluster: cluster,
+		client: fakeControllerClient{
+			fetchObservationDeltaFn: func(_ context.Context, _ observationDeltaRequest) (observationDeltaResponse, error) {
+				return observationDeltaResponse{
+					LeaderID:         2,
+					LeaderGeneration: 1,
+					Revisions:        observationRevisions{Assignments: 1},
+					FullSync:         true,
+					Assignments:      []controllermeta.SlotAssignment{testObservationAssignment(1, 1)},
+					Nodes:            []controllermeta.ClusterNode{testObservationNode(1, controllermeta.NodeStatusAlive)},
+				}, nil
+			},
+		},
+		cache: cluster.assignments,
+	}
+
+	cluster.wakeReconcileOnce(context.Background())
+
+	if worker.ticks != 0 {
+		t.Fatalf("migration worker ticks = %d, want 0 for wake reconcile path", worker.ticks)
+	}
+}
+
+func TestSlowSyncOnceLeavesMigrationProgressToDedicatedLoop(t *testing.T) {
+	cluster := newUnitObservationTestCluster(t)
+
+	controllerClient := newControllerClient(cluster, []NodeConfig{{NodeID: 1}, {NodeID: 2}}, nil)
+	controllerClient.setLeader(2)
+	cluster.controllerClient = controllerClient
+	cluster.migrationWorker = &fakeHashSlotMigrationWorker{}
+	cluster.router = NewRouter(NewHashSlotTable(8, 2), 1, cluster.runtime)
+
+	worker := cluster.migrationWorker.(*fakeHashSlotMigrationWorker)
+	cluster.agent = &slotAgent{
+		cluster: cluster,
+		client: fakeControllerClient{
+			fetchObservationDeltaFn: func(_ context.Context, _ observationDeltaRequest) (observationDeltaResponse, error) {
+				return observationDeltaResponse{
+					LeaderID:         2,
+					LeaderGeneration: 1,
+					Revisions:        observationRevisions{Assignments: 1},
+					FullSync:         true,
+					Assignments:      []controllermeta.SlotAssignment{testObservationAssignment(1, 1)},
+					Nodes:            []controllermeta.ClusterNode{testObservationNode(1, controllermeta.NodeStatusAlive)},
+				}, nil
+			},
+		},
+		cache: cluster.assignments,
+	}
+
+	cluster.slowSyncOnce(context.Background())
+
+	if worker.ticks != 0 {
+		t.Fatalf("migration worker ticks = %d, want 0 for slow sync path", worker.ticks)
+	}
+}
+
+func TestIdleClusterSkipsMigrationObserveWithoutActiveWork(t *testing.T) {
+	worker := &fakeHashSlotMigrationWorker{}
+	cluster := &Cluster{
+		cfg:             Config{NodeID: 1},
+		router:          NewRouter(NewHashSlotTable(8, 2), 1, nil),
+		migrationWorker: worker,
+	}
+
+	cluster.migrationObserveOnce(context.Background())
+
+	if worker.ticks != 0 {
+		t.Fatalf("migration worker ticks = %d, want 0 when there is no active migration work", worker.ticks)
+	}
+	if len(worker.started) != 0 {
+		t.Fatalf("migration worker started = %#v, want no work started", worker.started)
+	}
+}
+
 func TestClusterRuntimeObservationLoopSkipsIdleFlush(t *testing.T) {
 	now := time.Unix(1710015000, 0)
 	sendCalls := 0
@@ -2442,6 +2797,9 @@ type fakeControllerClient struct {
 	listTasksFn                 func(context.Context) ([]controllermeta.ReconcileTask, error)
 	listTasks                   []controllermeta.ReconcileTask
 	listTasksErr                error
+	fetchObservationDeltaFn     func(context.Context, observationDeltaRequest) (observationDeltaResponse, error)
+	fetchObservationDelta       observationDeltaResponse
+	fetchObservationDeltaErr    error
 	getTaskFn                   func(context.Context, uint32) (controllermeta.ReconcileTask, error)
 	tasks                       map[uint32]controllermeta.ReconcileTask
 	getTaskErr                  error
@@ -2637,6 +2995,13 @@ func (f fakeControllerClient) ListTasks(ctx context.Context) ([]controllermeta.R
 		return tasks, f.listTasksErr
 	}
 	return append([]controllermeta.ReconcileTask(nil), f.listTasks...), f.listTasksErr
+}
+
+func (f fakeControllerClient) FetchObservationDelta(ctx context.Context, req observationDeltaRequest) (observationDeltaResponse, error) {
+	if f.fetchObservationDeltaFn != nil {
+		return f.fetchObservationDeltaFn(ctx, req)
+	}
+	return f.fetchObservationDelta, f.fetchObservationDeltaErr
 }
 
 func (f fakeControllerClient) Operator(_ context.Context, _ slotcontroller.OperatorRequest) error {

@@ -223,6 +223,35 @@ func TestConfigApplyDefaultsPreservesExplicitObservationCadence(t *testing.T) {
 	}
 }
 
+func TestClusterTimeoutDefaultsIncludeSlowSyncAndPlannerSafetyIntervals(t *testing.T) {
+	cluster := &Cluster{cfg: validTestConfig()}
+	cluster.cfg.applyDefaults()
+
+	if got, want := cluster.observationSlowSyncInterval(), defaultObservationSlowSyncInterval; got != want {
+		t.Fatalf("observationSlowSyncInterval() = %v, want %v", got, want)
+	}
+	if got, want := cluster.plannerSafetyInterval(), defaultPlannerSafetyInterval; got != want {
+		t.Fatalf("plannerSafetyInterval() = %v, want %v", got, want)
+	}
+	if got, want := cluster.plannerWakeDebounce(), defaultPlannerWakeDebounce; got != want {
+		t.Fatalf("plannerWakeDebounce() = %v, want %v", got, want)
+	}
+
+	cluster.cfg.Timeouts.ObservationSlowSyncInterval = 4 * time.Second
+	cluster.cfg.Timeouts.PlannerSafetyInterval = 3 * time.Second
+	cluster.cfg.Timeouts.PlannerWakeDebounce = 250 * time.Millisecond
+
+	if got, want := cluster.observationSlowSyncInterval(), 4*time.Second; got != want {
+		t.Fatalf("observationSlowSyncInterval() override = %v, want %v", got, want)
+	}
+	if got, want := cluster.plannerSafetyInterval(), 3*time.Second; got != want {
+		t.Fatalf("plannerSafetyInterval() override = %v, want %v", got, want)
+	}
+	if got, want := cluster.plannerWakeDebounce(), 250*time.Millisecond; got != want {
+		t.Fatalf("plannerWakeDebounce() override = %v, want %v", got, want)
+	}
+}
+
 func TestConfigValidate_NodeIDZero(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.NodeID = 0

@@ -607,6 +607,128 @@ func TestControllerHandlerMetadataReadsFallBackToStoreWhenSnapshotDirty(t *testi
 	}
 }
 
+func TestControllerHandlerFetchObservationDeltaReturnsIncrementalState(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	handler := &controllerHandler{cluster: cluster}
+
+	host.syncState.reset()
+	host.syncState.replaceMetadataSnapshot(controllerMetadataSnapshot{
+		Assignments: []controllermeta.SlotAssignment{testObservationAssignment(1, 1)},
+		Tasks:       []controllermeta.ReconcileTask{testObservationTask(1, 1)},
+		Nodes:       []controllermeta.ClusterNode{testObservationNode(1, controllermeta.NodeStatusAlive)},
+	})
+	host.syncState.replaceRuntimeViews([]controllermeta.SlotRuntimeView{
+		testObservationRuntimeView(1, 1, []uint64{1, 2, 3}, 1, time.Unix(1710007000, 0)),
+	})
+	before := host.syncState.currentRevisions()
+
+	host.syncState.replaceMetadataSnapshot(controllerMetadataSnapshot{
+		Assignments: []controllermeta.SlotAssignment{testObservationAssignment(1, 2)},
+		Tasks:       []controllermeta.ReconcileTask{testObservationTask(1, 2)},
+		Nodes:       []controllermeta.ClusterNode{testObservationNode(1, controllermeta.NodeStatusAlive)},
+	})
+	host.syncState.replaceRuntimeViews([]controllermeta.SlotRuntimeView{
+		testObservationRuntimeView(1, 2, []uint64{1, 2, 3}, 2, time.Unix(1710007010, 0)),
+	})
+
+	host.warmupMu.RLock()
+	leaderGeneration := host.warmupGeneration
+	host.warmupMu.RUnlock()
+
+	body, err := encodeControllerRequest(controllerRPCRequest{
+		Kind: controllerRPCFetchObservationDelta,
+		ObservationDelta: &observationDeltaRequest{
+			LeaderID:         uint64(host.localNode),
+			LeaderGeneration: leaderGeneration,
+			Revisions:        before,
+			RequestedSlots:   []uint32{1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("encodeControllerRequest() error = %v", err)
+	}
+
+	respBody, err := handler.Handle(context.Background(), body)
+	if err != nil {
+		t.Fatalf("controllerHandler.Handle() error = %v", err)
+	}
+	resp, err := decodeControllerResponse(controllerRPCFetchObservationDelta, respBody)
+	if err != nil {
+		t.Fatalf("decodeControllerResponse() error = %v", err)
+	}
+	if resp.ObservationDelta == nil {
+		t.Fatal("ObservationDelta = nil, want payload")
+	}
+	if resp.ObservationDelta.FullSync {
+		t.Fatal("ObservationDelta.FullSync = true, want incremental delta")
+	}
+	if got, want := len(resp.ObservationDelta.Assignments), 1; got != want {
+		t.Fatalf("len(ObservationDelta.Assignments) = %d, want %d", got, want)
+	}
+	if got, want := len(resp.ObservationDelta.Tasks), 1; got != want {
+		t.Fatalf("len(ObservationDelta.Tasks) = %d, want %d", got, want)
+	}
+	if got, want := len(resp.ObservationDelta.RuntimeViews), 1; got != want {
+		t.Fatalf("len(ObservationDelta.RuntimeViews) = %d, want %d", got, want)
+	}
+	if got, want := len(resp.ObservationDelta.Nodes), 0; got != want {
+		t.Fatalf("len(ObservationDelta.Nodes) = %d, want %d", got, want)
+	}
+}
+
+func TestControllerHandlerFetchObservationDeltaForcesFullSyncOnLeaderGenerationMismatch(t *testing.T) {
+	cluster, host, _ := newTestLocalControllerCluster(t, true)
+	handler := &controllerHandler{cluster: cluster}
+
+	host.syncState.reset()
+	host.syncState.replaceMetadataSnapshot(controllerMetadataSnapshot{
+		Assignments: []controllermeta.SlotAssignment{testObservationAssignment(1, 1)},
+		Tasks:       []controllermeta.ReconcileTask{testObservationTask(1, 1)},
+		Nodes:       []controllermeta.ClusterNode{testObservationNode(1, controllermeta.NodeStatusAlive)},
+	})
+	host.syncState.replaceRuntimeViews([]controllermeta.SlotRuntimeView{
+		testObservationRuntimeView(1, 1, []uint64{1, 2, 3}, 1, time.Unix(1710007020, 0)),
+	})
+
+	body, err := encodeControllerRequest(controllerRPCRequest{
+		Kind: controllerRPCFetchObservationDelta,
+		ObservationDelta: &observationDeltaRequest{
+			LeaderID:         uint64(host.localNode),
+			LeaderGeneration: 0,
+			Revisions: observationRevisions{
+				Assignments: host.syncState.currentRevisions().Assignments,
+				Tasks:       host.syncState.currentRevisions().Tasks,
+				Nodes:       host.syncState.currentRevisions().Nodes,
+				Runtime:     host.syncState.currentRevisions().Runtime,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("encodeControllerRequest() error = %v", err)
+	}
+
+	respBody, err := handler.Handle(context.Background(), body)
+	if err != nil {
+		t.Fatalf("controllerHandler.Handle() error = %v", err)
+	}
+	resp, err := decodeControllerResponse(controllerRPCFetchObservationDelta, respBody)
+	if err != nil {
+		t.Fatalf("decodeControllerResponse() error = %v", err)
+	}
+	if resp.ObservationDelta == nil {
+		t.Fatal("ObservationDelta = nil, want payload")
+	}
+	if !resp.ObservationDelta.FullSync {
+		t.Fatal("ObservationDelta.FullSync = false, want full sync")
+	}
+	if got, want := len(resp.ObservationDelta.Assignments), 1; got != want {
+		t.Fatalf("len(ObservationDelta.Assignments) = %d, want %d", got, want)
+	}
+	if got, want := resp.ObservationDelta.LeaderGeneration, uint64(1); got != want {
+		t.Fatalf("ObservationDelta.LeaderGeneration = %d, want %d", got, want)
+	}
+}
+
 func TestControllerHandlerHeartbeatBackfillsHashSlotSnapshotOnColdMiss(t *testing.T) {
 	cluster, host, _ := newTestLocalControllerCluster(t, true)
 	handler := &controllerHandler{cluster: cluster}
