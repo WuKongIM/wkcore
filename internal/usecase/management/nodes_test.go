@@ -132,6 +132,8 @@ type fakeClusterReader struct {
 	taskBySlot                  map[uint32]controllermeta.ReconcileTask
 	listTasksErr                error
 	getTaskErr                  error
+	markNodeDrainingErr         error
+	resumeNodeErr               error
 }
 
 func (f fakeClusterReader) SlotIDs() []multiraft.SlotID {
@@ -174,6 +176,14 @@ func (f fakeClusterReader) GetReconcileTaskStrict(_ context.Context, slotID uint
 
 func (f fakeClusterReader) ControllerLeaderID() uint64 {
 	return f.controllerLeaderID
+}
+
+func (f fakeClusterReader) MarkNodeDraining(context.Context, uint64) error {
+	return f.markNodeDrainingErr
+}
+
+func (f fakeClusterReader) ResumeNode(context.Context, uint64) error {
+	return f.resumeNodeErr
 }
 
 type nodeSummary struct {
