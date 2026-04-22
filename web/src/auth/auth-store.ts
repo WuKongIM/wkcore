@@ -1,5 +1,11 @@
 import { create } from "zustand"
 
+import {
+  loginManager,
+  type ManagerLoginCredentials,
+  type ManagerSession,
+} from "@/lib/manager-api"
+
 export type AuthStatus = "anonymous" | "authenticated"
 
 export type AuthPermission = {
@@ -23,6 +29,7 @@ type AuthState = {
   accessToken: string
   expiresAt: string
   permissions: AuthPermission[]
+  login: (credentials: ManagerLoginCredentials) => Promise<void>
   restoreSession: () => void
   logout: () => void
   handleUnauthorized: () => void
@@ -107,8 +114,23 @@ function applyAuthenticatedSession(session: AuthSession) {
   }
 }
 
+function toAuthSession(session: ManagerSession): AuthSession {
+  return {
+    username: session.username,
+    tokenType: session.tokenType,
+    accessToken: session.accessToken,
+    expiresAt: session.expiresAt,
+    permissions: session.permissions,
+  }
+}
+
 export const useAuthStore = create<AuthState>((set) => ({
   ...createAnonymousAuthState(),
+  login: async (credentials) => {
+    const session = toAuthSession(await loginManager(credentials))
+    persistSession(session)
+    set(applyAuthenticatedSession(session))
+  },
   restoreSession: () => {
     const session = readPersistedSession()
     if (!session || isSessionExpired(session.expiresAt)) {
