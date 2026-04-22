@@ -1,9 +1,11 @@
 import { Navigate, createBrowserRouter, type RouteObject } from "react-router-dom"
 
 import { AppShell } from "@/app/layout/app-shell"
+import { ProtectedRoute, PublicOnlyRoute } from "@/auth/protected-route"
 import { ChannelsPage } from "@/pages/channels/page"
 import { ConnectionsPage } from "@/pages/connections/page"
 import { DashboardPage } from "@/pages/dashboard/page"
+import { LoginPage } from "@/pages/login/page"
 import { NetworkPage } from "@/pages/network/page"
 import { NodesPage } from "@/pages/nodes/page"
 import { SlotsPage } from "@/pages/slots/page"
@@ -11,8 +13,20 @@ import { TopologyPage } from "@/pages/topology/page"
 
 export const routes: RouteObject[] = [
   {
+    path: "/login",
+    element: (
+      <PublicOnlyRoute>
+        <LoginPage />
+      </PublicOnlyRoute>
+    ),
+  },
+  {
     path: "/",
-    element: <AppShell />,
+    element: (
+      <ProtectedRoute>
+        <AppShell />
+      </ProtectedRoute>
+    ),
     children: [
       { index: true, element: <Navigate replace to="/dashboard" /> },
       { path: "dashboard", element: <DashboardPage /> },
