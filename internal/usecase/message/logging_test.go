@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
@@ -179,6 +180,50 @@ func TestSendWithMetaRefreshRetryLogsRefreshAttempt(t *testing.T) {
 	require.Equal(t, "u2@u1", requireFieldValue[string](t, entry, "channelID"))
 	require.Equal(t, "u1", requireFieldValue[string](t, entry, "uid"))
 	require.EqualError(t, requireFieldValue[error](t, entry, "error"), channel.ErrStaleMeta.Error())
+}
+
+func TestSendWithMetaRefreshRetryLogsRefreshedMetaSnapshot(t *testing.T) {
+	logger := newRecordingLogger("message")
+	cluster := &fakeChannelCluster{
+		sendReplies: []fakeChannelClusterSendReply{
+			{err: channel.ErrNotLeader},
+			{result: channel.AppendResult{MessageID: 88, MessageSeq: 9}},
+		},
+	}
+	refresher := &fakeMetaRefresher{metas: []channel.Meta{{
+		ID:          channel.ChannelID{ID: "u2@u1", Type: frame.ChannelTypePerson},
+		Epoch:       4,
+		LeaderEpoch: 5,
+		Leader:      2,
+		Replicas:    []channel.NodeID{1, 2, 3},
+		ISR:         []channel.NodeID{1, 2, 3},
+		MinISR:      3,
+		LeaseUntil:  fixedSendNow.Add(3 * time.Second),
+	}}}
+	app := New(Options{
+		Now:           fixedNowFn,
+		Logger:        logger,
+		Cluster:       cluster,
+		MetaRefresher: refresher,
+	})
+
+	_, err := app.Send(context.Background(), SendCommand{
+		FromUID:     "u1",
+		ChannelID:   "u2",
+		ChannelType: frame.ChannelTypePerson,
+		Payload:     []byte("hi"),
+	})
+	require.NoError(t, err)
+
+	entry := requireLogEntry(t, logger, "DEBUG", "message.retry", "message.retry.refresh.resolved")
+	require.Equal(t, "resolved refreshed channel metadata", entry.msg)
+	require.Equal(t, uint64(2), requireFieldValue[uint64](t, entry, "leaderNodeID"))
+	require.Equal(t, uint64(4), requireFieldValue[uint64](t, entry, "channelEpoch"))
+	require.Equal(t, uint64(5), requireFieldValue[uint64](t, entry, "leaderEpoch"))
+	require.Equal(t, 3, requireFieldValue[int](t, entry, "replicaCount"))
+	require.Equal(t, 3, requireFieldValue[int](t, entry, "isrCount"))
+	require.Equal(t, 3, requireFieldValue[int](t, entry, "minISR"))
+	require.Equal(t, 3*time.Second, requireFieldValue[time.Duration](t, entry, "leaseRemaining"))
 }
 
 func TestSendLogsDispatchSubmitFailureAsWarn(t *testing.T) {

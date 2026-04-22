@@ -13,6 +13,7 @@ import (
 	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type channelMetaSource interface {
@@ -36,6 +37,7 @@ type channelReplicaFactory struct {
 	appendGroupCommitMaxWait    time.Duration
 	appendGroupCommitMaxRecords int
 	appendGroupCommitMaxBytes   int
+	logger                      wklog.Logger
 }
 
 type channelMetaCluster interface {
@@ -80,7 +82,7 @@ func (s *memoryGenerationStore) Store(channelKey channel.ChannelKey, generation 
 	return nil
 }
 
-func newChannelReplicaFactory(db *channelstore.Engine, localNode channel.NodeID, now func() time.Time, appendGroupCommitMaxWait time.Duration, appendGroupCommitMaxRecords, appendGroupCommitMaxBytes int) *channelReplicaFactory {
+func newChannelReplicaFactory(db *channelstore.Engine, localNode channel.NodeID, now func() time.Time, appendGroupCommitMaxWait time.Duration, appendGroupCommitMaxRecords, appendGroupCommitMaxBytes int, logger wklog.Logger) *channelReplicaFactory {
 	return &channelReplicaFactory{
 		db:                          db,
 		localNode:                   localNode,
@@ -88,6 +90,7 @@ func newChannelReplicaFactory(db *channelstore.Engine, localNode channel.NodeID,
 		appendGroupCommitMaxWait:    appendGroupCommitMaxWait,
 		appendGroupCommitMaxRecords: appendGroupCommitMaxRecords,
 		appendGroupCommitMaxBytes:   appendGroupCommitMaxBytes,
+		logger:                      logger,
 	}
 }
 
@@ -104,6 +107,7 @@ func (f *channelReplicaFactory) New(cfg channelruntime.ChannelConfig) (channelre
 		AppendGroupCommitMaxWait:    f.appendGroupCommitMaxWait,
 		AppendGroupCommitMaxRecords: f.appendGroupCommitMaxRecords,
 		AppendGroupCommitMaxBytes:   f.appendGroupCommitMaxBytes,
+		Logger:                      f.logger,
 		OnStateChange:               cfg.OnReplicaStateChange,
 	})
 }

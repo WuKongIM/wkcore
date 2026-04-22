@@ -266,6 +266,58 @@ func TestThreeNodeAppMessageSendUsesLongPollLocalCommitWithoutAdvancingQuorum(t 
 	}, 500*time.Millisecond, 50*time.Millisecond)
 }
 
+func TestThreeNodeAppMessageSendTimesOutWaitingForQuorumWithMinISR3(t *testing.T) {
+	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(cfg *Config) {
+		cfg.Gateway.SendTimeout = 350 * time.Millisecond
+		cfg.Cluster.ChannelBootstrapDefaultMinISR = 3
+	})
+	leaderID := harness.waitForStableLeader(t, 1)
+	leader := harness.apps[leaderID]
+	recipientUID := "three-node-timeout-direct-user"
+	channelID := deliveryusecase.EncodePersonChannel("sender-timeout-direct", recipientUID)
+
+	id := channel.ChannelID{
+		ID:   channelID,
+		Type: frame.ChannelTypePerson,
+	}
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 117,
+		LeaderEpoch:  18,
+		Replicas:     []uint64{1, 2, 3},
+		ISR:          []uint64{1, 2, 3},
+		Leader:       leader.cfg.Node.ID,
+		MinISR:       3,
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
+	}
+	require.NoError(t, leader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
+
+	for _, app := range harness.appsWithLeaderFirst(leaderID) {
+		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), id)
+		require.NoError(t, err)
+	}
+
+	offlineFollowerID := leaderID%3 + 1
+	require.NotEqual(t, leaderID, offlineFollowerID)
+	harness.stopNode(t, offlineFollowerID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
+	defer cancel()
+	result, err := leader.Message().Send(ctx, messageusecase.SendCommand{
+		FromUID:     "sender-timeout-direct",
+		ChannelID:   recipientUID,
+		ChannelType: id.Type,
+		ClientSeq:   1,
+		ClientMsgNo: "three-node-timeout-direct-1",
+		Payload:     []byte("hello timeout direct"),
+	})
+	require.Zero(t, result.MessageSeq)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
 func TestThreeNodeAppGatewaySendFromFollowerForwardsDurableAppendToLeader(t *testing.T) {
 	harness := newThreeNodeAppHarness(t)
 	leaderID := harness.waitForStableLeader(t, 1)
@@ -432,6 +484,72 @@ func TestThreeNodeAppGatewaySendFromFollowerAfterLeaseExpiryRecoversViaMetaSync(
 		require.Equal(t, []byte("hello after lease expiry"), msg.Payload)
 		require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
 	}
+}
+
+func TestThreeNodeAppGatewaySendTimesOutWaitingForQuorumWithMinISR3(t *testing.T) {
+	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(cfg *Config) {
+		cfg.Gateway.SendTimeout = 350 * time.Millisecond
+		cfg.Cluster.ChannelBootstrapDefaultMinISR = 3
+	})
+	leaderID := harness.waitForStableLeader(t, 1)
+	leader := harness.apps[leaderID]
+	senderID := leaderID%3 + 1
+	require.NotEqual(t, leaderID, senderID)
+	sender := harness.apps[senderID]
+	blockedFollowerID := senderID%3 + 1
+	if blockedFollowerID == leaderID {
+		blockedFollowerID = blockedFollowerID%3 + 1
+	}
+	require.NotEqual(t, leaderID, blockedFollowerID)
+	require.NotEqual(t, senderID, blockedFollowerID)
+	recipientUID := "three-node-timeout-user"
+	channelID := deliveryusecase.EncodePersonChannel("sender-timeout", recipientUID)
+
+	id := channel.ChannelID{
+		ID:   channelID,
+		Type: frame.ChannelTypePerson,
+	}
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 219,
+		LeaderEpoch:  33,
+		Replicas:     []uint64{1, 2, 3},
+		ISR:          []uint64{1, 2, 3},
+		Leader:       leader.cfg.Node.ID,
+		MinISR:       3,
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
+	}
+	require.NoError(t, leader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
+	for _, app := range []*App{leader, sender} {
+		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), id)
+		require.NoError(t, err)
+	}
+
+	harness.stopNode(t, blockedFollowerID)
+
+	staleMeta := projectChannelMeta(meta)
+	staleMeta.LeaderEpoch--
+	staleMeta.Leader = channel.NodeID(sender.cfg.Node.ID)
+	sender.channelLog.service.RestoreMeta(staleMeta.Key, staleMeta, true)
+
+	conn := connectAppWKProtoClient(t, sender, "sender-timeout")
+	sendAppWKProtoFrame(t, conn, &frame.SendPacket{
+		ChannelID:   recipientUID,
+		ChannelType: id.Type,
+		ClientSeq:   1,
+		ClientMsgNo: "three-node-timeout-1",
+		Payload:     []byte("hello timeout"),
+	})
+
+	sendack, ok := readAppWKProtoFrameWithin(t, conn, 5*time.Second).(*frame.SendackPacket)
+	require.True(t, ok)
+	require.Equal(t, frame.ReasonSystemError, sendack.ReasonCode)
+	require.Equal(t, uint64(1), sendack.ClientSeq)
+	require.Equal(t, "three-node-timeout-1", sendack.ClientMsgNo)
+	require.NoError(t, conn.Close())
 }
 
 func TestThreeNodeAppDurableSendReturnsBeforeRemoteAck(t *testing.T) {

@@ -52,7 +52,7 @@ func (a *App) sendDurable(ctx context.Context, cmd SendCommand) (SendResult, err
 		Type: cmd.ChannelType,
 	}
 	startedAt := a.now()
-	result, err := sendWithMetaRefreshRetry(ctx, a.sendLogger(), a.retryLogger(), a.cluster, a.refresher, channel.AppendRequest{
+	result, err := sendWithMetaRefreshRetry(ctx, a.now, a.sendLogger(), a.retryLogger(), a.cluster, a.refresher, channel.AppendRequest{
 		ChannelID:             channelID,
 		Message:               draft,
 		SupportsMessageSeqU64: supportsMessageSeqU64(cmd.ProtocolVersion),

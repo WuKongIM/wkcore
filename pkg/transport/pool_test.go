@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -132,6 +133,247 @@ func TestPoolObserverTracksSentBytes(t *testing.T) {
 	if gotBytes != len("hello") {
 		t.Fatalf("observer bytes = %d, want %d", gotBytes, len("hello"))
 	}
+}
+
+func TestPoolObserverTracksDialLifecycle(t *testing.T) {
+	t.Run("ok", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+
+		go acceptFrames(t, ln, func(uint8, []byte) {})
+
+		events := make(chan DialEvent, 1)
+		pool := NewPool(PoolConfig{
+			Discovery:   staticDiscovery{addrs: map[NodeID]string{2: ln.Addr().String()}},
+			Size:        1,
+			DialTimeout: time.Second,
+			QueueSizes:  [numPriorities]int{4, 4, 4},
+			DefaultPri:  PriorityRaft,
+			Observer: ObserverHooks{
+				OnDial: func(event DialEvent) {
+					events <- event
+				},
+			},
+		})
+		defer pool.Close()
+
+		if err := pool.Send(2, 0, 9, []byte("hello")); err != nil {
+			t.Fatalf("Send() error = %v", err)
+		}
+
+		select {
+		case event := <-events:
+			if event.TargetNode != 2 {
+				t.Fatalf("dial target = %d, want 2", event.TargetNode)
+			}
+			if event.Result != "ok" {
+				t.Fatalf("dial result = %q, want ok", event.Result)
+			}
+			if event.Duration <= 0 {
+				t.Fatalf("dial duration = %s, want > 0", event.Duration)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timeout waiting for dial event")
+		}
+	})
+
+	t.Run("dial_error", func(t *testing.T) {
+		wantErr := errors.New("boom")
+		events := make(chan DialEvent, 1)
+		pool := NewPool(PoolConfig{
+			Discovery:   staticDiscovery{addrs: map[NodeID]string{2: "127.0.0.1:1"}},
+			Size:        1,
+			DialTimeout: time.Second,
+			Dial: func(network, addr string, timeout time.Duration) (net.Conn, error) {
+				return nil, wantErr
+			},
+			QueueSizes: [numPriorities]int{4, 4, 4},
+			DefaultPri: PriorityRaft,
+			Observer: ObserverHooks{
+				OnDial: func(event DialEvent) {
+					events <- event
+				},
+			},
+		})
+		defer pool.Close()
+
+		err := pool.Send(2, 0, 9, []byte("hello"))
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("Send() error = %v, want %v", err, wantErr)
+		}
+
+		select {
+		case event := <-events:
+			if event.TargetNode != 2 {
+				t.Fatalf("dial target = %d, want 2", event.TargetNode)
+			}
+			if event.Result != "dial_error" {
+				t.Fatalf("dial result = %q, want dial_error", event.Result)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timeout waiting for dial event")
+		}
+	})
+}
+
+func TestPoolObserverTracksEnqueueResults(t *testing.T) {
+	t.Run("ok", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+
+		go func() {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			msgType, body, release, err := readFrame(conn)
+			if err != nil {
+				return
+			}
+			release()
+			if msgType != MsgTypeRPCRequest {
+				return
+			}
+			reqID := decodeRequestID(body)
+			var bufs net.Buffers
+			writeFrame(&bufs, MsgTypeRPCResponse, encodeRPCResponse(reqID, 0, []byte("pong")))
+			_, _ = bufs.WriteTo(conn)
+		}()
+
+		events := make(chan EnqueueEvent, 1)
+		pool := NewPool(PoolConfig{
+			Discovery:   staticDiscovery{addrs: map[NodeID]string{2: ln.Addr().String()}},
+			Size:        1,
+			DialTimeout: time.Second,
+			QueueSizes:  [numPriorities]int{4, 4, 4},
+			DefaultPri:  PriorityRPC,
+			Observer: ObserverHooks{
+				OnEnqueue: func(event EnqueueEvent) {
+					events <- event
+				},
+			},
+		})
+		defer pool.Close()
+
+		resp, err := pool.RPC(context.Background(), 2, 0, []byte("ping"))
+		if err != nil {
+			t.Fatalf("RPC() error = %v", err)
+		}
+		if string(resp) != "pong" {
+			t.Fatalf("RPC() response = %q, want %q", resp, "pong")
+		}
+
+		select {
+		case event := <-events:
+			if event.TargetNode != 2 {
+				t.Fatalf("enqueue target = %d, want 2", event.TargetNode)
+			}
+			if event.Kind != "rpc" {
+				t.Fatalf("enqueue kind = %q, want rpc", event.Kind)
+			}
+			if event.Result != "ok" {
+				t.Fatalf("enqueue result = %q, want ok", event.Result)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timeout waiting for enqueue event")
+		}
+	})
+
+	t.Run("queue_full", func(t *testing.T) {
+		clientConn := newBlockingConn()
+
+		pool := NewPool(PoolConfig{
+			Discovery:   staticDiscovery{addrs: map[NodeID]string{2: "pipe"}},
+			Size:        1,
+			DialTimeout: time.Second,
+			Dial: func(network, addr string, timeout time.Duration) (net.Conn, error) {
+				return clientConn, nil
+			},
+			QueueSizes: [numPriorities]int{1, 1, 1},
+			DefaultPri: PriorityRaft,
+		})
+		defer pool.Close()
+
+		events := make(chan EnqueueEvent, 4)
+		pool.cfg.Observer.OnEnqueue = func(event EnqueueEvent) {
+			events <- event
+		}
+
+		if err := pool.Send(2, 0, 9, []byte("a")); err != nil {
+			t.Fatalf("first Send() error = %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+		if err := pool.Send(2, 0, 9, []byte("b")); err != nil {
+			t.Fatalf("second Send() error = %v", err)
+		}
+		err := pool.Send(2, 0, 9, []byte("c"))
+		if !errors.Is(err, ErrQueueFull) {
+			t.Fatalf("third Send() error = %v, want %v", err, ErrQueueFull)
+		}
+
+		requireEventually(t, func() bool {
+			for len(events) > 0 {
+				event := <-events
+				if event.Result == "queue_full" {
+					return event.TargetNode == 2 && event.Kind == "raft"
+				}
+			}
+			return false
+		})
+	})
+
+	t.Run("stopped", func(t *testing.T) {
+		events := make(chan EnqueueEvent, 1)
+		pool := NewPool(PoolConfig{
+			Discovery:   staticDiscovery{addrs: map[NodeID]string{2: "127.0.0.1:1"}},
+			Size:        1,
+			DialTimeout: time.Second,
+			QueueSizes:  [numPriorities]int{1, 1, 1},
+			DefaultPri:  PriorityRPC,
+			Observer: ObserverHooks{
+				OnEnqueue: func(event EnqueueEvent) {
+					events <- event
+				},
+			},
+		})
+		defer pool.Close()
+
+		set, err := pool.getOrCreateNodeSet(2)
+		if err != nil {
+			t.Fatalf("getOrCreateNodeSet() error = %v", err)
+		}
+		set.slots[0].mu.Lock()
+		set.slots[0].lastErr = ErrStopped
+		set.slots[0].lastDialFail = time.Now()
+		set.slots[0].mu.Unlock()
+
+		_, err = pool.RPC(context.Background(), 2, 0, []byte("ping"))
+		if !errors.Is(err, ErrStopped) {
+			t.Fatalf("RPC() error = %v, want %v", err, ErrStopped)
+		}
+
+		select {
+		case event := <-events:
+			if event.TargetNode != 2 {
+				t.Fatalf("enqueue target = %d, want 2", event.TargetNode)
+			}
+			if event.Kind != "rpc" {
+				t.Fatalf("enqueue kind = %q, want rpc", event.Kind)
+			}
+			if event.Result != "stopped" {
+				t.Fatalf("enqueue result = %q, want stopped", event.Result)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timeout waiting for stopped enqueue event")
+		}
+	})
 }
 
 func TestPoolStatsReportActiveAndIdleConnections(t *testing.T) {
@@ -868,6 +1110,51 @@ func reserveTCPAddr(t *testing.T) string {
 	}
 	return addr
 }
+
+type blockingConn struct {
+	closeOnce    sync.Once
+	closed       chan struct{}
+	releaseWrite chan struct{}
+}
+
+func newBlockingConn() *blockingConn {
+	return &blockingConn{
+		closed:       make(chan struct{}),
+		releaseWrite: make(chan struct{}),
+	}
+}
+
+func (c *blockingConn) Read(_ []byte) (int, error) {
+	<-c.closed
+	return 0, io.EOF
+}
+
+func (c *blockingConn) Write(b []byte) (int, error) {
+	select {
+	case <-c.releaseWrite:
+		return len(b), nil
+	case <-c.closed:
+		return 0, io.ErrClosedPipe
+	}
+}
+
+func (c *blockingConn) Close() error {
+	c.closeOnce.Do(func() {
+		close(c.closed)
+	})
+	return nil
+}
+
+func (c *blockingConn) LocalAddr() net.Addr              { return blockingAddr("local") }
+func (c *blockingConn) RemoteAddr() net.Addr             { return blockingAddr("remote") }
+func (c *blockingConn) SetDeadline(time.Time) error      { return nil }
+func (c *blockingConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *blockingConn) SetWriteDeadline(time.Time) error { return nil }
+
+type blockingAddr string
+
+func (a blockingAddr) Network() string { return "blocking" }
+func (a blockingAddr) String() string  { return string(a) }
 
 func mustListenOnAddr(t *testing.T, addr string) net.Listener {
 	t.Helper()

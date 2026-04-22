@@ -145,6 +145,57 @@ func (o transportMetricsObserver) Hooks() transport.ObserverHooks {
 			}
 			o.metrics.Transport.ObserveReceivedBytes(transportMsgType(msgType), bytes)
 		},
+		OnDial: func(event transport.DialEvent) {
+			if o.metrics == nil {
+				return
+			}
+			o.metrics.Transport.ObserveDial(strconv.FormatUint(uint64(event.TargetNode), 10), event.Result, event.Duration)
+		},
+		OnEnqueue: func(event transport.EnqueueEvent) {
+			if o.metrics == nil {
+				return
+			}
+			o.metrics.Transport.ObserveEnqueue(strconv.FormatUint(uint64(event.TargetNode), 10), event.Kind, event.Result)
+		},
+		OnRPCClient: func(event transport.RPCClientEvent) {
+			if o.metrics == nil {
+				return
+			}
+			targetNode := strconv.FormatUint(uint64(event.TargetNode), 10)
+			service := transportRPCServiceName(event.ServiceID)
+			o.metrics.Transport.SetRPCInflight(targetNode, service, event.Inflight)
+			if event.Result == "" {
+				return
+			}
+			o.metrics.Transport.ObserveRPCClient(targetNode, service, event.Result, event.Duration)
+		},
+	}
+}
+
+func transportRPCServiceName(serviceID uint8) string {
+	switch serviceID {
+	case 1:
+		return "forward"
+	case 5:
+		return "presence"
+	case 6:
+		return "delivery_submit"
+	case 7:
+		return "delivery_push"
+	case 8:
+		return "delivery_ack"
+	case 9:
+		return "delivery_offline"
+	case 13:
+		return "conversation_facts"
+	case 14:
+		return "controller"
+	case 20:
+		return "managed_slot"
+	case 33:
+		return "channel_append"
+	default:
+		return "service_" + strconv.FormatUint(uint64(serviceID), 10)
 	}
 }
 

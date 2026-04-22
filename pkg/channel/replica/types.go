@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type SnapshotApplier interface {
@@ -50,7 +51,9 @@ type ReplicaConfig struct {
 	AppendGroupCommitMaxWait    time.Duration
 	AppendGroupCommitMaxRecords int
 	AppendGroupCommitMaxBytes   int
-	OnStateChange               func()
+	// Logger emits replica diagnostics for append wait and lifecycle paths.
+	Logger        wklog.Logger
+	OnStateChange func()
 }
 
 type Replica interface {

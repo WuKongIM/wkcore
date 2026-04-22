@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sort"
 	"sync"
@@ -68,19 +69,25 @@ func NewPool(args ...any) *Pool {
 func (p *Pool) Send(nodeID NodeID, shardKey uint64, msgType uint8, body []byte) error {
 	mc, err := p.acquire(nodeID, shardKey)
 	if err != nil {
+		p.observeEnqueue(nodeID, p.cfg.DefaultPri, err)
 		return err
 	}
-	return mc.Send(p.cfg.DefaultPri, msgType, body)
+	err = mc.Send(p.cfg.DefaultPri, msgType, body)
+	p.observeEnqueue(nodeID, p.cfg.DefaultPri, err)
+	return err
 }
 
 func (p *Pool) RPC(ctx context.Context, nodeID NodeID, shardKey uint64, payload []byte) ([]byte, error) {
 	mc, err := p.acquire(nodeID, shardKey)
 	if err != nil {
+		p.observeEnqueue(nodeID, PriorityRPC, err)
 		return nil, err
 	}
 	reqID := p.nextID.Add(1)
 	wire := encodeRPCRequest(reqID, payload)
-	return mc.RPC(ctx, p.cfg.DefaultPri, reqID, wire)
+	resp, err := mc.RPC(ctx, p.cfg.DefaultPri, reqID, wire)
+	p.observeEnqueue(nodeID, p.cfg.DefaultPri, err)
+	return resp, err
 }
 
 func (p *Pool) Close() {
@@ -182,7 +189,9 @@ func (p *Pool) acquire(nodeID NodeID, shardKey uint64) (*MuxConn, error) {
 		if dial == nil {
 			dial = net.DialTimeout
 		}
+		startedAt := time.Now()
 		raw, dialErr := dial("tcp", addr, p.cfg.DialTimeout)
+		p.observeDial(nodeID, dialErr, time.Since(startedAt))
 		if dialErr != nil {
 			slot.finishDial(nil, dialErr, ready)
 			return nil, dialErr
@@ -191,6 +200,61 @@ func (p *Pool) acquire(nodeID NodeID, shardKey uint64) (*MuxConn, error) {
 		mc := newMuxConn(raw, nil, ConnConfig{QueueSizes: p.cfg.QueueSizes, Observer: p.cfg.Observer})
 		slot.finishDial(mc, nil, ready)
 		return mc, nil
+	}
+}
+
+func (p *Pool) observeDial(nodeID NodeID, err error, dur time.Duration) {
+	if p == nil || p.cfg.Observer.OnDial == nil {
+		return
+	}
+	p.cfg.Observer.OnDial(DialEvent{
+		TargetNode: nodeID,
+		Result:     dialResult(err),
+		Duration:   dur,
+	})
+}
+
+func (p *Pool) observeEnqueue(nodeID NodeID, pri Priority, err error) {
+	if p == nil || p.cfg.Observer.OnEnqueue == nil {
+		return
+	}
+	p.cfg.Observer.OnEnqueue(EnqueueEvent{
+		TargetNode: nodeID,
+		Kind:       priorityKind(pri),
+		Result:     enqueueResult(err),
+	})
+}
+
+func dialResult(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	return "dial_error"
+}
+
+func enqueueResult(err error) string {
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.Is(err, ErrQueueFull):
+		return "queue_full"
+	case errors.Is(err, ErrStopped):
+		return "stopped"
+	default:
+		return "other"
+	}
+}
+
+func priorityKind(pri Priority) string {
+	switch pri {
+	case PriorityRaft:
+		return "raft"
+	case PriorityRPC:
+		return "rpc"
+	case PriorityBulk:
+		return "bulk"
+	default:
+		return "unknown"
 	}
 }
 

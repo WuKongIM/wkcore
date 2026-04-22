@@ -3,12 +3,129 @@ package replica
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 	"github.com/stretchr/testify/require"
 )
+
+type replicaRecordedLogEntry struct {
+	level  string
+	module string
+	msg    string
+	fields []wklog.Field
+}
+
+func (e replicaRecordedLogEntry) field(key string) (wklog.Field, bool) {
+	for _, field := range e.fields {
+		if field.Key == key {
+			return field, true
+		}
+	}
+	return wklog.Field{}, false
+}
+
+type replicaRecordingLoggerSink struct {
+	mu      sync.Mutex
+	entries []replicaRecordedLogEntry
+}
+
+type replicaRecordingLogger struct {
+	module string
+	base   []wklog.Field
+	sink   *replicaRecordingLoggerSink
+}
+
+func newReplicaRecordingLogger(module string) *replicaRecordingLogger {
+	return &replicaRecordingLogger{module: module, sink: &replicaRecordingLoggerSink{}}
+}
+
+func (l *replicaRecordingLogger) Debug(msg string, fields ...wklog.Field) {
+	l.log("DEBUG", msg, fields...)
+}
+func (l *replicaRecordingLogger) Info(msg string, fields ...wklog.Field) {
+	l.log("INFO", msg, fields...)
+}
+func (l *replicaRecordingLogger) Warn(msg string, fields ...wklog.Field) {
+	l.log("WARN", msg, fields...)
+}
+func (l *replicaRecordingLogger) Error(msg string, fields ...wklog.Field) {
+	l.log("ERROR", msg, fields...)
+}
+func (l *replicaRecordingLogger) Fatal(msg string, fields ...wklog.Field) {
+	l.log("FATAL", msg, fields...)
+}
+
+func (l *replicaRecordingLogger) Named(name string) wklog.Logger {
+	if name == "" {
+		return l
+	}
+	module := name
+	if l.module != "" {
+		module = l.module + "." + name
+	}
+	return &replicaRecordingLogger{module: module, base: append([]wklog.Field(nil), l.base...), sink: l.sink}
+}
+
+func (l *replicaRecordingLogger) With(fields ...wklog.Field) wklog.Logger {
+	merged := append(append([]wklog.Field(nil), l.base...), fields...)
+	return &replicaRecordingLogger{module: l.module, base: merged, sink: l.sink}
+}
+
+func (l *replicaRecordingLogger) Sync() error { return nil }
+
+func (l *replicaRecordingLogger) log(level, msg string, fields ...wklog.Field) {
+	if l == nil || l.sink == nil {
+		return
+	}
+	entry := replicaRecordedLogEntry{
+		level:  level,
+		module: l.module,
+		msg:    msg,
+		fields: append(append([]wklog.Field(nil), l.base...), fields...),
+	}
+	l.sink.mu.Lock()
+	defer l.sink.mu.Unlock()
+	l.sink.entries = append(l.sink.entries, entry)
+}
+
+func (l *replicaRecordingLogger) entries() []replicaRecordedLogEntry {
+	if l == nil || l.sink == nil {
+		return nil
+	}
+	l.sink.mu.Lock()
+	defer l.sink.mu.Unlock()
+	out := make([]replicaRecordedLogEntry, len(l.sink.entries))
+	copy(out, l.sink.entries)
+	return out
+}
+
+func requireReplicaLogEntry(t *testing.T, logger *replicaRecordingLogger, level, module, event string) replicaRecordedLogEntry {
+	t.Helper()
+	for _, entry := range logger.entries() {
+		if entry.level != level || entry.module != module {
+			continue
+		}
+		field, ok := entry.field("event")
+		if ok && field.Value == event {
+			return entry
+		}
+	}
+	t.Fatalf("log entry not found: level=%s module=%s event=%s entries=%#v", level, module, event, logger.entries())
+	return replicaRecordedLogEntry{}
+}
+
+func requireReplicaFieldValue[T any](t *testing.T, entry replicaRecordedLogEntry, key string) T {
+	t.Helper()
+	field, ok := entry.field(key)
+	require.True(t, ok, "field %q not found in entry %#v", key, entry)
+	value, ok := field.Value.(T)
+	require.True(t, ok, "field %q has type %T, want %T", key, field.Value, *new(T))
+	return value
+}
 
 func TestAppendCollectorDrainsBurstsWithoutRetrigger(t *testing.T) {
 	env := newTestEnv(t)
@@ -206,6 +323,38 @@ func TestAppendContextCancellationReturnsPromptly(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("append did not return after context cancellation")
 	}
+}
+
+func TestAppendContextCancellationLogsTimeoutSnapshot(t *testing.T) {
+	env := newThreeReplicaCluster(t)
+	logger := newReplicaRecordingLogger("channel")
+	env.leader.logger = logger
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := env.leader.Append(ctx, []channel.Record{{Payload: []byte("x"), SizeBytes: 1}})
+		done <- err
+	}()
+	waitForLogAppend(t, env.leader.log.(*fakeLogStore), 1)
+
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(time.Second):
+		t.Fatal("append did not return after deadline exceeded")
+	}
+
+	entry := requireReplicaLogEntry(t, logger, "DEBUG", "channel.replica", "channel.replica.append.timeout")
+	require.Equal(t, "append wait timed out before quorum commit", entry.msg)
+	require.Equal(t, "group-10", requireReplicaFieldValue[string](t, entry, "channelKey"))
+	require.Equal(t, uint64(1), requireReplicaFieldValue[uint64](t, entry, "nodeID"))
+	require.Equal(t, uint64(1), requireReplicaFieldValue[uint64](t, entry, "leaderNodeID"))
+	require.Equal(t, true, requireReplicaFieldValue[bool](t, entry, "commitReady"))
+	require.Equal(t, uint64(0), requireReplicaFieldValue[uint64](t, entry, "hw"))
+	require.Equal(t, uint64(1), requireReplicaFieldValue[uint64](t, entry, "leo"))
+	require.Equal(t, uint64(1), requireReplicaFieldValue[uint64](t, entry, "targetOffset"))
 }
 
 func TestBecomeFollowerFailsOutstandingAppendWaiters(t *testing.T) {

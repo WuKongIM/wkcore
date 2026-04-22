@@ -58,7 +58,7 @@ services:
     depends_on:
       - wk-node1
     ports:
-      - "8080:80"
+      - "18080:80"
 
   prometheus:
     image: prom/prometheus:v3

@@ -52,7 +52,7 @@ API.Server() / RPCMux() / Discovery() / RPCService(ctx, nodeID, slotID, serviceI
 | 类型 | 文件 | 说明 |
 |------|------|------|
 | `Cluster` | cluster.go:59 | 核心结构体，聚合传输/Controller/Agent/ManagedSlot/迁移等全部资源 |
-| `Config` | config.go:32 | 配置容器：NodeID, ListenAddr, SlotCount, HashSlotCount, 工厂函数, 超时参数, Observer / TransportObserver 等 |
+| `Config` | config.go:32 | 配置容器：NodeID, ListenAddr, SlotCount, HashSlotCount, 工厂函数, 超时参数, Observer / TransportObserver 等；其中 TransportObserver 用于汇聚传输层 bytes / dial / enqueue / RPC client 可观测信号 |
 | `Timeouts` | config.go:59 | 控制器请求 / 重试预算 + observation cadence：heartbeat、runtime scan、slow sync、planner safety、planner wake debounce 等 |
 | `Router` | router.go:9 | 路由器：持有 HashSlotTable(atomic), 负责 key→slot→leader 映射 |
 | `HashSlotTable` | hashslottable.go | Hash Slot 路由表：hashSlot→物理SlotID 映射 + 迁移状态 |
@@ -87,7 +87,7 @@ Start():
        rpcServiceController → handleControllerRPC
        rpcServiceManagedSlot → handleManagedSlotRPC
      创建 raftPool + rpcPool → raftClient + fwdClient
-     Server / Pool 通过 Config.TransportObserver 上报 transport send/receive bytes
+     Server / Pool 通过 Config.TransportObserver 上报 transport send/receive bytes、dial / enqueue 结果，以及 RPC client 调用结果 / 时延 / inflight
      Cluster.TransportPoolStats() 在观测刷新时聚合 raftPool/rpcPool 的 active/idle 连接数
   ④ startControllerRaftIfLocalPeer():
      条件: ControllerEnabled() && HasLocalControllerPeer()

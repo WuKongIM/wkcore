@@ -13,6 +13,7 @@ import (
 	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
 	channeltransport "github.com/WuKongIM/WuKongIM/pkg/channel/transport"
 	obsmetrics "github.com/WuKongIM/WuKongIM/pkg/metrics"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type appChannelCluster struct {
@@ -32,6 +33,7 @@ type appChannelCluster struct {
 	metricsMu      sync.Mutex
 	metrics        *obsmetrics.Registry
 	activeChannels map[channel.ChannelKey]struct{}
+	logger         wklog.Logger
 }
 
 type appChannelApplyLock struct {
@@ -49,6 +51,7 @@ func newAppChannelCluster(
 	transport *channeltransport.Transport,
 	messageIDs channel.MessageIDGenerator,
 	localNodeID uint64,
+	logger wklog.Logger,
 ) (*appChannelCluster, error) {
 	if store == nil || rt == nil || transport == nil || messageIDs == nil {
 		return nil, channel.ErrInvalidConfig
@@ -66,11 +69,19 @@ func newAppChannelCluster(
 		service:     service,
 		runtime:     appChannelRuntimeControl{runtime: rt},
 		localNodeID: localNodeID,
+		logger:      logger,
 		closers: []func() error{
 			transport.Close,
 			rt.Close,
 		},
 	}, nil
+}
+
+func (c *appChannelCluster) appendLogger() wklog.Logger {
+	if c == nil || c.logger == nil {
+		return wklog.NewNop()
+	}
+	return c.logger.Named("channel.append")
 }
 
 func (c *appChannelCluster) ApplyMeta(meta channel.Meta) error {
@@ -297,14 +308,51 @@ func (c *appChannelCluster) forwardAppendToLeader(ctx context.Context, req chann
 	}
 	meta, ok := c.service.MetaSnapshot(channelhandler.KeyFromChannelID(req.ChannelID))
 	if !ok || meta.Leader == 0 {
+		c.appendLogger().Debug("skip forwarding channel append without leader metadata",
+			wklog.Event("app.channel.append.forward.skipped"),
+			wklog.NodeID(c.localNodeID),
+			wklog.ChannelID(req.ChannelID.ID),
+			wklog.ChannelType(int64(req.ChannelID.Type)),
+			wklog.String("clientMsgNo", req.Message.ClientMsgNo),
+			wklog.Reason("missing_leader_metadata"),
+		)
 		return channel.AppendResult{}, nil, false
 	}
 	leaderID := uint64(meta.Leader)
 	if leaderID == 0 || leaderID == c.localNodeID {
+		c.appendLogger().Debug("skip forwarding channel append because local node is still selected as leader",
+			wklog.Event("app.channel.append.forward.skipped"),
+			wklog.NodeID(c.localNodeID),
+			wklog.ChannelID(req.ChannelID.ID),
+			wklog.ChannelType(int64(req.ChannelID.Type)),
+			wklog.String("clientMsgNo", req.Message.ClientMsgNo),
+			wklog.Reason("leader_is_local"),
+		)
 		return channel.AppendResult{}, nil, false
 	}
+	c.appendLogger().Debug("forwarding channel append to leader",
+		wklog.Event("app.channel.append.forward.triggered"),
+		wklog.NodeID(c.localNodeID),
+		wklog.LeaderNodeID(leaderID),
+		wklog.ChannelID(req.ChannelID.ID),
+		wklog.ChannelType(int64(req.ChannelID.Type)),
+		wklog.String("clientMsgNo", req.Message.ClientMsgNo),
+	)
 	startedAt := time.Now()
 	result, err := c.remoteAppender.AppendToLeader(ctx, leaderID, req)
+	completedFields := []wklog.Field{
+		wklog.Event("app.channel.append.forward.completed"),
+		wklog.NodeID(c.localNodeID),
+		wklog.LeaderNodeID(leaderID),
+		wklog.ChannelID(req.ChannelID.ID),
+		wklog.ChannelType(int64(req.ChannelID.Type)),
+		wklog.String("clientMsgNo", req.Message.ClientMsgNo),
+		wklog.Duration("duration", time.Since(startedAt)),
+	}
+	if err != nil {
+		completedFields = append(completedFields, wklog.Error(err))
+	}
+	c.appendLogger().Debug("completed forwarded channel append", completedFields...)
 	if err == nil {
 		sendtrace.Record(sendtrace.Event{
 			Stage:       sendtrace.StageChannelAppendForward,

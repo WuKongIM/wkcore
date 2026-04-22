@@ -161,7 +161,7 @@ func build(cfg Config) (_ *App, err error) {
 	}
 	app.isrRuntime, err = channelruntime.New(channelruntime.Config{
 		LocalNode:                        channel.NodeID(cfg.Node.ID),
-		ReplicaFactory:                   newChannelReplicaFactory(app.channelLogDB, channel.NodeID(cfg.Node.ID), nil, cfg.Cluster.AppendGroupCommitMaxWait, cfg.Cluster.AppendGroupCommitMaxRecords, cfg.Cluster.AppendGroupCommitMaxBytes),
+		ReplicaFactory:                   newChannelReplicaFactory(app.channelLogDB, channel.NodeID(cfg.Node.ID), nil, cfg.Cluster.AppendGroupCommitMaxWait, cfg.Cluster.AppendGroupCommitMaxRecords, cfg.Cluster.AppendGroupCommitMaxBytes, app.logger.Named("channel")),
 		GenerationStore:                  newMemoryGenerationStore(),
 		Activator:                        app.channelMetaSync,
 		Transport:                        app.isrTransport,
@@ -186,7 +186,7 @@ func build(cfg Config) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: create channel runtime: %w", err)
 	}
-	app.channelLog, err = newAppChannelCluster(app.channelLogDB, app.isrRuntime, app.isrTransport, messageIDs, cfg.Node.ID)
+	app.channelLog, err = newAppChannelCluster(app.channelLogDB, app.isrRuntime, app.isrTransport, messageIDs, cfg.Node.ID, app.logger)
 	if err != nil {
 		return nil, fmt.Errorf("app: create channel cluster: %w", err)
 	}

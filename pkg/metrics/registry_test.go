@@ -146,6 +146,70 @@ func TestSlotAndTransportMetricsTrackProposalsLeaderChangesAndRPCs(t *testing.T)
 	require.Len(t, poolIdle.GetMetric(), 2)
 }
 
+func TestTransportMetricsTrackRPCClientDialAndEnqueue(t *testing.T) {
+	reg := New(15, "node-15")
+
+	reg.Transport.ObserveRPCClient("3", "channel_append", "ok", 7*time.Millisecond)
+	reg.Transport.ObserveRPCClient("3", "channel_append", "timeout", 11*time.Millisecond)
+	reg.Transport.SetRPCInflight("3", "channel_append", 2)
+	reg.Transport.ObserveEnqueue("3", "rpc", "queue_full")
+	reg.Transport.ObserveDial("3", "dial_error", 5*time.Millisecond)
+
+	families, err := reg.Gather()
+	require.NoError(t, err)
+
+	rpcTotal := requireMetricFamily(t, families, "wukongim_transport_rpc_client_total")
+	require.Len(t, rpcTotal.GetMetric(), 2)
+
+	rpcDuration := requireMetricFamily(t, families, "wukongim_transport_rpc_client_duration_seconds")
+	require.Len(t, rpcDuration.GetMetric(), 1)
+	requireMetricLabels(t, rpcDuration.GetMetric()[0], map[string]string{
+		"node_id":     "15",
+		"node_name":   "node-15",
+		"target_node": "3",
+		"service":     "channel_append",
+	})
+
+	rpcInflight := requireMetricFamily(t, families, "wukongim_transport_rpc_inflight")
+	require.Len(t, rpcInflight.GetMetric(), 1)
+	requireMetricLabels(t, rpcInflight.GetMetric()[0], map[string]string{
+		"node_id":     "15",
+		"node_name":   "node-15",
+		"target_node": "3",
+		"service":     "channel_append",
+	})
+	require.Equal(t, float64(2), rpcInflight.GetMetric()[0].GetGauge().GetValue())
+
+	enqueueTotal := requireMetricFamily(t, families, "wukongim_transport_enqueue_total")
+	require.Len(t, enqueueTotal.GetMetric(), 1)
+	requireMetricLabels(t, enqueueTotal.GetMetric()[0], map[string]string{
+		"node_id":     "15",
+		"node_name":   "node-15",
+		"target_node": "3",
+		"kind":        "rpc",
+		"result":      "queue_full",
+	})
+	require.Equal(t, float64(1), enqueueTotal.GetMetric()[0].GetCounter().GetValue())
+
+	dialTotal := requireMetricFamily(t, families, "wukongim_transport_dial_total")
+	require.Len(t, dialTotal.GetMetric(), 1)
+	requireMetricLabels(t, dialTotal.GetMetric()[0], map[string]string{
+		"node_id":     "15",
+		"node_name":   "node-15",
+		"target_node": "3",
+		"result":      "dial_error",
+	})
+	require.Equal(t, float64(1), dialTotal.GetMetric()[0].GetCounter().GetValue())
+
+	dialDuration := requireMetricFamily(t, families, "wukongim_transport_dial_duration_seconds")
+	require.Len(t, dialDuration.GetMetric(), 1)
+	requireMetricLabels(t, dialDuration.GetMetric()[0], map[string]string{
+		"node_id":     "15",
+		"node_name":   "node-15",
+		"target_node": "3",
+	})
+}
+
 func TestControllerMetricsTrackDecisionStateAndTaskCounts(t *testing.T) {
 	reg := New(11, "node-11")
 

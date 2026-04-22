@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -27,6 +28,8 @@ import (
 
 const multinodeAppReadTimeout = 20 * time.Second
 const appReadTimeout = 2 * time.Second
+const threeNodeHarnessStartAttempts = 3
+const threeNodeHarnessRetryBackoff = 300 * time.Millisecond
 
 var appWKProtoClients sync.Map
 
@@ -221,6 +224,35 @@ func newThreeNodeAppHarnessWithConfigMutator(t *testing.T, mutate func(*Config))
 func newThreeNodeAppHarnessWithOptions(t *testing.T, slotCount uint32, slotReplicaN int, mutate func(*Config)) *threeNodeAppHarness {
 	t.Helper()
 
+	var lastErr error
+	for attempt := 1; attempt <= threeNodeHarnessStartAttempts; attempt++ {
+		harness, cleanup, err := buildThreeNodeAppHarness(t, slotCount, slotReplicaN, mutate)
+		if err == nil {
+			t.Cleanup(func() {
+				require.NoError(t, cleanup())
+			})
+			return harness
+		}
+
+		lastErr = err
+		if cleanupErr := cleanup(); cleanupErr != nil {
+			t.Logf("cleanup failed after three-node harness startup error: %v", cleanupErr)
+		}
+		if attempt == threeNodeHarnessStartAttempts {
+			break
+		}
+
+		t.Logf("retrying three-node harness startup (%d/%d): %v", attempt, threeNodeHarnessStartAttempts, err)
+		time.Sleep(time.Duration(attempt) * threeNodeHarnessRetryBackoff)
+	}
+
+	require.NoError(t, lastErr)
+	return nil
+}
+
+func buildThreeNodeAppHarness(t *testing.T, slotCount uint32, slotReplicaN int, mutate func(*Config)) (*threeNodeAppHarness, func() error, error) {
+	t.Helper()
+
 	clusterAddrs := reserveTestTCPAddrs(t, 3)
 	gatewayAddrs := reserveTestTCPAddrs(t, 3)
 	apiAddrs := reserveTestTCPAddrs(t, 3)
@@ -268,13 +300,28 @@ func newThreeNodeAppHarnessWithOptions(t *testing.T, slotCount uint32, slotRepli
 		specs[nodeID] = appNodeSpec{cfg: cfg}
 
 		app, err := New(cfg)
-		require.NoError(t, err)
+		if err != nil {
+			return nil, func() error { return stopThreeNodeApps(apps) }, err
+		}
 		apps[nodeID] = app
 	}
 
+	if err := startThreeNodeApps(apps); err != nil {
+		return nil, func() error { return stopThreeNodeApps(apps) }, err
+	}
+
+	harness := &threeNodeAppHarness{apps: apps, specs: specs}
+	return harness, func() error { return stopThreeNodeApps(apps) }, nil
+}
+
+func startThreeNodeApps(apps map[uint64]*App) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(apps))
-	for _, app := range apps {
+	for i := 1; i <= len(apps); i++ {
+		app := apps[uint64(i)]
+		if app == nil {
+			continue
+		}
 		wg.Add(1)
 		go func(app *App) {
 			defer wg.Done()
@@ -283,19 +330,28 @@ func newThreeNodeAppHarnessWithOptions(t *testing.T, slotCount uint32, slotRepli
 	}
 	wg.Wait()
 	close(errCh)
-	for err := range errCh {
-		require.NoError(t, err)
-	}
 
-	harness := &threeNodeAppHarness{apps: apps, specs: specs}
-	t.Cleanup(func() {
-		for i := 3; i >= 1; i-- {
-			if app := apps[uint64(i)]; app != nil {
-				require.NoError(t, app.Stop())
-			}
+	var errs []error
+	for err := range errCh {
+		if err != nil {
+			errs = append(errs, err)
 		}
-	})
-	return harness
+	}
+	return errors.Join(errs...)
+}
+
+func stopThreeNodeApps(apps map[uint64]*App) error {
+	var errs []error
+	for i := len(apps); i >= 1; i-- {
+		app := apps[uint64(i)]
+		if app == nil {
+			continue
+		}
+		if err := app.Stop(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func applySendPathTuning(t *testing.T, cfg *Config, preset sendStressAcceptanceSpec) {

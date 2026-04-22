@@ -15,6 +15,7 @@ import (
 	obsmetrics "github.com/WuKongIM/WuKongIM/pkg/metrics"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/transport"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -92,6 +93,55 @@ func TestTransportMetricsObserverRecordsSendAndReceiveBytes(t *testing.T) {
 
 	receivedBytes := requireMetricFamilyByName(t, families, "wukongim_transport_received_bytes_total")
 	require.Len(t, receivedBytes.GetMetric(), 1)
+}
+
+func TestTransportMetricsObserverRecordsRPCClientMetrics(t *testing.T) {
+	registry := obsmetrics.New(2, "node-2")
+	hooks := transportMetricsObserver{metrics: registry}.Hooks()
+
+	hooks.OnDial(transport.DialEvent{TargetNode: 3, Result: "dial_error", Duration: 5 * time.Millisecond})
+	hooks.OnEnqueue(transport.EnqueueEvent{TargetNode: 3, Kind: "rpc", Result: "queue_full"})
+	hooks.OnRPCClient(transport.RPCClientEvent{TargetNode: 3, ServiceID: 33, Inflight: 1})
+	hooks.OnRPCClient(transport.RPCClientEvent{TargetNode: 3, ServiceID: 33, Result: "timeout", Duration: 20 * time.Millisecond, Inflight: 0})
+
+	families, err := registry.Gather()
+	require.NoError(t, err)
+
+	rpcTotal := requireMetricFamilyByName(t, families, "wukongim_transport_rpc_client_total")
+	require.Len(t, rpcTotal.GetMetric(), 1)
+
+	rpcInflight := requireMetricFamilyByName(t, families, "wukongim_transport_rpc_inflight")
+	require.Len(t, rpcInflight.GetMetric(), 1)
+	require.Equal(t, float64(0), rpcInflight.GetMetric()[0].GetGauge().GetValue())
+
+	enqueueTotal := requireMetricFamilyByName(t, families, "wukongim_transport_enqueue_total")
+	require.Len(t, enqueueTotal.GetMetric(), 1)
+
+	dialTotal := requireMetricFamilyByName(t, families, "wukongim_transport_dial_total")
+	require.Len(t, dialTotal.GetMetric(), 1)
+}
+
+func TestTransportMetricsObserverMapsServiceIDToName(t *testing.T) {
+	registry := obsmetrics.New(2, "node-2")
+	hooks := transportMetricsObserver{metrics: registry}.Hooks()
+
+	hooks.OnRPCClient(transport.RPCClientEvent{TargetNode: 3, ServiceID: 33, Result: "ok", Duration: 7 * time.Millisecond})
+	hooks.OnRPCClient(transport.RPCClientEvent{TargetNode: 3, ServiceID: 99, Result: "other", Duration: 9 * time.Millisecond})
+
+	families, err := registry.Gather()
+	require.NoError(t, err)
+
+	rpcTotal := requireMetricFamilyByName(t, families, "wukongim_transport_rpc_client_total")
+	require.True(t, metricFamilyHasLabels(rpcTotal, map[string]string{
+		"target_node": "3",
+		"service":     "channel_append",
+		"result":      "ok",
+	}))
+	require.True(t, metricFamilyHasLabels(rpcTotal, map[string]string{
+		"target_node": "3",
+		"service":     "service_99",
+		"result":      "other",
+	}))
 }
 
 func TestMetricsHandlerRefreshesTransportPoolMetrics(t *testing.T) {
@@ -465,4 +515,27 @@ func (f fakeObservabilityCluster) Discovery() raftcluster.Discovery { return nil
 
 func (f fakeObservabilityCluster) RPCService(context.Context, multiraft.NodeID, multiraft.SlotID, uint8, []byte) ([]byte, error) {
 	return nil, nil
+}
+
+func metricFamilyHasLabels(family *dto.MetricFamily, want map[string]string) bool {
+	if family == nil {
+		return false
+	}
+	for _, metric := range family.GetMetric() {
+		labels := map[string]string{}
+		for _, label := range metric.GetLabel() {
+			labels[label.GetName()] = label.GetValue()
+		}
+		matched := true
+		for key, value := range want {
+			if labels[key] != value {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }

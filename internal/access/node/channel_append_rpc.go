@@ -9,6 +9,7 @@ import (
 )
 
 import "github.com/WuKongIM/WuKongIM/pkg/channel"
+import "github.com/WuKongIM/WuKongIM/pkg/wklog"
 
 type channelAppendRequest struct {
 	AppendRequest channel.AppendRequest `json:"append_request"`
@@ -50,6 +51,18 @@ func (a *Adapter) handleChannelAppendRPC(ctx context.Context, body []byte) ([]by
 	}
 	if errors.Is(err, channel.ErrNotLeader) || errors.Is(err, channel.ErrStaleMeta) {
 		if refreshed, refreshErr := a.refreshChannelAppendMeta(ctx, req.AppendRequest.ChannelID); refreshErr == nil {
+			a.channelAppendLogger().Debug("resolved refreshed channel append metadata",
+				wklog.Event("access.node.channel_append.refresh.resolved"),
+				wklog.NodeID(a.localNodeID),
+				wklog.LeaderNodeID(uint64(refreshed.Leader)),
+				wklog.ChannelID(req.AppendRequest.ChannelID.ID),
+				wklog.ChannelType(int64(req.AppendRequest.ChannelID.Type)),
+				wklog.Uint64("channelEpoch", refreshed.Epoch),
+				wklog.Uint64("leaderEpoch", refreshed.LeaderEpoch),
+				wklog.Int("replicaCount", len(refreshed.Replicas)),
+				wklog.Int("isrCount", len(refreshed.ISR)),
+				wklog.Int("minISR", refreshed.MinISR),
+			)
 			req.AppendRequest.ExpectedChannelEpoch = refreshed.Epoch
 			req.AppendRequest.ExpectedLeaderEpoch = refreshed.LeaderEpoch
 			if refreshed.Leader != 0 && uint64(refreshed.Leader) != a.localNodeID {
@@ -74,6 +87,13 @@ func (a *Adapter) handleChannelAppendRPC(ctx context.Context, body []byte) ([]by
 		return encodeChannelAppendResponse(channelAppendResponse{Status: rpcStatusNotLeader})
 	}
 	return nil, err
+}
+
+func (a *Adapter) channelAppendLogger() wklog.Logger {
+	if a == nil || a.logger == nil {
+		return wklog.NewNop()
+	}
+	return a.logger.Named("channel_append")
 }
 
 func (a *Adapter) handleChannelLeaderRedirect(id channel.ChannelID) ([]byte, bool, error) {

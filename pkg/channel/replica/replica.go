@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type appendGroupCommitConfig struct {
@@ -55,6 +56,7 @@ type replica struct {
 	probeSource         ReconcileProbeSource
 	now                 func() time.Time
 	onLeaderLocalAppend func()
+	logger              wklog.Logger
 
 	meta         channel.Meta
 	state        channel.ReplicaState
@@ -101,6 +103,9 @@ func NewReplica(cfg ReplicaConfig) (Replica, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.Logger == nil {
+		cfg.Logger = wklog.NewNop()
+	}
 
 	r := &replica{
 		localNode:     cfg.LocalNode,
@@ -112,6 +117,7 @@ func NewReplica(cfg ReplicaConfig) (Replica, error) {
 		snapshots:     cfg.SnapshotApplier,
 		probeSource:   cfg.ReconcileProbeSource,
 		now:           cfg.Now,
+		logger:        cfg.Logger,
 		appendGroupCommit: appendGroupCommitConfig{
 			maxWait:    effectiveAppendGroupCommitMaxWait(cfg.AppendGroupCommitMaxWait),
 			maxRecords: effectiveAppendGroupCommitMaxRecords(cfg.AppendGroupCommitMaxRecords),
@@ -137,6 +143,13 @@ func NewReplica(cfg ReplicaConfig) (Replica, error) {
 	r.startAdvancePublisher()
 	r.startCheckpointPublisher()
 	return r, nil
+}
+
+func (r *replica) appendLogger() wklog.Logger {
+	if r == nil || r.logger == nil {
+		return wklog.NewNop()
+	}
+	return r.logger.Named("replica")
 }
 
 func effectiveAppendGroupCommitMaxWait(configured time.Duration) time.Duration {
