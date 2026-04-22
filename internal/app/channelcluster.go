@@ -86,17 +86,16 @@ func (c *appChannelCluster) ApplyMeta(meta channel.Meta) error {
 	defer unlock()
 
 	previous, ok := c.service.MetaSnapshot(key)
-	if err := c.service.ApplyMeta(meta); err != nil {
+	if err := c.ApplyRoutingMeta(meta); err != nil {
 		return err
 	}
 	var runtimeErr error
 	if meta.Status == channel.StatusDeleted {
-		runtimeErr = c.runtime.RemoveChannel(key)
+		runtimeErr = c.RemoveLocalRuntime(key)
 	} else {
-		runtimeErr = c.runtime.UpsertMeta(meta)
+		runtimeErr = c.EnsureLocalRuntime(meta)
 	}
 	if runtimeErr == nil {
-		c.setChannelActive(key, meta.Status != channel.StatusDeleted)
 		return nil
 	}
 	c.service.RestoreMeta(key, previous, ok)
@@ -187,6 +186,41 @@ func (c *appChannelCluster) RestoreMeta(key channel.ChannelKey, meta channel.Met
 }
 
 func (c *appChannelCluster) RemoveLocal(key channel.ChannelKey) error {
+	return c.RemoveLocalRuntime(key)
+}
+
+func (c *appChannelCluster) ApplyRoutingMeta(meta channel.Meta) error {
+	if c == nil {
+		return channel.ErrInvalidConfig
+	}
+	key := meta.Key
+	if key == "" {
+		key = channelhandler.KeyFromChannelID(meta.ID)
+		meta.Key = key
+	}
+	if c.service == nil {
+		return channel.ErrInvalidConfig
+	}
+	return c.service.ApplyMeta(meta)
+}
+
+func (c *appChannelCluster) EnsureLocalRuntime(meta channel.Meta) error {
+	if c == nil || c.runtime == nil {
+		return channel.ErrInvalidConfig
+	}
+	key := meta.Key
+	if key == "" {
+		key = channelhandler.KeyFromChannelID(meta.ID)
+		meta.Key = key
+	}
+	if err := c.runtime.UpsertMeta(meta); err != nil {
+		return err
+	}
+	c.setChannelActive(key, true)
+	return nil
+}
+
+func (c *appChannelCluster) RemoveLocalRuntime(key channel.ChannelKey) error {
 	if c == nil {
 		return nil
 	}
@@ -196,9 +230,6 @@ func (c *appChannelCluster) RemoveLocal(key channel.ChannelKey) error {
 		if errors.Is(err, channel.ErrChannelNotFound) {
 			err = nil
 		}
-	}
-	if c.service != nil {
-		c.service.RestoreMeta(key, channel.Meta{}, false)
 	}
 	c.setChannelActive(key, false)
 	return err
@@ -321,4 +352,13 @@ func (c appChannelRuntimeControl) Close() error {
 		return nil
 	}
 	return c.runtime.Close()
+}
+
+func containsNodeID(values []channel.NodeID, target channel.NodeID) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

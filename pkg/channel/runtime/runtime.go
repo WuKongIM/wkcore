@@ -233,6 +233,7 @@ func (r *runtime) ApplyMeta(meta core.Meta) error {
 		return ErrChannelNotFound
 	}
 	previousMeta := ch.metaSnapshot()
+	queueLeaderProbe := false
 	if shouldSkipReplicaApplyMeta(ch, r.cfg.LocalNode, meta) {
 		r.sendCoordMu.Lock()
 		ch.setMeta(meta)
@@ -255,12 +256,28 @@ func (r *runtime) ApplyMeta(meta core.Meta) error {
 	r.sendCoordMu.Unlock()
 	r.clearInvalidPeerWork(ch, meta)
 	stopTimers(r.clearStaleReplicationRetries(meta.Key, meta))
+	if r.longPollEnabled() && meta.Leader == r.cfg.LocalNode {
+		state := ch.Status()
+		for _, peer := range r.activeReplicationPeers(meta) {
+			if !r.shouldSendLeaderProbe(ch, meta, state, peer) {
+				continue
+			}
+			ch.enqueueReplication(peer)
+			queueLeaderProbe = true
+		}
+		if queueLeaderProbe {
+			ch.markReplication()
+		}
+	}
 	if meta.Leader != r.cfg.LocalNode {
 		r.retryReplication(meta.Key, meta.Leader, true)
 	} else if status := ch.Status(); !status.CommitReady {
 		for _, peer := range r.activeReplicationPeers(meta) {
 			r.retryReplication(meta.Key, peer, true)
 		}
+	}
+	if queueLeaderProbe {
+		r.enqueueScheduler(meta.Key, PriorityNormal)
 	}
 	return nil
 }

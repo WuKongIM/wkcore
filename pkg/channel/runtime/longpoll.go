@@ -52,8 +52,8 @@ func (r *runtime) ServeLanePoll(ctx context.Context, req LanePollRequestEnvelope
 	if req.Op == LanePollOpOpen || !ok {
 		session = newLeaderLaneSession(r.requestID.Add(1), 1)
 		for _, member := range req.FullMembership {
-			ch, exists := r.lookupChannel(member.ChannelKey)
-			if !exists {
+			ch, _, err := r.ensureChannelForIngress(ctx, member.ChannelKey, ActivationSourceLaneOpen)
+			if err != nil {
 				continue
 			}
 			meta := ch.metaSnapshot()

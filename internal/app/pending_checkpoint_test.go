@@ -12,6 +12,7 @@ import (
 
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	channelhandler "github.com/WuKongIM/WuKongIM/pkg/channel/handler"
 	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
@@ -150,6 +151,94 @@ func TestThreeNodeAppSendAckSurvivesLeaderRestartAfterPendingCheckpointReconcile
 	msg := waitForAppCommittedMessage(t, harness.apps[leaderID], id, sendack.MessageSeq, 5*time.Second)
 	require.Equal(t, []byte("reconcile after restart"), msg.Payload)
 	require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
+}
+
+func TestMultiNodeColdFollowerActivatesAfterLeaderAppend(t *testing.T) {
+	harness := newThreeNodeAppHarness(t)
+	leaderID := harness.waitForStableLeader(t, 1)
+	leader := harness.apps[leaderID]
+
+	followerID := uint64(1)
+	if followerID == leaderID {
+		followerID = 2
+	}
+	follower := harness.apps[followerID]
+
+	id := pendingCheckpointChannelID("cold-follower-sender", "cold-follower-recipient")
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 45,
+		LeaderEpoch:  16,
+		Replicas:     []uint64{leaderID, followerID},
+		ISR:          []uint64{leaderID, followerID},
+		Leader:       leader.cfg.Node.ID,
+		MinISR:       2,
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
+	}
+	require.NoError(t, leader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
+	_, err := leader.channelMetaSync.RefreshChannelMeta(context.Background(), id)
+	require.NoError(t, err)
+
+	key := channelhandler.KeyFromChannelID(id)
+	_, ok := follower.ISRRuntime().Channel(key)
+	require.False(t, ok, "expected follower runtime to stay cold before leader append")
+
+	conn := connectMultinodeWKProtoClient(t, leader, "cold-follower-sender", "cold-follower-device")
+	sendAppWKProtoFrame(t, conn, &frame.SendPacket{
+		ChannelID:   "cold-follower-recipient",
+		ChannelType: id.Type,
+		ClientSeq:   1,
+		ClientMsgNo: "cold-follower-append-1",
+		Payload:     []byte("wake cold follower"),
+	})
+
+	sendack, err := readPendingCheckpointSendack(conn, 5*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, frame.ReasonSuccess, sendack.ReasonCode)
+	require.NoError(t, conn.Close())
+
+	msg := waitForAppCommittedMessage(t, follower, id, sendack.MessageSeq, 5*time.Second)
+	require.Equal(t, []byte("wake cold follower"), msg.Payload)
+	require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
+}
+
+func TestLeaderFailoverRefreshesLocalChannelMetaWithoutPeriodicScan(t *testing.T) {
+	harness := newThreeNodeAppHarness(t)
+	leaderID := harness.waitForStableLeader(t, 1)
+	leader := harness.apps[leaderID]
+
+	id := pendingCheckpointChannelID("meta-refresh-sender", "meta-refresh-recipient")
+	conn := connectMultinodeWKProtoClient(t, leader, "meta-refresh-sender", "meta-refresh-device")
+	sendAppWKProtoFrame(t, conn, &frame.SendPacket{
+		ChannelID:   "meta-refresh-recipient",
+		ChannelType: id.Type,
+		ClientSeq:   1,
+		ClientMsgNo: "meta-refresh-1",
+		Payload:     []byte("refresh leader meta"),
+	})
+
+	sendack, err := readPendingCheckpointSendack(conn, 5*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, frame.ReasonSuccess, sendack.ReasonCode)
+	require.NoError(t, conn.Close())
+
+	harness.stopNode(t, leaderID)
+	newLeaderID := harness.waitForLeaderChange(t, 1, leaderID)
+	newLeader := harness.apps[newLeaderID]
+
+	waitForAppCommittedMessage(t, newLeader, id, sendack.MessageSeq, 5*time.Second)
+
+	key := channelhandler.KeyFromChannelID(id)
+	require.Eventually(t, func() bool {
+		handle, ok := newLeader.ISRRuntime().Channel(key)
+		if !ok {
+			return false
+		}
+		return handle.Meta().Leader == channel.NodeID(newLeaderID)
+	}, 5*time.Second, 50*time.Millisecond)
 }
 
 func pendingCheckpointChannelID(senderUID, recipientUID string) channel.ChannelID {

@@ -94,11 +94,12 @@ steady-state `long_poll`（当前唯一复制主路径）:
   ⑥ 若 lane 当前无 ready item，则 park 到 `maxWait` 或新事件；空响应是正常 timeout，follower 收到后立即续下一条 poll
   ⑦ follower 收到 item 后仍走 `ApplyFetch` 落盘；steady-state ACK 通过下一条 lane poll 的 `cursorDelta` 回传
   ⑧ lane poll 发送失败 / backpressure / RPC timeout 的恢复退避按 `(peer,lane)` 维度计时；steady-state 不再依赖 legacy short-poll / batch-fetch 路径
+  ⑨ 对冷 channel 的 `Fetch` / `ReconcileProbe` ingress 不再要求 runtime 预热：runtime miss 时会通过注入的 activator 按 `ChannelKey` 做一次权威激活，再重试一次本地处理
 ```
 
 ```
 Reconcile Probe（启动 / leader transfer 后的 provisional 收敛）:
-  ① leader promotion 或 recover 后若 `CommitReady=false`，runtime 触发 peer probe
+  ① leader promotion 或 recover 后若 `CommitReady=false`，runtime 触发 peer probe；leader 本地 append 也会给未建立 steady-state lane 视图的冷 follower 排一个轻量 wake-up probe
   ② transport/session.go 发送 ReconcileProbe RPC，收集 follower 的 {OffsetEpoch, LogEndOffset, CheckpointHW}
   ③ replica/reconcile.go 基于 epoch lineage + quorum proofs 计算 quorum-safe prefix
   ④ 保留 quorum-safe tail，必要时截断 minority-only suffix
@@ -172,5 +173,7 @@ Idempotency (0x14): prefix + key + fromUID + msgNo — 幂等条目
 - **Checkpoint 不再阻塞 sendack**: leader 在 quorum commit 后先完成 Append waiter，Checkpoint 持久化走后台 coalescing；若 checkpoint 写盘长期失败，当前实现还缺少显式 health / metrics 暴露。
 - **Transport RPC 分片**: steady-state lane poll 按 `laneID` 路由，保证同一 `(peer,lane)` 有序；辅助 `Fetch` / `ReconcileProbe` 继续按 FNV-64a(ChannelKey) 路由。见 `transport/session.go`。
 - **Leader lane session 是固定规模资源**: ready queue / parked waiter 的规模与 `peer * laneCount` 成正比，不会退化成 per-channel timer / goroutine。
+- **复制 ingress 允许一次按 key 激活重试**: `ServeFetch` / `ServeReconcileProbe` 遇到 runtime miss 时会先走 activator 按 `ChannelKey` 拉权威 meta、确保本地 runtime，再重试一次；它不是后台全量预热。
 - **lane retry 是唯一 steady-state 恢复节奏**: steady-state lane poll 的恢复 backoff 由 `(peer,lane)` timer 驱动；`ReconcileProbe` 仍是独立恢复协议。
+- **leader append 会主动叫醒冷 follower**: long-poll 打开后，leader 本地 append 会把尚未被 lane session 跟踪的复制目标补一个 `ReconcileProbe`，避免 follower 必须依赖启动全量预热才能开始拉取。
 - **`cursorDelta` 是唯一 steady-state ACK**: follower 不再单独发送 `ProgressAck`；复制进度通过下一条 lane poll 回传给 leader。

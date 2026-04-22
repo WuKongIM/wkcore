@@ -1912,6 +1912,56 @@ func TestRuntimeStartsLeaderReconcileProbeWhenCommitNotReady(t *testing.T) {
 	t.Fatal("expected runtime to start a leader reconcile probe while commit-ready is false")
 }
 
+func TestRuntimeLeaderSchedulesWakeUpProbeForColdFollower(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.LongPollLaneCount = 4
+		cfg.LongPollMaxWait = time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+	})
+	meta := testMetaLocal(257, 4, 1, []core.NodeID{1, 2})
+	mustEnsureLocal(t, env.runtime, meta)
+
+	handle, ok := env.runtime.Channel(meta.Key)
+	if !ok {
+		t.Fatalf("Channel(%q) not found", meta.Key)
+	}
+
+	_, err := handle.Append(context.Background(), []core.Record{
+		{Payload: []byte("wake"), SizeBytes: len("wake")},
+	})
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	env.runtime.runScheduler()
+
+	session := env.sessions.session(2)
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected one wake-up probe send, got %d", got)
+	}
+	if session.last.Kind != MessageKindReconcileProbeRequest {
+		t.Fatalf("last kind = %v, want reconcile probe request", session.last.Kind)
+	}
+	if session.last.ReconcileProbeRequest == nil {
+		t.Fatal("expected reconcile probe payload")
+	}
+
+	_, err = handle.Append(context.Background(), []core.Record{
+		{Payload: []byte("wake-again"), SizeBytes: len("wake-again")},
+	})
+	if err != nil {
+		t.Fatalf("second Append() error = %v", err)
+	}
+	env.runtime.runScheduler()
+
+	if got := session.sendCount(); got != 1 {
+		t.Fatalf("expected wake-up probe dedupe to keep one outstanding send, got %d", got)
+	}
+	if got := env.runtime.queuedPeerRequests(2); got != 0 {
+		t.Fatalf("expected wake-up probe dedupe to avoid queued duplicates, got %d", got)
+	}
+}
+
 func TestSessionFetchFailureEnvelopeReleasesInflightAndRetriesReplication(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.AutoRunScheduler = true
@@ -2026,6 +2076,109 @@ func TestSessionServeFetchReturnsReplicaFetchResult(t *testing.T) {
 	}
 	if len(resp.Records) != 2 || string(resp.Records[1].Payload) != "bc" {
 		t.Fatalf("unexpected response records: %+v", resp.Records)
+	}
+}
+
+func TestSessionServeFetchActivatesMissingChannelOnce(t *testing.T) {
+	activator := &recordingActivator{}
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Activator = activator
+	})
+	meta := testMetaLocal(2604, 5, 1, []core.NodeID{1, 2})
+
+	activator.fn = func(context.Context, core.ChannelKey, ActivationSource) (core.Meta, error) {
+		if err := env.runtime.EnsureChannel(meta); err != nil {
+			t.Fatalf("EnsureChannel(%q) error = %v", meta.Key, err)
+		}
+		replica := env.factory.replicas[len(env.factory.replicas)-1]
+		replica.mu.Lock()
+		replica.state.LEO = 1
+		replica.fetchResult = core.ReplicaFetchResult{
+			Epoch: 5,
+			HW:    1,
+			Records: []core.Record{
+				{Payload: []byte("cold"), SizeBytes: len("cold")},
+			},
+		}
+		replica.mu.Unlock()
+		return meta, nil
+	}
+
+	resp, err := env.runtime.ServeFetch(context.Background(), FetchRequestEnvelope{
+		ChannelKey:  meta.Key,
+		Epoch:       meta.Epoch,
+		Generation:  1,
+		ReplicaID:   2,
+		FetchOffset: 0,
+		OffsetEpoch: meta.Epoch,
+		MaxBytes:    1024,
+	})
+	if err != nil {
+		t.Fatalf("ServeFetch() error = %v", err)
+	}
+	if activator.callCount() != 1 {
+		t.Fatalf("expected activator to be called once, got %d", activator.callCount())
+	}
+	if activator.calls[0].source != ActivationSourceFetch {
+		t.Fatalf("activation source = %q, want %q", activator.calls[0].source, ActivationSourceFetch)
+	}
+	if activator.calls[0].key != meta.Key {
+		t.Fatalf("activation key = %q, want %q", activator.calls[0].key, meta.Key)
+	}
+	if len(env.factory.replicas) != 1 {
+		t.Fatalf("expected one activated replica, got %d", len(env.factory.replicas))
+	}
+	if env.factory.replicas[0].fetchCalls != 1 {
+		t.Fatalf("expected activated replica.Fetch to be called once, got %d", env.factory.replicas[0].fetchCalls)
+	}
+	if len(resp.Records) != 1 || string(resp.Records[0].Payload) != "cold" {
+		t.Fatalf("ServeFetch returned %+v, want activated record", resp)
+	}
+}
+
+func TestSessionServeReconcileProbeActivatesMissingChannelOnce(t *testing.T) {
+	activator := &recordingActivator{}
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Activator = activator
+	})
+	meta := testMetaLocal(2605, 6, 1, []core.NodeID{1, 2})
+
+	activator.fn = func(context.Context, core.ChannelKey, ActivationSource) (core.Meta, error) {
+		if err := env.runtime.EnsureChannel(meta); err != nil {
+			t.Fatalf("EnsureChannel(%q) error = %v", meta.Key, err)
+		}
+		replica := env.factory.replicas[len(env.factory.replicas)-1]
+		replica.mu.Lock()
+		replica.state.LEO = 7
+		replica.state.OffsetEpoch = 4
+		replica.state.CheckpointHW = 5
+		replica.mu.Unlock()
+		return meta, nil
+	}
+
+	resp, err := env.runtime.ServeReconcileProbe(context.Background(), ReconcileProbeRequestEnvelope{
+		ChannelKey: meta.Key,
+		Epoch:      meta.Epoch,
+		Generation: 1,
+		ReplicaID:  2,
+	})
+	if err != nil {
+		t.Fatalf("ServeReconcileProbe() error = %v", err)
+	}
+	if activator.callCount() != 1 {
+		t.Fatalf("expected activator to be called once, got %d", activator.callCount())
+	}
+	if activator.calls[0].source != ActivationSourceProbe {
+		t.Fatalf("activation source = %q, want %q", activator.calls[0].source, ActivationSourceProbe)
+	}
+	if activator.calls[0].key != meta.Key {
+		t.Fatalf("activation key = %q, want %q", activator.calls[0].key, meta.Key)
+	}
+	if resp.ChannelKey != meta.Key || resp.Epoch != meta.Epoch || resp.Generation != 1 {
+		t.Fatalf("unexpected probe response metadata: %+v", resp)
+	}
+	if resp.OffsetEpoch != 4 || resp.LogEndOffset != 7 || resp.CheckpointHW != 5 {
+		t.Fatalf("unexpected probe response state: %+v", resp)
 	}
 }
 
@@ -2146,6 +2299,34 @@ type sessionTestEnv struct {
 	factory     *sessionReplicaFactory
 	transport   *sessionTransport
 	sessions    *sessionPeerSessionManager
+}
+
+type activationCall struct {
+	key    core.ChannelKey
+	source ActivationSource
+}
+
+type recordingActivator struct {
+	mu    sync.Mutex
+	calls []activationCall
+	fn    func(context.Context, core.ChannelKey, ActivationSource) (core.Meta, error)
+}
+
+func (a *recordingActivator) ActivateByKey(ctx context.Context, key core.ChannelKey, source ActivationSource) (core.Meta, error) {
+	a.mu.Lock()
+	a.calls = append(a.calls, activationCall{key: key, source: source})
+	fn := a.fn
+	a.mu.Unlock()
+	if fn == nil {
+		return core.Meta{}, nil
+	}
+	return fn(ctx, key, source)
+}
+
+func (a *recordingActivator) callCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.calls)
 }
 
 func newSessionTestEnv(t *testing.T) *sessionTestEnv {

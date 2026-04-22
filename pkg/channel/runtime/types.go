@@ -269,6 +269,7 @@ type Config struct {
 	LocalNode                        core.NodeID
 	ReplicaFactory                   ReplicaFactory
 	GenerationStore                  GenerationStore
+	Activator                        Activator
 	Transport                        Transport
 	PeerSessions                     PeerSessionManager
 	AutoRunScheduler                 bool

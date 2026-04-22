@@ -54,7 +54,7 @@ func (r *runtime) processReplication(key core.ChannelKey) {
 		return
 	}
 	if r.longPollEnabled() && meta.Leader == r.cfg.LocalNode {
-		r.markLeaderLaneReady(ch)
+		r.processLeaderLongPoll(ch, meta)
 		return
 	}
 
@@ -130,6 +130,61 @@ func (r *runtime) processReplication(key core.ChannelKey) {
 	}
 }
 
+func (r *runtime) processLeaderLongPoll(ch *channel, meta core.Meta) {
+	r.markLeaderLaneReady(ch)
+
+	state := ch.Status()
+	var failedPeers []core.NodeID
+	scheduleRetry := false
+	for {
+		peer, ok := ch.popReplicationPeer()
+		if !ok {
+			break
+		}
+		if !r.shouldSendLeaderProbe(ch, meta, state, peer) {
+			r.clearReplicationRetry(ch.key, peer)
+			continue
+		}
+		env := Envelope{
+			Peer:       peer,
+			ChannelKey: ch.key,
+			Epoch:      state.Epoch,
+			Generation: ch.gen,
+			RequestID:  r.requestID.Add(1),
+			Kind:       MessageKindReconcileProbeRequest,
+			ReconcileProbeRequest: &ReconcileProbeRequestEnvelope{
+				ChannelKey: ch.key,
+				Epoch:      state.Epoch,
+				Generation: ch.gen,
+				ReplicaID:  r.cfg.LocalNode,
+			},
+		}
+		err := r.sendEnvelope(env)
+		if err == nil {
+			r.clearReplicationRetry(ch.key, peer)
+			continue
+		}
+		if !errors.Is(err, ErrBackpressured) {
+			failedPeers = append(failedPeers, peer)
+			if r.markReplicationRetry(ch.key, peer) {
+				scheduleRetry = true
+			}
+		}
+	}
+
+	if len(failedPeers) == 0 {
+		return
+	}
+	for _, peer := range failedPeers {
+		ch.enqueueReplication(peer)
+		r.scheduleFollowerReplication(ch.key, peer)
+	}
+	ch.markReplication()
+	if scheduleRetry {
+		r.enqueueScheduler(ch.key, PriorityNormal)
+	}
+}
+
 func (r *runtime) markLeaderLaneReady(ch *channel) {
 	state := ch.Status()
 	for _, target := range ch.replicationTargetsSnapshot() {
@@ -154,6 +209,19 @@ func (r *runtime) onChannelAppend(key core.ChannelKey) {
 		return
 	}
 	r.markLeaderLaneReady(ch)
+	state := ch.Status()
+	queuedWakeUp := false
+	for _, target := range ch.replicationTargetsSnapshot() {
+		if !r.shouldSendLeaderProbe(ch, meta, state, target.Peer) {
+			continue
+		}
+		ch.enqueueReplication(target.Peer)
+		queuedWakeUp = true
+	}
+	if queuedWakeUp {
+		ch.markReplication()
+		r.enqueueScheduler(key, PriorityNormal)
+	}
 }
 
 func (r *runtime) processFollowerLongPoll(ch *channel, meta core.Meta) {
@@ -170,6 +238,42 @@ func (r *runtime) processFollowerLongPoll(ch *channel, meta core.Meta) {
 		laneID := manager.LaneFor(ch.key)
 		r.scheduleLaneDispatch(peer, laneID)
 	}
+}
+
+func (r *runtime) shouldSendLeaderProbe(ch *channel, meta core.Meta, state core.ReplicaState, peer core.NodeID) bool {
+	if ch == nil {
+		return false
+	}
+	if !r.isReplicationPeerValid(meta, peer) {
+		return false
+	}
+	if r.peerRequests.hasChannelInflight(ch.key, peer) {
+		return false
+	}
+	if !state.CommitReady {
+		return true
+	}
+	return !r.leaderLaneTracksChannel(ch.key, state.Epoch, peer)
+}
+
+func (r *runtime) leaderLaneTracksChannel(key core.ChannelKey, epoch uint64, peer core.NodeID) bool {
+	if !r.longPollEnabled() {
+		return false
+	}
+	session, ok := r.leaderLanes.Session(PeerLaneKey{
+		Peer:   peer,
+		LaneID: laneIDFor(key, r.cfg.LongPollLaneCount),
+	})
+	if !ok {
+		return false
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	trackedEpoch, ok := session.channelEpoch[key]
+	if !ok {
+		return false
+	}
+	return trackedEpoch == 0 || epoch == 0 || trackedEpoch == epoch
 }
 
 func (r *runtime) scheduleFollowerReplication(key core.ChannelKey, leader core.NodeID) {

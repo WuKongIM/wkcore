@@ -11,8 +11,8 @@ import (
 	channelreplica "github.com/WuKongIM/WuKongIM/pkg/channel/replica"
 	channelruntime "github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
 	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
-	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 )
 
 type channelMetaSource interface {
@@ -39,8 +39,9 @@ type channelReplicaFactory struct {
 }
 
 type channelMetaCluster interface {
-	ApplyMeta(meta channel.Meta) error
-	RemoveLocal(key channel.ChannelKey) error
+	ApplyRoutingMeta(meta channel.Meta) error
+	EnsureLocalRuntime(meta channel.Meta) error
+	RemoveLocalRuntime(key channel.ChannelKey) error
 }
 
 type channelMetaSync struct {
@@ -54,6 +55,10 @@ type channelMetaSync struct {
 	cancel       context.CancelFunc
 	done         chan struct{}
 	appliedLocal map[channel.ChannelKey]struct{}
+	appliedSlots map[multiraft.SlotID]int
+	slotLeaders  map[multiraft.SlotID]multiraft.NodeID
+	cache        channelActivationCache
+	pendingSlots map[multiraft.SlotID]struct{}
 
 	lastHashSlotTableVersion uint64
 }
@@ -125,21 +130,7 @@ func (s channelSnapshotApplier) InstallSnapshot(_ context.Context, snap channel.
 }
 
 func (s *channelMetaSync) RefreshChannelMeta(ctx context.Context, id channel.ChannelID) (channel.Meta, error) {
-	s.observeHashSlotTableVersion()
-	meta, err := s.source.GetChannelRuntimeMeta(ctx, id.ID, int64(id.Type))
-	if err != nil {
-		if errors.Is(err, metadb.ErrNotFound) {
-			meta, err = s.ensureChannelRuntimeMeta(ctx, id)
-		}
-		if err != nil {
-			return channel.Meta{}, err
-		}
-	}
-	meta, err = s.reconcileChannelRuntimeMeta(ctx, meta)
-	if err != nil {
-		return channel.Meta{}, err
-	}
-	return s.apply(meta)
+	return s.ActivateByID(ctx, id, channelruntime.ActivationSourceBusiness)
 }
 
 func (s *channelMetaSync) ensureChannelRuntimeMeta(ctx context.Context, id channel.ChannelID) (metadb.ChannelRuntimeMeta, error) {
@@ -163,43 +154,13 @@ func (s *channelMetaSync) Start() error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	interval := s.refreshInterval
-	if interval <= 0 {
-		interval = time.Second
-	}
 	s.cancel = cancel
 	s.done = done
+	interval := s.refreshInterval
 	s.mu.Unlock()
 
-	if err := s.syncOnce(ctx); err != nil && !channelMetaSyncStartupRetryable(err) {
-		cancel()
-		s.mu.Lock()
-		if s.done == done {
-			s.cancel = nil
-			s.done = nil
-		}
-		s.mu.Unlock()
-		return errors.Join(err, s.cleanupAppliedLocal())
-	}
-
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		defer close(done)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				_ = s.syncOnce(ctx)
-			}
-		}
-	}()
+	go s.watchActiveSlotLeaders(ctx, interval, done)
 	return nil
-}
-
-func channelMetaSyncStartupRetryable(err error) bool {
-	return errors.Is(err, raftcluster.ErrNoLeader) || errors.Is(err, raftcluster.ErrSlotNotFound)
 }
 
 func (s *channelMetaSync) Stop() error {
@@ -246,7 +207,7 @@ func (s *channelMetaSync) syncOnce(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		applied, err := s.apply(meta)
+		applied, err := s.applyLocalMeta(meta)
 		if err != nil {
 			return err
 		}
@@ -256,7 +217,7 @@ func (s *channelMetaSync) syncOnce(ctx context.Context) error {
 		if _, ok := currentLocal[key]; ok {
 			continue
 		}
-		if err := s.removeLocal(key); err != nil {
+		if err := s.removeLocalRuntime(key); err != nil {
 			return err
 		}
 	}
@@ -264,21 +225,11 @@ func (s *channelMetaSync) syncOnce(ctx context.Context) error {
 	return nil
 }
 
-func (s *channelMetaSync) apply(meta metadb.ChannelRuntimeMeta) (channel.Meta, error) {
+func (s *channelMetaSync) applyLocalMeta(meta metadb.ChannelRuntimeMeta) (channel.Meta, error) {
 	if !containsUint64(meta.Replicas, s.localNode) {
 		return channel.Meta{}, channel.ErrStaleMeta
 	}
-	rootMeta := projectChannelMeta(meta)
-	if err := s.cluster.ApplyMeta(rootMeta); err != nil {
-		return channel.Meta{}, err
-	}
-	s.mu.Lock()
-	if s.appliedLocal == nil {
-		s.appliedLocal = make(map[channel.ChannelKey]struct{})
-	}
-	s.appliedLocal[rootMeta.Key] = struct{}{}
-	s.mu.Unlock()
-	return rootMeta, nil
+	return s.applyAuthoritativeMeta(meta)
 }
 
 func (s *channelMetaSync) reconcileChannelRuntimeMeta(ctx context.Context, meta metadb.ChannelRuntimeMeta) (metadb.ChannelRuntimeMeta, error) {
@@ -308,12 +259,39 @@ func (s *channelMetaSync) observeHashSlotTableVersion() {
 		return
 	}
 	version := versionSource.HashSlotTableVersion()
+	changed := false
 	s.mu.Lock()
 	if s.lastHashSlotTableVersion != 0 && version != s.lastHashSlotTableVersion {
-		s.appliedLocal = nil
+		s.resetAppliedLocalTrackingLocked()
+		changed = true
 	}
 	s.lastHashSlotTableVersion = version
 	s.mu.Unlock()
+	if changed {
+		s.cache.clear()
+	}
+}
+
+func (s *channelMetaSync) watchActiveSlotLeaders(ctx context.Context, interval time.Duration, done chan struct{}) {
+	defer close(done)
+	if s == nil {
+		return
+	}
+	if interval <= 0 {
+		<-ctx.Done()
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		s.pollActiveSlotLeaders()
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func projectChannelMeta(meta metadb.ChannelRuntimeMeta) channel.Meta {
@@ -356,29 +334,26 @@ func containsUint64(values []uint64, target uint64) bool {
 	return false
 }
 
-func (s *channelMetaSync) removeLocal(key channel.ChannelKey) error {
+func (s *channelMetaSync) removeLocalRuntime(key channel.ChannelKey) error {
 	if s.cluster == nil {
 		return nil
 	}
-	if err := s.cluster.RemoveLocal(key); err != nil {
+	if err := s.cluster.RemoveLocalRuntime(key); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.appliedLocal, key)
-	if len(s.appliedLocal) == 0 {
-		s.appliedLocal = nil
-	}
+	s.untrackAppliedLocalKeyLocked(key)
 	return nil
 }
 
 func (s *channelMetaSync) cleanupAppliedLocal() error {
 	var err error
 	for key := range s.snapshotAppliedLocal() {
-		err = errors.Join(err, s.removeLocal(key))
+		err = errors.Join(err, s.removeLocalRuntime(key))
 	}
 	s.mu.Lock()
-	s.appliedLocal = nil
+	s.resetAppliedLocalTrackingLocked()
 	s.mu.Unlock()
 	return err
 }
@@ -391,8 +366,129 @@ func (s *channelMetaSync) snapshotAppliedLocal() map[channel.ChannelKey]struct{}
 
 func (s *channelMetaSync) setAppliedLocal(values map[channel.ChannelKey]struct{}) {
 	s.mu.Lock()
-	s.appliedLocal = cloneAppliedLocalSet(values)
+	s.resetAppliedLocalTrackingLocked()
+	for key := range values {
+		s.trackAppliedLocalKeyLocked(key)
+	}
 	s.mu.Unlock()
+}
+
+func (s *channelMetaSync) snapshotAppliedSlots() []multiraft.SlotID {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.appliedSlots) == 0 {
+		return nil
+	}
+	slots := make([]multiraft.SlotID, 0, len(s.appliedSlots))
+	for slotID := range s.appliedSlots {
+		slots = append(slots, slotID)
+	}
+	return slots
+}
+
+func (s *channelMetaSync) pollActiveSlotLeaders() {
+	if s == nil || s.bootstrap == nil || s.bootstrap.cluster == nil {
+		return
+	}
+	for _, slotID := range s.snapshotAppliedSlots() {
+		leader, err := s.bootstrap.cluster.LeaderOf(slotID)
+		if err != nil || leader == 0 {
+			continue
+		}
+		if !s.updateObservedSlotLeader(slotID, leader) {
+			continue
+		}
+		s.scheduleSlotLeaderRefresh(slotID)
+	}
+}
+
+func (s *channelMetaSync) updateObservedSlotLeader(slotID multiraft.SlotID, leader multiraft.NodeID) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.slotLeaders == nil {
+		s.slotLeaders = make(map[multiraft.SlotID]multiraft.NodeID)
+	}
+	previous := s.slotLeaders[slotID]
+	s.slotLeaders[slotID] = leader
+	return previous != leader
+}
+
+func (s *channelMetaSync) trackAppliedLocalKeyLocked(key channel.ChannelKey) {
+	if s == nil {
+		return
+	}
+	if s.appliedLocal == nil {
+		s.appliedLocal = make(map[channel.ChannelKey]struct{})
+	}
+	if _, exists := s.appliedLocal[key]; exists {
+		return
+	}
+	s.appliedLocal[key] = struct{}{}
+	slotID, ok := s.slotForChannelKey(key)
+	if !ok {
+		return
+	}
+	if s.appliedSlots == nil {
+		s.appliedSlots = make(map[multiraft.SlotID]int)
+	}
+	s.appliedSlots[slotID]++
+}
+
+func (s *channelMetaSync) untrackAppliedLocalKeyLocked(key channel.ChannelKey) {
+	if s == nil || s.appliedLocal == nil {
+		return
+	}
+	if _, exists := s.appliedLocal[key]; !exists {
+		return
+	}
+	delete(s.appliedLocal, key)
+	if len(s.appliedLocal) == 0 {
+		s.appliedLocal = nil
+	}
+	slotID, ok := s.slotForChannelKey(key)
+	if !ok || s.appliedSlots == nil {
+		return
+	}
+	if remaining := s.appliedSlots[slotID] - 1; remaining > 0 {
+		s.appliedSlots[slotID] = remaining
+		return
+	}
+	delete(s.appliedSlots, slotID)
+	if len(s.appliedSlots) == 0 {
+		s.appliedSlots = nil
+	}
+	if s.slotLeaders != nil {
+		delete(s.slotLeaders, slotID)
+		if len(s.slotLeaders) == 0 {
+			s.slotLeaders = nil
+		}
+	}
+}
+
+func (s *channelMetaSync) resetAppliedLocalTrackingLocked() {
+	if s == nil {
+		return
+	}
+	s.appliedLocal = nil
+	s.appliedSlots = nil
+	s.slotLeaders = nil
+}
+
+func (s *channelMetaSync) slotForChannelKey(key channel.ChannelKey) (multiraft.SlotID, bool) {
+	if s == nil || s.bootstrap == nil || s.bootstrap.cluster == nil {
+		return 0, false
+	}
+	id, err := channelhandler.ParseChannelKey(key)
+	if err != nil {
+		return 0, false
+	}
+	return s.bootstrap.cluster.SlotForKey(id.ID), true
 }
 
 func cloneAppliedLocalSet(values map[channel.ChannelKey]struct{}) map[channel.ChannelKey]struct{} {

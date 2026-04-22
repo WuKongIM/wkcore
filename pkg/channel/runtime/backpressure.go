@@ -109,6 +109,13 @@ func (s *peerRequestState) releaseChannel(key core.ChannelKey, peer core.NodeID)
 	delete(s.groups, channelPeerKey{channelKey: key, peer: peer})
 }
 
+func (s *peerRequestState) hasChannelInflight(key core.ChannelKey, peer core.NodeID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.groups[channelPeerKey{channelKey: key, peer: peer}]
+	return ok
+}
+
 func (s *peerRequestState) clearChannel(key core.ChannelKey) []core.NodeID {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -862,9 +869,9 @@ func (r *runtime) applyReconcileProbeResponseEnvelope(ch *channel, env Reconcile
 }
 
 func (r *runtime) ServeFetch(ctx context.Context, req FetchRequestEnvelope) (FetchResponseEnvelope, error) {
-	ch, ok := r.lookupChannel(req.ChannelKey)
-	if !ok {
-		return FetchResponseEnvelope{}, ErrChannelNotFound
+	ch, _, err := r.ensureChannelForIngress(ctx, req.ChannelKey, ActivationSourceFetch)
+	if err != nil {
+		return FetchResponseEnvelope{}, err
 	}
 	if ch.gen != req.Generation {
 		return FetchResponseEnvelope{}, ErrGenerationMismatch
@@ -921,10 +928,10 @@ func longPollFetchContext(parent context.Context, timeout time.Duration) (contex
 	return context.WithTimeout(parent, timeout)
 }
 
-func (r *runtime) ServeReconcileProbe(_ context.Context, req ReconcileProbeRequestEnvelope) (ReconcileProbeResponseEnvelope, error) {
-	ch, ok := r.lookupChannel(req.ChannelKey)
-	if !ok {
-		return ReconcileProbeResponseEnvelope{}, ErrChannelNotFound
+func (r *runtime) ServeReconcileProbe(ctx context.Context, req ReconcileProbeRequestEnvelope) (ReconcileProbeResponseEnvelope, error) {
+	ch, _, err := r.ensureChannelForIngress(ctx, req.ChannelKey, ActivationSourceProbe)
+	if err != nil {
+		return ReconcileProbeResponseEnvelope{}, err
 	}
 	if ch.gen != req.Generation {
 		return ReconcileProbeResponseEnvelope{}, ErrGenerationMismatch
