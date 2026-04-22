@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -24,6 +25,10 @@ type slotAgent struct {
 	cache      *assignmentCache
 	reports    pendingTaskReports
 	reconciler assignmentReconciler
+
+	observationMu         sync.RWMutex
+	observationState      observationAppliedState
+	pendingReconcileScope map[uint32]struct{}
 }
 
 type pendingTaskReport struct {
@@ -58,6 +63,7 @@ func (a *slotAgent) SyncAssignments(ctx context.Context) error {
 		if a.cache != nil {
 			a.cache.SetAssignments(assignments)
 		}
+		a.setPendingReconcileScope(nil)
 		return nil
 	}
 	if !controllerReadFallbackAllowed(err) || a.cluster == nil || a.cluster.controllerMeta == nil {
@@ -70,6 +76,36 @@ func (a *slotAgent) SyncAssignments(ctx context.Context) error {
 	if err := a.cluster.syncRouterHashSlotTableFromStore(ctx); err != nil {
 		return err
 	}
+	if a.cache != nil {
+		a.cache.SetAssignments(assignments)
+	}
+	a.setPendingReconcileScope(nil)
+	return nil
+}
+
+func (a *slotAgent) SyncObservationDelta(ctx context.Context, hint observationHint) error {
+	if a == nil || a.client == nil {
+		return ErrNotStarted
+	}
+
+	req := observationDeltaRequest{
+		LeaderID:         a.appliedObservationLeaderID(),
+		LeaderGeneration: a.appliedObservationLeaderGeneration(),
+		Revisions:        a.appliedObservationRevisions(),
+		RequestedSlots:   append([]uint32(nil), hint.AffectedSlots...),
+		ForceFullSync:    hint.NeedFullSync,
+	}
+	delta, err := a.client.FetchObservationDelta(ctx, req)
+	if err != nil {
+		return err
+	}
+
+	a.observationMu.Lock()
+	applyObservationDelta(&a.observationState, delta)
+	a.pendingReconcileScope = requestedSlotSet(reconcileScopeFromObservationDelta(delta))
+	assignments := sortedObservationAssignments(a.observationState.Assignments)
+	a.observationMu.Unlock()
+
 	if a.cache != nil {
 		a.cache.SetAssignments(assignments)
 	}
@@ -124,6 +160,9 @@ func (a *slotAgent) listControllerNodes(ctx context.Context) ([]controllermeta.C
 			return snapshot.Nodes, nil
 		}
 	}
+	if nodes, ok := a.appliedObservationNodes(); ok {
+		return nodes, nil
+	}
 	var nodes []controllermeta.ClusterNode
 	err := a.retryControllerCall(ctx, func(attemptCtx context.Context) error {
 		var err error
@@ -139,6 +178,9 @@ func (a *slotAgent) listControllerNodes(ctx context.Context) ([]controllermeta.C
 func (a *slotAgent) listRuntimeViews(ctx context.Context) ([]controllermeta.SlotRuntimeView, bool, error) {
 	if a == nil || a.client == nil {
 		return nil, false, ErrNotStarted
+	}
+	if views, ok := a.appliedObservationRuntimeViews(); ok {
+		return views, true, nil
 	}
 	var views []controllermeta.SlotRuntimeView
 	err := a.retryControllerCall(ctx, func(attemptCtx context.Context) error {
@@ -164,6 +206,9 @@ func (a *slotAgent) listTasks(ctx context.Context) ([]controllermeta.ReconcileTa
 	}
 	if a.cluster != nil && a.cluster.controllerMeta != nil && a.cluster.isLocalControllerLeader() {
 		return a.cluster.controllerMeta.ListTasks(ctx)
+	}
+	if tasks, ok := a.appliedObservationTasks(); ok {
+		return tasks, nil
 	}
 	var tasks []controllermeta.ReconcileTask
 	err := a.retryControllerCall(ctx, func(attemptCtx context.Context) error {
@@ -215,6 +260,95 @@ func (a *slotAgent) retryControllerCall(ctx context.Context, fn func(context.Con
 	return fn(ctx)
 }
 
+func (a *slotAgent) appliedObservationRevisions() observationRevisions {
+	if a == nil {
+		return observationRevisions{}
+	}
+	a.observationMu.RLock()
+	defer a.observationMu.RUnlock()
+	return a.observationState.Revisions
+}
+
+func (a *slotAgent) appliedObservationLeaderID() uint64 {
+	if a == nil {
+		return 0
+	}
+	a.observationMu.RLock()
+	defer a.observationMu.RUnlock()
+	return a.observationState.LeaderID
+}
+
+func (a *slotAgent) appliedObservationLeaderGeneration() uint64 {
+	if a == nil {
+		return 0
+	}
+	a.observationMu.RLock()
+	defer a.observationMu.RUnlock()
+	return a.observationState.LeaderGeneration
+}
+
+func (a *slotAgent) appliedObservationNodes() ([]controllermeta.ClusterNode, bool) {
+	if a == nil {
+		return nil, false
+	}
+	a.observationMu.RLock()
+	defer a.observationMu.RUnlock()
+	if a.observationState.LeaderGeneration == 0 {
+		return nil, false
+	}
+	return sortedObservationNodes(a.observationState.Nodes), true
+}
+
+func (a *slotAgent) appliedObservationRuntimeViews() ([]controllermeta.SlotRuntimeView, bool) {
+	if a == nil {
+		return nil, false
+	}
+	a.observationMu.RLock()
+	defer a.observationMu.RUnlock()
+	if a.observationState.LeaderGeneration == 0 {
+		return nil, false
+	}
+	return sortedObservationRuntimeViews(a.observationState.RuntimeViews), true
+}
+
+func (a *slotAgent) appliedObservationTasks() ([]controllermeta.ReconcileTask, bool) {
+	if a == nil {
+		return nil, false
+	}
+	a.observationMu.RLock()
+	defer a.observationMu.RUnlock()
+	if a.observationState.LeaderGeneration == 0 {
+		return nil, false
+	}
+	return sortedObservationTasks(a.observationState.Tasks), true
+}
+
+func (a *slotAgent) setPendingReconcileScope(slotIDs []uint32) {
+	if a == nil {
+		return
+	}
+	a.observationMu.Lock()
+	defer a.observationMu.Unlock()
+	a.pendingReconcileScope = requestedSlotSet(slotIDs)
+}
+
+func (a *slotAgent) takePendingReconcileScope() (map[uint32]struct{}, bool) {
+	if a == nil {
+		return nil, false
+	}
+	a.observationMu.Lock()
+	defer a.observationMu.Unlock()
+	if len(a.pendingReconcileScope) == 0 {
+		return nil, false
+	}
+	scope := make(map[uint32]struct{}, len(a.pendingReconcileScope))
+	for slotID := range a.pendingReconcileScope {
+		scope[slotID] = struct{}{}
+	}
+	a.pendingReconcileScope = nil
+	return scope, true
+}
+
 func (a *slotAgent) pendingTaskReport(slotID uint32) (pendingTaskReport, bool) {
 	if a == nil {
 		return pendingTaskReport{}, false
@@ -259,6 +393,54 @@ func sameReconcileTaskIdentity(left, right controllermeta.ReconcileTask) bool {
 		left.SourceNode == right.SourceNode &&
 		left.TargetNode == right.TargetNode &&
 		left.Attempt == right.Attempt
+}
+
+func sortedObservationAssignments(assignments map[uint32]controllermeta.SlotAssignment) []controllermeta.SlotAssignment {
+	if len(assignments) == 0 {
+		return nil
+	}
+	out := make([]controllermeta.SlotAssignment, 0, len(assignments))
+	for _, assignment := range assignments {
+		out = append(out, cloneSlotAssignment(assignment))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SlotID < out[j].SlotID })
+	return out
+}
+
+func sortedObservationNodes(nodes map[uint64]controllermeta.ClusterNode) []controllermeta.ClusterNode {
+	if len(nodes) == 0 {
+		return nil
+	}
+	out := make([]controllermeta.ClusterNode, 0, len(nodes))
+	for _, node := range nodes {
+		out = append(out, node)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
+	return out
+}
+
+func sortedObservationRuntimeViews(views map[uint32]controllermeta.SlotRuntimeView) []controllermeta.SlotRuntimeView {
+	if len(views) == 0 {
+		return nil
+	}
+	out := make([]controllermeta.SlotRuntimeView, 0, len(views))
+	for _, view := range views {
+		out = append(out, cloneRuntimeView(view))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SlotID < out[j].SlotID })
+	return out
+}
+
+func sortedObservationTasks(tasks map[uint32]controllermeta.ReconcileTask) []controllermeta.ReconcileTask {
+	if len(tasks) == 0 {
+		return nil
+	}
+	out := make([]controllermeta.ReconcileTask, 0, len(tasks))
+	for _, task := range tasks {
+		out = append(out, task)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SlotID < out[j].SlotID })
+	return out
 }
 
 func slotcontrollerReport(c *Cluster, now time.Time, view *controllermeta.SlotRuntimeView) slotcontroller.AgentReport {

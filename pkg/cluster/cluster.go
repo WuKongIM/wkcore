@@ -62,6 +62,7 @@ type observationResources struct {
 	runtimeObserver   *observerLoop
 	runtimeReporter   *runtimeObservationReporter
 	wakeState         *observationWakeState
+	syncInFlight      atomic.Bool
 }
 
 type Cluster struct {
@@ -470,6 +471,18 @@ func (c *Cluster) observeOnce(ctx context.Context) {
 	if c.agent == nil || c.runtime == nil || c.stopped.Load() {
 		return
 	}
+	if c.wakeState != nil {
+		if wake, ok := c.wakeState.takePending(); ok {
+			deltaCtx, cancel := c.withControllerTimeout(ctx)
+			err := c.agent.SyncObservationDelta(deltaCtx, wake.Hint)
+			cancel()
+			if err == nil {
+				_ = c.agent.ApplyAssignments(ctx)
+				_ = c.observeHashSlotMigrations(ctx)
+				return
+			}
+		}
+	}
 	assignCtx, cancel := c.withControllerTimeout(ctx)
 	err := c.agent.SyncAssignments(assignCtx)
 	cancel()
@@ -481,6 +494,39 @@ func (c *Cluster) observeOnce(ctx context.Context) {
 		_ = c.agent.ApplyAssignments(ctx)
 	}
 	_ = c.observeHashSlotMigrations(ctx)
+}
+
+// wakeReconcileOnce consumes one coalesced wake hint and syncs observation deltas once.
+func (c *Cluster) wakeReconcileOnce(ctx context.Context) {
+	if c == nil || c.agent == nil || c.runtime == nil || c.stopped.Load() {
+		return
+	}
+	if !c.observationSyncStart() {
+		return
+	}
+	defer c.observationSyncDone()
+
+	if c.wakeState == nil {
+		return
+	}
+	wake, ok := c.wakeState.takePending()
+	if !ok {
+		return
+	}
+	_ = c.syncObservationDeltaOnce(ctx, wake.Hint)
+}
+
+// slowSyncOnce performs a low-frequency full-scope observation sync for hint-loss recovery.
+func (c *Cluster) slowSyncOnce(ctx context.Context) {
+	if c == nil || c.agent == nil || c.runtime == nil || c.stopped.Load() {
+		return
+	}
+	if !c.observationSyncStart() {
+		return
+	}
+	defer c.observationSyncDone()
+
+	_ = c.syncObservationDeltaOnce(ctx, observationHint{})
 }
 
 func (c *Cluster) runtimeObservationOnce(ctx context.Context) {
@@ -1393,4 +1439,34 @@ func (c *Cluster) controllerLeaderID() multiraft.NodeID {
 		return client.cachedLeader()
 	}
 	return 0
+}
+
+// observationSyncStart coalesces concurrent wake-driven and slow-sync delta fetches.
+func (c *Cluster) observationSyncStart() bool {
+	if c == nil {
+		return false
+	}
+	return c.syncInFlight.CompareAndSwap(false, true)
+}
+
+func (c *Cluster) observationSyncDone() {
+	if c == nil {
+		return
+	}
+	c.syncInFlight.Store(false)
+}
+
+func (c *Cluster) syncObservationDeltaOnce(ctx context.Context, hint observationHint) error {
+	if c == nil || c.agent == nil || c.runtime == nil || c.stopped.Load() {
+		return ErrNotStarted
+	}
+	deltaCtx, cancel := c.withControllerTimeout(ctx)
+	err := c.agent.SyncObservationDelta(deltaCtx, hint)
+	cancel()
+	if err != nil {
+		return err
+	}
+	_ = c.agent.ApplyAssignments(ctx)
+	_ = c.observeHashSlotMigrations(ctx)
+	return nil
 }

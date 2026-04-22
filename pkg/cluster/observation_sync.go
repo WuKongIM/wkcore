@@ -43,11 +43,13 @@ type observationDeltaResponse struct {
 
 // observationAppliedState is the follower-side cache view updated by delta apply helpers.
 type observationAppliedState struct {
-	Assignments  map[uint32]controllermeta.SlotAssignment
-	Tasks        map[uint32]controllermeta.ReconcileTask
-	Nodes        map[uint64]controllermeta.ClusterNode
-	RuntimeViews map[uint32]controllermeta.SlotRuntimeView
-	Revisions    observationRevisions
+	LeaderID         uint64
+	LeaderGeneration uint64
+	Assignments      map[uint32]controllermeta.SlotAssignment
+	Tasks            map[uint32]controllermeta.ReconcileTask
+	Nodes            map[uint64]controllermeta.ClusterNode
+	RuntimeViews     map[uint32]controllermeta.SlotRuntimeView
+	Revisions        observationRevisions
 }
 
 // observationSyncState holds the leader-local latest state plus per-entity change revisions.
@@ -287,6 +289,8 @@ func applyObservationDelta(state *observationAppliedState, delta observationDelt
 	for _, slotID := range delta.DeletedRuntimeSlots {
 		delete(state.RuntimeViews, slotID)
 	}
+	state.LeaderID = delta.LeaderID
+	state.LeaderGeneration = delta.LeaderGeneration
 	state.Revisions = delta.Revisions
 }
 
@@ -426,6 +430,13 @@ func slotRequested(slots map[uint32]struct{}, slotID uint32) bool {
 	}
 	_, ok := slots[slotID]
 	return ok
+}
+
+func reconcileScopeFromObservationDelta(delta observationDeltaResponse) []uint32 {
+	if len(delta.Nodes) > 0 {
+		return nil
+	}
+	return affectedSlotsFromObservationDelta(delta)
 }
 
 func sortObservationDelta(resp *observationDeltaResponse) {

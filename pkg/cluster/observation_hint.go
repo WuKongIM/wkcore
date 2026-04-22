@@ -96,6 +96,23 @@ func (s *observationWakeState) snapshot() observationWakeSnapshot {
 	}
 }
 
+func (s *observationWakeState) takePending() (observationWakeSnapshot, bool) {
+	if s == nil {
+		return observationWakeSnapshot{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.pending {
+		return observationWakeSnapshot{}, false
+	}
+	snapshot := observationWakeSnapshot{
+		Pending: true,
+		Hint:    cloneObservationHint(s.hint),
+	}
+	s.pending = false
+	return snapshot, true
+}
+
 func (s *observationWakeState) observeHint(currentLeaderID uint64, hint observationHint) bool {
 	if s == nil || hint.LeaderID == 0 || hint.LeaderGeneration == 0 {
 		return false
