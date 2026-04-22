@@ -50,6 +50,16 @@ services:
       - "5202:5200"
       - "7002:7000"
 
+  wk-web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - wk-node1
+    ports:
+      - "8080:80"
+
   prometheus:
     image: prom/prometheus:v3
     restart: unless-stopped
