@@ -12,6 +12,7 @@ import (
 	controllerraft "github.com/WuKongIM/WuKongIM/pkg/controller/raft"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
+	"github.com/WuKongIM/WuKongIM/pkg/transport"
 )
 
 type controllerHost struct {
@@ -21,7 +22,10 @@ type controllerHost struct {
 	service      *controllerraft.Service
 	observations *observationCache
 	// syncState tracks leader-local observation revisions and delta-ready snapshots.
-	syncState       *observationSyncState
+	syncState *observationSyncState
+	// hintClient sends best-effort observation wakeups to followers.
+	hintClient      *transport.Client
+	hintPeers       []multiraft.NodeID
 	healthScheduler *nodeHealthScheduler
 	localNode       multiraft.NodeID
 
@@ -79,8 +83,16 @@ func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, erro
 		sm:              sm,
 		observations:    newObservationCache(),
 		syncState:       newObservationSyncState(),
+		hintClient:      layer.fwdClient,
 		localNode:       cfg.NodeID,
 		warmupFullSyncs: make(map[uint64]struct{}),
+	}
+	host.hintPeers = make([]multiraft.NodeID, 0, len(cfg.Nodes))
+	for _, node := range cfg.Nodes {
+		if node.NodeID == 0 || node.NodeID == cfg.NodeID {
+			continue
+		}
+		host.hintPeers = append(host.hintPeers, node.NodeID)
 	}
 	timeouts := cfg.Timeouts
 	timeouts.applyDefaults()
@@ -90,7 +102,9 @@ func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, erro
 	host.loadNodeMirrorFn = func(ctx context.Context) ([]controllermeta.ClusterNode, error) { return host.meta.ListNodes(ctx) }
 	host.metadataSnapshotState.onLoaded = func(snapshot controllerMetadataSnapshot) {
 		if host.syncState != nil {
+			before := host.syncState.currentRevisions()
 			host.syncState.replaceMetadataSnapshot(snapshot)
+			host.emitObservationHintSince(before)
 		}
 	}
 	host.observations.runtimeViewTTL = 3 * timeouts.ObservationRuntimeFullSyncInterval
@@ -187,7 +201,9 @@ func (h *controllerHost) applyRuntimeReport(report runtimeObservationReport) {
 	h.syncLeaderWarmupState()
 	h.observations.applyRuntimeReport(report)
 	if h.syncState != nil {
+		before := h.syncState.currentRevisions()
 		h.syncState.replaceRuntimeViews(h.observations.snapshotRuntimeViews())
+		h.emitObservationHintSince(before)
 	}
 	if report.FullSync {
 		h.markWarmupFullSync(report.NodeID)
@@ -233,6 +249,39 @@ func (h *controllerHost) buildObservationDelta(req observationDeltaRequest) obse
 	resp.LeaderID = currentLeaderID
 	resp.LeaderGeneration = currentGeneration
 	return resp
+}
+
+func (h *controllerHost) emitObservationHintSince(before observationRevisions) {
+	if h == nil || h.syncState == nil || h.hintClient == nil {
+		return
+	}
+
+	currentLeaderID := h.LeaderID()
+	currentGeneration := h.leaderGeneration()
+	if currentLeaderID != h.localNode || currentGeneration == 0 {
+		return
+	}
+	after := h.syncState.currentRevisions()
+	if after == before {
+		return
+	}
+
+	delta := h.syncState.buildDelta(observationDeltaRequest{Revisions: before})
+	h.emitObservationHint(hintFromObservationDelta(uint64(h.localNode), currentGeneration, delta))
+}
+
+func (h *controllerHost) emitObservationHint(hint observationHint) {
+	if h == nil || h.hintClient == nil || len(h.hintPeers) == 0 {
+		return
+	}
+
+	body := encodeObservationHint(hint)
+	for _, peerID := range h.hintPeers {
+		if peerID == 0 || peerID == h.localNode {
+			continue
+		}
+		_ = h.hintClient.Send(uint64(peerID), 0, msgTypeObservationHint, body)
+	}
 }
 
 func (h *controllerHost) hashSlotTableSnapshot() (*HashSlotTable, bool) {

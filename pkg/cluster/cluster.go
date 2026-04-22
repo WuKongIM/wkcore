@@ -61,6 +61,7 @@ type observationResources struct {
 	heartbeatObserver *observerLoop
 	runtimeObserver   *observerLoop
 	runtimeReporter   *runtimeObservationReporter
+	wakeState         *observationWakeState
 }
 
 type Cluster struct {
@@ -118,6 +119,9 @@ func NewCluster(cfg Config) (*Cluster, error) {
 		},
 		hashSlotRuntimeResources: hashSlotRuntimeResources{
 			runtimeStateMachines: make(map[multiraft.SlotID]hashSlotOwnershipUpdater),
+		},
+		observationResources: observationResources{
+			wakeState: newObservationWakeState(),
 		},
 	}
 	cluster.slotMgr = newSlotManager(cluster)
@@ -179,6 +183,7 @@ func (c *Cluster) startTransportLayer() error {
 	if err := layer.Start(c.cfg.ListenAddr, c.handleRaftMessage, c.handleForwardRPC, c.handleControllerRPC, c.handleManagedSlotRPC); err != nil {
 		return err
 	}
+	layer.server.Handle(msgTypeObservationHint, c.handleObservationHintMessage)
 
 	c.transportLayer = layer
 	c.server = layer.server
@@ -198,6 +203,7 @@ func (c *Cluster) startServer() error {
 		},
 	})
 	c.server.Handle(msgTypeRaft, c.handleRaftMessage)
+	c.server.Handle(msgTypeObservationHint, c.handleObservationHintMessage)
 	c.rpcMux.Handle(rpcServiceForward, c.handleForwardRPC)
 	c.rpcMux.Handle(rpcServiceController, c.handleControllerRPC)
 	c.rpcMux.Handle(rpcServiceManagedSlot, c.handleManagedSlotRPC)
@@ -299,6 +305,9 @@ func (c *Cluster) startControllerClient() {
 	client.onLeaderChange = func(multiraft.NodeID) {
 		if c.runtimeReporter != nil {
 			c.runtimeReporter.requestFullSync()
+		}
+		if c.wakeState != nil {
+			c.wakeState.reset()
 		}
 	}
 	c.controllerClient = client
@@ -1351,4 +1360,37 @@ func nodeIDsFromUint64s(ids []uint64) []multiraft.NodeID {
 
 func (c *Cluster) handleControllerRPC(ctx context.Context, body []byte) ([]byte, error) {
 	return (&controllerHandler{cluster: c}).Handle(ctx, body)
+}
+
+func (c *Cluster) handleObservationHintMessage(body []byte) {
+	hint, err := decodeObservationHint(body)
+	if err != nil {
+		return
+	}
+	c.handleObservationHint(hint)
+}
+
+func (c *Cluster) handleObservationHint(hint observationHint) bool {
+	if c == nil || c.wakeState == nil {
+		return false
+	}
+	return c.wakeState.observeHint(uint64(c.controllerLeaderID()), hint)
+}
+
+func (c *Cluster) controllerLeaderID() multiraft.NodeID {
+	if c == nil {
+		return 0
+	}
+	if c.controller != nil {
+		if leaderID := c.controller.LeaderID(); leaderID != 0 {
+			return multiraft.NodeID(leaderID)
+		}
+	}
+	if client, ok := c.controllerClient.(*controllerClient); ok {
+		if leaderID, ok := client.localLeaderHint(); ok {
+			return leaderID
+		}
+		return client.cachedLeader()
+	}
+	return 0
 }
