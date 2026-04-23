@@ -174,14 +174,14 @@ UpdateNodeLiveness(nodeID, from, to)
 
 Population rules:
 
-- controller leader and controller followers learn committed `NodeStatusUpdate`
-  transitions directly from controller committed-command handling
-- all other nodes update liveness by diffing `delta.Nodes` inside
-  `SyncObservationDelta()`
+- the controller leader learns committed `NodeStatusUpdate` transitions directly
+  from controller committed-command handling
+- every other node, including controller followers, updates liveness by diffing
+  `delta.Nodes` inside `SyncObservationDelta()`
 
-This keeps app-layer liveness logic on one code path even though controller
- replicas and non-controller replicas observe node status through different
- transport paths.
+This keeps app-layer liveness logic on one callback shape even though the
+controller leader and every other node observe node status through different
+transport paths.
 
 ### 5. Authoritative leader repair lives on the current slot leader
 
@@ -418,8 +418,8 @@ This design therefore changes **who may be selected** and **who is authorized to
 ### Phase 2: add unified liveness cache plumbing
 
 - add `OnNodeStatusChange` observer hook
-- emit it from controller committed path
-- emit it from non-controller `SyncObservationDelta()` node diffs
+- emit it from the controller leader committed path
+- emit it from `SyncObservationDelta()` node diffs on every other node
 - update `channelMetaSync.nodeLivenessCache` from one app entry point
 
 ### Phase 3: add node RPC skeletons
