@@ -3,6 +3,8 @@ import type {
   ChannelRuntimeMetaListParams,
   ManagerChannelRuntimeMetaDetailResponse,
   ManagerChannelRuntimeMetaListResponse,
+  ManagerConnectionDetailResponse,
+  ManagerConnectionsResponse,
   ManagerLoginResponse,
   ManagerNodeDetailResponse,
   ManagerNodesResponse,
@@ -208,6 +210,14 @@ export function getTasks() {
 
 export function getTask(slotId: number) {
   return jsonManagerFetch<ManagerTaskDetailResponse>(`/manager/tasks/${slotId}`)
+}
+
+export function getConnections() {
+  return jsonManagerFetch<ManagerConnectionsResponse>("/manager/connections")
+}
+
+export function getConnection(sessionId: number) {
+  return jsonManagerFetch<ManagerConnectionDetailResponse>(`/manager/connections/${sessionId}`)
 }
 
 export function getChannelRuntimeMeta(params?: ChannelRuntimeMetaListParams) {

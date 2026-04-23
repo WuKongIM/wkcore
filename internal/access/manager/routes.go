@@ -59,6 +59,13 @@ func (s *Server) registerRoutes() {
 	}
 	overview.GET("/overview", s.handleOverview)
 
+	connections := s.engine.Group("/manager")
+	if s.auth.enabled() {
+		connections.Use(s.requirePermission("cluster.connection", "r"))
+	}
+	connections.GET("/connections", s.handleConnections)
+	connections.GET("/connections/:session_id", s.handleConnection)
+
 	channelRuntimeMeta := s.engine.Group("/manager")
 	if s.auth.enabled() {
 		channelRuntimeMeta.Use(s.requirePermission("cluster.channel", "r"))

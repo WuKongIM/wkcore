@@ -1701,6 +1701,203 @@ func TestManagerChannelRuntimeMetaDetailReturnsObject(t *testing.T) {
 	}`, rec.Body.String())
 }
 
+func TestManagerConnectionsRejectsInsufficientPermission(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "viewer",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.node",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/connections", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "viewer"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.JSONEq(t, `{"error":"forbidden","message":"forbidden"}`, rec.Body.String())
+}
+
+func TestManagerConnectionsReturnsList(t *testing.T) {
+	connectedAt := time.Date(2026, 4, 23, 8, 0, 0, 0, time.UTC)
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.connection",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{
+			connections: []managementusecase.Connection{{
+				SessionID:   101,
+				UID:         "u1",
+				DeviceID:    "device-a",
+				DeviceFlag:  "app",
+				DeviceLevel: "master",
+				SlotID:      9,
+				State:       "active",
+				Listener:    "tcp",
+				ConnectedAt: connectedAt,
+				RemoteAddr:  "10.0.0.1:5000",
+				LocalAddr:   "127.0.0.1:7000",
+			}},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/connections", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{
+		"total": 1,
+		"items": [{
+			"session_id": 101,
+			"uid": "u1",
+			"device_id": "device-a",
+			"device_flag": "app",
+			"device_level": "master",
+			"slot_id": 9,
+			"state": "active",
+			"listener": "tcp",
+			"connected_at": "2026-04-23T08:00:00Z",
+			"remote_addr": "10.0.0.1:5000",
+			"local_addr": "127.0.0.1:7000"
+		}]
+	}`, rec.Body.String())
+}
+
+func TestManagerConnectionsReturnsServiceUnavailableWhenManagementNotConfigured(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.connection",
+				Actions:  []string{"r"},
+			}},
+		}}),
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/connections", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.JSONEq(t, `{"error":"service_unavailable","message":"management not configured"}`, rec.Body.String())
+}
+
+func TestManagerConnectionDetailReturnsItem(t *testing.T) {
+	connectedAt := time.Date(2026, 4, 23, 8, 10, 0, 0, time.UTC)
+	var received uint64
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.connection",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{
+			connectionDetailReqSink: &received,
+			connectionDetail: managementusecase.ConnectionDetail{
+				SessionID:   202,
+				UID:         "u2",
+				DeviceID:    "device-b",
+				DeviceFlag:  "web",
+				DeviceLevel: "slave",
+				SlotID:      3,
+				State:       "closing",
+				Listener:    "ws",
+				ConnectedAt: connectedAt,
+				RemoteAddr:  "10.0.0.2:6000",
+				LocalAddr:   "127.0.0.1:7100",
+			},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/connections/202", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, uint64(202), received)
+	require.JSONEq(t, `{
+		"session_id": 202,
+		"uid": "u2",
+		"device_id": "device-b",
+		"device_flag": "web",
+		"device_level": "slave",
+		"slot_id": 3,
+		"state": "closing",
+		"listener": "ws",
+		"connected_at": "2026-04-23T08:10:00Z",
+		"remote_addr": "10.0.0.2:6000",
+		"local_addr": "127.0.0.1:7100"
+	}`, rec.Body.String())
+}
+
+func TestManagerConnectionDetailRejectsInvalidSessionID(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.connection",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/connections/bad", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"error":"bad_request","message":"invalid session_id"}`, rec.Body.String())
+}
+
+func TestManagerConnectionDetailReturnsNotFound(t *testing.T) {
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "cluster.connection",
+				Actions:  []string{"r"},
+			}},
+		}}),
+		Management: managementStub{connectionDetailErr: controllermeta.ErrNotFound},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/connections/99", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	require.JSONEq(t, `{"error":"not_found","message":"connection not found"}`, rec.Body.String())
+}
+
 func TestManagerOverviewRejectsMissingToken(t *testing.T) {
 	srv := New(Options{
 		Auth:       testAuthConfig(nil),
@@ -2042,6 +2239,11 @@ type managementStub struct {
 	tasksErr                        error
 	task                            managementusecase.TaskDetail
 	taskErr                         error
+	connections                     []managementusecase.Connection
+	connectionsErr                  error
+	connectionDetailReqSink         *uint64
+	connectionDetail                managementusecase.ConnectionDetail
+	connectionDetailErr             error
 	channelRuntimeMetaReqSink       *managementusecase.ListChannelRuntimeMetaRequest
 	channelRuntimeMetaPage          managementusecase.ListChannelRuntimeMetaResponse
 	channelRuntimeMetaErr           error
@@ -2090,6 +2292,17 @@ func (s managementStub) ListTasks(context.Context) ([]managementusecase.Task, er
 
 func (s managementStub) GetTask(context.Context, uint32) (managementusecase.TaskDetail, error) {
 	return s.task, s.taskErr
+}
+
+func (s managementStub) ListConnections(context.Context) ([]managementusecase.Connection, error) {
+	return append([]managementusecase.Connection(nil), s.connections...), s.connectionsErr
+}
+
+func (s managementStub) GetConnection(_ context.Context, sessionID uint64) (managementusecase.ConnectionDetail, error) {
+	if s.connectionDetailReqSink != nil {
+		*s.connectionDetailReqSink = sessionID
+	}
+	return s.connectionDetail, s.connectionDetailErr
 }
 
 func (s managementStub) ListChannelRuntimeMeta(_ context.Context, req managementusecase.ListChannelRuntimeMetaRequest) (managementusecase.ListChannelRuntimeMetaResponse, error) {

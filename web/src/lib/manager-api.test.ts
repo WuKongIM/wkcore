@@ -4,6 +4,8 @@ import {
   configureManagerAuth,
   getChannelRuntimeMeta,
   getChannelRuntimeMetaDetail,
+  getConnection,
+  getConnections,
   getNode,
   getNodes,
   getOverview,
@@ -245,6 +247,45 @@ describe("manager api client", () => {
     await expect(getSlot(9)).resolves.toEqual(slotDetail)
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/manager/slots", expect.anything())
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/manager/slots/9", expect.anything())
+  })
+
+  it("fetches connection list and detail data from manager endpoints", async () => {
+    const connectionsResponse = {
+      total: 1,
+      items: [{
+        session_id: 101,
+        uid: "u1",
+        device_id: "device-a",
+        device_flag: "app",
+        device_level: "master",
+        slot_id: 9,
+        state: "active",
+        listener: "tcp",
+        connected_at: "2026-04-23T08:00:00Z",
+        remote_addr: "10.0.0.1:5000",
+        local_addr: "127.0.0.1:7000",
+      }],
+    }
+    const connectionDetail = {
+      ...connectionsResponse.items[0],
+      state: "closing",
+    }
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(connectionsResponse), { status: 200 }))
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(connectionDetail), { status: 200 }))
+
+    await expect(getConnections()).resolves.toEqual(connectionsResponse)
+    await expect(getConnection(101)).resolves.toEqual(connectionDetail)
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/manager/connections",
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/manager/connections/101",
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    )
   })
 
   it("posts slot operator actions using backend request field names", async () => {

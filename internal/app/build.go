@@ -317,6 +317,7 @@ func build(cfg Config) (_ *App, err error) {
 			LocalNodeID:        cfg.Node.ID,
 			ControllerPeerIDs:  controllerPeerIDs(cfg.Cluster.DerivedControllerNodes()),
 			Cluster:            app.cluster,
+			Online:             onlineRegistry,
 			ChannelRuntimeMeta: app.store,
 		})
 		app.manager = accessmanager.New(accessmanager.Options{

@@ -208,6 +208,27 @@ export type ManagerChannelRuntimeMetaDetailResponse = ManagerChannelRuntimeMeta 
   lease_until_ms: number
 }
 
+export type ManagerConnection = {
+  session_id: number
+  uid: string
+  device_id: string
+  device_flag: string
+  device_level: string
+  slot_id: number
+  state: string
+  listener: string
+  connected_at: string
+  remote_addr: string
+  local_addr: string
+}
+
+export type ManagerConnectionsResponse = {
+  total: number
+  items: ManagerConnection[]
+}
+
+export type ManagerConnectionDetailResponse = ManagerConnection
+
 export type TransferSlotLeaderInput = {
   targetNodeId: number
 }

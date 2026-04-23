@@ -10,6 +10,7 @@ const getOverviewMock = vi.fn()
 const getTasksMock = vi.fn()
 const getNodesMock = vi.fn()
 const getChannelRuntimeMetaMock = vi.fn()
+const getConnectionsMock = vi.fn()
 const getSlotsMock = vi.fn()
 
 vi.mock("@/lib/manager-api", async (importOriginal) => {
@@ -20,6 +21,7 @@ vi.mock("@/lib/manager-api", async (importOriginal) => {
     getTasks: (...args: unknown[]) => getTasksMock(...args),
     getNodes: (...args: unknown[]) => getNodesMock(...args),
     getChannelRuntimeMeta: (...args: unknown[]) => getChannelRuntimeMetaMock(...args),
+    getConnections: (...args: unknown[]) => getConnectionsMock(...args),
     getSlots: (...args: unknown[]) => getSlotsMock(...args),
   }
 })
@@ -30,6 +32,7 @@ beforeEach(() => {
   getTasksMock.mockReset()
   getNodesMock.mockReset()
   getChannelRuntimeMetaMock.mockReset()
+  getConnectionsMock.mockReset()
   getSlotsMock.mockReset()
 
   getOverviewMock.mockResolvedValue({
@@ -87,6 +90,22 @@ beforeEach(() => {
     }],
     has_more: false,
   })
+  getConnectionsMock.mockResolvedValue({
+    total: 1,
+    items: [{
+      session_id: 101,
+      uid: "u1",
+      device_id: "device-a",
+      device_flag: "app",
+      device_level: "master",
+      slot_id: 9,
+      state: "active",
+      listener: "tcp",
+      connected_at: "2026-04-23T08:00:00Z",
+      remote_addr: "10.0.0.1:5000",
+      local_addr: "127.0.0.1:7000",
+    }],
+  })
   getSlotsMock.mockResolvedValue({
     total: 1,
     items: [{
@@ -119,6 +138,7 @@ it.each([
   ["/dashboard", "Dashboard", "Operations Summary"],
   ["/nodes", "Nodes", "Node Inventory"],
   ["/channels", "Channels", "Channel Runtime"],
+  ["/connections", "Connections", "Connection Inventory"],
   ["/slots", "Slots", "Slot Inventory"],
 ])("renders %s shell", async (path, title, section) => {
   const router = createMemoryRouter(routes, { initialEntries: [path] })
@@ -135,7 +155,6 @@ it.each([
 })
 
 it.each([
-  ["/connections", "Connections", /does not expose connection inventory/i],
   ["/network", "Network", /does not expose transport or throughput endpoints/i],
   ["/topology", "Topology", /does not expose replica topology endpoints/i],
 ])("renders %s unavailable manager scope", async (path, title, message) => {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
@@ -59,6 +60,8 @@ type Options struct {
 	ControllerPeerIDs []uint64
 	// Cluster provides distributed cluster read access.
 	Cluster ClusterReader
+	// Online provides local online connection reads.
+	Online online.Registry
 	// ChannelRuntimeMeta provides authoritative slot-level runtime meta pages.
 	ChannelRuntimeMeta ChannelRuntimeMetaReader
 	// Now returns the current time for manager aggregations.
@@ -70,6 +73,7 @@ type App struct {
 	localNodeID        uint64
 	controllerPeerIDs  map[uint64]struct{}
 	cluster            ClusterReader
+	online             online.Registry
 	channelRuntimeMeta ChannelRuntimeMetaReader
 	now                func() time.Time
 }
@@ -91,6 +95,7 @@ func New(opts Options) *App {
 		localNodeID:        opts.LocalNodeID,
 		controllerPeerIDs:  peers,
 		cluster:            opts.Cluster,
+		online:             opts.Online,
 		channelRuntimeMeta: opts.ChannelRuntimeMeta,
 		now:                now,
 	}
