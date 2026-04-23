@@ -1,4 +1,4 @@
-import { DEFAULT_LOCALE, LOCALE_STORAGE_KEY } from "@/i18n/constants"
+import { LOCALE_STORAGE_KEY } from "@/i18n/constants"
 import { detectInitialLocale, normalizeLocale } from "@/i18n/detect-locale"
 import type { AppLocale } from "@/i18n/types"
 

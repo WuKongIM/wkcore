@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, test, vi } from "vitest"
 
 import { createAnonymousAuthState, useAuthStore } from "@/auth/auth-store"
+import { I18nProvider } from "@/i18n/provider"
+import { resetLocale } from "@/i18n/locale-store"
 import { ManagerApiError } from "@/lib/manager-api"
 import { NodesPage } from "@/pages/nodes/page"
 
@@ -55,6 +57,8 @@ const drainingNodeDetail = {
 }
 
 beforeEach(() => {
+  localStorage.clear()
+  resetLocale()
   getNodesMock.mockReset()
   getNodeMock.mockReset()
   markNodeDrainingMock.mockReset()
@@ -71,6 +75,14 @@ beforeEach(() => {
   })
 })
 
+function renderNodesPage() {
+  return render(
+    <I18nProvider>
+      <NodesPage />
+    </I18nProvider>,
+  )
+}
+
 test("opens node detail and refreshes after draining", async () => {
   getNodesMock.mockResolvedValueOnce({ total: 1, items: [nodeRow] })
   getNodeMock.mockResolvedValueOnce(nodeDetail)
@@ -79,7 +91,7 @@ test("opens node detail and refreshes after draining", async () => {
   getNodeMock.mockResolvedValueOnce(drainingNodeDetail)
 
   const user = userEvent.setup()
-  render(<NodesPage />)
+  renderNodesPage()
 
   expect(await screen.findByText("127.0.0.1:7000")).toBeInTheDocument()
   await user.click(screen.getByRole("button", { name: "Inspect node 1" }))
@@ -103,7 +115,7 @@ test("refreshes the open detail sheet after resuming a node", async () => {
   getNodeMock.mockResolvedValueOnce(nodeDetail)
 
   const user = userEvent.setup()
-  render(<NodesPage />)
+  renderNodesPage()
 
   expect(await screen.findByText("127.0.0.1:7000")).toBeInTheDocument()
   await user.click(screen.getByRole("button", { name: "Inspect node 1" }))
@@ -122,7 +134,7 @@ test("refreshes the open detail sheet after resuming a node", async () => {
 test("shows a forbidden state when node list access is denied", async () => {
   getNodesMock.mockRejectedValueOnce(new ManagerApiError(403, "forbidden", "forbidden"))
 
-  render(<NodesPage />)
+  renderNodesPage()
 
   expect(await screen.findByText(/permission/i)).toBeInTheDocument()
 })
@@ -132,7 +144,7 @@ test("shows an unavailable state when the manager node list is unavailable", asy
     new ManagerApiError(503, "service_unavailable", "controller leader unavailable"),
   )
 
-  render(<NodesPage />)
+  renderNodesPage()
 
   expect(await screen.findByText(/currently unavailable/i)).toBeInTheDocument()
 })

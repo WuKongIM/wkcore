@@ -1,5 +1,6 @@
 import type { FormEvent } from "react"
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { useIntl, type IntlShape } from "react-intl"
 
 import { useAuthStore } from "@/auth/auth-store"
 import { ActionFormDialog } from "@/components/manager/action-form-dialog"
@@ -34,13 +35,17 @@ type SlotsState = {
   error: Error | null
 }
 
-const recoverStrategies = [{
-  value: "latest_live_replica",
-  label: "Latest live replica",
-}]
+const recoverStrategyValues = ["latest_live_replica"] as const
 
-function formatTimestamp(value: string) {
-  return new Date(value).toLocaleString()
+function formatTimestamp(intl: IntlShape, value: string) {
+  return new Intl.DateTimeFormat(intl.locale, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(value))
 }
 
 function mapErrorKind(error: Error | null) {
@@ -74,6 +79,16 @@ function formatNodeList(nodeIds: number[]) {
 }
 
 export function SlotsPage() {
+  const intl = useIntl()
+  const recoverStrategies = useMemo(
+    () => [
+      {
+        value: recoverStrategyValues[0],
+        label: intl.formatMessage({ id: "slots.recoveryStrategy.latestLiveReplica" }),
+      },
+    ],
+    [intl],
+  )
   const permissions = useAuthStore((state) => state.permissions)
   const canWriteSlots = useMemo(
     () => hasPermission(permissions, "cluster.slot", "w"),
@@ -96,7 +111,7 @@ export function SlotsPage() {
   const [recoverOpen, setRecoverOpen] = useState(false)
   const [recoverPending, setRecoverPending] = useState(false)
   const [recoverError, setRecoverError] = useState("")
-  const [recoverStrategy, setRecoverStrategy] = useState(recoverStrategies[0].value)
+  const [recoverStrategy, setRecoverStrategy] = useState<string>(recoverStrategies[0].value)
   const [rebalanceOpen, setRebalanceOpen] = useState(false)
   const [rebalancePending, setRebalancePending] = useState(false)
   const [rebalanceError, setRebalanceError] = useState("")
@@ -179,7 +194,7 @@ export function SlotsPage() {
 
     const parsedTargetNodeId = Number(targetNodeId)
     if (!Number.isInteger(parsedTargetNodeId) || parsedTargetNodeId <= 0) {
-      setTransferError("Enter a valid target node ID.")
+      setTransferError(intl.formatMessage({ id: "slots.validation.targetNodeId" }))
       return
     }
 
@@ -196,7 +211,7 @@ export function SlotsPage() {
     } finally {
       setTransferPending(false)
     }
-  }, [refreshOpenDetail, selectedSlotId, targetNodeId])
+  }, [intl, refreshOpenDetail, selectedSlotId, targetNodeId])
 
   const submitRecover = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -206,7 +221,7 @@ export function SlotsPage() {
     }
 
     if (!recoverStrategy) {
-      setRecoverError("Select a recovery strategy.")
+      setRecoverError(intl.formatMessage({ id: "slots.validation.recoveryStrategy" }))
       return
     }
 
@@ -252,8 +267,8 @@ export function SlotsPage() {
   return (
     <PageContainer>
       <PageHeader
-        title="Slots"
-        description="Slot distribution, leader placement, and movement status."
+        title={intl.formatMessage({ id: "nav.slots.title" })}
+        description={intl.formatMessage({ id: "nav.slots.description" })}
         actions={
           <>
             <Button
@@ -263,7 +278,9 @@ export function SlotsPage() {
               size="sm"
               variant="outline"
             >
-              {state.refreshing ? "Refreshing..." : "Refresh"}
+              {state.refreshing
+                ? intl.formatMessage({ id: "common.refreshing" })
+                : intl.formatMessage({ id: "common.refresh" })}
             </Button>
             <Button
               disabled={!canWriteSlots}
@@ -273,79 +290,93 @@ export function SlotsPage() {
               }}
               size="sm"
             >
-              Rebalance slots
+              {intl.formatMessage({ id: "slots.rebalance" })}
             </Button>
           </>
         }
       >
         <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
           <div className="rounded-md border border-border bg-background px-3 py-2">
-            Scope: all slots
+            {intl.formatMessage({ id: "slots.scopeAllSlots" })}
           </div>
           <div className="rounded-md border border-border bg-background px-3 py-2">
-            {state.slots ? `Total: ${state.slots.total}` : "Total: pending"}
+            {state.slots
+              ? intl.formatMessage({ id: "slots.totalValue" }, { total: state.slots.total })
+              : intl.formatMessage({ id: "slots.totalPending" })}
           </div>
         </div>
       </PageHeader>
 
-      {state.loading ? <ResourceState kind="loading" title="Slots" /> : null}
+      {state.loading ? <ResourceState kind="loading" title={intl.formatMessage({ id: "nav.slots.title" })} /> : null}
       {!state.loading && state.error ? (
         <ResourceState
           kind={mapErrorKind(state.error)}
           onRetry={() => {
             void loadSlots(false)
           }}
-          title="Slots"
+          title={intl.formatMessage({ id: "nav.slots.title" })}
         />
       ) : null}
       {!state.loading && !state.error && state.slots ? (
         <>
           <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <SectionCard description="Slots currently reporting a leader." title="Leader coverage">
+            <SectionCard
+              description={intl.formatMessage({ id: "slots.cards.leaderCoverage.description" })}
+              title={intl.formatMessage({ id: "slots.cards.leaderCoverage.title" })}
+            >
               <div className="text-3xl font-semibold text-foreground">{slotSummary.leaders}</div>
             </SectionCard>
-            <SectionCard description="Slots whose quorum state is ready." title="Ready slots">
+            <SectionCard
+              description={intl.formatMessage({ id: "slots.cards.ready.description" })}
+              title={intl.formatMessage({ id: "slots.cards.ready.title" })}
+            >
               <div className="text-3xl font-semibold text-foreground">{slotSummary.ready}</div>
             </SectionCard>
-            <SectionCard description="Slots whose sync state is in sync." title="In sync">
+            <SectionCard
+              description={intl.formatMessage({ id: "slots.cards.inSync.description" })}
+              title={intl.formatMessage({ id: "slots.cards.inSync.title" })}
+            >
               <div className="text-3xl font-semibold text-foreground">{slotSummary.inSync}</div>
             </SectionCard>
-            <SectionCard description="Physical slots currently tracked." title="Tracked slots">
+            <SectionCard
+              description={intl.formatMessage({ id: "slots.cards.tracked.description" })}
+              title={intl.formatMessage({ id: "slots.cards.tracked.title" })}
+            >
               <div className="text-3xl font-semibold text-foreground">{slotSummary.total}</div>
             </SectionCard>
           </section>
 
           <SectionCard
-            description="Current assignment and runtime state from the manager slot endpoints."
-            title="Slot Inventory"
+            description={intl.formatMessage({ id: "slots.inventoryDescription" })}
+            title={intl.formatMessage({ id: "slots.inventoryTitle" })}
           >
             <TableToolbar
-              description="Inspect one slot to view task state or run operator actions."
+              description={intl.formatMessage({ id: "slots.toolbarDescription" })}
               onRefresh={() => {
                 void loadSlots(true)
               }}
               refreshing={state.refreshing}
-              title="Cluster slots"
+              title={intl.formatMessage({ id: "slots.toolbarTitle" })}
             />
             {state.slots.items.length > 0 ? (
               <div className="overflow-x-auto rounded-lg border border-border">
                 <table className="w-full border-collapse">
                   <thead className="bg-muted/40 text-left text-xs uppercase tracking-[0.14em] text-muted-foreground">
                     <tr>
-                      <th className="px-3 py-3">Slot</th>
-                      <th className="px-3 py-3">Quorum</th>
-                      <th className="px-3 py-3">Sync</th>
-                      <th className="px-3 py-3">Desired peer set</th>
-                      <th className="px-3 py-3">Current peer set</th>
-                      <th className="px-3 py-3">Leader</th>
-                      <th className="px-3 py-3">Actions</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "slots.table.slot" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "slots.table.quorum" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "slots.table.sync" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "slots.table.desiredPeerSet" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "slots.table.currentPeerSet" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "slots.table.leader" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "slots.table.actions" })}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {state.slots.items.map((slot) => (
                       <tr className="border-t border-border" key={slot.slot_id}>
                         <td className="px-3 py-3 text-sm font-medium text-foreground">
-                          {`Slot ${slot.slot_id}`}
+                          {intl.formatMessage({ id: "slots.slotValue" }, { id: slot.slot_id })}
                         </td>
                         <td className="px-3 py-3 text-sm text-foreground">
                           <StatusBadge value={slot.state.quorum} />
@@ -362,14 +393,14 @@ export function SlotsPage() {
                         <td className="px-3 py-3 text-sm text-muted-foreground">{slot.runtime.leader_id}</td>
                         <td className="px-3 py-3 text-sm text-foreground">
                           <Button
-                            aria-label={`Inspect slot ${slot.slot_id}`}
+                            aria-label={intl.formatMessage({ id: "slots.inspectSlot" }, { id: slot.slot_id })}
                             onClick={() => {
                               void openDetail(slot.slot_id)
                             }}
                             size="sm"
                             variant="outline"
                           >
-                            Inspect
+                            {intl.formatMessage({ id: "common.inspect" })}
                           </Button>
                         </td>
                       </tr>
@@ -378,28 +409,33 @@ export function SlotsPage() {
                 </table>
               </div>
             ) : (
-              <ResourceState kind="empty" title="Slot Inventory" />
+              <ResourceState kind="empty" title={intl.formatMessage({ id: "slots.inventoryTitle" })} />
             )}
           </SectionCard>
 
           {rebalancePlan ? (
             <SectionCard
-              description="Latest migration plan returned by the slot rebalance endpoint."
-              title="Rebalance Plan"
+              description={intl.formatMessage({ id: "slots.rebalancePlan.description" })}
+              title={intl.formatMessage({ id: "slots.rebalancePlan.title" })}
             >
               {rebalancePlan.items.length > 0 ? (
                 <div className="space-y-3">
                   {rebalancePlan.items.map((item) => (
                     <div className="rounded-lg border border-border bg-muted/20 px-3 py-3" key={item.hash_slot}>
-                      <div className="text-sm font-medium text-foreground">{`Hash slot ${item.hash_slot}`}</div>
+                      <div className="text-sm font-medium text-foreground">
+                        {intl.formatMessage({ id: "slots.rebalancePlan.hashSlotValue" }, { id: item.hash_slot })}
+                      </div>
                       <div className="mt-1 text-sm text-muted-foreground">
-                        {`From slot ${item.from_slot_id} to slot ${item.to_slot_id}`}
+                        {intl.formatMessage(
+                          { id: "slots.rebalancePlan.fromToValue" },
+                          { from: item.from_slot_id, to: item.to_slot_id },
+                        )}
                       </div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <ResourceState kind="empty" title="Rebalance Plan" />
+                <ResourceState kind="empty" title={intl.formatMessage({ id: "slots.rebalancePlan.title" })} />
               )}
             </SectionCard>
           ) : null}
@@ -407,7 +443,11 @@ export function SlotsPage() {
       ) : null}
 
       <DetailSheet
-        description={detail ? `Leader ${detail.runtime.leader_id}` : "Manager slot detail"}
+        description={
+          detail
+            ? intl.formatMessage({ id: "slots.detailDescriptionValue" }, { id: detail.runtime.leader_id })
+            : intl.formatMessage({ id: "slots.detailDescriptionFallback" })
+        }
         footer={
           detail ? (
             <div className="flex items-center justify-end gap-2">
@@ -420,7 +460,7 @@ export function SlotsPage() {
                 size="sm"
                 variant="outline"
               >
-                Transfer leader
+                {intl.formatMessage({ id: "slots.transferLeader" })}
               </Button>
               <Button
                 disabled={!canWriteSlots}
@@ -430,16 +470,22 @@ export function SlotsPage() {
                 }}
                 size="sm"
               >
-                Recover slot
+                {intl.formatMessage({ id: "slots.recoverSlot" })}
               </Button>
             </div>
           ) : null
         }
         onOpenChange={closeDetail}
         open={selectedSlotId !== null}
-        title={detail ? `Slot ${detail.slot_id}` : "Slot detail"}
+        title={
+          detail
+            ? intl.formatMessage({ id: "slots.detailTitleValue" }, { id: detail.slot_id })
+            : intl.formatMessage({ id: "slots.detailTitleFallback" })
+        }
       >
-        {detailLoading ? <ResourceState kind="loading" title="Slot detail" /> : null}
+        {detailLoading ? (
+          <ResourceState kind="loading" title={intl.formatMessage({ id: "slots.detailTitleFallback" })} />
+        ) : null}
         {!detailLoading && detailError ? (
           <ResourceState
             kind={mapErrorKind(detailError)}
@@ -448,31 +494,68 @@ export function SlotsPage() {
                 void loadSlotDetail(selectedSlotId)
               }
             }}
-            title="Slot detail"
+            title={intl.formatMessage({ id: "slots.detailTitleFallback" })}
           />
         ) : null}
         {!detailLoading && !detailError && detail ? (
           <KeyValueList
             items={[
-              { label: "Desired peers", value: formatNodeList(detail.assignment.desired_peers) },
-              { label: "Current peers", value: formatNodeList(detail.runtime.current_peers) },
-              { label: "Task status", value: detail.task ? <StatusBadge value={detail.task.status} /> : "-" },
-              { label: "Task step", value: detail.task?.step ?? "-" },
-              { label: "Quorum", value: <StatusBadge value={detail.state.quorum} /> },
-              { label: "Sync", value: <StatusBadge value={detail.state.sync} /> },
-              { label: "Leader ID", value: detail.runtime.leader_id },
-              { label: "Healthy voters", value: detail.runtime.healthy_voters },
-              { label: "Config epoch", value: detail.assignment.config_epoch },
-              { label: "Observed epoch", value: detail.runtime.observed_config_epoch },
-              { label: "Last report", value: formatTimestamp(detail.runtime.last_report_at) },
-              { label: "Last error", value: detail.task?.last_error || "-" },
+              {
+                label: intl.formatMessage({ id: "slots.detail.desiredPeers" }),
+                value: formatNodeList(detail.assignment.desired_peers),
+              },
+              {
+                label: intl.formatMessage({ id: "slots.detail.currentPeers" }),
+                value: formatNodeList(detail.runtime.current_peers),
+              },
+              {
+                label: intl.formatMessage({ id: "slots.detail.taskStatus" }),
+                value: detail.task ? <StatusBadge value={detail.task.status} /> : "-",
+              },
+              {
+                label: intl.formatMessage({ id: "slots.detail.taskStep" }),
+                value: detail.task?.step ?? "-",
+              },
+              {
+                label: intl.formatMessage({ id: "slots.detail.quorum" }),
+                value: <StatusBadge value={detail.state.quorum} />,
+              },
+              {
+                label: intl.formatMessage({ id: "slots.detail.sync" }),
+                value: <StatusBadge value={detail.state.sync} />,
+              },
+              { label: intl.formatMessage({ id: "slots.detail.leaderId" }), value: detail.runtime.leader_id },
+              {
+                label: intl.formatMessage({ id: "slots.detail.healthyVoters" }),
+                value: detail.runtime.healthy_voters,
+              },
+              {
+                label: intl.formatMessage({ id: "slots.detail.configEpoch" }),
+                value: detail.assignment.config_epoch,
+              },
+              {
+                label: intl.formatMessage({ id: "slots.detail.observedEpoch" }),
+                value: detail.runtime.observed_config_epoch,
+              },
+              {
+                label: intl.formatMessage({ id: "slots.detail.lastReport" }),
+                value: formatTimestamp(intl, detail.runtime.last_report_at),
+              },
+              {
+                label: intl.formatMessage({ id: "slots.detail.lastError" }),
+                value: detail.task?.last_error || "-",
+              },
             ]}
           />
         ) : null}
       </DetailSheet>
 
       <ActionFormDialog
-        description={selectedSlotId ? `Move slot ${selectedSlotId} leadership to another assigned node.` : undefined}
+        description={
+          selectedSlotId
+            ? intl.formatMessage({ id: "slots.transferDescription" }, { id: selectedSlotId })
+            : undefined
+        }
         error={transferError}
         onOpenChange={(open) => {
           setTransferOpen(open)
@@ -486,11 +569,11 @@ export function SlotsPage() {
         }}
         open={transferOpen}
         pending={transferPending}
-        submitLabel="Transfer"
-        title="Transfer leader"
+        submitLabel={intl.formatMessage({ id: "slots.transfer" })}
+        title={intl.formatMessage({ id: "slots.transferLeader" })}
       >
         <label className="grid gap-2 text-sm text-foreground">
-          <span>Target node ID</span>
+          <span>{intl.formatMessage({ id: "slots.targetNodeId" })}</span>
           <input
             className="rounded-md border border-border bg-background px-3 py-2 text-sm outline-none"
             inputMode="numeric"
@@ -501,7 +584,11 @@ export function SlotsPage() {
       </ActionFormDialog>
 
       <ActionFormDialog
-        description={selectedSlotId ? `Run a manager recover flow for slot ${selectedSlotId}.` : undefined}
+        description={
+          selectedSlotId
+            ? intl.formatMessage({ id: "slots.recoverDescription" }, { id: selectedSlotId })
+            : undefined
+        }
         error={recoverError}
         onOpenChange={(open) => {
           setRecoverOpen(open)
@@ -515,11 +602,11 @@ export function SlotsPage() {
         }}
         open={recoverOpen}
         pending={recoverPending}
-        submitLabel="Recover"
-        title="Recover slot"
+        submitLabel={intl.formatMessage({ id: "slots.recover" })}
+        title={intl.formatMessage({ id: "slots.recoverSlot" })}
       >
         <label className="grid gap-2 text-sm text-foreground">
-          <span>Recovery strategy</span>
+          <span>{intl.formatMessage({ id: "slots.recoveryStrategy" })}</span>
           <select
             className="rounded-md border border-border bg-background px-3 py-2 text-sm outline-none"
             onChange={(event) => setRecoverStrategy(event.target.value)}
@@ -535,8 +622,8 @@ export function SlotsPage() {
       </ActionFormDialog>
 
       <ConfirmDialog
-        confirmLabel="Confirm"
-        description="Generate a slot rebalance migration plan through the manager API."
+        confirmLabel={intl.formatMessage({ id: "common.confirm" })}
+        description={intl.formatMessage({ id: "slots.rebalanceDescription" })}
         error={rebalanceError}
         onConfirm={() => {
           void runRebalance()
@@ -549,7 +636,7 @@ export function SlotsPage() {
         }}
         open={rebalanceOpen}
         pending={rebalancePending}
-        title="Rebalance slots"
+        title={intl.formatMessage({ id: "slots.rebalance" })}
       />
     </PageContainer>
   )

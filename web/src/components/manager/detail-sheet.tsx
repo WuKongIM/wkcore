@@ -1,5 +1,7 @@
 import type { ReactNode } from "react"
 
+import { useIntl } from "react-intl"
+
 import { Button } from "@/components/ui/button"
 
 type DetailSheetProps = {
@@ -19,6 +21,8 @@ export function DetailSheet({
   children,
   footer,
 }: DetailSheetProps) {
+  const intl = useIntl()
+
   if (!open) {
     return null
   }
@@ -44,7 +48,7 @@ export function DetailSheet({
             type="button"
             variant="outline"
           >
-            Close
+            {intl.formatMessage({ id: "common.close" })}
           </Button>
         </div>
         <div className="flex-1 overflow-y-auto px-4 py-4">{children}</div>

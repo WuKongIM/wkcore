@@ -12,6 +12,9 @@ The web app now includes the first authenticated manager shell flow:
 - `/login` authenticates against `POST /manager/login`
 - protected routes require a valid persisted JWT session
 - `VITE_API_BASE_URL` optionally overrides the default same-origin `/manager/*` base
+- UI copy currently supports `en` and `zh-CN`
+- locale selection order is persisted `localStorage` value -> browser language -> default `en`
+- users can switch languages from the login page and the authenticated shell topbar
 
 It still keeps the rest of the admin experience intentionally lightweight:
 

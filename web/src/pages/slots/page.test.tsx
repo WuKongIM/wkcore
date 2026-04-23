@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, test, vi } from "vitest"
 
 import { createAnonymousAuthState, useAuthStore } from "@/auth/auth-store"
+import { I18nProvider } from "@/i18n/provider"
+import { resetLocale } from "@/i18n/locale-store"
 import { ManagerApiError } from "@/lib/manager-api"
 import { SlotsPage } from "@/pages/slots/page"
 
@@ -54,6 +56,8 @@ const slotDetail = {
 }
 
 beforeEach(() => {
+  localStorage.clear()
+  resetLocale()
   getSlotsMock.mockReset()
   getSlotMock.mockReset()
   transferSlotLeaderMock.mockReset()
@@ -71,6 +75,14 @@ beforeEach(() => {
   })
 })
 
+function renderSlotsPage() {
+  return render(
+    <I18nProvider>
+      <SlotsPage />
+    </I18nProvider>,
+  )
+}
+
 test("opens slot detail and transfers the leader", async () => {
   getSlotsMock.mockResolvedValueOnce({ total: 1, items: [slotRow] })
   getSlotMock.mockResolvedValueOnce(slotDetail)
@@ -79,7 +91,7 @@ test("opens slot detail and transfers the leader", async () => {
   getSlotMock.mockResolvedValueOnce(slotDetail)
 
   const user = userEvent.setup()
-  render(<SlotsPage />)
+  renderSlotsPage()
 
   expect(await screen.findByText("Slot 9")).toBeInTheDocument()
   await user.click(screen.getByRole("button", { name: "Inspect slot 9" }))
@@ -107,7 +119,7 @@ test("submits the recover action using the selected strategy", async () => {
   getSlotMock.mockResolvedValueOnce(slotDetail)
 
   const user = userEvent.setup()
-  render(<SlotsPage />)
+  renderSlotsPage()
 
   expect(await screen.findByText("Slot 9")).toBeInTheDocument()
   await user.click(screen.getByRole("button", { name: "Inspect slot 9" }))
@@ -130,7 +142,7 @@ test("shows rebalance plan results after confirmation", async () => {
   })
 
   const user = userEvent.setup()
-  render(<SlotsPage />)
+  renderSlotsPage()
 
   expect(await screen.findByText("Slot 9")).toBeInTheDocument()
 
@@ -146,7 +158,7 @@ test("renders unavailable state when the slot list request fails", async () => {
     new ManagerApiError(503, "service_unavailable", "slot leader unavailable"),
   )
 
-  render(<SlotsPage />)
+  renderSlotsPage()
 
   expect(await screen.findByText(/currently unavailable/i)).toBeInTheDocument()
 })
@@ -158,11 +170,27 @@ test("shows conflict feedback when slot rebalance is rejected", async () => {
   )
 
   const user = userEvent.setup()
-  render(<SlotsPage />)
+  renderSlotsPage()
 
   expect(await screen.findByText("Slot 9")).toBeInTheDocument()
   await user.click(screen.getByRole("button", { name: "Rebalance slots" }))
   await user.click(screen.getByRole("button", { name: "Confirm" }))
 
   expect(await screen.findByText("slot migrations already in progress")).toBeInTheDocument()
+})
+
+test("shows translated Chinese validation when the transfer target is invalid", async () => {
+  localStorage.setItem("wukongim_manager_locale", "zh-CN")
+  getSlotsMock.mockResolvedValueOnce({ total: 1, items: [slotRow] })
+  getSlotMock.mockResolvedValueOnce(slotDetail)
+
+  const user = userEvent.setup()
+  renderSlotsPage()
+
+  expect(await screen.findByText("槽位 9")).toBeInTheDocument()
+  await user.click(screen.getByRole("button", { name: "查看槽位 9" }))
+  await user.click(screen.getByRole("button", { name: "转移 Leader" }))
+  await user.click(screen.getByRole("button", { name: "转移" }))
+
+  expect(await screen.findByText("请输入有效的目标节点 ID。")).toBeInTheDocument()
 })

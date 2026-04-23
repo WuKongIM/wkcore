@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, test, vi } from "vitest"
 
 import { createAnonymousAuthState, useAuthStore } from "@/auth/auth-store"
+import { I18nProvider } from "@/i18n/provider"
+import { resetLocale } from "@/i18n/locale-store"
 import { ManagerApiError } from "@/lib/manager-api"
 import { ChannelsPage } from "@/pages/channels/page"
 
@@ -45,6 +47,8 @@ const channelDetail = {
 }
 
 beforeEach(() => {
+  localStorage.clear()
+  resetLocale()
   getChannelRuntimeMetaMock.mockReset()
   getChannelRuntimeMetaDetailMock.mockReset()
   useAuthStore.setState({
@@ -59,6 +63,14 @@ beforeEach(() => {
   })
 })
 
+function renderChannelsPage() {
+  return render(
+    <I18nProvider>
+      <ChannelsPage />
+    </I18nProvider>,
+  )
+}
+
 test("renders channel runtime rows and opens detail from manager APIs", async () => {
   getChannelRuntimeMetaMock.mockResolvedValueOnce({
     items: [channelRow],
@@ -67,7 +79,7 @@ test("renders channel runtime rows and opens detail from manager APIs", async ()
   getChannelRuntimeMetaDetailMock.mockResolvedValueOnce(channelDetail)
 
   const user = userEvent.setup()
-  render(<ChannelsPage />)
+  renderChannelsPage()
 
   expect(await screen.findByText("alpha")).toBeInTheDocument()
   await user.click(screen.getByRole("button", { name: "Inspect channel alpha" }))
@@ -88,7 +100,7 @@ test("loads the next channel runtime page when more data is available", async ()
   })
 
   const user = userEvent.setup()
-  render(<ChannelsPage />)
+  renderChannelsPage()
 
   expect(await screen.findByText("alpha")).toBeInTheDocument()
   await user.click(screen.getByRole("button", { name: "Load more" }))
@@ -102,7 +114,7 @@ test("renders unavailable state when channel runtime data cannot be loaded", asy
     new ManagerApiError(503, "service_unavailable", "slot leader authoritative read unavailable"),
   )
 
-  render(<ChannelsPage />)
+  renderChannelsPage()
 
   expect(await screen.findByText(/currently unavailable/i)).toBeInTheDocument()
 })

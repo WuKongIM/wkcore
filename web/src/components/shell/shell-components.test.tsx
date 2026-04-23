@@ -85,7 +85,7 @@ test("status badge distinguishes runtime states", () => {
 })
 
 test("detail sheet shows heading copy and children", () => {
-  render(
+  renderWithI18n(
     <DetailSheet open title="Node 1" description="Node detail panel" onOpenChange={() => undefined}>
       <div>Hosted IDs</div>
     </DetailSheet>,
