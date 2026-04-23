@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 )
 
 // SlotTopology describes the externally observed slot leader/follower layout.
@@ -86,24 +87,34 @@ func (c *StartedCluster) ResolveSlotTopology(ctx context.Context, slotID uint32)
 		expectedNodeIDs = append(expectedNodeIDs, node.Spec.ID)
 	}
 
+	ticker := time.NewTicker(readyPollInterval)
+	defer ticker.Stop()
+
 	var lastErr error
-	for _, node := range c.Nodes {
-		_, body, err := FetchSlotDetail(ctx, node, slotID)
-		if err != nil {
+	for {
+		for _, node := range c.Nodes {
+			_, body, err := FetchSlotDetail(ctx, node, slotID)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			c.lastSlotBodies[slotID] = string(body)
+			topology, err := parseSlotTopology(slotID, expectedNodeIDs, body)
+			if err == nil {
+				return topology, nil
+			}
 			lastErr = err
-			continue
 		}
-		c.lastSlotBodies[slotID] = string(body)
-		topology, err := parseSlotTopology(slotID, expectedNodeIDs, body)
-		if err == nil {
-			return topology, nil
+
+		select {
+		case <-ctx.Done():
+			if lastErr == nil {
+				lastErr = fmt.Errorf("slot %d topology unavailable", slotID)
+			}
+			return SlotTopology{}, lastErr
+		case <-ticker.C:
 		}
-		lastErr = err
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("slot %d topology unavailable", slotID)
-	}
-	return SlotTopology{}, lastErr
 }
 
 func fetchHTTPBody(ctx context.Context, addr, path string) ([]byte, error) {
@@ -177,6 +188,34 @@ func connectionsContainUID(items []ManagerConnection, uid string) bool {
 		}
 	}
 	return false
+}
+
+// ConnectionsContainUID waits until the node reports a local manager connection for the UID.
+func ConnectionsContainUID(ctx context.Context, node StartedNode, uid string) (bool, error) {
+	ticker := time.NewTicker(readyPollInterval)
+	defer ticker.Stop()
+
+	var lastErr error
+	for {
+		items, _, err := FetchConnections(ctx, node)
+		if err == nil {
+			if connectionsContainUID(items, uid) {
+				return true, nil
+			}
+			lastErr = fmt.Errorf("uid %s not present in manager connections", uid)
+		} else {
+			lastErr = err
+		}
+
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return false, lastErr
+			}
+			return false, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func sameNodeSet(left, right []uint64) bool {

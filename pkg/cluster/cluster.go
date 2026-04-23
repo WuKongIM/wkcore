@@ -1452,7 +1452,8 @@ func (c *Cluster) snapshotRuntimeObservationViews() ([]controllermeta.SlotRuntim
 		if err != nil {
 			continue
 		}
-		views = append(views, buildRuntimeView(now, slotID, status, c.observationPeersForSlot(slotID)))
+		observedConfigEpoch, _ := c.assignments.ConfigEpochForSlot(slotID)
+		views = append(views, buildRuntimeView(now, slotID, status, c.observationPeersForSlot(slotID), observedConfigEpoch))
 	}
 	return views, nil
 }

@@ -80,3 +80,19 @@ func (c *assignmentCache) Snapshot() []controllermeta.SlotAssignment {
 	}
 	return out
 }
+
+func (c *assignmentCache) ConfigEpochForSlot(slotID multiraft.SlotID) (uint64, bool) {
+	if c == nil {
+		return 0, false
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	for _, assignment := range c.assignments {
+		if assignment.SlotID == uint32(slotID) {
+			return assignment.ConfigEpoch, true
+		}
+	}
+	return 0, false
+}
