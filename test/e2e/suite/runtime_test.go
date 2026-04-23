@@ -19,3 +19,9 @@ func TestNewWorkspaceCreatesNodeScopedPaths(t *testing.T) {
 	require.Equal(t, filepath.Join(workspace.RootDir, "node-1", "stdout.log"), workspace.NodeStdoutPath(1))
 	require.Equal(t, filepath.Join(workspace.RootDir, "node-1", "stderr.log"), workspace.NodeStderrPath(1))
 }
+
+func TestNewWorkspaceCreatesNodeScopedLogDirPaths(t *testing.T) {
+	workspace := NewWorkspace(t)
+
+	require.Equal(t, filepath.Join(workspace.RootDir, "node-1", "logs"), workspace.NodeLogDir(1))
+}

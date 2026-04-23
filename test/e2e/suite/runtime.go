@@ -38,6 +38,7 @@ func NewWorkspace(t *testing.T) Workspace {
 	rootDir := t.TempDir()
 	workspace := Workspace{RootDir: rootDir}
 	require.NoError(t, os.MkdirAll(workspace.NodeDataDir(1), 0o755))
+	require.NoError(t, os.MkdirAll(workspace.NodeLogDir(1), 0o755))
 	return workspace
 }
 
@@ -68,6 +69,8 @@ func (s *Suite) StartSingleNodeCluster() *StartedNode {
 		ClusterAddr: ports.ClusterAddr,
 		GatewayAddr: ports.GatewayAddr,
 		APIAddr:     ports.APIAddr,
+		ManagerAddr: ports.ManagerAddr,
+		LogDir:      s.workspace.NodeLogDir(1),
 	}
 
 	require.NoError(s.t, os.WriteFile(spec.ConfigPath, []byte(RenderSingleNodeConfig(spec)), 0o644))
@@ -101,6 +104,11 @@ func (w Workspace) NodeRootDir(nodeID uint64) string {
 // NodeDataDir returns the data directory for one node.
 func (w Workspace) NodeDataDir(nodeID uint64) string {
 	return filepath.Join(w.NodeRootDir(nodeID), "data")
+}
+
+// NodeLogDir returns the log directory for one node.
+func (w Workspace) NodeLogDir(nodeID uint64) string {
+	return filepath.Join(w.NodeRootDir(nodeID), "logs")
 }
 
 // NodeConfigPath returns the config file path for one node.
