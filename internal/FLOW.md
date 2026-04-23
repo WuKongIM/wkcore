@@ -193,8 +193,9 @@ message.App.Send(ctx, cmd):
         → 失败且 ErrStaleMeta / ErrNotLeader / ErrRerouted → refresher.Refresh
         → 权威运行时元数据缺失(ErrNotFound) 时，按 Slot 拓扑 bootstrap RuntimeMeta
         → 若权威 RuntimeMeta 的 leader lease 已过期/即将过期，或 Slot 拓扑中的 leader/副本集已变化，则先走权威 reconcile：续租 lease，并把 leader / replicas / ISR / MinISR 对齐到当前 Slot 拓扑
-        → 重新读取权威 RuntimeMeta → apply 到本地 ISR runtime → 重试一次 Append
-        → 若本地副本不是 Channel Leader，appChannelCluster 会按 meta 中的 Leader 通过 `access/node/channel_append_rpc.go` 转发追加请求；
+        → 重新读取权威 RuntimeMeta → apply 到本地 ISR runtime → 返回已应用视图给发送路径 → 重试一次 Append
+        → 若重试后的本地状态表明当前节点不是 Channel Leader，或刷新后本地 runtime 已被移除但路由 meta 指向远端 leader，
+          appChannelCluster 会按 meta 中的 Leader 通过 `access/node/channel_append_rpc.go` 转发追加请求；
           但即使已经转发到 leader，leader 仍可能因 `CommitReady=false` 临时拒绝写入
      c. Append 成功 → 获得 MessageID + MessageSeq
      d. dispatcher.SubmitCommitted(ctx, committedMessage):
@@ -402,7 +403,7 @@ handleRecvAck(ctx, pkt):
 - **启动顺序严格**: `Start()` 按 Cluster → WaitReady → ChannelMetaSync → Presence → Conversation → Gateway → API 顺序启动，任一步骤失败会反向回滚已启动组件。不要尝试跳过或重排。
 - **停止顺序相反**: `Stop()` 先停 API/Gateway（停止接入新请求），再停业务层，最后停 Cluster 和关闭数据库。`stopOnce` 保证幂等。
 - **Person 频道 ID 规范化**: 发送到 Person 频道时，`NormalizePersonChannel(fromUID, channelID)` 会将两个 UID 排序拼接为统一的 channelID。直接使用原始 channelID 会导致同一对话产生两个不同的 Channel。
-- **sendWithMetaRefreshRetry 只解决路由/权威元数据一致性**: 消息 Append 遇到 `ErrStaleMeta`、`ErrNotLeader` 或 `ErrRerouted` 时会触发一次刷新重试。若权威 `ChannelRuntimeMeta` 读到 `ErrNotFound`，刷新路径会先按 Slot 拓扑 bootstrap 缺失的运行时元数据；若读到的权威元数据 lease 已过期/即将过期，或 leader / replicas 已落后于当前 Slot 拓扑，则会先做一次权威 reconcile，再重新读取权威结果、应用到本地 ISR runtime，然后只重试一次 Append。重试后的本地 `Append` 若发现当前节点只是 Follower，会按最新 meta 中的 Leader 走 node RPC 转发。
+- **sendWithMetaRefreshRetry 只解决路由/权威元数据一致性**: 消息 Append 遇到 `ErrStaleMeta`、`ErrNotLeader` 或 `ErrRerouted` 时会触发一次刷新重试。若权威 `ChannelRuntimeMeta` 读到 `ErrNotFound`，刷新路径会先按 Slot 拓扑 bootstrap 缺失的运行时元数据；若读到的权威元数据 lease 已过期/即将过期，或 leader / replicas 已落后于当前 Slot 拓扑，则会先做一次权威 reconcile，再重新读取权威结果、应用到本地 ISR runtime，并把这份已应用视图返回给发送路径，然后只重试一次 Append。重试后的本地 `Append` 若发现当前节点只是 Follower，或刷新后本地 runtime 已被移除但最新路由 meta 指向远端 leader，会按最新 meta 中的 Leader 走 node RPC 转发。
 - **权威 runtime-meta reconcile ≠ replica reconcile**: `channelMetaSync` / `sendWithMetaRefreshRetry` 里的 reconcile 负责把权威 `ChannelRuntimeMeta` 与 Slot 拓扑、lease 对齐；`pkg/channel` 里的 replica reconcile probe 则负责在启动或 leader transfer 后重建 quorum-safe `CommitHW`，把副本从 `CommitReady=false` 拉到可服务状态。前者解决“该写到谁”，后者解决“现在是否安全可写”。
 - **channelMetaSync 不再做每秒全量 scan**: steady-state 不再 `ListChannelRuntimeMeta()` 预热本地所有副本频道；业务路径按 `ChannelID` 激活，复制路径按 `ChannelKey` 激活，只保留热 runtime。
 - **active-slot leader watcher 只盯热 slot**: `channelMetaSync.Start()` 现在只轮询当前热本地 runtime 所在的 physical slot leader；检测到 slot leader 变化后，仅刷新该 slot 下已激活 channel 的权威 `ChannelRuntimeMeta`，把 leader / replicas / ISR / lease 对齐到当前 Slot 拓扑。

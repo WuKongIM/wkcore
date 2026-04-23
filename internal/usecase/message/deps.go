@@ -55,6 +55,8 @@ type ChannelCluster interface {
 }
 
 type MetaRefresher interface {
+	// RefreshChannelMeta loads authoritative channel metadata, applies the
+	// refreshed routing/runtime view locally, and returns the applied metadata.
 	RefreshChannelMeta(ctx context.Context, id channel.ChannelID) (channel.Meta, error)
 }
 

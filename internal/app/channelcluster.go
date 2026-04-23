@@ -156,7 +156,9 @@ func (c *appChannelCluster) Append(ctx context.Context, req channel.AppendReques
 			MessageSeq:  result.MessageSeq,
 		})
 	}
-	if errors.Is(err, channel.ErrNotLeader) {
+	if errors.Is(err, channel.ErrNotLeader) || errors.Is(err, channel.ErrStaleMeta) {
+		// A known remote leader can still serve the append after local runtime
+		// refresh removes this node from replicas.
 		if forwarded, forwardErr, ok := c.forwardAppendToLeader(ctx, req); ok {
 			result, err = forwarded, forwardErr
 		}

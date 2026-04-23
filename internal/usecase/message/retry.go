@@ -40,14 +40,6 @@ func sendWithMetaRefreshRetry(ctx context.Context, now func() time.Time, sendLog
 		retryLogger.Error("refresh channel metadata failed", fields...)
 		return channel.AppendResult{}, err
 	}
-	if err := cluster.ApplyMeta(meta); err != nil {
-		fields := append([]wklog.Field{
-			wklog.Event("message.retry.apply_meta.failed"),
-		}, messageLogFields(req.ChannelID, req.Message.FromUID)...)
-		fields = append(fields, wklog.Error(err))
-		retryLogger.Error("apply refreshed channel metadata failed", fields...)
-		return channel.AppendResult{}, err
-	}
 	resolvedFields := append([]wklog.Field{
 		wklog.Event("message.retry.refresh.resolved"),
 		wklog.LeaderNodeID(uint64(meta.Leader)),
