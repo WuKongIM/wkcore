@@ -11,70 +11,70 @@ import {
 
 export type NavigationItem = {
   href: string
-  title: string
-  description: string
+  titleMessageId: string
+  descriptionMessageId: string
   icon: LucideIcon
 }
 
 export type NavigationGroup = {
-  label: string
+  labelMessageId: string
   items: NavigationItem[]
 }
 
 export const navigationGroups: NavigationGroup[] = [
   {
-    label: "Overview",
+    labelMessageId: "nav.group.overview",
     items: [
       {
         href: "/dashboard",
-        title: "Dashboard",
-        description: "Runtime summary and operator entry points.",
+        titleMessageId: "nav.dashboard.title",
+        descriptionMessageId: "nav.dashboard.description",
         icon: LayoutDashboard,
       },
     ],
   },
   {
-    label: "Runtime",
+    labelMessageId: "nav.group.runtime",
     items: [
       {
         href: "/nodes",
-        title: "Nodes",
-        description: "Node inventory, roles, and lifecycle status.",
+        titleMessageId: "nav.nodes.title",
+        descriptionMessageId: "nav.nodes.description",
         icon: Server,
       },
       {
         href: "/channels",
-        title: "Channels",
-        description: "Channel lists and runtime drill-in status.",
+        titleMessageId: "nav.channels.title",
+        descriptionMessageId: "nav.channels.description",
         icon: MessageSquare,
       },
       {
         href: "/connections",
-        title: "Connections",
-        description: "Connection inventory and transport state.",
+        titleMessageId: "nav.connections.title",
+        descriptionMessageId: "nav.connections.description",
         icon: Cable,
       },
       {
         href: "/slots",
-        title: "Slots",
-        description: "Slot distribution and runtime status.",
+        titleMessageId: "nav.slots.title",
+        descriptionMessageId: "nav.slots.description",
         icon: Database,
       },
     ],
   },
   {
-    label: "Observability",
+    labelMessageId: "nav.group.observability",
     items: [
       {
         href: "/network",
-        title: "Network",
-        description: "Transport summary and runtime status.",
+        titleMessageId: "nav.network.title",
+        descriptionMessageId: "nav.network.description",
         icon: Radar,
       },
       {
         href: "/topology",
-        title: "Topology",
-        description: "Replica relationships and topology context.",
+        titleMessageId: "nav.topology.title",
+        descriptionMessageId: "nav.topology.description",
         icon: Waypoints,
       },
     ],

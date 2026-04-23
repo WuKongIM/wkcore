@@ -18,8 +18,12 @@ export function Topbar() {
     <header className="border-b border-border bg-background px-6 py-3" role="banner">
       <div className="flex items-center justify-between gap-4">
         <div className="min-w-0">
-          <div className="text-sm font-semibold text-foreground">{page?.title}</div>
-          <p className="text-xs text-muted-foreground">{page?.description}</p>
+          <div className="text-sm font-semibold text-foreground">
+            {page ? intl.formatMessage({ id: page.titleMessageId }) : null}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {page ? intl.formatMessage({ id: page.descriptionMessageId }) : null}
+          </p>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
