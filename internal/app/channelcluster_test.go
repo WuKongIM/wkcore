@@ -187,6 +187,37 @@ func TestAppChannelClusterAppendForwardsToLeaderWhenLocalReplicaIsFollower(t *te
 	require.Equal(t, req, remote.calls[0].req)
 }
 
+func TestAppChannelClusterAppendForwardsToLeaderWhenLocalRuntimeIsMissingAfterRefresh(t *testing.T) {
+	req := channel.AppendRequest{
+		ChannelID: channel.ChannelID{ID: "room", Type: 2},
+		Message:   channel.Message{FromUID: "u1", ClientMsgNo: "m2", Payload: []byte("hi")},
+	}
+	service := &stubChannelService{
+		meta: channel.Meta{
+			Key:    channel.ChannelKey("room"),
+			ID:     req.ChannelID,
+			Leader: 2,
+		},
+		appendErr: channel.ErrStaleMeta,
+	}
+	remote := &recordingRemoteChannelAppender{
+		result: channel.AppendResult{MessageID: 10, MessageSeq: 11},
+	}
+	cluster := &appChannelCluster{
+		service:        service,
+		localNodeID:    1,
+		remoteAppender: remote,
+	}
+
+	result, err := cluster.Append(context.Background(), req)
+
+	require.NoError(t, err)
+	require.Equal(t, channel.AppendResult{MessageID: 10, MessageSeq: 11}, result)
+	require.Len(t, remote.calls, 1)
+	require.Equal(t, uint64(2), remote.calls[0].nodeID)
+	require.Equal(t, req, remote.calls[0].req)
+}
+
 func TestAppChannelClusterAppendLogsForwardDiagnostics(t *testing.T) {
 	req := channel.AppendRequest{
 		ChannelID: channel.ChannelID{ID: "room", Type: 2},

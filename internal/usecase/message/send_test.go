@@ -410,8 +410,7 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	require.Equal(t, uint64(7), result.MessageSeq)
 	require.Len(t, refresher.keys, 1)
 	require.Equal(t, channel.ChannelID{ID: "u2@u1", Type: frame.ChannelTypePerson}, refresher.keys[0])
-	require.Len(t, cluster.appliedMetas, 1)
-	require.Equal(t, uint64(11), cluster.appliedMetas[0].Epoch)
+	require.Empty(t, cluster.appliedMetas)
 	require.Len(t, cluster.sendRequests, 2)
 	require.Zero(t, cluster.sendRequests[0].ExpectedChannelEpoch)
 	require.Equal(t, uint64(11), cluster.sendRequests[1].ExpectedChannelEpoch)
@@ -479,12 +478,7 @@ func TestSendRetriesOnceAfterBootstrappingMissingRuntimeMeta(t *testing.T) {
 	require.Equal(t, int64(301), result.MessageID)
 	require.Equal(t, uint64(4), result.MessageSeq)
 	require.Equal(t, []channel.ChannelID{{ID: "group-1", Type: frame.ChannelTypeGroup}}, refresher.keys)
-	require.Len(t, cluster.appliedMetas, 1)
-	require.Equal(t, channel.Meta{
-		ID:          channel.ChannelID{ID: "group-1", Type: frame.ChannelTypeGroup},
-		Epoch:       17,
-		LeaderEpoch: 6,
-	}, cluster.appliedMetas[0])
+	require.Empty(t, cluster.appliedMetas)
 	require.Len(t, cluster.sendRequests, 2)
 	require.Equal(t, channel.ChannelID{ID: "group-1", Type: frame.ChannelTypeGroup}, cluster.sendRequests[0].ChannelID)
 	require.Zero(t, cluster.sendRequests[0].ExpectedChannelEpoch)
@@ -502,6 +496,47 @@ func TestSendRetriesOnceAfterBootstrappingMissingRuntimeMeta(t *testing.T) {
 			ClientSeq:   33,
 		},
 	}}, dispatcher.calls)
+}
+
+func TestSendRefreshRetryDoesNotReapplyRefreshedMeta(t *testing.T) {
+	cluster := &fakeChannelCluster{
+		sendReplies: []fakeChannelClusterSendReply{
+			{err: channel.ErrStaleMeta},
+			{result: channel.AppendResult{MessageID: 302, MessageSeq: 8}},
+		},
+		applyErr: channel.ErrStaleMeta,
+	}
+	refresher := &fakeMetaRefresher{
+		metas: []channel.Meta{{
+			ID:          channel.ChannelID{ID: "group-apply-once", Type: frame.ChannelTypeGroup},
+			Epoch:       18,
+			LeaderEpoch: 7,
+		}},
+	}
+	app := New(Options{
+		Now:           fixedNowFn,
+		Cluster:       cluster,
+		MetaRefresher: refresher,
+	})
+
+	result, err := app.Send(context.Background(), SendCommand{
+		FromUID:     "u1",
+		ChannelID:   "group-apply-once",
+		ChannelType: frame.ChannelTypeGroup,
+		Payload:     []byte("hi group"),
+		ClientSeq:   35,
+		ClientMsgNo: "apply-once-1",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, frame.ReasonSuccess, result.Reason)
+	require.Equal(t, int64(302), result.MessageID)
+	require.Equal(t, uint64(8), result.MessageSeq)
+	require.Equal(t, []channel.ChannelID{{ID: "group-apply-once", Type: frame.ChannelTypeGroup}}, refresher.keys)
+	require.Empty(t, cluster.appliedMetas)
+	require.Len(t, cluster.sendRequests, 2)
+	require.Equal(t, uint64(18), cluster.sendRequests[1].ExpectedChannelEpoch)
+	require.Equal(t, uint64(7), cluster.sendRequests[1].ExpectedLeaderEpoch)
 }
 
 func TestSendFailsWhenBootstrapReturnsRetryableTopologyError(t *testing.T) {
