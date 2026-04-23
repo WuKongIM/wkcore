@@ -6,6 +6,7 @@ import {
   getChannelRuntimeMetaDetail,
   getConnection,
   getConnections,
+  getMessages,
   getNode,
   getNodes,
   getOverview,
@@ -247,6 +248,30 @@ describe("manager api client", () => {
     await expect(getSlot(9)).resolves.toEqual(slotDetail)
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/manager/slots", expect.anything())
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/manager/slots/9", expect.anything())
+  })
+
+  it("fetches message list data from the manager endpoint", async () => {
+    const messagesResponse = {
+      items: [{
+        message_id: 101,
+        message_seq: 9,
+        client_msg_no: "c-101",
+        channel_id: "room-1",
+        channel_type: 2,
+        from_uid: "u1",
+        timestamp: 1713859200,
+        payload: "aGVsbG8=",
+      }],
+      has_more: true,
+      next_cursor: "cursor-2",
+    }
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(messagesResponse), { status: 200 }))
+
+    await expect(getMessages({ channelId: "room-1", channelType: 2, clientMsgNo: "dup-1", limit: 20, cursor: "cursor-1" })).resolves.toEqual(messagesResponse)
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/manager/messages?channel_id=room-1&channel_type=2&limit=20&cursor=cursor-1&client_msg_no=dup-1",
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    )
   })
 
   it("fetches connection list and detail data from manager endpoints", async () => {

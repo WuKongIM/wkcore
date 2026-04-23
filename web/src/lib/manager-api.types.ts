@@ -229,6 +229,23 @@ export type ManagerConnectionsResponse = {
 
 export type ManagerConnectionDetailResponse = ManagerConnection
 
+export type ManagerMessage = {
+  message_id: number
+  message_seq: number
+  client_msg_no: string
+  channel_id: string
+  channel_type: number
+  from_uid: string
+  timestamp: number
+  payload: string
+}
+
+export type ManagerMessagesResponse = {
+  items: ManagerMessage[]
+  has_more: boolean
+  next_cursor?: string
+}
+
 export type TransferSlotLeaderInput = {
   targetNodeId: number
 }
@@ -240,4 +257,13 @@ export type RecoverSlotInput = {
 export type ChannelRuntimeMetaListParams = {
   limit?: number
   cursor?: string
+}
+
+export type MessageListParams = {
+  channelId: string
+  channelType: number
+  limit?: number
+  cursor?: string
+  messageId?: number
+  clientMsgNo?: string
 }

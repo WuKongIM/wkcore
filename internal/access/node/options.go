@@ -8,6 +8,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/internal/usecase/presence"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
@@ -58,6 +59,7 @@ type Options struct {
 	GatewayBootID    uint64
 	LocalNodeID      uint64
 	ChannelLog       ChannelLog
+	ChannelLogDB     *channelstore.Engine
 	DeliverySubmit   DeliverySubmit
 	DeliveryAck      DeliveryAck
 	DeliveryOffline  DeliveryOffline
@@ -74,6 +76,7 @@ type Adapter struct {
 	gatewayBootID    uint64
 	localNodeID      uint64
 	channelLog       ChannelLog
+	channelLogDB     *channelstore.Engine
 	deliverySubmit   DeliverySubmit
 	deliveryAck      DeliveryAck
 	deliveryOffline  DeliveryOffline
@@ -97,6 +100,7 @@ func New(opts Options) *Adapter {
 		gatewayBootID:    opts.GatewayBootID,
 		localNodeID:      opts.LocalNodeID,
 		channelLog:       opts.ChannelLog,
+		channelLogDB:     opts.ChannelLogDB,
 		deliverySubmit:   opts.DeliverySubmit,
 		deliveryAck:      opts.DeliveryAck,
 		deliveryOffline:  opts.DeliveryOffline,
@@ -113,6 +117,7 @@ func New(opts Options) *Adapter {
 		opts.Cluster.RPCMux().Handle(deliveryOfflineRPCServiceID, adapter.handleDeliveryOfflineRPC)
 		opts.Cluster.RPCMux().Handle(conversationFactsRPCServiceID, adapter.handleConversationFactsRPC)
 		opts.Cluster.RPCMux().Handle(channelAppendRPCServiceID, adapter.handleChannelAppendRPC)
+		opts.Cluster.RPCMux().Handle(channelMessagesRPCServiceID, adapter.handleChannelMessagesRPC)
 	}
 	return adapter
 }

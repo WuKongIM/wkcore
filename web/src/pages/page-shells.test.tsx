@@ -12,6 +12,7 @@ const getTasksMock = vi.fn()
 const getNodesMock = vi.fn()
 const getChannelRuntimeMetaMock = vi.fn()
 const getConnectionsMock = vi.fn()
+const getMessagesMock = vi.fn()
 const getSlotsMock = vi.fn()
 
 vi.mock("@/lib/manager-api", async (importOriginal) => {
@@ -23,6 +24,7 @@ vi.mock("@/lib/manager-api", async (importOriginal) => {
     getNodes: (...args: unknown[]) => getNodesMock(...args),
     getChannelRuntimeMeta: (...args: unknown[]) => getChannelRuntimeMetaMock(...args),
     getConnections: (...args: unknown[]) => getConnectionsMock(...args),
+    getMessages: (...args: unknown[]) => getMessagesMock(...args),
     getSlots: (...args: unknown[]) => getSlotsMock(...args),
   }
 })
@@ -35,6 +37,7 @@ beforeEach(() => {
   getNodesMock.mockReset()
   getChannelRuntimeMetaMock.mockReset()
   getConnectionsMock.mockReset()
+  getMessagesMock.mockReset()
   getSlotsMock.mockReset()
 
   getOverviewMock.mockResolvedValue({
@@ -92,6 +95,7 @@ beforeEach(() => {
     }],
     has_more: false,
   })
+  getMessagesMock.mockResolvedValue({ items: [], has_more: false })
   getConnectionsMock.mockResolvedValue({
     total: 1,
     items: [{
@@ -141,6 +145,7 @@ it.each([
   ["/nodes", "Nodes", "Node Inventory"],
   ["/channels", "Channels", "Channel Runtime"],
   ["/connections", "Connections", "Connection Inventory"],
+  ["/messages", "Messages", "Message Query"],
   ["/slots", "Slots", "Slot Inventory"],
 ])("renders %s shell", async (path, title, section) => {
   const router = createMemoryRouter(routes, { initialEntries: [path] })
@@ -194,6 +199,7 @@ it.each([
   ["/nodes", "节点", "节点清单"],
   ["/channels", "频道", "频道运行时"],
   ["/connections", "连接", "连接清单"],
+  ["/messages", "消息", "消息查询"],
   ["/slots", "槽位", "槽位清单"],
   ["/network", "网络", "管理 API 覆盖"],
   ["/topology", "拓扑", "管理 API 覆盖"],

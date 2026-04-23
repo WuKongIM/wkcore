@@ -6,6 +6,7 @@ import type {
   ManagerConnectionDetailResponse,
   ManagerConnectionsResponse,
   ManagerLoginResponse,
+  ManagerMessagesResponse,
   ManagerNodeDetailResponse,
   ManagerNodesResponse,
   ManagerOverviewResponse,
@@ -16,6 +17,7 @@ import type {
   ManagerSlotsResponse,
   ManagerTaskDetailResponse,
   ManagerTasksResponse,
+  MessageListParams,
   RecoverSlotInput,
   TransferSlotLeaderInput,
 } from "@/lib/manager-api.types"
@@ -106,6 +108,25 @@ function buildChannelRuntimeMetaPath(params?: ChannelRuntimeMetaListParams) {
 
   const query = search.toString()
   return query ? `/manager/channel-runtime-meta?${query}` : "/manager/channel-runtime-meta"
+}
+
+function buildMessageListPath(params: MessageListParams) {
+  const search = new URLSearchParams()
+  search.set("channel_id", params.channelId)
+  search.set("channel_type", String(params.channelType))
+  if (typeof params.limit === "number") {
+    search.set("limit", String(params.limit))
+  }
+  if (params.cursor) {
+    search.set("cursor", params.cursor)
+  }
+  if (typeof params.messageId === "number") {
+    search.set("message_id", String(params.messageId))
+  }
+  if (params.clientMsgNo) {
+    search.set("client_msg_no", params.clientMsgNo)
+  }
+  return `/manager/messages?${search.toString()}`
 }
 
 export async function managerFetch(path: string, init?: RequestInit) {
@@ -218,6 +239,10 @@ export function getConnections() {
 
 export function getConnection(sessionId: number) {
   return jsonManagerFetch<ManagerConnectionDetailResponse>(`/manager/connections/${sessionId}`)
+}
+
+export function getMessages(params: MessageListParams) {
+  return jsonManagerFetch<ManagerMessagesResponse>(buildMessageListPath(params))
 }
 
 export function getChannelRuntimeMeta(params?: ChannelRuntimeMetaListParams) {

@@ -278,6 +278,7 @@ func build(cfg Config) (_ *App, err error) {
 		GatewayBootID:    app.gatewayBootID,
 		LocalNodeID:      cfg.Node.ID,
 		ChannelLog:       app.channelLog,
+		ChannelLogDB:     app.channelLogDB,
 		ChannelMeta:      app.channelMetaSync,
 		DeliverySubmit:   committedDispatcher,
 		DeliveryAck:      app.deliveryApp,
@@ -321,6 +322,12 @@ func build(cfg Config) (_ *App, err error) {
 			Cluster:            app.cluster,
 			Online:             onlineRegistry,
 			ChannelRuntimeMeta: app.store,
+			Messages: managerMessageReader{
+				localNodeID: cfg.Node.ID,
+				channelLog:  app.channelLogDB,
+				metas:       app.store,
+				remote:      app.nodeClient,
+			},
 		})
 		app.manager = accessmanager.New(accessmanager.Options{
 			ListenAddr: cfg.Manager.ListenAddr,

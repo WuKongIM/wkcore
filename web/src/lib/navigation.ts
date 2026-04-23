@@ -49,6 +49,12 @@ export const navigationGroups: NavigationGroup[] = [
         icon: MessageSquare,
       },
       {
+        href: "/messages",
+        titleMessageId: "nav.messages.title",
+        descriptionMessageId: "nav.messages.description",
+        icon: MessageSquare,
+      },
+      {
         href: "/connections",
         titleMessageId: "nav.connections.title",
         descriptionMessageId: "nav.connections.description",

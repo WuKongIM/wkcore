@@ -48,6 +48,8 @@ type Management interface {
 	ListChannelRuntimeMeta(ctx context.Context, req managementusecase.ListChannelRuntimeMetaRequest) (managementusecase.ListChannelRuntimeMetaResponse, error)
 	// GetChannelRuntimeMeta returns one manager-facing channel runtime metadata detail DTO.
 	GetChannelRuntimeMeta(ctx context.Context, channelID string, channelType int64) (managementusecase.ChannelRuntimeMetaDetail, error)
+	// ListMessages returns one manager-facing channel message page.
+	ListMessages(ctx context.Context, req managementusecase.ListMessagesRequest) (managementusecase.ListMessagesResponse, error)
 	// GetOverview returns the manager homepage overview DTO.
 	GetOverview(ctx context.Context) (managementusecase.Overview, error)
 }

@@ -6,6 +6,7 @@ import { ChannelsPage } from "@/pages/channels/page"
 import { ConnectionsPage } from "@/pages/connections/page"
 import { DashboardPage } from "@/pages/dashboard/page"
 import { LoginPage } from "@/pages/login/page"
+import { MessagesPage } from "@/pages/messages/page"
 import { NetworkPage } from "@/pages/network/page"
 import { NodesPage } from "@/pages/nodes/page"
 import { SlotsPage } from "@/pages/slots/page"
@@ -32,6 +33,7 @@ export const routes: RouteObject[] = [
       { path: "dashboard", element: <DashboardPage /> },
       { path: "nodes", element: <NodesPage /> },
       { path: "channels", element: <ChannelsPage /> },
+      { path: "messages", element: <MessagesPage /> },
       { path: "connections", element: <ConnectionsPage /> },
       { path: "slots", element: <SlotsPage /> },
       { path: "network", element: <NetworkPage /> },

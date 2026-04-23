@@ -72,6 +72,7 @@ func (s *Server) registerRoutes() {
 	}
 	channelRuntimeMeta.GET("/channel-runtime-meta", s.handleChannelRuntimeMeta)
 	channelRuntimeMeta.GET("/channel-runtime-meta/:channel_type/:channel_id", s.handleChannelRuntimeMetaDetail)
+	channelRuntimeMeta.GET("/messages", s.handleMessages)
 }
 
 func openCORSMiddleware() gin.HandlerFunc {

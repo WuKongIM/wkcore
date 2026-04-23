@@ -160,11 +160,23 @@ func (s *ChannelStore) ReadOffsets(fromOffset uint64, limit int, maxBytes int) (
 	return s.readOffsets(fromOffset, limit, maxBytes)
 }
 
+// ReadOffsetsReverse returns committed log records in descending offset order.
+func (s *ChannelStore) ReadOffsetsReverse(fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
+	return s.readOffsetsReverse(fromOffset, limit, maxBytes)
+}
+
 func (s *ChannelStore) readOffsets(fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
 	return s.engine.readOffsets(s.key, fromOffset, limit, maxBytes)
+}
+
+func (s *ChannelStore) readOffsetsReverse(fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
+	return s.engine.readOffsetsReverse(s.key, fromOffset, limit, maxBytes)
 }
 
 func (s *ChannelStore) LEO() uint64 {
@@ -271,6 +283,14 @@ func (e *Engine) Read(channelKey channel.ChannelKey, fromOffset uint64, limit in
 	return e.readOffsets(channelKey, fromOffset, limit, maxBytes)
 }
 
+// ReadReverse returns log records in descending offset order starting at fromOffset.
+func (e *Engine) ReadReverse(channelKey channel.ChannelKey, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
+	if e == nil || e.db == nil || channelKey == "" {
+		return nil, channel.ErrInvalidArgument
+	}
+	return e.readOffsetsReverse(channelKey, fromOffset, limit, maxBytes)
+}
+
 func (e *Engine) readOffsets(channelKey channel.ChannelKey, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
 	if limit <= 0 || maxBytes <= 0 {
 		return nil, nil
@@ -282,6 +302,54 @@ func (e *Engine) readOffsets(channelKey channel.ChannelKey, fromOffset uint64, l
 		return nil
 	})
 	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (e *Engine) readOffsetsReverse(channelKey channel.ChannelKey, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
+	if limit <= 0 || maxBytes <= 0 {
+		return nil, nil
+	}
+
+	prefix := encodeLogPrefix(channelKey)
+	iter, err := e.db.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: keyUpperBound(prefix),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+
+	seekOffset := fromOffset
+	if seekOffset < math.MaxUint64 {
+		seekOffset++
+	}
+	valid := iter.SeekLT(encodeLogRecordKey(channelKey, seekOffset))
+	if !valid {
+		return nil, nil
+	}
+
+	out := make([]LogRecord, 0, minInt(limit, logScanInitialCapacity))
+	total := 0
+	for ; valid && len(out) < limit; valid = iter.Prev() {
+		if !bytes.HasPrefix(iter.Key(), prefix) {
+			break
+		}
+		offset, err := decodeLogRecordOffset(iter.Key(), prefix)
+		if err != nil {
+			return nil, err
+		}
+		payload := append([]byte(nil), iter.Value()...)
+		size := len(payload)
+		if len(out) > 0 && total+size > maxBytes {
+			break
+		}
+		out = append(out, LogRecord{Offset: offset, Payload: payload})
+		total += size
+	}
+	if err := iter.Error(); err != nil {
 		return nil, err
 	}
 	return out, nil

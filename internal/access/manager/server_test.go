@@ -2288,6 +2288,9 @@ type managementStub struct {
 	channelRuntimeMetaDetailReqSink *channelRuntimeMetaDetailCall
 	channelRuntimeMetaDetail        managementusecase.ChannelRuntimeMetaDetail
 	channelRuntimeMetaDetailErr     error
+	messagesReqSink                 *managementusecase.ListMessagesRequest
+	messagesPage                    managementusecase.ListMessagesResponse
+	messagesErr                     error
 	overview                        managementusecase.Overview
 	overviewErr                     error
 }
@@ -2355,6 +2358,13 @@ func (s managementStub) GetChannelRuntimeMeta(_ context.Context, channelID strin
 		*s.channelRuntimeMetaDetailReqSink = channelRuntimeMetaDetailCall{channelID: channelID, channelType: channelType}
 	}
 	return s.channelRuntimeMetaDetail, s.channelRuntimeMetaDetailErr
+}
+
+func (s managementStub) ListMessages(_ context.Context, req managementusecase.ListMessagesRequest) (managementusecase.ListMessagesResponse, error) {
+	if s.messagesReqSink != nil {
+		*s.messagesReqSink = req
+	}
+	return s.messagesPage, s.messagesErr
 }
 
 func (s managementStub) GetOverview(context.Context) (managementusecase.Overview, error) {

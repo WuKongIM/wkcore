@@ -52,6 +52,12 @@ type ChannelRuntimeMetaReader interface {
 	GetChannelRuntimeMeta(ctx context.Context, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error)
 }
 
+// MessageReader exposes authoritative channel message page reads.
+type MessageReader interface {
+	// QueryMessages returns one authoritative message page for a channel.
+	QueryMessages(ctx context.Context, req MessageQueryRequest) (MessageQueryPage, error)
+}
+
 // Options configures the management usecase app.
 type Options struct {
 	// LocalNodeID is the node ID of the current process.
@@ -64,6 +70,8 @@ type Options struct {
 	Online online.Registry
 	// ChannelRuntimeMeta provides authoritative slot-level runtime meta pages.
 	ChannelRuntimeMeta ChannelRuntimeMetaReader
+	// Messages provides authoritative channel message pages.
+	Messages MessageReader
 	// Now returns the current time for manager aggregations.
 	Now func() time.Time
 }
@@ -75,6 +83,7 @@ type App struct {
 	cluster            ClusterReader
 	online             online.Registry
 	channelRuntimeMeta ChannelRuntimeMetaReader
+	messages           MessageReader
 	now                func() time.Time
 }
 
@@ -97,6 +106,7 @@ func New(opts Options) *App {
 		cluster:            opts.Cluster,
 		online:             opts.Online,
 		channelRuntimeMeta: opts.ChannelRuntimeMeta,
+		messages:           opts.Messages,
 		now:                now,
 	}
 }
