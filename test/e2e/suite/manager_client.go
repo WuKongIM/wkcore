@@ -75,6 +75,37 @@ func FetchConnections(ctx context.Context, node StartedNode) ([]ManagerConnectio
 	return resp.Items, body, nil
 }
 
+// ResolveSlotTopology resolves the externally observed slot topology for one managed slot.
+func (c *StartedCluster) ResolveSlotTopology(ctx context.Context, slotID uint32) (SlotTopology, error) {
+	if c == nil {
+		return SlotTopology{}, fmt.Errorf("started cluster is nil")
+	}
+
+	expectedNodeIDs := make([]uint64, 0, len(c.Nodes))
+	for _, node := range c.Nodes {
+		expectedNodeIDs = append(expectedNodeIDs, node.Spec.ID)
+	}
+
+	var lastErr error
+	for _, node := range c.Nodes {
+		_, body, err := FetchSlotDetail(ctx, node, slotID)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		c.lastSlotBodies[slotID] = string(body)
+		topology, err := parseSlotTopology(slotID, expectedNodeIDs, body)
+		if err == nil {
+			return topology, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("slot %d topology unavailable", slotID)
+	}
+	return SlotTopology{}, lastErr
+}
+
 func fetchHTTPBody(ctx context.Context, addr, path string) ([]byte, error) {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path

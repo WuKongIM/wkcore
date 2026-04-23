@@ -13,6 +13,12 @@ import (
 
 const readyPollInterval = 100 * time.Millisecond
 
+// HTTPObservation captures the last observed HTTP status/body pair from a probe.
+type HTTPObservation struct {
+	StatusCode int
+	Body       string
+}
+
 // WaitWKProtoReady waits until a real WKProto handshake succeeds on the address.
 func WaitWKProtoReady(ctx context.Context, addr string) error {
 	ticker := time.NewTicker(readyPollInterval)
@@ -45,6 +51,28 @@ func WaitWKProtoReady(ctx context.Context, addr string) error {
 
 // WaitHTTPReady waits until the HTTP endpoint starts returning status 200.
 func WaitHTTPReady(ctx context.Context, addr, path string) error {
+	_, err := waitHTTPReadyDetailed(ctx, addr, path)
+	return err
+}
+
+// WaitNodeReady waits for both HTTP readiness and a real WKProto handshake.
+func WaitNodeReady(ctx context.Context, node StartedNode) error {
+	_, err := waitNodeReadyDetailed(ctx, node)
+	return err
+}
+
+func waitNodeReadyDetailed(ctx context.Context, node StartedNode) (HTTPObservation, error) {
+	observation, err := waitHTTPReadyDetailed(ctx, node.Spec.APIAddr, "/readyz")
+	if err != nil {
+		return observation, err
+	}
+	if err := WaitWKProtoReady(ctx, node.Spec.GatewayAddr); err != nil {
+		return observation, err
+	}
+	return observation, nil
+}
+
+func waitHTTPReadyDetailed(ctx context.Context, addr, path string) (HTTPObservation, error) {
 	ticker := time.NewTicker(readyPollInterval)
 	defer ticker.Stop()
 
@@ -52,11 +80,14 @@ func WaitHTTPReady(ctx context.Context, addr, path string) error {
 		path = "/" + path
 	}
 
-	var lastErr error
+	var (
+		lastErr error
+		lastObs HTTPObservation
+	)
 	for {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+path, nil)
 		if err != nil {
-			return err
+			return lastObs, err
 		}
 
 		resp, err := http.DefaultClient.Do(req)
@@ -65,10 +96,15 @@ func WaitHTTPReady(ctx context.Context, addr, path string) error {
 			_ = resp.Body.Close()
 			if readErr != nil {
 				lastErr = readErr
-			} else if resp.StatusCode == http.StatusOK {
-				return nil
 			} else {
-				lastErr = fmt.Errorf("http readiness %s returned %d: %s", path, resp.StatusCode, strings.TrimSpace(string(body)))
+				lastObs = HTTPObservation{
+					StatusCode: resp.StatusCode,
+					Body:       strings.TrimSpace(string(body)),
+				}
+				if resp.StatusCode == http.StatusOK {
+					return lastObs, nil
+				}
+				lastErr = fmt.Errorf("http readiness %s returned %d: %s", path, resp.StatusCode, lastObs.Body)
 			}
 		} else {
 			lastErr = err
@@ -77,18 +113,10 @@ func WaitHTTPReady(ctx context.Context, addr, path string) error {
 		select {
 		case <-ctx.Done():
 			if lastErr != nil {
-				return lastErr
+				return lastObs, lastErr
 			}
-			return ctx.Err()
+			return lastObs, ctx.Err()
 		case <-ticker.C:
 		}
 	}
-}
-
-// WaitNodeReady waits for both HTTP readiness and a real WKProto handshake.
-func WaitNodeReady(ctx context.Context, node StartedNode) error {
-	if err := WaitHTTPReady(ctx, node.Spec.APIAddr, "/readyz"); err != nil {
-		return err
-	}
-	return WaitWKProtoReady(ctx, node.Spec.GatewayAddr)
 }

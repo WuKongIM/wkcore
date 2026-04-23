@@ -4,9 +4,11 @@ package suite
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,14 +33,20 @@ type StartedNode struct {
 	Process *NodeProcess
 }
 
+// StartedCluster describes one started three-node cluster and its last observations.
+type StartedCluster struct {
+	Nodes          []StartedNode
+	lastReadyz     map[uint64]HTTPObservation
+	lastSlotBodies map[uint32]string
+}
+
 // NewWorkspace creates a temp workspace with a default node-1 tree for phase 1.
 func NewWorkspace(t *testing.T) Workspace {
 	t.Helper()
 
 	rootDir := t.TempDir()
 	workspace := Workspace{RootDir: rootDir}
-	require.NoError(t, os.MkdirAll(workspace.NodeDataDir(1), 0o755))
-	require.NoError(t, os.MkdirAll(workspace.NodeLogDir(1), 0o755))
+	require.NoError(t, workspace.ensureNodeDirs(1))
 	return workspace
 }
 
@@ -58,21 +66,8 @@ func (s *Suite) StartSingleNodeCluster() *StartedNode {
 	s.t.Helper()
 
 	ports := ReserveLoopbackPorts(s.t)
-	spec := NodeSpec{
-		ID:          1,
-		Name:        "node-1",
-		RootDir:     s.workspace.NodeRootDir(1),
-		DataDir:     s.workspace.NodeDataDir(1),
-		ConfigPath:  s.workspace.NodeConfigPath(1),
-		StdoutPath:  s.workspace.NodeStdoutPath(1),
-		StderrPath:  s.workspace.NodeStderrPath(1),
-		ClusterAddr: ports.ClusterAddr,
-		GatewayAddr: ports.GatewayAddr,
-		APIAddr:     ports.APIAddr,
-		ManagerAddr: ports.ManagerAddr,
-		LogDir:      s.workspace.NodeLogDir(1),
-	}
-
+	spec := s.singleNodeSpec(1, ports)
+	require.NoError(s.t, s.workspace.ensureNodeDirs(spec.ID))
 	require.NoError(s.t, os.WriteFile(spec.ConfigPath, []byte(RenderSingleNodeConfig(spec)), 0o644))
 
 	process := &NodeProcess{
@@ -91,9 +86,135 @@ func (s *Suite) StartSingleNodeCluster() *StartedNode {
 	return &StartedNode{Spec: spec, Process: process}
 }
 
+// StartThreeNodeCluster starts three real child processes and returns a cluster handle.
+func (s *Suite) StartThreeNodeCluster() *StartedCluster {
+	s.t.Helper()
+
+	ports := []PortSet{
+		ReserveLoopbackPorts(s.t),
+		ReserveLoopbackPorts(s.t),
+		ReserveLoopbackPorts(s.t),
+	}
+	specs := make([]NodeSpec, 0, len(ports))
+	for i, portSet := range ports {
+		nodeID := uint64(i + 1)
+		spec := s.singleNodeSpec(nodeID, portSet)
+		require.NoError(s.t, s.workspace.ensureNodeDirs(nodeID))
+		specs = append(specs, spec)
+	}
+
+	for _, spec := range specs {
+		require.NoError(s.t, os.WriteFile(spec.ConfigPath, []byte(RenderClusterConfig(spec, specs)), 0o644))
+	}
+
+	cluster := &StartedCluster{
+		Nodes:          make([]StartedNode, 0, len(specs)),
+		lastReadyz:     make(map[uint64]HTTPObservation, len(specs)),
+		lastSlotBodies: make(map[uint32]string),
+	}
+	for _, spec := range specs {
+		process := &NodeProcess{Spec: spec, BinaryPath: s.binaryPath}
+		require.NoError(s.t, process.Start())
+		cluster.Nodes = append(cluster.Nodes, StartedNode{Spec: spec, Process: process})
+	}
+
+	s.t.Cleanup(func() {
+		for i := len(cluster.Nodes) - 1; i >= 0; i-- {
+			require.NoError(s.t, cluster.Nodes[i].Process.Stop())
+		}
+	})
+
+	return cluster
+}
+
+// WaitClusterReady waits until every node satisfies the node-ready contract.
+func (c *StartedCluster) WaitClusterReady(ctx context.Context) error {
+	if c == nil {
+		return fmt.Errorf("started cluster is nil")
+	}
+	for _, node := range c.Nodes {
+		observation, err := waitNodeReadyDetailed(ctx, node)
+		c.lastReadyz[node.Spec.ID] = observation
+		if err != nil {
+			return fmt.Errorf("node %d not ready: %w", node.Spec.ID, err)
+		}
+	}
+	return nil
+}
+
+// DumpDiagnostics returns a cluster-scoped snapshot of the last observations and node artifacts.
+func (c *StartedCluster) DumpDiagnostics() string {
+	if c == nil {
+		return "cluster: <nil>\n"
+	}
+
+	var b strings.Builder
+	for _, node := range c.Nodes {
+		fmt.Fprintf(&b, "node %d diagnostics:\n", node.Spec.ID)
+		if observation, ok := c.lastReadyz[node.Spec.ID]; ok {
+			fmt.Fprintf(&b, "readyz: status=%d body=%s\n", observation.StatusCode, observation.Body)
+		}
+		process := node.Process
+		if process == nil {
+			process = &NodeProcess{Spec: node.Spec}
+		}
+		b.WriteString(process.DumpDiagnostics())
+	}
+	for slotID, body := range c.lastSlotBodies {
+		fmt.Fprintf(&b, "slot %d body: %s\n", slotID, body)
+	}
+	return b.String()
+}
+
+// Node looks up one node handle by node ID.
+func (c *StartedCluster) Node(nodeID uint64) (*StartedNode, bool) {
+	if c == nil {
+		return nil, false
+	}
+	for i := range c.Nodes {
+		if c.Nodes[i].Spec.ID == nodeID {
+			return &c.Nodes[i], true
+		}
+	}
+	return nil, false
+}
+
+// MustNode looks up one node handle by node ID and panics when missing.
+func (c *StartedCluster) MustNode(nodeID uint64) *StartedNode {
+	node, ok := c.Node(nodeID)
+	if !ok {
+		panic(fmt.Sprintf("node %d not found", nodeID))
+	}
+	return node
+}
+
 // GatewayAddr returns the public WKProto listen address for the started node.
 func (n *StartedNode) GatewayAddr() string {
 	return n.Spec.GatewayAddr
+}
+
+func (s *Suite) singleNodeSpec(nodeID uint64, ports PortSet) NodeSpec {
+	return NodeSpec{
+		ID:          nodeID,
+		Name:        "node-" + strconv.FormatUint(nodeID, 10),
+		RootDir:     s.workspace.NodeRootDir(nodeID),
+		DataDir:     s.workspace.NodeDataDir(nodeID),
+		ConfigPath:  s.workspace.NodeConfigPath(nodeID),
+		StdoutPath:  s.workspace.NodeStdoutPath(nodeID),
+		StderrPath:  s.workspace.NodeStderrPath(nodeID),
+		ClusterAddr: ports.ClusterAddr,
+		GatewayAddr: ports.GatewayAddr,
+		APIAddr:     ports.APIAddr,
+		ManagerAddr: ports.ManagerAddr,
+		LogDir:      s.workspace.NodeLogDir(nodeID),
+	}
+}
+
+func (w Workspace) ensureNodeDirs(nodeID uint64) error {
+	if err := os.MkdirAll(w.NodeDataDir(nodeID), 0o755); err != nil {
+		return err
+	}
+	return os.MkdirAll(w.NodeLogDir(nodeID), 0o755)
 }
 
 // NodeRootDir returns the root directory for one node.

@@ -13,7 +13,11 @@ import (
 	"time"
 )
 
-const defaultStopTimeout = 5 * time.Second
+const (
+	defaultStopTimeout   = 5 * time.Second
+	diagnosticsTailBytes = 4096
+	diagnosticsTailLines = 16
+)
 
 // NodeProcess wraps one real child process used by the e2e suite.
 type NodeProcess struct {
@@ -109,8 +113,19 @@ func (p *NodeProcess) DumpDiagnostics() string {
 	fmt.Fprintf(&b, "config: %s\n", p.Spec.ConfigPath)
 	fmt.Fprintf(&b, "stdout: %s\n", p.Spec.StdoutPath)
 	fmt.Fprintf(&b, "stderr: %s\n", p.Spec.StderrPath)
-	appendLog(&b, "stdout", p.Spec.StdoutPath)
-	appendLog(&b, "stderr", p.Spec.StderrPath)
+	appendLogTail(&b, "stdout", p.Spec.StdoutPath)
+	appendLogTail(&b, "stderr", p.Spec.StderrPath)
+
+	logDir := p.Spec.LogDir
+	if logDir == "" && p.Spec.RootDir != "" {
+		logDir = filepath.Join(p.Spec.RootDir, "logs")
+	}
+	if logDir != "" {
+		fmt.Fprintf(&b, "app-log: %s\n", filepath.Join(logDir, "app.log"))
+		appendLogTail(&b, "app-log", filepath.Join(logDir, "app.log"))
+		fmt.Fprintf(&b, "error-log: %s\n", filepath.Join(logDir, "error.log"))
+		appendLogTail(&b, "error-log", filepath.Join(logDir, "error.log"))
+	}
 	return b.String()
 }
 
@@ -123,11 +138,25 @@ func (p *NodeProcess) closeLogs() {
 	}
 }
 
-func appendLog(b *strings.Builder, name, path string) {
+func appendLogTail(b *strings.Builder, name, path string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Fprintf(b, "%s-read-error: %v\n", name, err)
 		return
+	}
+	truncated := false
+	if len(data) > diagnosticsTailBytes {
+		data = data[len(data)-diagnosticsTailBytes:]
+		truncated = true
+	}
+	lines := strings.Split(string(data), "\n")
+	if len(lines) > diagnosticsTailLines {
+		lines = lines[len(lines)-diagnosticsTailLines:]
+		truncated = true
+		data = []byte(strings.Join(lines, "\n"))
+	}
+	if truncated {
+		fmt.Fprintf(b, "%s-tail: [truncated]\n", name)
 	}
 	fmt.Fprintf(b, "%s-content:\n%s", name, data)
 	if len(data) > 0 && data[len(data)-1] != '\n' {

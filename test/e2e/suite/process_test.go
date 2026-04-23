@@ -77,6 +77,39 @@ func TestNodeProcessDumpDiagnosticsIncludesConfigAndLogPaths(t *testing.T) {
 	require.Contains(t, diagnostics, "stderr-line")
 }
 
+func TestNodeProcessDumpDiagnosticsTailsAppLogs(t *testing.T) {
+	workdir := t.TempDir()
+	logDir := filepath.Join(workdir, "logs")
+	require.NoError(t, os.MkdirAll(logDir, 0o755))
+
+	stdoutPath := filepath.Join(workdir, "stdout.log")
+	stderrPath := filepath.Join(workdir, "stderr.log")
+	appLogPath := filepath.Join(logDir, "app.log")
+	errorLogPath := filepath.Join(logDir, "error.log")
+
+	require.NoError(t, os.WriteFile(stdoutPath, []byte("stdout-line\n"), 0o644))
+	require.NoError(t, os.WriteFile(stderrPath, []byte("stderr-line\n"), 0o644))
+
+	head := strings.Repeat("head-line\n", 1200)
+	require.NoError(t, os.WriteFile(appLogPath, []byte(head+"app-tail-line\n"), 0o644))
+	require.NoError(t, os.WriteFile(errorLogPath, []byte(head+"error-tail-line\n"), 0o644))
+
+	process := NodeProcess{
+		Spec: NodeSpec{
+			RootDir:    workdir,
+			StdoutPath: stdoutPath,
+			StderrPath: stderrPath,
+		},
+	}
+
+	diagnostics := process.DumpDiagnostics()
+	require.Contains(t, diagnostics, appLogPath)
+	require.Contains(t, diagnostics, errorLogPath)
+	require.Contains(t, diagnostics, "app-tail-line")
+	require.Contains(t, diagnostics, "error-tail-line")
+	require.NotContains(t, diagnostics, strings.Repeat("head-line\n", 20))
+}
+
 func runTrapSIGTERMHelper() {
 	fmt.Println("helper-started")
 	sigCh := make(chan os.Signal, 1)

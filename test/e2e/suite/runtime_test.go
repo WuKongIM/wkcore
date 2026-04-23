@@ -3,6 +3,7 @@
 package suite
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -24,4 +25,71 @@ func TestNewWorkspaceCreatesNodeScopedLogDirPaths(t *testing.T) {
 	workspace := NewWorkspace(t)
 
 	require.Equal(t, filepath.Join(workspace.RootDir, "node-1", "logs"), workspace.NodeLogDir(1))
+}
+
+func TestStartedClusterNodeLookupByID(t *testing.T) {
+	cluster := StartedCluster{
+		Nodes: []StartedNode{
+			{Spec: NodeSpec{ID: 1}},
+			{Spec: NodeSpec{ID: 2}},
+		},
+	}
+
+	node, ok := cluster.Node(2)
+	require.True(t, ok)
+	require.Equal(t, uint64(2), node.Spec.ID)
+	require.Equal(t, uint64(1), cluster.MustNode(1).Spec.ID)
+}
+
+func TestStartedClusterDumpDiagnosticsIncludesReadyzAndSlotBodies(t *testing.T) {
+	cluster := StartedCluster{
+		Nodes: []StartedNode{
+			{
+				Spec: NodeSpec{
+					ID:         1,
+					ConfigPath: "/tmp/node-1/wukongim.conf",
+					StdoutPath: "/tmp/node-1/stdout.log",
+					StderrPath: "/tmp/node-1/stderr.log",
+				},
+			},
+		},
+		lastReadyz: map[uint64]HTTPObservation{
+			1: {StatusCode: 503, Body: `{"status":"not_ready"}`},
+		},
+		lastSlotBodies: map[uint32]string{
+			1: `{"runtime":{"leader_id":2}}`,
+		},
+	}
+
+	dump := cluster.DumpDiagnostics()
+	require.Contains(t, dump, `{"status":"not_ready"}`)
+	require.Contains(t, dump, `leader_id`)
+}
+
+func TestStartThreeNodeClusterWritesThreeNodeScopedConfigs(t *testing.T) {
+	binaryPath := writeFakeNodeBinary(t)
+
+	suite := New(t, binaryPath)
+	cluster := suite.StartThreeNodeCluster()
+
+	require.Len(t, cluster.Nodes, 3)
+	for _, node := range cluster.Nodes {
+		require.FileExists(t, node.Spec.ConfigPath)
+
+		cfg, err := os.ReadFile(node.Spec.ConfigPath)
+		require.NoError(t, err)
+		require.Contains(t, string(cfg), "WK_CLUSTER_CONTROLLER_REPLICA_N=3")
+		require.Contains(t, string(cfg), "WK_CLUSTER_SLOT_REPLICA_N=3")
+		require.Contains(t, string(cfg), "WK_MANAGER_AUTH_ON=false")
+		require.Contains(t, string(cfg), "WK_LOG_DIR="+node.Spec.LogDir)
+	}
+}
+
+func writeFakeNodeBinary(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "fake-wukongim.sh")
+	script := "#!/bin/sh\ntrap 'exit 0' TERM\nwhile :; do sleep 1; done\n"
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
+	return path
 }
