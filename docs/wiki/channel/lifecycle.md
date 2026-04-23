@@ -158,7 +158,100 @@ message.App.Send
 
 leader 本地 append 成功后，会主动唤醒复制路径；对冷 follower，还可能补一个轻量 probe，帮助对端尽快进入 steady-state 复制。
 
-## 8. 元数据变化时怎么演化
+## 8. 冷却流程
+
+这里要先说清一个容易误解的点：
+
+**当前实现里，没有“channel 空闲一段时间后自动冷却并回收本地 runtime”的后台机制。**
+
+所以这里说的“冷却”，更准确地说是：
+
+- 本地 runtime 被卸载
+- 当前节点重新回到“这条 channel 在本地是冷的”状态
+
+也就是说，channel 不是因为“最近没人发消息了”就自动变冷，而是因为**当前节点不再需要继续承载这条 channel**，或者**进程退出**，才会退回冷状态。
+
+### 当前代码里，进入“本地冷状态”主要有 3 条路径
+
+#### 1. 副本拓扑变化，当前节点不再属于 replicas
+
+这是最常见的“退冷”路径。
+
+`channelMetaSync` 刷新权威 meta 后，如果发现当前节点已经不在这条 channel 的 `replicas` 里，就不会继续保留本地 runtime，而是走：
+
+```text
+applyAuthoritativeMeta
+  -> removeLocalRuntime
+  -> appChannelCluster.RemoveLocalRuntime
+  -> runtime.RemoveChannel
+```
+
+这表示：
+
+- routing 信息可以继续更新
+- 但本地 replica runtime 会被卸载
+
+卸载后，这条 channel 对当前节点来说就重新变成“冷的”。
+
+#### 2. channel 进入 deleted
+
+当权威状态进入 `deleted` 时，本地 runtime 也会被移除。
+
+这条路径和上面不同的地方是：
+
+- 上面是“当前节点不再承载它”
+- 这里是“这条 channel 整体已经被删除”
+
+结果都是一样的：本地 runtime 退场。
+
+#### 3. 进程停止
+
+应用退出时，不会保留本地 runtime。
+
+这时会统一关闭 `channelLog` / `runtime` / `replica`，所以所有本地 channel 最终都会退回冷状态。
+
+### 本地 runtime 被移除时，具体做了什么
+
+本地 runtime 被卸载时，不只是从一个 map 里删掉，还会做一整套清理动作：
+
+- 先把 replica 标记成 `Tombstone`
+- 把 channel 从 runtime 的 shard map 中删除
+- 清理 follower/leader lane 关联
+- 清理 snapshot waiter
+- 清理复制重试与 peer queue
+- 必要时关闭无效 peer session
+- 最后关闭 replica
+
+同时，runtime 还会加一段短期 tombstone 记录。
+
+这段 tombstone 的作用不是“保活”，而是：
+
+- 拦截删除前已经在路上的旧响应
+- 防止旧 generation 的包又落回新状态里
+
+### 冷却后还能再激活吗
+
+可以，但要看当前权威 meta。
+
+分两种情况：
+
+- **只是当前节点被卸载了，但以后又重新进入 replicas**  
+  那么后续再次访问这条 channel 时，仍然可以重新激活并重建本地 runtime。
+
+- **channel 已经 deleted**  
+  那就不会再按原状态重新激活。
+
+### 所以“冷却”要怎么理解
+
+建议把它理解成：
+
+```text
+不是空闲自动降温，
+而是本地副本 runtime 被明确卸载，
+当前节点重新回到 cold miss 状态。
+```
+
+## 9. 元数据变化时怎么演化
 
 channel 不是创建完就不变了。
 
@@ -178,7 +271,7 @@ channel 不是创建完就不变了。
 - 保持角色不变，但复制目标变化
 - 清理已经失效的 peer session / lane / retry 状态
 
-## 9. 删除阶段
+## 10. 删除阶段
 
 当 channel 状态进入 `deleting` 或 `deleted` 后：
 
@@ -194,7 +287,7 @@ channel 不是创建完就不变了。
 
 这段 tombstone 的作用是拦截晚到的旧响应，避免删除后的旧包再次污染新状态。
 
-## 10. 退出阶段
+## 11. 退出阶段
 
 应用停止时：
 
@@ -204,7 +297,7 @@ channel 不是创建完就不变了。
 
 所以进程退出时，所有本地 channel runtime 都会被统一释放。
 
-## 11. 当前实现里一个很重要的现实
+## 12. 当前实现里一个很重要的现实
 
 当前代码里，我没有看到“channel 空闲一段时间后自动回收本地 runtime”的逻辑。
 
