@@ -221,7 +221,7 @@ type ManagerUserConfig struct {
 
 // ManagerPermissionConfig binds one resource to allowed actions.
 type ManagerPermissionConfig struct {
-	// Resource is the manager resource name, such as "cluster.node".
+	// Resource is the manager resource name, such as "cluster.node"; use "*" to grant all manager resources.
 	Resource string
 	// Actions contains the allowed action codes: r, w, or *.
 	Actions []string

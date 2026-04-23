@@ -50,7 +50,7 @@ WK_MANAGER_AUTH_ON=true
 WK_MANAGER_JWT_SECRET=wukongim-dev-manager-secret
 WK_MANAGER_JWT_ISSUER=wukongim-manager
 WK_MANAGER_JWT_EXPIRE=24h
-WK_MANAGER_USERS=[{"username":"admin","password":"a1234567","permissions":[{"resource":"cluster.node","actions":["*"]},{"resource":"cluster.slot","actions":["*"]},{"resource":"cluster.task","actions":["*"]},{"resource":"cluster.overview","actions":["*"]},{"resource":"cluster.channel","actions":["*"]}]}]
+WK_MANAGER_USERS=[{"username":"admin","password":"a1234567","permissions":[{"resource":"*","actions":["*"]}]}]
 # Optional: published by /route and /route/batch only; does not change listener binds.
 # WK_EXTERNAL_TCPADDR=im.example.com:5100
 # WK_EXTERNAL_WSADDR=ws://im.example.com:5200

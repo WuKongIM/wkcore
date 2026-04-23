@@ -297,6 +297,27 @@ func TestConfigValidateRejectsManagerPermissionWithInvalidAction(t *testing.T) {
 	require.ErrorContains(t, cfg.ApplyDefaultsAndValidate(), "manager permission action")
 }
 
+func TestConfigValidateAllowsManagerPermissionWildcardResource(t *testing.T) {
+	cfg := validConfig()
+	cfg.Manager = ManagerConfig{
+		ListenAddr: "127.0.0.1:5301",
+		AuthOn:     true,
+		JWTSecret:  "test-secret",
+		JWTIssuer:  "wukongim-manager",
+		JWTExpire:  24 * time.Hour,
+		Users: []ManagerUserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []ManagerPermissionConfig{{
+				Resource: "*",
+				Actions:  []string{"*"},
+			}},
+		}},
+	}
+
+	require.NoError(t, cfg.ApplyDefaultsAndValidate())
+}
+
 func TestLegacyRouteAddressesPreferExplicitExternalConfig(t *testing.T) {
 	cfg := validConfig()
 	cfg.Gateway.Listeners = []gateway.ListenerOptions{

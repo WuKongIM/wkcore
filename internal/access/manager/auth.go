@@ -84,14 +84,18 @@ func (a authState) hasPermission(username, resource, action string) bool {
 	if !ok {
 		return false
 	}
-	actions, ok := principal.permissions[resource]
-	if !ok {
+	return hasPermissionAction(principal.permissions[resource], action) ||
+		hasPermissionAction(principal.permissions["*"], action)
+}
+
+func hasPermissionAction(actions map[string]struct{}, action string) bool {
+	if len(actions) == 0 {
 		return false
 	}
 	if _, ok := actions["*"]; ok {
 		return true
 	}
-	_, ok = actions[action]
+	_, ok := actions[action]
 	return ok
 }
 

@@ -54,7 +54,7 @@ type Management interface {
 
 // PermissionConfig binds a resource to allowed actions.
 type PermissionConfig struct {
-	// Resource is the protected manager resource name.
+	// Resource is the protected manager resource name; use "*" to grant all manager resources.
 	Resource string
 	// Actions contains the allowed action codes.
 	Actions []string

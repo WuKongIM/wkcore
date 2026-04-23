@@ -1724,6 +1724,44 @@ func TestManagerConnectionsRejectsInsufficientPermission(t *testing.T) {
 	require.JSONEq(t, `{"error":"forbidden","message":"forbidden"}`, rec.Body.String())
 }
 
+func TestManagerConnectionsAcceptsGlobalWildcardPermission(t *testing.T) {
+	connectedAt := time.Date(2026, 4, 23, 8, 0, 0, 0, time.UTC)
+	srv := New(Options{
+		Auth: testAuthConfig([]UserConfig{{
+			Username: "admin",
+			Password: "secret",
+			Permissions: []PermissionConfig{{
+				Resource: "*",
+				Actions:  []string{"*"},
+			}},
+		}}),
+		Management: managementStub{
+			connections: []managementusecase.Connection{{
+				SessionID:   101,
+				UID:         "u1",
+				DeviceID:    "device-a",
+				DeviceFlag:  "app",
+				DeviceLevel: "master",
+				SlotID:      9,
+				State:       "active",
+				Listener:    "tcp",
+				ConnectedAt: connectedAt,
+				RemoteAddr:  "10.0.0.1:5000",
+				LocalAddr:   "127.0.0.1:7000",
+			}},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/manager/connections", nil)
+	req.Header.Set("Authorization", "Bearer "+mustIssueTestToken(t, srv, "admin"))
+
+	srv.Engine().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"session_id":101`)
+}
+
 func TestManagerConnectionsReturnsList(t *testing.T) {
 	connectedAt := time.Date(2026, 4, 23, 8, 0, 0, 0, time.UTC)
 	srv := New(Options{
