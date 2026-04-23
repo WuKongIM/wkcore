@@ -31,7 +31,7 @@ export function setLocale(nextLocale: AppLocale) {
 }
 
 export function resetLocale() {
-  currentLocale = DEFAULT_LOCALE
+  currentLocale = null
 
   if (typeof window !== "undefined") {
     window.localStorage.removeItem(LOCALE_STORAGE_KEY)

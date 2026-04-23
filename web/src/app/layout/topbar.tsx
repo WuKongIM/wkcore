@@ -1,11 +1,14 @@
 import { Search } from "lucide-react"
+import { useIntl } from "react-intl"
 import { useLocation } from "react-router-dom"
 
 import { useAuthStore } from "@/auth/auth-store"
+import { LocaleSwitcher } from "@/components/i18n/locale-switcher"
 import { Button } from "@/components/ui/button"
 import { pageMetadata } from "@/lib/navigation"
 
 export function Topbar() {
+  const intl = useIntl()
   const location = useLocation()
   const page = pageMetadata.get(location.pathname) ?? pageMetadata.get("/dashboard")
   const username = useAuthStore((state) => state.username)
@@ -20,18 +23,19 @@ export function Topbar() {
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
+            <LocaleSwitcher />
             <Button size="sm" variant="outline">
-              Refresh
+              {intl.formatMessage({ id: "common.refresh" })}
             </Button>
             <Button size="sm" variant="outline">
               <Search className="size-3.5" />
-              Search
+              {intl.formatMessage({ id: "common.search" })}
             </Button>
           </div>
           <div className="flex items-center gap-2 border-l border-border pl-3">
             <span className="text-xs text-muted-foreground">{username}</span>
             <Button onClick={logout} size="sm" variant="outline">
-              Logout
+              {intl.formatMessage({ id: "common.logout" })}
             </Button>
           </div>
         </div>
