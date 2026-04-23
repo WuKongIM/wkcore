@@ -118,7 +118,7 @@ func scaleDerivedInterval(actual, defaultActual, defaultInterval time.Duration) 
 	return interval
 }
 
-func buildRuntimeView(now time.Time, slotID multiraft.SlotID, status multiraft.Status, peers []multiraft.NodeID) controllermeta.SlotRuntimeView {
+func buildRuntimeView(now time.Time, slotID multiraft.SlotID, status multiraft.Status, peers []multiraft.NodeID, observedConfigEpoch uint64) controllermeta.SlotRuntimeView {
 	currentPeers := make([]uint64, 0, len(peers))
 	for _, peer := range peers {
 		currentPeers = append(currentPeers, uint64(peer))
@@ -128,6 +128,7 @@ func buildRuntimeView(now time.Time, slotID multiraft.SlotID, status multiraft.S
 		SlotID:       uint32(slotID),
 		CurrentPeers: currentPeers,
 		LeaderID:     uint64(status.LeaderID),
+		ObservedConfigEpoch: observedConfigEpoch,
 		LastReportAt: now,
 	}
 	if len(currentPeers) > 0 {
