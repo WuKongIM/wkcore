@@ -1,5 +1,7 @@
 import type { ReactNode } from "react"
 
+import { useIntl } from "react-intl"
+
 import { Button } from "@/components/ui/button"
 
 type TableToolbarProps = {
@@ -17,6 +19,8 @@ export function TableToolbar({
   onRefresh,
   actions,
 }: TableToolbarProps) {
+  const intl = useIntl()
+
   return (
     <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
       <div>
@@ -27,7 +31,9 @@ export function TableToolbar({
         {actions}
         {onRefresh ? (
           <Button onClick={onRefresh} size="sm" variant="outline">
-            {refreshing ? "Refreshing..." : "Refresh"}
+            {refreshing
+              ? intl.formatMessage({ id: "common.refreshing" })
+              : intl.formatMessage({ id: "common.refresh" })}
           </Button>
         ) : null}
       </div>

@@ -1,5 +1,7 @@
 import type { FormEvent, ReactNode } from "react"
 
+import { useIntl } from "react-intl"
+
 import { Button } from "@/components/ui/button"
 
 type ActionFormDialogProps = {
@@ -27,6 +29,8 @@ export function ActionFormDialog({
   onOpenChange,
   children,
 }: ActionFormDialogProps) {
+  const intl = useIntl()
+
   if (!open) {
     return null
   }
@@ -40,7 +44,7 @@ export function ActionFormDialog({
         {error ? <p className="mt-3 text-sm text-destructive">{error}</p> : null}
         <div className="mt-5 flex justify-end gap-2">
           <Button onClick={() => onOpenChange(false)} size="sm" type="button" variant="outline">
-            {cancelLabel}
+            {cancelLabel === "Cancel" ? intl.formatMessage({ id: "common.cancel" }) : cancelLabel}
           </Button>
           <Button disabled={pending} size="sm" type="submit">
             {submitLabel}

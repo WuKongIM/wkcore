@@ -2,6 +2,8 @@ import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, test, vi } from "vitest"
 
+import { I18nProvider } from "@/i18n/provider"
+import { resetLocale } from "@/i18n/locale-store"
 import { ManagerApiError } from "@/lib/manager-api"
 import { DashboardPage } from "@/pages/dashboard/page"
 
@@ -84,15 +86,25 @@ const tasksFixture = {
 }
 
 beforeEach(() => {
+  localStorage.clear()
+  resetLocale()
   getOverviewMock.mockReset()
   getTasksMock.mockReset()
 })
+
+function renderDashboard() {
+  return render(
+    <I18nProvider>
+      <DashboardPage />
+    </I18nProvider>,
+  )
+}
 
 test("renders overview metrics and task queue from manager APIs", async () => {
   getOverviewMock.mockResolvedValue(overviewFixture)
   getTasksMock.mockResolvedValue(tasksFixture)
 
-  render(<DashboardPage />)
+  renderDashboard()
 
   expect(await screen.findByText("63")).toBeInTheDocument()
   expect(screen.getByText("Controller leader")).toBeInTheDocument()
@@ -106,7 +118,7 @@ test("refresh triggers a new overview and task fetch", async () => {
   getTasksMock.mockResolvedValue(tasksFixture)
 
   const user = userEvent.setup()
-  render(<DashboardPage />)
+  renderDashboard()
 
   await screen.findByText("63")
   await user.click(screen.getByRole("button", { name: "Refresh" }))
@@ -121,7 +133,7 @@ test("shows a forbidden state when the manager overview request is denied", asyn
   )
   getTasksMock.mockResolvedValue(tasksFixture)
 
-  render(<DashboardPage />)
+  renderDashboard()
 
   expect(await screen.findByText(/permission/i)).toBeInTheDocument()
 })
@@ -132,7 +144,20 @@ test("shows an unavailable state when the manager overview request is unavailabl
   )
   getTasksMock.mockResolvedValue(tasksFixture)
 
-  render(<DashboardPage />)
+  renderDashboard()
 
   expect(await screen.findByText(/currently unavailable/i)).toBeInTheDocument()
+})
+
+test("uses Chinese dashboard copy and locale-aware generated timestamps", async () => {
+  localStorage.setItem("wukongim_manager_locale", "zh-CN")
+  getOverviewMock.mockResolvedValue(overviewFixture)
+  getTasksMock.mockResolvedValue(tasksFixture)
+
+  renderDashboard()
+
+  expect(await screen.findByRole("heading", { name: "仪表盘" })).toBeInTheDocument()
+  expect(screen.getByText("操作摘要")).toBeInTheDocument()
+  expect(screen.getByText("控制器 Leader：1")).toBeInTheDocument()
+  expect(screen.getByText("生成时间：2026/04/23 16:00:00")).toBeInTheDocument()
 })
