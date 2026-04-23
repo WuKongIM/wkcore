@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { useIntl } from "react-intl"
 
 import { DetailSheet } from "@/components/manager/detail-sheet"
 import { KeyValueList } from "@/components/manager/key-value-list"
@@ -45,6 +46,7 @@ function formatNodeList(nodeIds: number[]) {
 }
 
 export function ChannelsPage() {
+  const intl = useIntl()
   const [state, setState] = useState<ChannelsState>({
     channels: null,
     loading: true,
@@ -172,8 +174,8 @@ export function ChannelsPage() {
   return (
     <PageContainer>
       <PageHeader
-        title="Channels"
-        description="Channel runtime inventory, pagination, and drill-in detail."
+        title={intl.formatMessage({ id: "nav.channels.title" })}
+        description={intl.formatMessage({ id: "nav.channels.description" })}
         actions={
           <Button
             onClick={() => {
@@ -182,50 +184,66 @@ export function ChannelsPage() {
             size="sm"
             variant="outline"
           >
-            {state.refreshing ? "Refreshing..." : "Refresh"}
+            {state.refreshing
+              ? intl.formatMessage({ id: "common.refreshing" })
+              : intl.formatMessage({ id: "common.refresh" })}
           </Button>
         }
       >
         <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
           <div className="rounded-md border border-border bg-background px-3 py-2">
-            Scope: all channels
+            {intl.formatMessage({ id: "channels.scopeAllChannels" })}
           </div>
           <div className="rounded-md border border-border bg-background px-3 py-2">
-            {state.channels ? `Loaded: ${state.channels.items.length}` : "Loaded: pending"}
+            {state.channels
+              ? intl.formatMessage({ id: "channels.loadedValue" }, { count: state.channels.items.length })
+              : intl.formatMessage({ id: "channels.loadedPending" })}
           </div>
         </div>
       </PageHeader>
 
-      {state.loading ? <ResourceState kind="loading" title="Channels" /> : null}
+      {state.loading ? <ResourceState kind="loading" title={intl.formatMessage({ id: "nav.channels.title" })} /> : null}
       {!state.loading && state.error ? (
         <ResourceState
           kind={mapErrorKind(state.error)}
           onRetry={() => {
             void loadChannels(false)
           }}
-          title="Channels"
+          title={intl.formatMessage({ id: "nav.channels.title" })}
         />
       ) : null}
       {!state.loading && !state.error && state.channels ? (
         <>
           <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <SectionCard description="Total runtime items loaded in this page set." title="Loaded channels">
+            <SectionCard
+              description={intl.formatMessage({ id: "channels.cards.loaded.description" })}
+              title={intl.formatMessage({ id: "channels.cards.loaded.title" })}
+            >
               <div className="text-3xl font-semibold text-foreground">{summary.total}</div>
             </SectionCard>
-            <SectionCard description="Runtime items currently marked active." title="Active">
+            <SectionCard
+              description={intl.formatMessage({ id: "channels.cards.active.description" })}
+              title={intl.formatMessage({ id: "channels.cards.active.title" })}
+            >
               <div className="text-3xl font-semibold text-foreground">{summary.active}</div>
             </SectionCard>
-            <SectionCard description="Distinct physical slots represented in view." title="Slots">
+            <SectionCard
+              description={intl.formatMessage({ id: "channels.cards.slots.description" })}
+              title={intl.formatMessage({ id: "channels.cards.slots.title" })}
+            >
               <div className="text-3xl font-semibold text-foreground">{summary.slots}</div>
             </SectionCard>
-            <SectionCard description="Distinct leader nodes represented in view." title="Leaders">
+            <SectionCard
+              description={intl.formatMessage({ id: "channels.cards.leaders.description" })}
+              title={intl.formatMessage({ id: "channels.cards.leaders.title" })}
+            >
               <div className="text-3xl font-semibold text-foreground">{summary.leaders}</div>
             </SectionCard>
           </section>
 
           <SectionCard
-            description="Paged runtime metadata from the channel manager endpoints."
-            title="Channel Runtime"
+            description={intl.formatMessage({ id: "channels.runtimeDescription" })}
+            title={intl.formatMessage({ id: "channels.runtimeTitle" })}
           >
             <TableToolbar
               actions={
@@ -237,28 +255,30 @@ export function ChannelsPage() {
                     size="sm"
                     variant="outline"
                   >
-                    {state.loadingMore ? "Loading..." : "Load more"}
+                    {state.loadingMore
+                      ? intl.formatMessage({ id: "common.loading" })
+                      : intl.formatMessage({ id: "common.loadMore" })}
                   </Button>
                 ) : null
               }
-              description="Inspect one channel to view slot ownership and runtime lease metadata."
+              description={intl.formatMessage({ id: "channels.toolbarDescription" })}
               onRefresh={() => {
                 void loadChannels(true)
               }}
               refreshing={state.refreshing}
-              title="Channel inventory"
+              title={intl.formatMessage({ id: "channels.toolbarTitle" })}
             />
             {state.channels.items.length > 0 ? (
               <div className="overflow-x-auto rounded-lg border border-border">
                 <table className="w-full border-collapse">
                   <thead className="bg-muted/40 text-left text-xs uppercase tracking-[0.14em] text-muted-foreground">
                     <tr>
-                      <th className="px-3 py-3">Channel ID</th>
-                      <th className="px-3 py-3">Type</th>
-                      <th className="px-3 py-3">Slot</th>
-                      <th className="px-3 py-3">Leader</th>
-                      <th className="px-3 py-3">Status</th>
-                      <th className="px-3 py-3">Actions</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "channels.table.channelId" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "channels.table.type" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "channels.table.slot" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "channels.table.leader" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "channels.table.status" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "channels.table.actions" })}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -273,14 +293,17 @@ export function ChannelsPage() {
                         </td>
                         <td className="px-3 py-3 text-sm text-foreground">
                           <Button
-                            aria-label={`Inspect channel ${channel.channel_id}`}
+                            aria-label={intl.formatMessage(
+                              { id: "channels.inspectChannel" },
+                              { id: channel.channel_id },
+                            )}
                             onClick={() => {
                               void openDetail(channel.channel_type, channel.channel_id)
                             }}
                             size="sm"
                             variant="outline"
                           >
-                            Inspect
+                            {intl.formatMessage({ id: "common.inspect" })}
                           </Button>
                         </td>
                       </tr>
@@ -289,19 +312,29 @@ export function ChannelsPage() {
                 </table>
               </div>
             ) : (
-              <ResourceState kind="empty" title="Channel Runtime" />
+              <ResourceState kind="empty" title={intl.formatMessage({ id: "channels.runtimeTitle" })} />
             )}
           </SectionCard>
         </>
       ) : null}
 
       <DetailSheet
-        description={detail ? `Slot ${detail.slot_id}` : "Manager channel runtime detail"}
+        description={
+          detail
+            ? intl.formatMessage({ id: "channels.detailDescriptionValue" }, { id: detail.slot_id })
+            : intl.formatMessage({ id: "channels.detailDescriptionFallback" })
+        }
         onOpenChange={closeDetail}
         open={selectedChannel !== null}
-        title={detail ? `Channel ${detail.channel_id}` : "Channel detail"}
+        title={
+          detail
+            ? intl.formatMessage({ id: "channels.detailTitleValue" }, { id: detail.channel_id })
+            : intl.formatMessage({ id: "channels.detailTitleFallback" })
+        }
       >
-        {detailLoading ? <ResourceState kind="loading" title="Channel detail" /> : null}
+        {detailLoading ? (
+          <ResourceState kind="loading" title={intl.formatMessage({ id: "channels.detailTitleFallback" })} />
+        ) : null}
         {!detailLoading && detailError ? (
           <ResourceState
             kind={mapErrorKind(detailError)}
@@ -310,25 +343,40 @@ export function ChannelsPage() {
                 void loadChannelDetail(selectedChannel.channelType, selectedChannel.channelId)
               }
             }}
-            title="Channel detail"
+            title={intl.formatMessage({ id: "channels.detailTitleFallback" })}
           />
         ) : null}
         {!detailLoading && !detailError && detail ? (
           <KeyValueList
             items={[
-              { label: "Channel ID", value: detail.channel_id },
-              { label: "Channel type", value: detail.channel_type },
-              { label: "Slot ID", value: detail.slot_id },
-              { label: "Hash slot", value: detail.hash_slot },
-              { label: "Status", value: <StatusBadge value={detail.status} /> },
-              { label: "Leader", value: detail.leader },
-              { label: "Replicas", value: formatNodeList(detail.replicas) },
-              { label: "ISR", value: formatNodeList(detail.isr) },
-              { label: "Min ISR", value: detail.min_isr },
-              { label: "Channel epoch", value: detail.channel_epoch },
-              { label: "Leader epoch", value: detail.leader_epoch },
-              { label: "Features", value: detail.features },
-              { label: "Lease until ms", value: detail.lease_until_ms },
+              { label: intl.formatMessage({ id: "channels.detail.channelId" }), value: detail.channel_id },
+              { label: intl.formatMessage({ id: "channels.detail.channelType" }), value: detail.channel_type },
+              { label: intl.formatMessage({ id: "channels.detail.slotId" }), value: detail.slot_id },
+              { label: intl.formatMessage({ id: "channels.detail.hashSlot" }), value: detail.hash_slot },
+              {
+                label: intl.formatMessage({ id: "channels.detail.status" }),
+                value: <StatusBadge value={detail.status} />,
+              },
+              { label: intl.formatMessage({ id: "channels.detail.leader" }), value: detail.leader },
+              {
+                label: intl.formatMessage({ id: "channels.detail.replicas" }),
+                value: formatNodeList(detail.replicas),
+              },
+              { label: intl.formatMessage({ id: "channels.detail.isr" }), value: formatNodeList(detail.isr) },
+              { label: intl.formatMessage({ id: "channels.detail.minIsr" }), value: detail.min_isr },
+              {
+                label: intl.formatMessage({ id: "channels.detail.channelEpoch" }),
+                value: detail.channel_epoch,
+              },
+              {
+                label: intl.formatMessage({ id: "channels.detail.leaderEpoch" }),
+                value: detail.leader_epoch,
+              },
+              { label: intl.formatMessage({ id: "channels.detail.features" }), value: detail.features },
+              {
+                label: intl.formatMessage({ id: "channels.detail.leaseUntilMs" }),
+                value: detail.lease_until_ms,
+              },
             ]}
           />
         ) : null}

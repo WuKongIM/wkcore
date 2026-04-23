@@ -5,9 +5,11 @@ import { beforeEach } from "vitest"
 import { AppProviders } from "@/app/providers"
 import { routes } from "@/app/router"
 import { useAuthStore } from "@/auth/auth-store"
+import { resetLocale } from "@/i18n/locale-store"
 
 beforeEach(() => {
   localStorage.clear()
+  resetLocale()
   useAuthStore.setState({
     status: "authenticated",
     isHydrated: true,
@@ -58,4 +60,19 @@ test("keeps the cluster context visible in the sidebar", async () => {
 
   expect(await screen.findByText("Cluster status")).toBeInTheDocument()
   expect(screen.getByText("Single-node cluster")).toBeInTheDocument()
+})
+
+test("renders Chinese navigation labels and cluster context when locale is zh-CN", async () => {
+  localStorage.setItem("wukongim_manager_locale", "zh-CN")
+  const router = createMemoryRouter(routes, { initialEntries: ["/dashboard"] })
+
+  render(
+    <AppProviders>
+      <RouterProvider router={router} />
+    </AppProviders>,
+  )
+
+  expect(await screen.findByRole("link", { name: "仪表盘" })).toBeInTheDocument()
+  expect(screen.getByText("运行时")).toBeInTheDocument()
+  expect(screen.getByText("单节点集群")).toBeInTheDocument()
 })

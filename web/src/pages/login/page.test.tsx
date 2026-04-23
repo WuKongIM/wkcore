@@ -6,6 +6,7 @@ import { beforeEach, expect, test, vi } from "vitest"
 import { AppProviders } from "@/app/providers"
 import { routes } from "@/app/router"
 import { createAnonymousAuthState, useAuthStore } from "@/auth/auth-store"
+import { resetLocale } from "@/i18n/locale-store"
 import { ManagerApiError } from "@/lib/manager-api"
 
 const loginManagerMock = vi.fn()
@@ -19,6 +20,7 @@ vi.mock("@/lib/manager-api", async (importOriginal) => {
 
 beforeEach(() => {
   localStorage.clear()
+  resetLocale()
   useAuthStore.setState({ ...createAnonymousAuthState(), isHydrated: true })
   loginManagerMock.mockReset()
 })
@@ -72,6 +74,27 @@ test("shows the invalid credentials message for 401 responses", async () => {
   expect(useAuthStore.getState().status).toBe("anonymous")
 })
 
+test("shows translated Chinese login copy and a translated 401 error", async () => {
+  localStorage.setItem("wukongim_manager_locale", "zh-CN")
+  loginManagerMock.mockRejectedValue(
+    new ManagerApiError(401, "invalid_credentials", "invalid credentials"),
+  )
+
+  const router = createMemoryRouter(routes, { initialEntries: ["/login"] })
+  const user = userEvent.setup()
+
+  render(
+    <AppProviders>
+      <RouterProvider router={router} />
+    </AppProviders>,
+  )
+
+  expect(screen.getByRole("heading", { name: "登录" })).toBeInTheDocument()
+  await user.click(screen.getByRole("button", { name: "登录" }))
+
+  expect(await screen.findByText("用户名或密码错误。")).toBeInTheDocument()
+})
+
 test("shows a loading state while the login request is in flight", async () => {
   let resolveLogin: ((value: unknown) => void) | undefined
   loginManagerMock.mockReturnValue(
@@ -104,4 +127,22 @@ test("shows a loading state while the login request is in flight", async () => {
   })
 
   expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument()
+})
+
+test("switches the login page copy without navigating away", async () => {
+  const router = createMemoryRouter(routes, { initialEntries: ["/login"] })
+  const user = userEvent.setup()
+
+  render(
+    <AppProviders>
+      <RouterProvider router={router} />
+    </AppProviders>,
+  )
+
+  expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument()
+
+  await user.click(screen.getByRole("button", { name: "中文" }))
+
+  expect(screen.getByRole("heading", { name: "登录" })).toBeInTheDocument()
+  expect(localStorage.getItem("wukongim_manager_locale")).toBe("zh-CN")
 })

@@ -1,13 +1,26 @@
+import type { ReactNode } from "react"
 import { render, screen, within } from "@testing-library/react"
+import { beforeEach } from "vitest"
 
 import { ActionFormDialog } from "@/components/manager/action-form-dialog"
 import { ConfirmDialog } from "@/components/manager/confirm-dialog"
 import { DetailSheet } from "@/components/manager/detail-sheet"
 import { ResourceState } from "@/components/manager/resource-state"
 import { StatusBadge } from "@/components/manager/status-badge"
+import { I18nProvider } from "@/i18n/provider"
+import { resetLocale } from "@/i18n/locale-store"
 import { MetricPlaceholder } from "@/components/shell/metric-placeholder"
 import { PageHeader } from "@/components/shell/page-header"
 import { PlaceholderBlock } from "@/components/shell/placeholder-block"
+
+beforeEach(() => {
+  localStorage.clear()
+  resetLocale()
+})
+
+function renderWithI18n(node: ReactNode) {
+  return render(<I18nProvider>{node}</I18nProvider>)
+}
 
 test("page header renders a flat tool row", () => {
   render(
@@ -43,10 +56,18 @@ test("table placeholder exposes structural table rows", () => {
 })
 
 test("resource state renders forbidden copy", () => {
-  render(<ResourceState kind="forbidden" title="Nodes" />)
+  renderWithI18n(<ResourceState kind="forbidden" title="Nodes" />)
 
   expect(screen.getByText("Nodes")).toBeInTheDocument()
   expect(screen.getByText(/permission/i)).toBeInTheDocument()
+})
+
+test("resource state uses translated retry copy", () => {
+  localStorage.setItem("wukongim_manager_locale", "zh-CN")
+
+  renderWithI18n(<ResourceState kind="error" title="网络" onRetry={() => undefined} />)
+
+  expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument()
 })
 
 test("status badge distinguishes runtime states", () => {
@@ -64,7 +85,7 @@ test("status badge distinguishes runtime states", () => {
 })
 
 test("detail sheet shows heading copy and children", () => {
-  render(
+  renderWithI18n(
     <DetailSheet open title="Node 1" description="Node detail panel" onOpenChange={() => undefined}>
       <div>Hosted IDs</div>
     </DetailSheet>,
@@ -76,7 +97,7 @@ test("detail sheet shows heading copy and children", () => {
 })
 
 test("confirm dialog disables submit while pending", () => {
-  render(
+  renderWithI18n(
     <ConfirmDialog
       open
       title="Drain node"
@@ -92,7 +113,7 @@ test("confirm dialog disables submit while pending", () => {
 })
 
 test("action form dialog renders fields and error copy", () => {
-  render(
+  renderWithI18n(
     <ActionFormDialog
       open
       title="Transfer leader"

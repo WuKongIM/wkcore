@@ -1,10 +1,13 @@
 import { Cpu, ShieldCheck } from "lucide-react"
+import { useIntl } from "react-intl"
 import { NavLink } from "react-router-dom"
 
 import { cn } from "@/lib/utils"
 import { navigationGroups } from "@/lib/navigation"
 
 export function SidebarNav() {
+  const intl = useIntl()
+
   return (
     <nav
       aria-label="Primary navigation"
@@ -12,25 +15,25 @@ export function SidebarNav() {
     >
       <div className="rounded-lg border border-border bg-background px-4 py-4">
         <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
-          Management Console
+          {intl.formatMessage({ id: "shell.managementConsole" })}
         </div>
         <div className="mt-2 text-lg font-semibold text-foreground">WuKongIM</div>
         <p className="mt-1 text-sm leading-6 text-muted-foreground">
-          Runtime lists, status tables, and operator views.
+          {intl.formatMessage({ id: "shell.runtimeConsoleDescription" })}
         </p>
       </div>
 
       <div className="mt-6 space-y-5">
         {navigationGroups.map((group) => (
-          <section key={group.label} className="space-y-2">
+          <section key={group.labelMessageId} className="space-y-2">
             <div className="px-3 text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
-              {group.label}
+              {intl.formatMessage({ id: group.labelMessageId })}
             </div>
             <div className="space-y-1">
               {group.items.map((item) => (
                 <NavLink
                   key={item.href}
-                  aria-label={item.title}
+                  aria-label={intl.formatMessage({ id: item.titleMessageId })}
                   className={({ isActive }) =>
                     cn(
                       "flex items-center gap-3 rounded-md border px-3 py-2.5 text-sm transition-colors",
@@ -47,7 +50,9 @@ export function SidebarNav() {
                         aria-hidden
                         className={cn("size-4 shrink-0", isActive ? "text-foreground" : "text-muted-foreground")}
                       />
-                      <span className="font-medium tracking-[0.01em]">{item.title}</span>
+                      <span className="font-medium tracking-[0.01em]">
+                        {intl.formatMessage({ id: item.titleMessageId })}
+                      </span>
                     </>
                   )}
                 </NavLink>
@@ -61,9 +66,11 @@ export function SidebarNav() {
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
-              Cluster status
+              {intl.formatMessage({ id: "shell.clusterStatus" })}
             </div>
-            <div className="mt-2 text-sm font-medium text-foreground">Single-node cluster</div>
+            <div className="mt-2 text-sm font-medium text-foreground">
+              {intl.formatMessage({ id: "shell.singleNodeCluster" })}
+            </div>
           </div>
           <div className="rounded-md border border-border bg-muted/60 p-2 text-foreground">
             <ShieldCheck className="size-4" />
@@ -73,16 +80,16 @@ export function SidebarNav() {
           <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-3 py-2">
             <span className="inline-flex items-center gap-2 text-foreground">
               <span className="size-2 rounded-full bg-foreground" />
-              Stable shell
+              {intl.formatMessage({ id: "shell.stableShell" })}
             </span>
-            <span>Ready</span>
+            <span>{intl.formatMessage({ id: "shell.ready" })}</span>
           </div>
           <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-3 py-2">
             <span className="inline-flex items-center gap-2 text-foreground">
               <Cpu className="size-3.5" />
-              No live feed yet
+              {intl.formatMessage({ id: "shell.noLiveFeedYet" })}
             </span>
-            <span>Static</span>
+            <span>{intl.formatMessage({ id: "shell.static" })}</span>
           </div>
         </div>
       </div>

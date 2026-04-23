@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { useIntl, type IntlShape } from "react-intl"
 
 import { useAuthStore } from "@/auth/auth-store"
 import { ConfirmDialog } from "@/components/manager/confirm-dialog"
@@ -32,8 +33,15 @@ type NodesState = {
   error: Error | null
 }
 
-function formatTimestamp(value: string) {
-  return new Date(value).toLocaleString()
+function formatTimestamp(intl: IntlShape, value: string) {
+  return new Intl.DateTimeFormat(intl.locale, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(value))
 }
 
 function mapErrorKind(error: Error | null) {
@@ -63,6 +71,7 @@ function hasPermission(
 }
 
 export function NodesPage() {
+  const intl = useIntl()
   const permissions = useAuthStore((state) => state.permissions)
   const canWriteNodes = useMemo(
     () => hasPermission(permissions, "cluster.node", "w"),
@@ -168,8 +177,8 @@ export function NodesPage() {
   return (
     <PageContainer>
       <PageHeader
-        title="Nodes"
-        description="Node inventory, roles, and runtime status."
+        title={intl.formatMessage({ id: "nav.nodes.title" })}
+        description={intl.formatMessage({ id: "nav.nodes.description" })}
         actions={
           <>
             <Button
@@ -179,58 +188,62 @@ export function NodesPage() {
               size="sm"
               variant="outline"
             >
-              {state.refreshing ? "Refreshing..." : "Refresh"}
+              {state.refreshing
+                ? intl.formatMessage({ id: "common.refreshing" })
+                : intl.formatMessage({ id: "common.refresh" })}
             </Button>
             <Button disabled size="sm">
-              Inspect
+              {intl.formatMessage({ id: "common.inspect" })}
             </Button>
           </>
         }
       >
         <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
           <div className="rounded-md border border-border bg-background px-3 py-2">
-            Scope: all nodes
+            {intl.formatMessage({ id: "nodes.scopeAllNodes" })}
           </div>
           <div className="rounded-md border border-border bg-background px-3 py-2">
-            {state.nodes ? `Total: ${state.nodes.total}` : "Total: pending"}
+            {state.nodes
+              ? intl.formatMessage({ id: "nodes.totalValue" }, { total: state.nodes.total })
+              : intl.formatMessage({ id: "nodes.totalPending" })}
           </div>
         </div>
       </PageHeader>
 
-      {state.loading ? <ResourceState kind="loading" title="Nodes" /> : null}
+      {state.loading ? <ResourceState kind="loading" title={intl.formatMessage({ id: "nav.nodes.title" })} /> : null}
       {!state.loading && state.error ? (
         <ResourceState
           kind={mapErrorKind(state.error)}
           onRetry={() => {
             void loadNodes(false)
           }}
-          title="Nodes"
+          title={intl.formatMessage({ id: "nav.nodes.title" })}
         />
       ) : null}
       {!state.loading && !state.error && state.nodes ? (
         <SectionCard
-          description="Current node placement, role, and lifecycle state from the manager API."
-          title="Node Inventory"
+          description={intl.formatMessage({ id: "nodes.inventoryDescription" })}
+          title={intl.formatMessage({ id: "nodes.inventoryTitle" })}
         >
           <TableToolbar
-            description="Inspect a node for hosted slot details or run lifecycle actions."
+            description={intl.formatMessage({ id: "nodes.toolbarDescription" })}
             onRefresh={() => {
               void loadNodes(true)
             }}
             refreshing={state.refreshing}
-            title="Cluster nodes"
+            title={intl.formatMessage({ id: "nodes.toolbarTitle" })}
           />
           {state.nodes.items.length > 0 ? (
             <div className="overflow-x-auto rounded-lg border border-border">
               <table className="w-full border-collapse">
                 <thead className="bg-muted/40 text-left text-xs uppercase tracking-[0.14em] text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-3">Node</th>
-                    <th className="px-3 py-3">Address</th>
-                    <th className="px-3 py-3">Status</th>
-                    <th className="px-3 py-3">Controller</th>
-                    <th className="px-3 py-3">Slots</th>
-                    <th className="px-3 py-3">Actions</th>
+                    <th className="px-3 py-3">{intl.formatMessage({ id: "nodes.table.node" })}</th>
+                    <th className="px-3 py-3">{intl.formatMessage({ id: "nodes.table.address" })}</th>
+                    <th className="px-3 py-3">{intl.formatMessage({ id: "nodes.table.status" })}</th>
+                    <th className="px-3 py-3">{intl.formatMessage({ id: "nodes.table.controller" })}</th>
+                    <th className="px-3 py-3">{intl.formatMessage({ id: "nodes.table.slots" })}</th>
+                    <th className="px-3 py-3">{intl.formatMessage({ id: "nodes.table.actions" })}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -243,19 +256,28 @@ export function NodesPage() {
                       </td>
                       <td className="px-3 py-3 text-sm text-muted-foreground">{node.controller.role}</td>
                       <td className="px-3 py-3 text-sm text-muted-foreground">
-                        {node.slot_stats.count} / leaders {node.slot_stats.leader_count}
+                        {intl.formatMessage(
+                          { id: "nodes.slotSummary" },
+                          {
+                            total: node.slot_stats.count,
+                            leaders: node.slot_stats.leader_count,
+                          },
+                        )}
                       </td>
                       <td className="px-3 py-3 text-sm text-foreground">
                         <div className="flex items-center gap-2">
                           <Button
-                            aria-label={`Inspect node ${node.node_id}`}
+                            aria-label={intl.formatMessage(
+                              { id: "nodes.inspectNode" },
+                              { id: node.node_id },
+                            )}
                             onClick={() => {
                               void openDetail(node.node_id)
                             }}
                             size="sm"
                             variant="outline"
                           >
-                            Inspect
+                            {intl.formatMessage({ id: "common.inspect" })}
                           </Button>
                           <Button
                             disabled={!canWriteNodes}
@@ -267,7 +289,9 @@ export function NodesPage() {
                             size="sm"
                             variant="outline"
                           >
-                            {node.status === "draining" ? "Resume" : "Drain"}
+                            {node.status === "draining"
+                              ? intl.formatMessage({ id: "nodes.resume" })
+                              : intl.formatMessage({ id: "nodes.drain" })}
                           </Button>
                         </div>
                       </td>
@@ -277,13 +301,17 @@ export function NodesPage() {
               </table>
             </div>
           ) : (
-            <ResourceState kind="empty" title="Node Inventory" />
+            <ResourceState kind="empty" title={intl.formatMessage({ id: "nodes.inventoryTitle" })} />
           )}
         </SectionCard>
       ) : null}
 
       <DetailSheet
-        description={detail ? `Address ${detail.addr}` : "Manager node detail"}
+        description={
+          detail
+            ? intl.formatMessage({ id: "nodes.detailDescriptionValue" }, { value: detail.addr })
+            : intl.formatMessage({ id: "nodes.detailDescriptionFallback" })
+        }
         footer={
           detail ? (
             <div className="flex items-center justify-end gap-2">
@@ -295,16 +323,24 @@ export function NodesPage() {
                 }}
                 size="sm"
               >
-                {detail.status === "draining" ? "Resume node" : "Drain node"}
+                {detail.status === "draining"
+                  ? intl.formatMessage({ id: "nodes.resumeNode" })
+                  : intl.formatMessage({ id: "nodes.drainNode" })}
               </Button>
             </div>
           ) : null
         }
         onOpenChange={closeDetail}
         open={selectedNodeId !== null}
-        title={detail ? `Node ${detail.node_id}` : "Node detail"}
+        title={
+          detail
+            ? intl.formatMessage({ id: "nodes.detailTitleValue" }, { id: detail.node_id })
+            : intl.formatMessage({ id: "nodes.detailTitleFallback" })
+        }
       >
-        {detailLoading ? <ResourceState kind="loading" title="Node detail" /> : null}
+        {detailLoading ? (
+          <ResourceState kind="loading" title={intl.formatMessage({ id: "nodes.detailTitleFallback" })} />
+        ) : null}
         {!detailLoading && detailError ? (
           <ResourceState
             kind={mapErrorKind(detailError)}
@@ -313,20 +349,38 @@ export function NodesPage() {
                 void loadNodeDetail(selectedNodeId)
               }
             }}
-            title="Node detail"
+            title={intl.formatMessage({ id: "nodes.detailTitleFallback" })}
           />
         ) : null}
         {!detailLoading && !detailError && detail ? (
           <div className="space-y-4">
             <KeyValueList
               items={[
-                { label: "Address", value: detail.addr },
-                { label: "Status", value: <StatusBadge value={detail.status} /> },
-                { label: "Controller role", value: detail.controller.role },
-                { label: "Last heartbeat", value: formatTimestamp(detail.last_heartbeat_at) },
-                { label: "Capacity weight", value: detail.capacity_weight },
-                { label: "Hosted IDs", value: detail.slots.hosted_ids.join(", ") || "-" },
-                { label: "Leader IDs", value: detail.slots.leader_ids.join(", ") || "-" },
+                { label: intl.formatMessage({ id: "nodes.detail.address" }), value: detail.addr },
+                {
+                  label: intl.formatMessage({ id: "nodes.detail.status" }),
+                  value: <StatusBadge value={detail.status} />,
+                },
+                {
+                  label: intl.formatMessage({ id: "nodes.detail.controllerRole" }),
+                  value: detail.controller.role,
+                },
+                {
+                  label: intl.formatMessage({ id: "nodes.detail.lastHeartbeat" }),
+                  value: formatTimestamp(intl, detail.last_heartbeat_at),
+                },
+                {
+                  label: intl.formatMessage({ id: "nodes.detail.capacityWeight" }),
+                  value: detail.capacity_weight,
+                },
+                {
+                  label: intl.formatMessage({ id: "nodes.detail.hostedIds" }),
+                  value: detail.slots.hosted_ids.join(", ") || "-",
+                },
+                {
+                  label: intl.formatMessage({ id: "nodes.detail.leaderIds" }),
+                  value: detail.slots.leader_ids.join(", ") || "-",
+                },
               ]}
             />
           </div>
@@ -334,11 +388,11 @@ export function NodesPage() {
       </DetailSheet>
 
       <ConfirmDialog
-        confirmLabel="Confirm"
+        confirmLabel={intl.formatMessage({ id: "common.confirm" })}
         description={
           pendingAction === "drain"
-            ? `Move traffic away from node ${selectedNodeId}.`
-            : `Resume normal scheduling for node ${selectedNodeId}.`
+            ? intl.formatMessage({ id: "nodes.confirmDrainDescription" }, { id: selectedNodeId })
+            : intl.formatMessage({ id: "nodes.confirmResumeDescription" }, { id: selectedNodeId })
         }
         error={actionError}
         onConfirm={() => {
@@ -352,7 +406,11 @@ export function NodesPage() {
         }}
         open={pendingAction !== null}
         pending={actionPending}
-        title={pendingAction === "resume" ? "Resume node" : "Drain node"}
+        title={
+          pendingAction === "resume"
+            ? intl.formatMessage({ id: "nodes.resumeNode" })
+            : intl.formatMessage({ id: "nodes.drainNode" })
+        }
       />
     </PageContainer>
   )

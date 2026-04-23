@@ -2,6 +2,7 @@ import { useEffect } from "react"
 
 import { useAuthStore } from "@/auth/auth-store"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { I18nProvider } from "@/i18n/provider"
 import { configureManagerAuth } from "@/lib/manager-api"
 
 type AppProvidersProps = {
@@ -28,5 +29,9 @@ export function AppProviders({ children }: AppProvidersProps) {
     }
   }, [])
 
-  return <TooltipProvider>{children}</TooltipProvider>
+  return (
+    <I18nProvider>
+      <TooltipProvider>{children}</TooltipProvider>
+    </I18nProvider>
+  )
 }

@@ -5,6 +5,7 @@ import { beforeEach, vi } from "vitest"
 import { AppProviders } from "@/app/providers"
 import { routes } from "@/app/router"
 import { useAuthStore } from "@/auth/auth-store"
+import { resetLocale } from "@/i18n/locale-store"
 
 const getOverviewMock = vi.fn()
 const getTasksMock = vi.fn()
@@ -28,6 +29,7 @@ vi.mock("@/lib/manager-api", async (importOriginal) => {
 
 beforeEach(() => {
   localStorage.clear()
+  resetLocale()
   getOverviewMock.mockReset()
   getTasksMock.mockReset()
   getNodesMock.mockReset()
@@ -185,4 +187,26 @@ test("dashboard shows monochrome workbench sections", async () => {
   expect(screen.getAllByText("Alert List").length).toBeGreaterThan(0)
   expect(screen.getAllByText("Control Queue").length).toBeGreaterThan(0)
   expect(screen.queryByText("Pin board")).not.toBeInTheDocument()
+})
+
+it.each([
+  ["/dashboard", "仪表盘", "操作摘要"],
+  ["/nodes", "节点", "节点清单"],
+  ["/channels", "频道", "频道运行时"],
+  ["/connections", "连接", "连接清单"],
+  ["/slots", "槽位", "槽位清单"],
+  ["/network", "网络", "管理 API 覆盖"],
+  ["/topology", "拓扑", "管理 API 覆盖"],
+])("renders %s in Chinese", async (path, title, section) => {
+  localStorage.setItem("wukongim_manager_locale", "zh-CN")
+  const router = createMemoryRouter(routes, { initialEntries: [path] })
+
+  render(
+    <AppProviders>
+      <RouterProvider router={router} />
+    </AppProviders>,
+  )
+
+  expect(await screen.findByRole("heading", { name: title })).toBeInTheDocument()
+  expect(screen.getByText(section)).toBeInTheDocument()
 })

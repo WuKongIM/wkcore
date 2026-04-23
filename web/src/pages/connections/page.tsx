@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { useIntl, type IntlShape } from "react-intl"
 
 import { DetailSheet } from "@/components/manager/detail-sheet"
 import { KeyValueList } from "@/components/manager/key-value-list"
@@ -22,8 +23,15 @@ type ConnectionsState = {
   error: Error | null
 }
 
-function formatTimestamp(value: string) {
-  return new Date(value).toLocaleString()
+function formatTimestamp(intl: IntlShape, value: string) {
+  return new Intl.DateTimeFormat(intl.locale, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(value))
 }
 
 function mapErrorKind(error: Error | null) {
@@ -44,6 +52,7 @@ function formatDevice(value: { device_flag: string; device_level: string }) {
 }
 
 export function ConnectionsPage() {
+  const intl = useIntl()
   const [state, setState] = useState<ConnectionsState>({
     connections: null,
     loading: true,
@@ -125,8 +134,8 @@ export function ConnectionsPage() {
   return (
     <PageContainer>
       <PageHeader
-        title="Connections"
-        description="Local connection inventory, listener surface, and per-session detail."
+        title={intl.formatMessage({ id: "nav.connections.title" })}
+        description={intl.formatMessage({ id: "nav.connections.description" })}
         actions={
           <Button
             onClick={() => {
@@ -135,72 +144,88 @@ export function ConnectionsPage() {
             size="sm"
             variant="outline"
           >
-            {state.refreshing ? "Refreshing..." : "Refresh"}
+            {state.refreshing
+              ? intl.formatMessage({ id: "common.refreshing" })
+              : intl.formatMessage({ id: "common.refresh" })}
           </Button>
         }
       >
         <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
           <div className="rounded-md border border-border bg-background px-3 py-2">
-            Scope: local node
+            {intl.formatMessage({ id: "connections.scopeLocalNode" })}
           </div>
           <div className="rounded-md border border-border bg-background px-3 py-2">
-            {state.connections ? `Total: ${state.connections.total}` : "Total: pending"}
+            {state.connections
+              ? intl.formatMessage({ id: "connections.totalValue" }, { total: state.connections.total })
+              : intl.formatMessage({ id: "connections.totalPending" })}
           </div>
         </div>
       </PageHeader>
 
-      {state.loading ? <ResourceState kind="loading" title="Connections" /> : null}
+      {state.loading ? <ResourceState kind="loading" title={intl.formatMessage({ id: "nav.connections.title" })} /> : null}
       {!state.loading && state.error ? (
         <ResourceState
           kind={mapErrorKind(state.error)}
           onRetry={() => {
             void loadConnections(false)
           }}
-          title="Connections"
+          title={intl.formatMessage({ id: "nav.connections.title" })}
         />
       ) : null}
       {!state.loading && !state.error && state.connections ? (
         <>
           <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <SectionCard description="Local sessions currently listed by the manager API." title="Sessions">
+            <SectionCard
+              description={intl.formatMessage({ id: "connections.cards.sessions.description" })}
+              title={intl.formatMessage({ id: "connections.cards.sessions.title" })}
+            >
               <div className="text-3xl font-semibold text-foreground">{summary.total}</div>
             </SectionCard>
-            <SectionCard description="Distinct user IDs represented in the local view." title="Users">
+            <SectionCard
+              description={intl.formatMessage({ id: "connections.cards.users.description" })}
+              title={intl.formatMessage({ id: "connections.cards.users.title" })}
+            >
               <div className="text-3xl font-semibold text-foreground">{summary.users}</div>
             </SectionCard>
-            <SectionCard description="Distinct slot IDs represented in the local view." title="Slots">
+            <SectionCard
+              description={intl.formatMessage({ id: "connections.cards.slots.description" })}
+              title={intl.formatMessage({ id: "connections.cards.slots.title" })}
+            >
               <div className="text-3xl font-semibold text-foreground">{summary.slots}</div>
             </SectionCard>
-            <SectionCard description="Listener types represented in the local view." title="Listeners">
+            <SectionCard
+              description={intl.formatMessage({ id: "connections.cards.listeners.description" })}
+              title={intl.formatMessage({ id: "connections.cards.listeners.title" })}
+            >
               <div className="text-3xl font-semibold text-foreground">{summary.listeners}</div>
             </SectionCard>
           </section>
 
           <SectionCard
-            description="Current local connection records from the manager connections endpoints."
-            title="Connection Inventory"
+            description={intl.formatMessage({ id: "connections.inventoryDescription" })}
+            title={intl.formatMessage({ id: "connections.inventoryTitle" })}
           >
             <TableToolbar
-              description="Inspect one connection to view addresses, slot ownership, and session metadata."
+              description={intl.formatMessage({ id: "connections.toolbarDescription" })}
               onRefresh={() => {
                 void loadConnections(true)
               }}
               refreshing={state.refreshing}
-              title="Local connections"
+              title={intl.formatMessage({ id: "connections.toolbarTitle" })}
             />
             {state.connections.items.length > 0 ? (
               <div className="overflow-x-auto rounded-lg border border-border">
                 <table className="w-full border-collapse">
                   <thead className="bg-muted/40 text-left text-xs uppercase tracking-[0.14em] text-muted-foreground">
                     <tr>
-                      <th className="px-3 py-3">Session</th>
-                      <th className="px-3 py-3">UID</th>
-                      <th className="px-3 py-3">Device ID</th>
-                      <th className="px-3 py-3">Device</th>
-                      <th className="px-3 py-3">Listener</th>
-                      <th className="px-3 py-3">State</th>
-                      <th className="px-3 py-3">Connected At</th>
-                      <th className="px-3 py-3">Actions</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "connections.table.session" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "connections.table.uid" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "connections.table.deviceId" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "connections.table.device" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "connections.table.listener" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "connections.table.state" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "connections.table.connectedAt" })}</th>
+                      <th className="px-3 py-3">{intl.formatMessage({ id: "connections.table.actions" })}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -223,18 +248,21 @@ export function ConnectionsPage() {
                           <StatusBadge value={connection.state} />
                         </td>
                         <td className="px-3 py-3 text-sm text-muted-foreground">
-                          {formatTimestamp(connection.connected_at)}
+                          {formatTimestamp(intl, connection.connected_at)}
                         </td>
                         <td className="px-3 py-3 text-sm text-foreground">
                           <Button
-                            aria-label={`Inspect connection ${connection.session_id}`}
+                            aria-label={intl.formatMessage(
+                              { id: "connections.inspectConnection" },
+                              { id: connection.session_id },
+                            )}
                             onClick={() => {
                               void openDetail(connection.session_id)
                             }}
                             size="sm"
                             variant="outline"
                           >
-                            Inspect
+                            {intl.formatMessage({ id: "common.inspect" })}
                           </Button>
                         </td>
                       </tr>
@@ -243,19 +271,29 @@ export function ConnectionsPage() {
                 </table>
               </div>
             ) : (
-              <ResourceState kind="empty" title="Connection Inventory" />
+              <ResourceState kind="empty" title={intl.formatMessage({ id: "connections.inventoryTitle" })} />
             )}
           </SectionCard>
         </>
       ) : null}
 
       <DetailSheet
-        description={detail ? `UID ${detail.uid}` : "Manager connection detail"}
+        description={
+          detail
+            ? intl.formatMessage({ id: "connections.detailDescriptionValue" }, { uid: detail.uid })
+            : intl.formatMessage({ id: "connections.detailDescriptionFallback" })
+        }
         onOpenChange={closeDetail}
         open={selectedSessionId !== null}
-        title={detail ? `Connection ${detail.session_id}` : "Connection detail"}
+        title={
+          detail
+            ? intl.formatMessage({ id: "connections.detailTitleValue" }, { id: detail.session_id })
+            : intl.formatMessage({ id: "connections.detailTitleFallback" })
+        }
       >
-        {detailLoading ? <ResourceState kind="loading" title="Connection detail" /> : null}
+        {detailLoading ? (
+          <ResourceState kind="loading" title={intl.formatMessage({ id: "connections.detailTitleFallback" })} />
+        ) : null}
         {!detailLoading && detailError ? (
           <ResourceState
             kind={mapErrorKind(detailError)}
@@ -264,23 +302,41 @@ export function ConnectionsPage() {
                 void loadConnectionDetail(selectedSessionId)
               }
             }}
-            title="Connection detail"
+            title={intl.formatMessage({ id: "connections.detailTitleFallback" })}
           />
         ) : null}
         {!detailLoading && !detailError && detail ? (
           <KeyValueList
             items={[
-              { label: "Session ID", value: detail.session_id },
-              { label: "UID", value: detail.uid },
-              { label: "Device ID", value: detail.device_id },
-              { label: "Device flag", value: detail.device_flag },
-              { label: "Device level", value: detail.device_level },
-              { label: "Slot ID", value: detail.slot_id },
-              { label: "Listener", value: detail.listener },
-              { label: "State", value: <StatusBadge value={detail.state} /> },
-              { label: "Connected at", value: formatTimestamp(detail.connected_at) },
-              { label: "Remote address", value: detail.remote_addr || "-" },
-              { label: "Local address", value: detail.local_addr || "-" },
+              { label: intl.formatMessage({ id: "connections.detail.sessionId" }), value: detail.session_id },
+              { label: intl.formatMessage({ id: "connections.detail.uid" }), value: detail.uid },
+              { label: intl.formatMessage({ id: "connections.detail.deviceId" }), value: detail.device_id },
+              {
+                label: intl.formatMessage({ id: "connections.detail.deviceFlag" }),
+                value: detail.device_flag,
+              },
+              {
+                label: intl.formatMessage({ id: "connections.detail.deviceLevel" }),
+                value: detail.device_level,
+              },
+              { label: intl.formatMessage({ id: "connections.detail.slotId" }), value: detail.slot_id },
+              { label: intl.formatMessage({ id: "connections.detail.listener" }), value: detail.listener },
+              {
+                label: intl.formatMessage({ id: "connections.detail.state" }),
+                value: <StatusBadge value={detail.state} />,
+              },
+              {
+                label: intl.formatMessage({ id: "connections.detail.connectedAt" }),
+                value: formatTimestamp(intl, detail.connected_at),
+              },
+              {
+                label: intl.formatMessage({ id: "connections.detail.remoteAddress" }),
+                value: detail.remote_addr || "-",
+              },
+              {
+                label: intl.formatMessage({ id: "connections.detail.localAddress" }),
+                value: detail.local_addr || "-",
+              },
             ]}
           />
         ) : null}
