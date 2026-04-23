@@ -7,6 +7,8 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type handlerTable struct {
@@ -38,6 +40,7 @@ type rpcHandlerHolder struct {
 
 type ServerConfig struct {
 	ConnConfig ConnConfig
+	Logger     wklog.Logger
 }
 
 // Server accepts inbound connections and dispatches messages by msgType.
@@ -57,6 +60,9 @@ func NewServer() *Server {
 }
 
 func NewServerWithConfig(cfg ServerConfig) *Server {
+	if cfg.Logger == nil {
+		cfg.Logger = wklog.NewNop()
+	}
 	s := &Server{stopCh: make(chan struct{}), cfg: cfg}
 	s.handlers.Store(newHandlerTable())
 	return s
@@ -204,7 +210,12 @@ func (s *Server) handleRPCRequest(mc *MuxConn, handler RPCHandler, body []byte) 
 		respData = []byte(err.Error())
 	}
 	respBody := encodeRPCResponse(requestID, errCode, respData)
-	_ = mc.Send(PriorityRPC, MsgTypeRPCResponse, respBody)
+	if sendErr := mc.Send(PriorityRPC, MsgTypeRPCResponse, respBody); sendErr != nil {
+		s.cfg.Logger.Warn("rpc response send failed",
+			wklog.Uint64("requestID", requestID),
+			wklog.Error(sendErr),
+		)
+	}
 }
 
 func encodeRPCRequest(requestID uint64, payload []byte) []byte {

@@ -310,7 +310,17 @@ func (r *replica) flushAppendBatch(batch []*appendRequest) {
 	r.setReplicaProgressLocked(r.localNode, nextLEO)
 	r.publishStateLocked()
 	notifyLeaderLocalAppend := r.onLeaderLocalAppend
+	progress := r.snapshotProgressLocked()
 	r.mu.Unlock()
+	r.appendLogger().Debug("leader local append flushed",
+		wklog.Event("repl.diag.leader_append_flushed"),
+		wklog.String("channelKey", string(r.state.ChannelKey)),
+		wklog.Uint64("leo", nextLEO),
+		wklog.Uint64("hw", r.state.HW),
+		wklog.Int("records", len(active)),
+		wklog.Bool("callbackExists", notifyLeaderLocalAppend != nil),
+		wklog.Any("progress", progress),
+	)
 	if len(active) > 0 && notifyLeaderLocalAppend != nil {
 		notifyLeaderLocalAppend()
 	}

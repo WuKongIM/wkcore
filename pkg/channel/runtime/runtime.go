@@ -9,6 +9,7 @@ import (
 
 	core "github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/channel/replica"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 const runtimeShardCount = 64
@@ -63,6 +64,9 @@ type runtime struct {
 }
 
 func New(cfg Config) (Runtime, error) {
+	if cfg.Logger == nil {
+		cfg.Logger = wklog.NewNop()
+	}
 	if cfg.LocalNode == 0 {
 		return nil, ErrInvalidConfig
 	}

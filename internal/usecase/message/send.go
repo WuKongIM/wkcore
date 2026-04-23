@@ -52,14 +52,15 @@ func (a *App) sendDurable(ctx context.Context, cmd SendCommand) (SendResult, err
 		Type: cmd.ChannelType,
 	}
 	startedAt := a.now()
-	result, err := sendWithMetaRefreshRetry(ctx, a.now, a.sendLogger(), a.retryLogger(), a.cluster, a.refresher, channel.AppendRequest{
-		ChannelID:             channelID,
-		Message:               draft,
-		SupportsMessageSeqU64: supportsMessageSeqU64(cmd.ProtocolVersion),
-		CommitMode:            commitModeOrDefault(cmd.CommitMode),
-		ExpectedChannelEpoch:  cmd.ExpectedChannelEpoch,
-		ExpectedLeaderEpoch:   cmd.ExpectedLeaderEpoch,
-	})
+	result, err := sendWithEnsuredMeta(ctx, a.localNodeID, a.now, a.sendLogger(),
+		a.cluster, a.remoteAppender, a.refresher, channel.AppendRequest{
+			ChannelID:             channelID,
+			Message:               draft,
+			SupportsMessageSeqU64: supportsMessageSeqU64(cmd.ProtocolVersion),
+			CommitMode:            commitModeOrDefault(cmd.CommitMode),
+			ExpectedChannelEpoch:  cmd.ExpectedChannelEpoch,
+			ExpectedLeaderEpoch:   cmd.ExpectedLeaderEpoch,
+		})
 	sendtrace.Record(sendtrace.Event{
 		Stage:       sendtrace.StageMessageSendDurable,
 		At:          startedAt,

@@ -182,6 +182,7 @@ func build(cfg Config) (_ *App, err error) {
 			CleanupInterval: time.Minute,
 		},
 		Now: time.Now,
+		Logger: app.logger.Named("channel.runtime"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("app: create channel runtime: %w", err)
@@ -289,6 +290,7 @@ func build(cfg Config) (_ *App, err error) {
 		ChannelStore:        app.store,
 		Cluster:             app.channelLog,
 		MetaRefresher:       app.channelMetaSync,
+		RemoteAppender:      app.nodeClient,
 		Online:              onlineRegistry,
 		CommittedDispatcher: committedDispatcher,
 		DeliveryAck: ackRouting{

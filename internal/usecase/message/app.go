@@ -13,6 +13,8 @@ import (
 var (
 	ErrUnauthenticatedSender = errors.New("usecase/message: unauthenticated sender")
 	ErrClusterRequired       = errors.New("usecase/message: channel cluster required")
+	ErrMetaRefresherRequired = errors.New("usecase/message: meta refresher required")
+	ErrRemoteAppenderRequired = errors.New("usecase/message: remote appender required")
 )
 
 type Options struct {
@@ -20,6 +22,7 @@ type Options struct {
 	ChannelStore        ChannelStore
 	Cluster             ChannelCluster
 	MetaRefresher       MetaRefresher
+	RemoteAppender      RemoteAppender
 	Online              online.Registry
 	Delivery            online.Delivery
 	Recipients          RecipientDirectory
@@ -38,6 +41,7 @@ type App struct {
 	channels        ChannelStore
 	cluster         ChannelCluster
 	refresher       MetaRefresher
+	remoteAppender  RemoteAppender
 	online          online.Registry
 	delivery        online.Delivery
 	recipients      RecipientDirectory
@@ -70,6 +74,7 @@ func New(opts Options) *App {
 		channels:        opts.ChannelStore,
 		cluster:         opts.Cluster,
 		refresher:       opts.MetaRefresher,
+		remoteAppender:  opts.RemoteAppender,
 		online:          opts.Online,
 		delivery:        opts.Delivery,
 		recipients:      opts.Recipients,
@@ -96,13 +101,6 @@ func (a *App) sendLogger() wklog.Logger {
 		return wklog.NewNop()
 	}
 	return a.logger.Named("send")
-}
-
-func (a *App) retryLogger() wklog.Logger {
-	if a == nil || a.logger == nil {
-		return wklog.NewNop()
-	}
-	return a.logger.Named("retry")
 }
 
 type IdentityStore interface {

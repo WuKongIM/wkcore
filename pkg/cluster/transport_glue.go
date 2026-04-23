@@ -47,6 +47,7 @@ func (t *transportLayer) Start(
 		ConnConfig: transport.ConnConfig{
 			Observer: t.cfg.TransportObserver,
 		},
+		Logger: defaultLogger(t.cfg.Logger).Named("transport"),
 	})
 	t.server.Handle(msgTypeRaft, handleRaft)
 	t.rpcMux.Handle(rpcServiceForward, handleForward)

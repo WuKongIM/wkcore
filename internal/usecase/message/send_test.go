@@ -91,6 +91,7 @@ func TestSendReturnsSuccessAfterDurableWriteAndSubmitsCommittedMessage(t *testin
 	app := New(Options{
 		Now:                 fixedNowFn,
 		Cluster:             cluster,
+		MetaRefresher:       &fakeMetaRefresher{},
 		CommittedDispatcher: dispatcher,
 	})
 
@@ -156,8 +157,9 @@ func TestSendDefaultsToQuorumCommitMode(t *testing.T) {
 		},
 	}
 	app := New(Options{
-		Now:     fixedNowFn,
-		Cluster: cluster,
+		Now:           fixedNowFn,
+		Cluster:       cluster,
+		MetaRefresher: &fakeMetaRefresher{},
 	})
 
 	_, err := app.Send(context.Background(), SendCommand{
@@ -178,8 +180,9 @@ func TestSendPropagatesLocalCommitMode(t *testing.T) {
 		},
 	}
 	app := New(Options{
-		Now:     fixedNowFn,
-		Cluster: cluster,
+		Now:           fixedNowFn,
+		Cluster:       cluster,
+		MetaRefresher: &fakeMetaRefresher{},
 	})
 
 	_, err := app.Send(context.Background(), SendCommand{
@@ -201,8 +204,9 @@ func TestSendRecanonicalizesPrecomposedPersonChannelBeforeDurableWrite(t *testin
 		},
 	}
 	app := New(Options{
-		Now:     fixedNowFn,
-		Cluster: cluster,
+		Now:           fixedNowFn,
+		Cluster:       cluster,
+		MetaRefresher: &fakeMetaRefresher{},
 	})
 
 	result, err := app.Send(context.Background(), SendCommand{
@@ -247,6 +251,7 @@ func TestSendReturnsSuccessWhenCommittedSubmitFails(t *testing.T) {
 	app := New(Options{
 		Now:                 fixedNowFn,
 		Cluster:             cluster,
+		MetaRefresher:       &fakeMetaRefresher{},
 		CommittedDispatcher: dispatcher,
 	})
 
@@ -290,6 +295,7 @@ func TestSendSubmitsCommittedMessageFromClusterResult(t *testing.T) {
 	app := New(Options{
 		Now:                 fixedNowFn,
 		Cluster:             cluster,
+		MetaRefresher:       &fakeMetaRefresher{},
 		CommittedDispatcher: dispatcher,
 	})
 
@@ -336,6 +342,7 @@ func TestSendDoesNotPerformSynchronousDeliveryAfterDurableWrite(t *testing.T) {
 	app := New(Options{
 		Now:                 fixedNowFn,
 		Cluster:             cluster,
+		MetaRefresher:       &fakeMetaRefresher{},
 		Online:              reg,
 		Delivery:            delivery,
 		Recipients:          recipients,
@@ -360,11 +367,10 @@ func TestSendDoesNotPerformSynchronousDeliveryAfterDurableWrite(t *testing.T) {
 	require.Empty(t, remote.calls)
 }
 
-func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
+func TestSendRefreshesMetaThenAppendsLocally(t *testing.T) {
 	dispatcher := &recordingCommittedDispatcher{}
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{err: channel.ErrStaleMeta},
 			{result: channel.AppendResult{
 				MessageID:  201,
 				MessageSeq: 7,
@@ -411,10 +417,9 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	require.Len(t, refresher.keys, 1)
 	require.Equal(t, channel.ChannelID{ID: "u2@u1", Type: frame.ChannelTypePerson}, refresher.keys[0])
 	require.Empty(t, cluster.appliedMetas)
-	require.Len(t, cluster.sendRequests, 2)
-	require.Zero(t, cluster.sendRequests[0].ExpectedChannelEpoch)
-	require.Equal(t, uint64(11), cluster.sendRequests[1].ExpectedChannelEpoch)
-	require.Equal(t, uint64(3), cluster.sendRequests[1].ExpectedLeaderEpoch)
+	require.Len(t, cluster.sendRequests, 1)
+	require.Equal(t, uint64(11), cluster.sendRequests[0].ExpectedChannelEpoch)
+	require.Equal(t, uint64(3), cluster.sendRequests[0].ExpectedLeaderEpoch)
 	require.Equal(t, []deliveryEnvelopeRecord{{
 		Message: channel.Message{
 			MessageID:   201,
@@ -429,11 +434,10 @@ func TestSendRetriesOnceAfterRefreshingMeta(t *testing.T) {
 	}}, dispatcher.calls)
 }
 
-func TestSendRetriesOnceAfterBootstrappingMissingRuntimeMeta(t *testing.T) {
+func TestSendBootstrapsAndAppendsLocally(t *testing.T) {
 	dispatcher := &recordingCommittedDispatcher{}
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{err: channel.ErrStaleMeta},
 			{result: channel.AppendResult{
 				MessageID:  301,
 				MessageSeq: 4,
@@ -479,11 +483,10 @@ func TestSendRetriesOnceAfterBootstrappingMissingRuntimeMeta(t *testing.T) {
 	require.Equal(t, uint64(4), result.MessageSeq)
 	require.Equal(t, []channel.ChannelID{{ID: "group-1", Type: frame.ChannelTypeGroup}}, refresher.keys)
 	require.Empty(t, cluster.appliedMetas)
-	require.Len(t, cluster.sendRequests, 2)
+	require.Len(t, cluster.sendRequests, 1)
 	require.Equal(t, channel.ChannelID{ID: "group-1", Type: frame.ChannelTypeGroup}, cluster.sendRequests[0].ChannelID)
-	require.Zero(t, cluster.sendRequests[0].ExpectedChannelEpoch)
-	require.Equal(t, uint64(17), cluster.sendRequests[1].ExpectedChannelEpoch)
-	require.Equal(t, uint64(6), cluster.sendRequests[1].ExpectedLeaderEpoch)
+	require.Equal(t, uint64(17), cluster.sendRequests[0].ExpectedChannelEpoch)
+	require.Equal(t, uint64(6), cluster.sendRequests[0].ExpectedLeaderEpoch)
 	require.Equal(t, []deliveryEnvelopeRecord{{
 		Message: channel.Message{
 			MessageID:   301,
@@ -498,10 +501,9 @@ func TestSendRetriesOnceAfterBootstrappingMissingRuntimeMeta(t *testing.T) {
 	}}, dispatcher.calls)
 }
 
-func TestSendRefreshRetryDoesNotReapplyRefreshedMeta(t *testing.T) {
+func TestSendRefreshDoesNotReapplyMeta(t *testing.T) {
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{err: channel.ErrStaleMeta},
 			{result: channel.AppendResult{MessageID: 302, MessageSeq: 8}},
 		},
 		applyErr: channel.ErrStaleMeta,
@@ -534,17 +536,13 @@ func TestSendRefreshRetryDoesNotReapplyRefreshedMeta(t *testing.T) {
 	require.Equal(t, uint64(8), result.MessageSeq)
 	require.Equal(t, []channel.ChannelID{{ID: "group-apply-once", Type: frame.ChannelTypeGroup}}, refresher.keys)
 	require.Empty(t, cluster.appliedMetas)
-	require.Len(t, cluster.sendRequests, 2)
-	require.Equal(t, uint64(18), cluster.sendRequests[1].ExpectedChannelEpoch)
-	require.Equal(t, uint64(7), cluster.sendRequests[1].ExpectedLeaderEpoch)
+	require.Len(t, cluster.sendRequests, 1)
+	require.Equal(t, uint64(18), cluster.sendRequests[0].ExpectedChannelEpoch)
+	require.Equal(t, uint64(7), cluster.sendRequests[0].ExpectedLeaderEpoch)
 }
 
-func TestSendFailsWhenBootstrapReturnsRetryableTopologyError(t *testing.T) {
-	cluster := &fakeChannelCluster{
-		sendReplies: []fakeChannelClusterSendReply{
-			{err: channel.ErrStaleMeta},
-		},
-	}
+func TestSendFailsWhenRefreshReturnsTopologyError(t *testing.T) {
+	cluster := &fakeChannelCluster{}
 	refresher := &fakeMetaRefresher{
 		errs: []error{raftcluster.ErrNoLeader},
 	}
@@ -566,7 +564,7 @@ func TestSendFailsWhenBootstrapReturnsRetryableTopologyError(t *testing.T) {
 	require.ErrorIs(t, err, raftcluster.ErrNoLeader)
 	require.Equal(t, SendResult{}, result)
 	require.Equal(t, []channel.ChannelID{{ID: "group-2", Type: frame.ChannelTypeGroup}}, refresher.keys)
-	require.Len(t, cluster.sendRequests, 1)
+	require.Empty(t, cluster.sendRequests)
 	require.Empty(t, cluster.appliedMetas)
 }
 
@@ -575,7 +573,6 @@ func TestSendDurablePersonPropagatesRequestContextToClusterAndMetaRefresh(t *tes
 
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{err: channel.ErrStaleMeta},
 			{result: channel.AppendResult{MessageID: 401, MessageSeq: 19}},
 		},
 	}
@@ -603,9 +600,8 @@ func TestSendDurablePersonPropagatesRequestContextToClusterAndMetaRefresh(t *tes
 
 	require.NoError(t, err)
 	require.Equal(t, frame.ReasonSuccess, result.Reason)
-	require.Len(t, cluster.sendContexts, 2)
+	require.Len(t, cluster.sendContexts, 1)
 	require.Same(t, ctx, cluster.sendContexts[0])
-	require.Same(t, ctx, cluster.sendContexts[1])
 	require.Len(t, refresher.refreshContexts, 1)
 	require.Same(t, ctx, refresher.refreshContexts[0])
 }
@@ -618,8 +614,9 @@ func TestSendDurablePersonReturnsContextCanceled(t *testing.T) {
 		},
 	}
 	app := New(Options{
-		Now:     fixedNowFn,
-		Cluster: cluster,
+		Now:           fixedNowFn,
+		Cluster:       cluster,
+		MetaRefresher: &fakeMetaRefresher{},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -647,8 +644,9 @@ func TestSendReturnsProtocolUpgradeRequiredWhenClusterRejectsLegacyClient(t *tes
 	}
 	delivery := &recordingDelivery{}
 	app := New(Options{
-		Now:     fixedNowFn,
-		Cluster: cluster,
+		Now:           fixedNowFn,
+		Cluster:       cluster,
+		MetaRefresher: &fakeMetaRefresher{},
 		Online: &fakeRegistry{
 			byUID: map[string][]online.OnlineConn{
 				"u2": {
@@ -679,6 +677,7 @@ func TestNewPreservesInjectedCollaborators(t *testing.T) {
 	channels := &fakeChannelStore{}
 	cluster := &fakeChannelCluster{}
 	refresher := &fakeMetaRefresher{}
+	remoteApp := &fakeRemoteAppender{}
 	reg := &fakeRegistry{}
 	delivery := &recordingDelivery{}
 	dispatcher := &recordingCommittedDispatcher{}
@@ -690,6 +689,7 @@ func TestNewPreservesInjectedCollaborators(t *testing.T) {
 		ChannelStore:        channels,
 		Cluster:             cluster,
 		MetaRefresher:       refresher,
+		RemoteAppender:      remoteApp,
 		Online:              reg,
 		Delivery:            delivery,
 		CommittedDispatcher: dispatcher,
@@ -703,6 +703,7 @@ func TestNewPreservesInjectedCollaborators(t *testing.T) {
 	require.Same(t, channels, app.channels)
 	require.Same(t, cluster, app.cluster)
 	require.Same(t, refresher, app.refresher)
+	require.Same(t, remoteApp, app.remoteAppender)
 	require.Same(t, reg, app.online)
 	require.Same(t, delivery, app.delivery)
 	require.Same(t, dispatcher, app.dispatcher)

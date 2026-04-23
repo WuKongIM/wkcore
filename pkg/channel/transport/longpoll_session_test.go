@@ -176,7 +176,7 @@ func TestLongPollPeerSessionUsesConfiguredRPCTimeout(t *testing.T) {
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("session.Send() error = %v, want context deadline exceeded", err)
 		}
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(2 * time.Second):
 		t.Fatal("expected configured rpc timeout to abort long poll request")
 	}
 }

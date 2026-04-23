@@ -124,9 +124,10 @@ func TestSendLogsPrimaryFailureWithMessageModule(t *testing.T) {
 		sendReplies: []fakeChannelClusterSendReply{{err: errors.New("raft quorum unavailable")}},
 	}
 	app := New(Options{
-		Now:     fixedNowFn,
-		Logger:  logger,
-		Cluster: cluster,
+		Now:           fixedNowFn,
+		Logger:        logger,
+		Cluster:       cluster,
+		MetaRefresher: &fakeMetaRefresher{},
 	})
 
 	_, err := app.Send(context.Background(), SendCommand{
@@ -137,19 +138,18 @@ func TestSendLogsPrimaryFailureWithMessageModule(t *testing.T) {
 	})
 	require.Error(t, err)
 
-	entry := requireLogEntry(t, logger, "ERROR", "message.send", "message.send.persist.failed")
-	require.Equal(t, "persist committed message failed", entry.msg)
+	entry := requireLogEntry(t, logger, "ERROR", "message.send", "message.send.append.failed")
+	require.Equal(t, "local append failed", entry.msg)
 	require.Equal(t, "u2@u1", requireFieldValue[string](t, entry, "channelID"))
 	require.Equal(t, int64(frame.ChannelTypePerson), requireFieldValue[int64](t, entry, "channelType"))
 	require.Equal(t, "u1", requireFieldValue[string](t, entry, "uid"))
 	require.EqualError(t, requireFieldValue[error](t, entry, "error"), "raft quorum unavailable")
 }
 
-func TestSendWithMetaRefreshRetryLogsRefreshAttempt(t *testing.T) {
+func TestSendLogsResolvedMetaAfterRefresh(t *testing.T) {
 	logger := newRecordingLogger("message")
 	cluster := &fakeChannelCluster{
 		sendReplies: []fakeChannelClusterSendReply{
-			{err: channel.ErrStaleMeta},
 			{result: channel.AppendResult{MessageID: 88, MessageSeq: 9}},
 		},
 	}
@@ -175,18 +175,16 @@ func TestSendWithMetaRefreshRetryLogsRefreshAttempt(t *testing.T) {
 	require.Equal(t, int64(88), result.MessageID)
 	require.Equal(t, uint64(9), result.MessageSeq)
 
-	entry := requireLogEntry(t, logger, "WARN", "message.retry", "message.retry.refresh.triggered")
-	require.Equal(t, "channel metadata stale, refreshing and retrying", entry.msg)
+	entry := requireLogEntry(t, logger, "DEBUG", "message.send", "message.send.meta.resolved")
+	require.Equal(t, "resolved channel metadata", entry.msg)
 	require.Equal(t, "u2@u1", requireFieldValue[string](t, entry, "channelID"))
 	require.Equal(t, "u1", requireFieldValue[string](t, entry, "uid"))
-	require.EqualError(t, requireFieldValue[error](t, entry, "error"), channel.ErrStaleMeta.Error())
 }
 
-func TestSendWithMetaRefreshRetryLogsRefreshedMetaSnapshot(t *testing.T) {
+func TestSendLogsResolvedMetaWithLeaderDetails(t *testing.T) {
 	logger := newRecordingLogger("message")
-	cluster := &fakeChannelCluster{
-		sendReplies: []fakeChannelClusterSendReply{
-			{err: channel.ErrNotLeader},
+	remote := &fakeRemoteAppender{
+		replies: []fakeRemoteAppenderReply{
 			{result: channel.AppendResult{MessageID: 88, MessageSeq: 9}},
 		},
 	}
@@ -201,10 +199,11 @@ func TestSendWithMetaRefreshRetryLogsRefreshedMetaSnapshot(t *testing.T) {
 		LeaseUntil:  fixedSendNow.Add(3 * time.Second),
 	}}}
 	app := New(Options{
-		Now:           fixedNowFn,
-		Logger:        logger,
-		Cluster:       cluster,
-		MetaRefresher: refresher,
+		Now:            fixedNowFn,
+		Logger:         logger,
+		Cluster:        &fakeChannelCluster{},
+		MetaRefresher:  refresher,
+		RemoteAppender: remote,
 	})
 
 	_, err := app.Send(context.Background(), SendCommand{
@@ -215,14 +214,12 @@ func TestSendWithMetaRefreshRetryLogsRefreshedMetaSnapshot(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	entry := requireLogEntry(t, logger, "DEBUG", "message.retry", "message.retry.refresh.resolved")
-	require.Equal(t, "resolved refreshed channel metadata", entry.msg)
+	entry := requireLogEntry(t, logger, "DEBUG", "message.send", "message.send.meta.resolved")
+	require.Equal(t, "resolved channel metadata", entry.msg)
 	require.Equal(t, uint64(2), requireFieldValue[uint64](t, entry, "leaderNodeID"))
 	require.Equal(t, uint64(4), requireFieldValue[uint64](t, entry, "channelEpoch"))
 	require.Equal(t, uint64(5), requireFieldValue[uint64](t, entry, "leaderEpoch"))
 	require.Equal(t, 3, requireFieldValue[int](t, entry, "replicaCount"))
-	require.Equal(t, 3, requireFieldValue[int](t, entry, "isrCount"))
-	require.Equal(t, 3, requireFieldValue[int](t, entry, "minISR"))
 	require.Equal(t, 3*time.Second, requireFieldValue[time.Duration](t, entry, "leaseRemaining"))
 }
 
@@ -236,6 +233,7 @@ func TestSendLogsDispatchSubmitFailureAsWarn(t *testing.T) {
 		Now:                 fixedNowFn,
 		Logger:              logger,
 		Cluster:             cluster,
+		MetaRefresher:       &fakeMetaRefresher{},
 		CommittedDispatcher: dispatcher,
 	})
 

@@ -7,6 +7,7 @@ import (
 
 	"github.com/WuKongIM/WuKongIM/internal/observability/sendtrace"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 const smallISRProgressBufferSize = 8
@@ -28,6 +29,14 @@ func (r *replica) setReplicaProgressLocked(replicaID channel.NodeID, matchOffset
 		r.progress = make(map[channel.NodeID]uint64)
 	}
 	r.progress[replicaID] = matchOffset
+}
+
+func (r *replica) snapshotProgressLocked() map[uint64]uint64 {
+	out := make(map[uint64]uint64, len(r.progress))
+	for id, offset := range r.progress {
+		out[uint64(id)] = offset
+	}
+	return out
 }
 
 func (r *replica) startAdvancePublisher() {
@@ -68,7 +77,18 @@ func (r *replica) advanceHWOnce() (bool, uint64, error) {
 	r.mu.Lock()
 	checkpoint, candidate, err := r.nextHWCheckpointLocked()
 	if err != nil || checkpoint == nil {
+		progress := r.snapshotProgressLocked()
 		r.mu.Unlock()
+		if err != nil {
+			r.appendLogger().Warn("advance HW failed",
+				wklog.Event("repl.diag.advance_hw_error"),
+				wklog.String("channelKey", string(r.state.ChannelKey)),
+				wklog.Uint64("hw", r.state.HW),
+				wklog.Uint64("leo", r.state.LEO),
+				wklog.Any("progress", progress),
+				wklog.Error(err),
+			)
+		}
 		return checkpoint != nil, candidate, err
 	}
 	if candidate <= r.state.HW {
@@ -80,12 +100,22 @@ func (r *replica) advanceHWOnce() (bool, uint64, error) {
 		return true, candidate, channel.ErrCorruptState
 	}
 
+	oldHW := r.state.HW
 	r.state.HW = candidate
 	r.notifyReadyWaitersLocked()
 	r.scheduleCheckpointLocked(*checkpoint)
 	r.publishStateLocked()
 	notifyLeaderHWAdvance = r.onLeaderHWAdvance
+	progress := r.snapshotProgressLocked()
 	r.mu.Unlock()
+	r.appendLogger().Debug("HW advanced",
+		wklog.Event("repl.diag.hw_advanced"),
+		wklog.String("channelKey", string(r.state.ChannelKey)),
+		wklog.Uint64("oldHW", oldHW),
+		wklog.Uint64("newHW", candidate),
+		wklog.Uint64("leo", r.state.LEO),
+		wklog.Any("progress", progress),
+	)
 	if notifyLeaderHWAdvance != nil {
 		notifyLeaderHWAdvance()
 	}
@@ -324,6 +354,13 @@ func (r *replica) ApplyFollowerCursor(_ context.Context, req channel.ReplicaFoll
 	current := r.progress[req.ReplicaID]
 	if req.MatchOffset <= current {
 		r.mu.Unlock()
+		r.appendLogger().Debug("follower cursor stale, skipped",
+			wklog.Event("repl.diag.cursor_stale"),
+			wklog.String("channelKey", string(r.state.ChannelKey)),
+			wklog.Uint64("replicaID", uint64(req.ReplicaID)),
+			wklog.Uint64("matchOffset", req.MatchOffset),
+			wklog.Uint64("currentProgress", current),
+		)
 		return nil
 	}
 	if req.MatchOffset > r.state.LEO {
@@ -331,9 +368,20 @@ func (r *replica) ApplyFollowerCursor(_ context.Context, req channel.ReplicaFoll
 		return channel.ErrCorruptState
 	}
 	r.setReplicaProgressLocked(req.ReplicaID, req.MatchOffset)
+	progress := r.snapshotProgressLocked()
 	r.publishStateLocked()
 	r.mu.Unlock()
 
+	r.appendLogger().Debug("follower cursor applied",
+		wklog.Event("repl.diag.cursor_applied"),
+		wklog.String("channelKey", string(r.state.ChannelKey)),
+		wklog.Uint64("replicaID", uint64(req.ReplicaID)),
+		wklog.Uint64("matchOffset", req.MatchOffset),
+		wklog.Uint64("oldProgress", current),
+		wklog.Uint64("hw", r.state.HW),
+		wklog.Uint64("leo", r.state.LEO),
+		wklog.Any("progress", progress),
+	)
 	r.signalAdvanceHW()
 	return nil
 }

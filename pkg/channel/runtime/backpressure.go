@@ -7,6 +7,7 @@ import (
 	"time"
 
 	core "github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type peerRequestState struct {
@@ -772,12 +773,31 @@ func (r *runtime) deliverEnvelope(ch *channel, env Envelope) bool {
 func (r *runtime) handleLanePollResponse(peer core.NodeID, resp LanePollResponseEnvelope) {
 	manager, ok := r.laneManager(peer)
 	if !ok {
+		r.cfg.Logger.Warn("lane poll response dropped, no lane manager",
+			wklog.Event("repl.diag.lane_resp_no_manager"),
+			wklog.Uint64("peer", uint64(peer)),
+			wklog.Int("laneID", int(resp.LaneID)),
+			wklog.Int("items", len(resp.Items)),
+		)
 		return
 	}
+	// r.cfg.Logger.Debug("follower received lane poll response",
+	// 	wklog.Event("repl.diag.lane_resp_received"),
+	// 	wklog.Uint64("peer", uint64(peer)),
+	// 	wklog.Int("laneID", int(resp.LaneID)),
+	// 	wklog.Int("items", len(resp.Items)),
+	// 	wklog.Bool("timedOut", resp.TimedOut),
+	// 	wklog.String("status", string(resp.Status)),
+	// )
 	reissue := manager.ApplyResponse(resp)
 	for _, item := range resp.Items {
 		ch, ok := r.lookupChannel(item.ChannelKey)
 		if !ok {
+			r.cfg.Logger.Warn("lane poll response item skipped, channel not found",
+				wklog.Event("repl.diag.lane_resp_item_no_channel"),
+				wklog.String("channelKey", string(item.ChannelKey)),
+				wklog.Uint64("peer", uint64(peer)),
+			)
 			continue
 		}
 		fetchResp := FetchResponseEnvelope{

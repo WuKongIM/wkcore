@@ -49,25 +49,22 @@ func newPriorityWriter(conn net.Conn, queueSizes [numPriorities]int, observer Ob
 }
 
 func (pw *priorityWriter) enqueue(p Priority, item writeItem) error {
-	if p == PriorityRaft {
-		timer := time.NewTimer(10 * time.Millisecond)
-		defer timer.Stop()
-		select {
-		case pw.queues[p] <- item:
-			return nil
-		case <-pw.stopCh:
-			return ErrStopped
-		case <-timer.C:
-			return ErrQueueFull
-		}
-	}
-
 	select {
 	case pw.queues[p] <- item:
 		return nil
 	case <-pw.stopCh:
 		return ErrStopped
 	default:
+	}
+
+	timer := time.NewTimer(10 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case pw.queues[p] <- item:
+		return nil
+	case <-pw.stopCh:
+		return ErrStopped
+	case <-timer.C:
 		return ErrQueueFull
 	}
 }

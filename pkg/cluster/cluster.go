@@ -209,6 +209,7 @@ func (c *Cluster) startServer() error {
 		ConnConfig: transport.ConnConfig{
 			Observer: c.cfg.TransportObserver,
 		},
+		Logger: c.transportLogger(),
 	})
 	c.server.Handle(msgTypeRaft, c.handleRaftMessage)
 	c.server.Handle(msgTypeObservationHint, c.handleObservationHintMessage)

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 func (r *replica) Fetch(_ context.Context, req channel.ReplicaFetchRequest) (channel.ReplicaFetchResult, error) {
@@ -47,6 +48,7 @@ func (r *replica) Fetch(_ context.Context, req channel.ReplicaFetchRequest) (cha
 	if r.progress[req.ReplicaID] != matchOffset {
 		needsAdvance = true
 	}
+	oldProgress := r.progress[req.ReplicaID]
 	r.setReplicaProgressLocked(req.ReplicaID, matchOffset)
 	result := channel.ReplicaFetchResult{
 		Epoch: r.state.Epoch,
@@ -59,6 +61,18 @@ func (r *replica) Fetch(_ context.Context, req channel.ReplicaFetchRequest) (cha
 		r.signalAdvanceHW()
 		result.HW = visibleCommittedHW(r.Status())
 	}
+
+	r.appendLogger().Debug("leader served fetch",
+		wklog.Event("repl.diag.leader_served_fetch"),
+		wklog.String("channelKey", string(r.state.ChannelKey)),
+		wklog.Uint64("replicaID", uint64(req.ReplicaID)),
+		wklog.Uint64("fetchOffset", req.FetchOffset),
+		wklog.Uint64("matchOffset", matchOffset),
+		wklog.Uint64("oldProgress", oldProgress),
+		wklog.Uint64("leaderLEO", leaderLEO),
+		wklog.Uint64("hw", result.HW),
+		wklog.Bool("needsAdvance", needsAdvance),
+	)
 	if truncateTo != nil {
 		result.TruncateTo = truncateTo
 		return result, nil

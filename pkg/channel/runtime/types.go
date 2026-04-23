@@ -7,6 +7,7 @@ import (
 
 	core "github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/channel/replica"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 var (
@@ -281,4 +282,5 @@ type Config struct {
 	Tombstones                       TombstonePolicy
 	Limits                           Limits
 	Now                              func() time.Time
+	Logger                           wklog.Logger
 }

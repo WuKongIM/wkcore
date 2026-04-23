@@ -121,7 +121,12 @@ func (s *peerSession) sendLongPollRequest(env runtime.Envelope) error {
 		CursorDelta:           toTransportLaneCursorDelta(env.LanePollRequest.CursorDelta),
 	}
 	startedAt := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), s.adapter.rpcTimeout)
+	longPollWait := time.Duration(req.MaxWaitMs) * time.Millisecond
+	rpcDeadline := s.adapter.rpcTimeout
+	if longPollWait+s.adapter.rpcTimeout > rpcDeadline {
+		rpcDeadline = longPollWait + s.adapter.rpcTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), rpcDeadline)
 	defer cancel()
 
 	resp, err := s.adapter.LongPollFetch(ctx, s.peer, req)

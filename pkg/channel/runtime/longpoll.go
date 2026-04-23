@@ -5,6 +5,7 @@ import (
 	"time"
 
 	core "github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type fetchLongPollContextKey struct{}
@@ -110,6 +111,12 @@ func (r *runtime) ServeLanePoll(ctx context.Context, req LanePollRequestEnvelope
 		for i, item := range result.Items {
 			resp.Items[i] = itemToLaneResponse(item)
 		}
+		r.cfg.Logger.Debug("lane poll returning items immediately",
+			wklog.Event("repl.diag.lane_poll_immediate"),
+			wklog.Uint64("replicaID", uint64(req.ReplicaID)),
+			wklog.Int("laneID", int(req.LaneID)),
+			wklog.Int("items", len(resp.Items)),
+		)
 		return resp, nil
 	}
 
@@ -121,10 +128,21 @@ func (r *runtime) ServeLanePoll(ctx context.Context, req LanePollRequestEnvelope
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
+		r.cfg.Logger.Warn("lane poll context canceled while parked",
+			wklog.Event("repl.diag.lane_poll_ctx_canceled"),
+			wklog.Uint64("replicaID", uint64(req.ReplicaID)),
+			wklog.Int("laneID", int(req.LaneID)),
+			wklog.Error(ctx.Err()),
+		)
 		return LanePollResponseEnvelope{}, ctx.Err()
 	case <-waiter.Ready():
 		result, _ = selectItems()
 	case <-timer.C:
+		// r.cfg.Logger.Debug("lane poll timed out with no data",
+		// 	wklog.Event("repl.diag.lane_poll_timeout"),
+		// 	wklog.Uint64("replicaID", uint64(req.ReplicaID)),
+		// 	wklog.Int("laneID", int(req.LaneID)),
+		// )
 		sessionID, sessionEpoch := session.Session()
 		return LanePollResponseEnvelope{
 			LaneID:       req.LaneID,
@@ -147,6 +165,12 @@ func (r *runtime) ServeLanePoll(ctx context.Context, req LanePollRequestEnvelope
 	for i, item := range result.Items {
 		resp.Items[i] = itemToLaneResponse(item)
 	}
+	r.cfg.Logger.Debug("lane poll woke and returning items",
+		wklog.Event("repl.diag.lane_poll_woke"),
+		wklog.Uint64("replicaID", uint64(req.ReplicaID)),
+		wklog.Int("laneID", int(req.LaneID)),
+		wklog.Int("items", len(resp.Items)),
+	)
 	return resp, nil
 }
 
