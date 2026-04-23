@@ -105,6 +105,9 @@ docs/
 
 scripts/                 仓库辅助脚本
 
+test/
+  e2e/                   真实二进制黑盒 e2e 测试与子进程 harness
+
 ui/                      内置管理 UI 静态页面
   assets/                前端静态资源
   placeholder/           占位页面与未完成视图
