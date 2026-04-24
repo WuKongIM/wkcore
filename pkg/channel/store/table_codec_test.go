@@ -11,18 +11,19 @@ import (
 const expectedMessageFamilyCodecVersion byte = 1
 
 func TestMessageTableCatalogDeclaresPrimaryPayloadAndIndexes(t *testing.T) {
-	require.Equal(t, "message", MessageTable.Name)
-	require.Equal(t, []uint16{messageColumnIDMessageSeq}, MessageTable.PrimaryIndex.ColumnIDs)
-	require.Len(t, MessageTable.Families, 2)
-	require.Equal(t, "primary", MessageTable.Families[0].Name)
-	require.Equal(t, "payload", MessageTable.Families[1].Name)
-	require.Len(t, MessageTable.SecondaryIndexes, 3)
-	require.Equal(t, "uidx_message_id", MessageTable.SecondaryIndexes[0].Name)
-	require.Equal(t, []uint16{messageColumnIDMessageID}, MessageTable.SecondaryIndexes[0].ColumnIDs)
-	require.Equal(t, "idx_client_msg_no", MessageTable.SecondaryIndexes[1].Name)
-	require.Equal(t, []uint16{messageColumnIDClientMsgNo, messageColumnIDMessageSeq}, MessageTable.SecondaryIndexes[1].ColumnIDs)
-	require.Equal(t, "uidx_from_uid_client_msg_no", MessageTable.SecondaryIndexes[2].Name)
-	require.Equal(t, []uint16{messageColumnIDFromUID, messageColumnIDClientMsgNo}, MessageTable.SecondaryIndexes[2].ColumnIDs)
+	table := MessageTable()
+	require.Equal(t, "message", table.Name)
+	require.Equal(t, []uint16{messageColumnIDMessageSeq}, table.PrimaryIndex.ColumnIDs)
+	require.Len(t, table.Families, 2)
+	require.Equal(t, "primary", table.Families[0].Name)
+	require.Equal(t, "payload", table.Families[1].Name)
+	require.Len(t, table.SecondaryIndexes, 3)
+	require.Equal(t, "uidx_message_id", table.SecondaryIndexes[0].Name)
+	require.Equal(t, []uint16{messageColumnIDMessageID}, table.SecondaryIndexes[0].ColumnIDs)
+	require.Equal(t, "idx_client_msg_no", table.SecondaryIndexes[1].Name)
+	require.Equal(t, []uint16{messageColumnIDClientMsgNo, messageColumnIDMessageSeq}, table.SecondaryIndexes[1].ColumnIDs)
+	require.Equal(t, "uidx_from_uid_client_msg_no", table.SecondaryIndexes[2].Name)
+	require.Equal(t, []uint16{messageColumnIDFromUID, messageColumnIDClientMsgNo}, table.SecondaryIndexes[2].ColumnIDs)
 }
 
 func TestEncodeMessageFamiliesUsesVersionedColumnLengthWireFormat(t *testing.T) {
@@ -156,20 +157,14 @@ func TestIdempotencyIndexValueRoundTripAndRejectsCorrupt(t *testing.T) {
 }
 
 func TestMessageFamilyEncodingFollowsCatalogFamilyColumns(t *testing.T) {
-	originalPrimary := append([]uint16(nil), MessageTable.Families[0].ColumnIDs...)
-	originalPayload := append([]uint16(nil), MessageTable.Families[1].ColumnIDs...)
-	defer func() {
-		MessageTable.Families[0].ColumnIDs = originalPrimary
-		MessageTable.Families[1].ColumnIDs = originalPayload
-	}()
-
-	MessageTable.Families[0].ColumnIDs = []uint16{
+	table := MessageTable()
+	table.Families[0].ColumnIDs = []uint16{
 		messageColumnIDClientMsgNo,
 		messageColumnIDMessageID,
 		messageColumnIDTopic,
 		messageColumnIDPayloadHash,
 	}
-	MessageTable.Families[1].ColumnIDs = []uint16{
+	table.Families[1].ColumnIDs = []uint16{
 		messageColumnIDPayload,
 	}
 
@@ -182,18 +177,26 @@ func TestMessageFamilyEncodingFollowsCatalogFamilyColumns(t *testing.T) {
 		PayloadHash: 123,
 	}
 
-	primary, payload, err := encodeMessageFamilies(row)
+	primary, payload, err := encodeMessageFamiliesWithDesc(row, table)
 	require.NoError(t, err)
-	require.Equal(t, MessageTable.Families[0].ColumnIDs, decodeTestFamilyColumnIDs(t, primary))
-	require.Equal(t, MessageTable.Families[1].ColumnIDs, decodeTestFamilyColumnIDs(t, payload))
+	require.Equal(t, table.Families[0].ColumnIDs, decodeTestFamilyColumnIDs(t, primary))
+	require.Equal(t, table.Families[1].ColumnIDs, decodeTestFamilyColumnIDs(t, payload))
 
-	decoded, err := decodeMessageFamilies(row.MessageSeq, primary, payload)
+	decoded, err := decodeMessageFamiliesWithDesc(table, row.MessageSeq, primary, payload)
 	require.NoError(t, err)
 	require.Equal(t, row.MessageID, decoded.MessageID)
 	require.Equal(t, row.ClientMsgNo, decoded.ClientMsgNo)
 	require.Equal(t, row.Topic, decoded.Topic)
 	require.Equal(t, row.PayloadHash, decoded.PayloadHash)
 	require.Equal(t, row.Payload, decoded.Payload)
+}
+
+func TestMessageTableReturnsDeepCopy(t *testing.T) {
+	first := MessageTable()
+	first.Families[0].ColumnIDs[0] = messageColumnIDPayload
+
+	second := MessageTable()
+	require.Equal(t, messageColumnIDMessageID, second.Families[0].ColumnIDs[0])
 }
 
 func appendTestBytesColumn(dst []byte, columnID uint16, value []byte) []byte {

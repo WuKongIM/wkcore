@@ -71,6 +71,10 @@ func encodeTableSystemKey(channelKey channel.ChannelKey, tableID uint32, systemI
 }
 
 func encodeMessageFamilies(row messageRow) ([]byte, []byte, error) {
+	return encodeMessageFamiliesWithDesc(row, *canonicalMessageTable())
+}
+
+func encodeMessageFamiliesWithDesc(row messageRow, table TableDesc) ([]byte, []byte, error) {
 	if err := row.validate(); err != nil {
 		return nil, nil, err
 	}
@@ -80,7 +84,7 @@ func encodeMessageFamilies(row messageRow) ([]byte, []byte, error) {
 		payloadHash = hashMessagePayload(row.Payload)
 	}
 
-	families, err := encodeMessageFamilyPayloads(row, payloadHash)
+	families, err := encodeMessageFamilyPayloads(table, row, payloadHash)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -88,14 +92,18 @@ func encodeMessageFamilies(row messageRow) ([]byte, []byte, error) {
 }
 
 func decodeMessageFamilies(messageSeq uint64, primary []byte, payload []byte) (messageRow, error) {
+	return decodeMessageFamiliesWithDesc(*canonicalMessageTable(), messageSeq, primary, payload)
+}
+
+func decodeMessageFamiliesWithDesc(table TableDesc, messageSeq uint64, primary []byte, payload []byte) (messageRow, error) {
 	row := messageRow{MessageSeq: messageSeq}
-	if len(MessageTable.Families) != 2 {
+	if len(table.Families) != 2 {
 		return messageRow{}, channel.ErrInvalidArgument
 	}
-	if err := decodeMessageFamilyInto(&row, MessageTable.Families[0], primary); err != nil {
+	if err := decodeMessageFamilyInto(&row, table.Families[0], primary); err != nil {
 		return messageRow{}, err
 	}
-	if err := decodeMessageFamilyInto(&row, MessageTable.Families[1], payload); err != nil {
+	if err := decodeMessageFamilyInto(&row, table.Families[1], payload); err != nil {
 		return messageRow{}, err
 	}
 	if row.MessageID == 0 {
@@ -104,12 +112,12 @@ func decodeMessageFamilies(messageSeq uint64, primary []byte, payload []byte) (m
 	return row, nil
 }
 
-func encodeMessageFamilyPayloads(row messageRow, payloadHash uint64) ([][]byte, error) {
-	if len(MessageTable.Families) != 2 {
+func encodeMessageFamilyPayloads(table TableDesc, row messageRow, payloadHash uint64) ([][]byte, error) {
+	if len(table.Families) != 2 {
 		return nil, channel.ErrInvalidArgument
 	}
-	families := make([][]byte, 0, len(MessageTable.Families))
-	for _, family := range MessageTable.Families {
+	families := make([][]byte, 0, len(table.Families))
+	for _, family := range table.Families {
 		encoded := []byte{messageFamilyCodecVersion}
 		for _, columnID := range family.ColumnIDs {
 			value, err := encodeMessageFamilyColumnValue(row, payloadHash, columnID)
