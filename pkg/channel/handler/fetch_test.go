@@ -83,6 +83,30 @@ func TestFetchReturnsNotReadyWhenCommitHWIsProvisional(t *testing.T) {
 	}
 }
 
+func TestFetchMessagesFromStoreUsesStructuredScan(t *testing.T) {
+	st := &fakeFetchStore{
+		messages: []core.Message{
+			{MessageID: 11, MessageSeq: 1, Payload: []byte("one")},
+			{MessageID: 12, MessageSeq: 2, Payload: []byte("two")},
+			{MessageID: 13, MessageSeq: 3, Payload: []byte("three")},
+		},
+	}
+
+	result, err := fetchMessagesFromStore(st, 2, 1, 10, 1024)
+	if err != nil {
+		t.Fatalf("fetchMessagesFromStore() error = %v", err)
+	}
+	if len(result.Messages) != 2 {
+		t.Fatalf("len(Messages) = %d, want 2", len(result.Messages))
+	}
+	if result.NextSeq != 3 {
+		t.Fatalf("NextSeq = %d, want 3", result.NextSeq)
+	}
+	if st.listCalls != 1 {
+		t.Fatalf("ListMessagesBySeq() calls = %d, want 1", st.listCalls)
+	}
+}
+
 func mustAppendEncodedMessages(t *testing.T, st interface {
 	Append([]core.Record) (uint64, error)
 }, messages ...core.Message) {
@@ -99,4 +123,14 @@ func mustAppendEncodedMessages(t *testing.T, st interface {
 	if _, err := st.Append(records); err != nil {
 		t.Fatalf("Append() error = %v", err)
 	}
+}
+
+type fakeFetchStore struct {
+	messages  []core.Message
+	listCalls int
+}
+
+func (f *fakeFetchStore) ListMessagesBySeq(fromSeq uint64, limit int, maxBytes int, reverse bool) ([]core.Message, error) {
+	f.listCalls++
+	return f.messages, nil
 }

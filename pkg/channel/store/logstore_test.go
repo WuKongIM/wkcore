@@ -40,14 +40,15 @@ func TestEngineReadScopesByChannelKeyAndBudget(t *testing.T) {
 	mustAppendRecords(t, first, []string{"one", "two"})
 	mustAppendRecords(t, second, []string{"zzz"})
 
-	records, err := engine.Read(first.key, 0, 10, len(mustEncodeStoreMessage(t, channel.Message{
+	budget := len(mustEncodeStoreMessage(t, channel.Message{
 		MessageID:   1,
 		ClientMsgNo: "client-1",
 		FromUID:     "u1",
 		ChannelID:   "c1",
 		ChannelType: 1,
 		Payload:     []byte("one"),
-	})))
+	}))
+	records, err := engine.Read(first.key, 0, 10, budget)
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
@@ -153,6 +154,33 @@ func TestChannelStoreSyncPreservesTrimmedLogAcrossRestart(t *testing.T) {
 	if got := string(mustDecodeStoreMessage(t, records[0].Payload).Payload); got != "one" {
 		t.Fatalf("decoded payload = %q, want %q", got, "one")
 	}
+}
+
+func TestChannelStoreRestoresLEOFromMaxMessageSeqOnRestart(t *testing.T) {
+	dir := t.TempDir()
+	engine, err := Open(dir)
+	require.NoError(t, err)
+	key := channel.ChannelKey("channel/1/c1")
+	id := channel.ChannelID{ID: "c1", Type: 1}
+	st := engine.ForChannel(key, id)
+
+	mustAppendRecords(t, st, []string{"one", "two", "three"})
+	require.Equal(t, uint64(3), st.LEO())
+	require.NoError(t, engine.Close())
+
+	reopened, err := Open(dir)
+	require.NoError(t, err)
+	defer reopened.Close()
+
+	reloaded := reopened.ForChannel(key, id)
+	require.Equal(t, uint64(3), reloaded.LEO())
+
+	msg, ok, err := reloaded.GetMessageBySeq(3)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, uint64(3), msg.MessageSeq)
+	require.Equal(t, uint64(3), msg.MessageID)
+	require.Equal(t, "three", string(msg.Payload))
 }
 
 func TestChannelStoreTruncateRemovesRowsAndIndexes(t *testing.T) {

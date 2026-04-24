@@ -6,12 +6,13 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 )
 
-const stateSnapshotVersion byte = 1
+const stateSnapshotVersion byte = 2
 
 type stateSnapshotEntry struct {
 	FromUID     string
 	ClientMsgNo string
 	Entry       channel.IdempotencyEntry
+	PayloadHash uint64
 }
 
 func encodeCheckpoint(checkpoint channel.Checkpoint) []byte {
@@ -69,6 +70,29 @@ func decodeIdempotencyEntry(value []byte) (channel.IdempotencyEntry, error) {
 	}, nil
 }
 
+func encodeStoredIdempotencyValue(entry channel.IdempotencyEntry, payloadHash uint64) []byte {
+	value := make([]byte, 0, 24)
+	value = binary.BigEndian.AppendUint64(value, entry.MessageSeq)
+	value = binary.BigEndian.AppendUint64(value, entry.MessageID)
+	value = binary.BigEndian.AppendUint64(value, payloadHash)
+	return value
+}
+
+func decodeStoredIdempotencyValue(value []byte) (channel.IdempotencyEntry, uint64, error) {
+	if len(value) != 24 {
+		return channel.IdempotencyEntry{}, 0, channel.ErrCorruptValue
+	}
+	messageSeq := binary.BigEndian.Uint64(value[0:8])
+	if messageSeq == 0 {
+		return channel.IdempotencyEntry{}, 0, channel.ErrCorruptValue
+	}
+	return channel.IdempotencyEntry{
+		MessageID:  binary.BigEndian.Uint64(value[8:16]),
+		MessageSeq: messageSeq,
+		Offset:     messageSeq - 1,
+	}, binary.BigEndian.Uint64(value[16:24]), nil
+}
+
 func encodeStateSnapshot(entries []stateSnapshotEntry) []byte {
 	payload := make([]byte, 0, 1+binary.MaxVarintLen64+len(entries)*64)
 	payload = append(payload, stateSnapshotVersion)
@@ -76,7 +100,7 @@ func encodeStateSnapshot(entries []stateSnapshotEntry) []byte {
 	for _, entry := range entries {
 		payload = appendKeyString(payload, entry.FromUID)
 		payload = appendKeyString(payload, entry.ClientMsgNo)
-		payload = append(payload, encodeIdempotencyEntry(entry.Entry)...)
+		payload = append(payload, encodeStoredIdempotencyValue(entry.Entry, entry.PayloadHash)...)
 	}
 	return payload
 }
@@ -109,7 +133,7 @@ func decodeStateSnapshot(payload []byte) ([]stateSnapshotEntry, error) {
 		if len(rest) < 24 {
 			return nil, channel.ErrCorruptValue
 		}
-		entry, err := decodeIdempotencyEntry(rest[:24])
+		entry, payloadHash, err := decodeStoredIdempotencyValue(rest[:24])
 		if err != nil {
 			return nil, err
 		}
@@ -117,6 +141,7 @@ func decodeStateSnapshot(payload []byte) ([]stateSnapshotEntry, error) {
 			FromUID:     fromUID,
 			ClientMsgNo: clientMsgNo,
 			Entry:       entry,
+			PayloadHash: payloadHash,
 		})
 		payload = rest[24:]
 	}

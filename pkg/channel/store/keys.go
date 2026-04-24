@@ -7,23 +7,14 @@ import (
 )
 
 const (
-	keyspaceLog         byte = 0x10
-	keyspaceCheckpoint  byte = 0x11
-	keyspaceHistory     byte = 0x12
-	keyspaceSnapshot    byte = 0x13
-	keyspaceIdempotency byte = 0x14
+	channelSystemTableID      uint32 = TableIDMessage
+	channelSystemIDCheckpoint uint16 = 1
+	channelSystemIDHistory    uint16 = 2
+	channelSystemIDSnapshot   uint16 = 3
 )
 
-func encodeGroupPrefix(keyspace byte, channelKey channel.ChannelKey) []byte {
-	key := make([]byte, 0, 2+len(channelKey))
-	key = append(key, keyspace)
-	key = binary.AppendUvarint(key, uint64(len(channelKey)))
-	key = append(key, channelKey...)
-	return key
-}
-
 func encodeLogPrefix(channelKey channel.ChannelKey) []byte {
-	return encodeGroupPrefix(keyspaceLog, channelKey)
+	return encodeKeyspacePrefix(keyspaceLog, channelKey)
 }
 
 func encodeLogRecordKey(channelKey channel.ChannelKey, offset uint64) []byte {
@@ -32,11 +23,11 @@ func encodeLogRecordKey(channelKey channel.ChannelKey, offset uint64) []byte {
 }
 
 func encodeCheckpointKey(channelKey channel.ChannelKey) []byte {
-	return encodeGroupPrefix(keyspaceCheckpoint, channelKey)
+	return encodeTableSystemKey(channelKey, channelSystemTableID, channelSystemIDCheckpoint)
 }
 
 func encodeHistoryPrefix(channelKey channel.ChannelKey) []byte {
-	return encodeGroupPrefix(keyspaceHistory, channelKey)
+	return encodeTableSystemPrefix(channelKey, channelSystemTableID, channelSystemIDHistory)
 }
 
 func encodeHistoryKey(channelKey channel.ChannelKey, startOffset uint64) []byte {
@@ -45,11 +36,11 @@ func encodeHistoryKey(channelKey channel.ChannelKey, startOffset uint64) []byte 
 }
 
 func encodeSnapshotKey(channelKey channel.ChannelKey) []byte {
-	return encodeGroupPrefix(keyspaceSnapshot, channelKey)
+	return encodeTableSystemKey(channelKey, channelSystemTableID, channelSystemIDSnapshot)
 }
 
 func encodeIdempotencyPrefix(channelKey channel.ChannelKey) []byte {
-	return encodeGroupPrefix(keyspaceIdempotency, channelKey)
+	return encodeTableIndexPrefix(channelKey, TableIDMessage, messageIndexIDFromUIDClientMsgNo)
 }
 
 func encodeIdempotencyKey(channelKey channel.ChannelKey, key channel.IdempotencyKey) []byte {
@@ -84,37 +75,4 @@ func decodeLogRecordOffset(key []byte, prefix []byte) (uint64, error) {
 		return 0, channel.ErrCorruptValue
 	}
 	return binary.BigEndian.Uint64(key[len(prefix):]), nil
-}
-
-func keyUpperBound(prefix []byte) []byte {
-	if len(prefix) == 0 {
-		return nil
-	}
-	upper := append([]byte(nil), prefix...)
-	for i := len(upper) - 1; i >= 0; i-- {
-		if upper[i] == 0xff {
-			continue
-		}
-		upper[i]++
-		return upper[:i+1]
-	}
-	return nil
-}
-
-func appendKeyString(dst []byte, value string) []byte {
-	dst = binary.AppendUvarint(dst, uint64(len(value)))
-	dst = append(dst, value...)
-	return dst
-}
-
-func decodeKeyString(src []byte) (string, []byte, error) {
-	length, n := binary.Uvarint(src)
-	if n <= 0 {
-		return "", nil, channel.ErrCorruptValue
-	}
-	src = src[n:]
-	if uint64(len(src)) < length {
-		return "", nil, channel.ErrCorruptValue
-	}
-	return string(src[:length]), src[length:], nil
 }
