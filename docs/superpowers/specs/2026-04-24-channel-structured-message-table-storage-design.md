@@ -171,16 +171,19 @@ System : [0x12][channelKey][systemKind...]
 - `uidx_message_id`
   - Unique
   - Columns: `message_id`
+  - `message_id` 必须为非零；若解码结果为零则视为损坏或无效输入，直接拒绝入库
   - Value: `message_seq`（必要时附带少量校验字段）
 
 - `idx_client_msg_no`
   - Non-unique
   - Columns: `client_msg_no`, `message_seq`
-  - 用于按 client message number 的顺序分页查询
+  - 仅当 `client_msg_no != ""` 时写入
+  - 用于按 client message number 的精确匹配、按 `message_seq` 排序分页查询
 
 - `uidx_from_uid_client_msg_no`
   - Unique
   - Columns: `from_uid`, `client_msg_no`
+  - 仅当 `from_uid != "" && client_msg_no != ""` 时写入
   - Value: `message_seq`, `message_id`, `payload_hash`
   - 直接承载幂等约束
 
@@ -229,7 +232,7 @@ store 内部新增持久化行模型 `messageRow`。它与 `channel.Message` 接
 - `GetMessageBySeq(seq uint64) (messageRow, bool, error)`
 - `GetMessageByMessageID(messageID uint64) (messageRow, bool, error)`
 - `ListMessagesBySeq(...) ([]messageRow, error)`
-- `ListMessagesByClientMsgNo(...) ([]messageRow, nextCursor, error)`
+- `ListMessagesByClientMsgNo(...) ([]messageRow, nextCursor, error)`，其中 `nextCursor` 继续使用与当前 handler 查询一致的 `BeforeSeq` 语义，即“下一页的独占 message_seq 上界”
 - `LookupIdempotency(fromUID, clientMsgNo string) (hit, bool, error)`
 
 #### 5.2 兼容 API
@@ -273,9 +276,10 @@ store 内部新增持久化行模型 `messageRow`。它与 `channel.Message` 接
 `StoreApplyFetch(...)` 与本地 append 使用同一套 message row 持久化原语：
 
 1. `req.Records[*].Payload` 解码为 `messageRow`。
-2. 按 leader 传入顺序推导 `MessageSeq`。
-3. 和本地 append 一样写入主表与索引。
-4. 同一批次内按需要写入 checkpoint。
+2. `MessageSeq` 不能重新分配，必须严格使用“当前本地 post-truncate `LEO` + 1 + i”规则推导，其中 `i` 是本批记录的顺序下标。
+3. 上述 `post-truncate LEO` 由 replica 在进入 `StoreApplyFetch(...)` 前校准，因此它必须与 leader 发送区间的起始 offset/seq 一致；store 侧不得再引入独立的 seq 计数器。
+4. 和本地 append 一样写入主表与索引。
+5. 同一批次内按需要写入 checkpoint。
 
 这替代当前 `commit.go` 中“先写 raw log，再从 raw payload 中补解析 idempotency 字段”的双轨逻辑。
 
@@ -371,6 +375,8 @@ store 内部新增持久化行模型 `messageRow`。它与 `channel.Message` 接
   - `payload_hash` 相同 -> 幂等命中
   - `payload_hash` 不同 -> `ErrIdempotencyConflict`
 - `idx_client_msg_no` 是查询索引，不提供唯一约束。
+- 当 `client_msg_no == ""` 时，不写入 `idx_client_msg_no`。
+- 当 `from_uid == ""` 或 `client_msg_no == ""` 时，不写入 `uidx_from_uid_client_msg_no`；这类消息不参与幂等约束。
 
 ### 11. 测试策略
 
@@ -438,6 +444,8 @@ store 内部新增持久化行模型 `messageRow`。它与 `channel.Message` 接
 - channel store 不再把消息作为 raw log payload 主存储。
 - 幂等表不再是独立 keyspace，而是 message 表的唯一索引。
 - 查询路径支持 `MessageID` / `ClientMsgNo` 索引直达。
+
+实现计划必须把测试迁移与 `pkg/channel/FLOW.md` 更新列为显式任务，避免存储实现、查询路径和文档描述脱节。
 
 ## 实施边界
 
