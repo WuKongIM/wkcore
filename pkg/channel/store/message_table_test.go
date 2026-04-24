@@ -137,3 +137,31 @@ func TestChannelStoreAppendRejectsDuplicateIdempotencyKey(t *testing.T) {
 	_, err = st.Append([]channel.Record{{Payload: second, SizeBytes: len(second)}})
 	require.ErrorIs(t, err, channel.ErrCorruptState)
 }
+
+func TestChannelStoreAppendSkipsOptionalIndexesWhenClientMsgNoEmpty(t *testing.T) {
+	st := newTestChannelStore(t)
+	payload := mustEncodeStoreMessage(t, channel.Message{
+		MessageID:   51,
+		FromUID:     "u1",
+		ChannelID:   st.id.ID,
+		ChannelType: st.id.Type,
+		Payload:     []byte("one"),
+	})
+
+	_, err := st.Append([]channel.Record{{Payload: payload, SizeBytes: len(payload)}})
+	require.NoError(t, err)
+
+	msg, ok, err := st.GetMessageByMessageID(51)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, uint64(1), msg.MessageSeq)
+	require.Empty(t, msg.ClientMsgNo)
+
+	_, ok, err = getStoredClientMsgNoIndexSeq(t, st, "", 1)
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	_, ok, err = getStoredIdempotencyHit(t, st, "u1", "")
+	require.NoError(t, err)
+	require.False(t, ok)
+}

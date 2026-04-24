@@ -130,6 +130,20 @@ func getStoredMessageIDIndexSeq(tb testing.TB, st *ChannelStore, messageID uint6
 	return seq, true, nil
 }
 
+func getStoredClientMsgNoIndexSeq(tb testing.TB, st *ChannelStore, clientMsgNo string, seq uint64) (uint64, bool, error) {
+	tb.Helper()
+
+	value, ok, err := getDBValue(tb, st.engine.db, encodeMessageClientMsgNoIndexKey(st.key, clientMsgNo, seq))
+	if err != nil || !ok {
+		return 0, ok, err
+	}
+	indexSeq, err := decodeMessageIDIndexValue(value)
+	if err != nil {
+		return 0, false, err
+	}
+	return indexSeq, true, nil
+}
+
 func getStoredIdempotencyHit(tb testing.TB, st *ChannelStore, fromUID, clientMsgNo string) (messageIndexHit, bool, error) {
 	tb.Helper()
 
