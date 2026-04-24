@@ -158,6 +158,13 @@ func getDBValue(tb testing.TB, db *pebble.DB, key []byte) ([]byte, bool, error) 
 	return append([]byte(nil), value...), true, nil
 }
 
+func mustSetDBValue(tb testing.TB, db *pebble.DB, key []byte, value []byte) {
+	tb.Helper()
+	if err := db.Set(key, append([]byte(nil), value...), pebble.Sync); err != nil {
+		tb.Fatalf("db.Set() error = %v", err)
+	}
+}
+
 func callGetMessageBySeq(st *ChannelStore, seq uint64) (channel.Message, bool, error) {
 	out, err := callChannelStoreMethod(st, "GetMessageBySeq", seq)
 	if err != nil {

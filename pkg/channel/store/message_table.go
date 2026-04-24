@@ -16,6 +16,11 @@ type messageTable struct {
 	db         *pebble.DB
 }
 
+type messageIdempotencyKey struct {
+	fromUID     string
+	clientMsgNo string
+}
+
 func (t *messageTable) append(writeBatch *pebble.Batch, rows []messageRow) error {
 	if err := t.validate(); err != nil {
 		return err
@@ -25,6 +30,7 @@ func (t *messageTable) append(writeBatch *pebble.Batch, rows []messageRow) error
 	}
 
 	seenMessageIDs := make(map[uint64]struct{}, len(rows))
+	seenIdempotencyKeys := make(map[messageIdempotencyKey]struct{}, len(rows))
 	for _, row := range rows {
 		if row.MessageSeq == 0 {
 			return channel.ErrInvalidArgument
@@ -59,6 +65,16 @@ func (t *messageTable) append(writeBatch *pebble.Batch, rows []messageRow) error
 			}
 		}
 		if row.FromUID != "" && row.ClientMsgNo != "" {
+			key := messageIdempotencyKey{fromUID: row.FromUID, clientMsgNo: row.ClientMsgNo}
+			if _, ok := seenIdempotencyKeys[key]; ok {
+				return channel.ErrCorruptState
+			}
+			seenIdempotencyKeys[key] = struct{}{}
+			if existing, ok, err := t.lookupIdempotency(row.FromUID, row.ClientMsgNo); err != nil {
+				return err
+			} else if ok && existing.MessageSeq != row.MessageSeq {
+				return channel.ErrCorruptState
+			}
 			value, err := encodeIdempotencyIndexValue(row)
 			if err != nil {
 				return err
@@ -79,15 +95,18 @@ func (t *messageTable) getBySeq(seq uint64) (messageRow, bool, error) {
 		return messageRow{}, false, channel.ErrInvalidArgument
 	}
 
-	primary, ok, err := t.getValue(encodeTableStateKey(t.channelKey, TableIDMessage, seq, messagePrimaryFamilyID))
-	if err != nil || !ok {
-		return messageRow{}, ok, err
-	}
-	payload, ok, err := t.getValue(encodeTableStateKey(t.channelKey, TableIDMessage, seq, messagePayloadFamilyID))
+	primary, okPrimary, err := t.getValue(encodeTableStateKey(t.channelKey, TableIDMessage, seq, messagePrimaryFamilyID))
 	if err != nil {
 		return messageRow{}, false, err
 	}
-	if !ok {
+	payload, okPayload, err := t.getValue(encodeTableStateKey(t.channelKey, TableIDMessage, seq, messagePayloadFamilyID))
+	if err != nil {
+		return messageRow{}, false, err
+	}
+	if !okPrimary && !okPayload {
+		return messageRow{}, false, nil
+	}
+	if !okPrimary || !okPayload {
 		return messageRow{}, false, channel.ErrCorruptState
 	}
 	row, err := decodeMessageFamilies(seq, primary, payload)
@@ -148,12 +167,17 @@ func (t *messageTable) scanBySeq(fromSeq uint64, limit int, maxBytes int) ([]mes
 
 	rows := make([]messageRow, 0, minInt(limit, logScanInitialCapacity))
 	total := 0
+	var skipPayloadSeq uint64
 	for valid := iter.First(); valid && len(rows) < limit; valid = iter.Next() {
 		seq, familyID, err := decodeTableStateKey(iter.Key(), t.channelKey, TableIDMessage)
 		if err != nil {
 			return nil, err
 		}
-		if familyID != messagePrimaryFamilyID {
+		processRow, err := consumeForwardMessageFamily(seq, familyID, &skipPayloadSeq)
+		if err != nil {
+			return nil, err
+		}
+		if !processRow {
 			continue
 		}
 		row, err := t.materializeRow(seq, iter.Value())
@@ -169,6 +193,7 @@ func (t *messageTable) scanBySeq(fromSeq uint64, limit int, maxBytes int) ([]mes
 		}
 		rows = append(rows, row)
 		total += size
+		skipPayloadSeq = seq
 	}
 	if err := iter.Error(); err != nil {
 		return nil, err
@@ -199,12 +224,17 @@ func (t *messageTable) scanBySeqReverse(fromSeq uint64, limit int, maxBytes int)
 
 	rows := make([]messageRow, 0, minInt(limit, logScanInitialCapacity))
 	total := 0
+	var pendingPayloadSeq uint64
 	for valid := iter.SeekLT(seekKey); valid && len(rows) < limit; valid = iter.Prev() {
 		seq, familyID, err := decodeTableStateKey(iter.Key(), t.channelKey, TableIDMessage)
 		if err != nil {
 			return nil, err
 		}
-		if familyID != messagePrimaryFamilyID {
+		processRow, err := consumeReverseMessageFamily(seq, familyID, &pendingPayloadSeq)
+		if err != nil {
+			return nil, err
+		}
+		if !processRow {
 			continue
 		}
 		row, err := t.materializeRow(seq, iter.Value())
@@ -223,6 +253,9 @@ func (t *messageTable) scanBySeqReverse(fromSeq uint64, limit int, maxBytes int)
 	}
 	if err := iter.Error(); err != nil {
 		return nil, err
+	}
+	if pendingPayloadSeq != 0 {
+		return nil, channel.ErrCorruptState
 	}
 	return rows, nil
 }
@@ -298,12 +331,17 @@ func (t *messageTable) truncateFromSeq(writeBatch *pebble.Batch, fromSeq uint64)
 	}
 	defer iter.Close()
 
+	var skipPayloadSeq uint64
 	for valid := iter.First(); valid; valid = iter.Next() {
 		seq, familyID, err := decodeTableStateKey(iter.Key(), t.channelKey, TableIDMessage)
 		if err != nil {
 			return err
 		}
-		if familyID != messagePrimaryFamilyID {
+		processRow, err := consumeForwardMessageFamily(seq, familyID, &skipPayloadSeq)
+		if err != nil {
+			return err
+		}
+		if !processRow {
 			continue
 		}
 		row, err := t.materializeRow(seq, iter.Value())
@@ -329,6 +367,7 @@ func (t *messageTable) truncateFromSeq(writeBatch *pebble.Batch, fromSeq uint64)
 				return err
 			}
 		}
+		skipPayloadSeq = seq
 	}
 	return iter.Error()
 }
@@ -469,4 +508,45 @@ func (r messageRow) compatibilitySize() (int, error) {
 		return 0, err
 	}
 	return record.SizeBytes, nil
+}
+
+// consumeForwardMessageFamily validates the expected primary -> payload family order.
+func consumeForwardMessageFamily(seq uint64, familyID uint16, skipPayloadSeq *uint64) (bool, error) {
+	switch familyID {
+	case messagePrimaryFamilyID:
+		if skipPayloadSeq != nil && *skipPayloadSeq != 0 {
+			return false, channel.ErrCorruptState
+		}
+		return true, nil
+	case messagePayloadFamilyID:
+		if skipPayloadSeq == nil || *skipPayloadSeq != seq {
+			return false, channel.ErrCorruptState
+		}
+		*skipPayloadSeq = 0
+		return false, nil
+	default:
+		return false, channel.ErrCorruptState
+	}
+}
+
+// consumeReverseMessageFamily validates the expected payload -> primary order during reverse scans.
+func consumeReverseMessageFamily(seq uint64, familyID uint16, pendingPayloadSeq *uint64) (bool, error) {
+	switch familyID {
+	case messagePayloadFamilyID:
+		if pendingPayloadSeq == nil || *pendingPayloadSeq != 0 {
+			return false, channel.ErrCorruptState
+		}
+		*pendingPayloadSeq = seq
+		return false, nil
+	case messagePrimaryFamilyID:
+		if pendingPayloadSeq != nil {
+			if *pendingPayloadSeq != 0 && *pendingPayloadSeq != seq {
+				return false, channel.ErrCorruptState
+			}
+			*pendingPayloadSeq = 0
+		}
+		return true, nil
+	default:
+		return false, channel.ErrCorruptState
+	}
 }
