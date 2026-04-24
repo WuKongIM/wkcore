@@ -792,10 +792,17 @@ func newClusterBackedMessageAppWithOnline(registry online.Registry, result chann
 	return message.New(message.Options{
 		IdentityStore: &fakeIdentityStore{},
 		ChannelStore:  &fakeChannelStore{},
+		MetaRefresher: &fakeMetaRefresher{},
 		Cluster:       &fakeChannelCluster{result: result},
 		Online:        registry,
 		Now:           func() time.Time { return fixedGatewayNow },
 	})
+}
+
+type fakeMetaRefresher struct{}
+
+func (*fakeMetaRefresher) RefreshChannelMeta(context.Context, channel.ChannelID) (channel.Meta, error) {
+	return channel.Meta{}, nil
 }
 
 var _ online.Registry = (*online.MemoryRegistry)(nil)

@@ -69,12 +69,13 @@ func TestChannelMetaSyncRefreshProjectsLeaderEpochLeaseAndApply(t *testing.T) {
 
 func TestChannelMetaSyncNeedsLeaderRepair(t *testing.T) {
 	meta := metadb.ChannelRuntimeMeta{
-		ChannelID:   "repair",
-		ChannelType: 1,
-		Replicas:    []uint64{2, 3},
-		ISR:         []uint64{2, 3},
-		Leader:      3,
-		Status:      uint8(channel.StatusActive),
+		ChannelID:    "repair",
+		ChannelType:  1,
+		Replicas:     []uint64{2, 3},
+		ISR:          []uint64{2, 3},
+		Leader:       3,
+		Status:       uint8(channel.StatusActive),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
 	}
 
 	t.Run("cache miss", func(t *testing.T) {
@@ -114,6 +115,15 @@ func TestChannelMetaSyncNeedsLeaderRepair(t *testing.T) {
 		need, reason := syncer.needsLeaderRepair(meta)
 		require.True(t, need)
 		require.Equal(t, "leader_draining", reason)
+	})
+
+	t.Run("expired lease", func(t *testing.T) {
+		syncer := &channelMetaSync{}
+		candidate := meta
+		candidate.LeaseUntilMS = time.Now().Add(-time.Second).UnixMilli()
+		need, reason := syncer.needsLeaderRepair(candidate)
+		require.True(t, need)
+		require.Equal(t, "leader_lease_expired", reason)
 	})
 
 	t.Run("missing leader", func(t *testing.T) {

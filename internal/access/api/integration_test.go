@@ -22,6 +22,7 @@ func TestAPIServerSendMessageWithRealMessageApp(t *testing.T) {
 	msgApp := message.New(message.Options{
 		IdentityStore: &fakeIdentityStore{},
 		ChannelStore:  &fakeChannelStore{},
+		MetaRefresher: &fakeMetaRefresher{},
 		Cluster: &fakeChannelCluster{
 			result: channel.AppendResult{MessageID: 66, MessageSeq: 7},
 		},
@@ -93,10 +94,16 @@ type fakeChannelCluster struct {
 	err    error
 }
 
+type fakeMetaRefresher struct{}
+
 func (*fakeChannelCluster) ApplyMeta(channel.Meta) error {
 	return nil
 }
 
 func (f *fakeChannelCluster) Append(context.Context, channel.AppendRequest) (channel.AppendResult, error) {
 	return f.result, f.err
+}
+
+func (*fakeMetaRefresher) RefreshChannelMeta(context.Context, channel.ChannelID) (channel.Meta, error) {
+	return channel.Meta{}, nil
 }
