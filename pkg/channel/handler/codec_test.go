@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/binary"
 	"reflect"
 	"testing"
@@ -252,9 +253,39 @@ func testEncodeFramerFlags(framer frame.Framer) uint8 {
 func encodeLegacyCompatibleMessagePayloadForTest(t *testing.T, msg channel.Message) []byte {
 	t.Helper()
 
-	payload, err := channel.EncodeDurableMessageWithPayloadHash(msg, hashPayload(msg.Payload))
-	if err != nil {
-		t.Fatalf("EncodeDurableMessageWithPayloadHash() error = %v", err)
+	var buf bytes.Buffer
+	if err := buf.WriteByte(channel.DurableMessageCodecVersion); err != nil {
+		t.Fatalf("WriteByte() error = %v", err)
 	}
+	if err := binary.Write(&buf, binary.BigEndian, msg.MessageID); err != nil {
+		t.Fatalf("binary.Write(MessageID) error = %v", err)
+	}
+	if _, err := buf.Write(make([]byte, channel.DurableMessageHeaderSize-9)); err != nil {
+		t.Fatalf("Write(header padding) error = %v", err)
+	}
+	binary.BigEndian.PutUint64(buf.Bytes()[37:45], hashPayload(msg.Payload))
+	if err := writeString(&buf, ""); err != nil {
+		t.Fatalf("writeString(msgKey) error = %v", err)
+	}
+	if err := writeString(&buf, msg.ClientMsgNo); err != nil {
+		t.Fatalf("writeString(clientMsgNo) error = %v", err)
+	}
+	if err := writeString(&buf, ""); err != nil {
+		t.Fatalf("writeString(streamNo) error = %v", err)
+	}
+	if err := writeString(&buf, msg.ChannelID); err != nil {
+		t.Fatalf("writeString(channelID) error = %v", err)
+	}
+	if err := writeString(&buf, ""); err != nil {
+		t.Fatalf("writeString(topic) error = %v", err)
+	}
+	if err := writeString(&buf, msg.FromUID); err != nil {
+		t.Fatalf("writeString(fromUID) error = %v", err)
+	}
+	if err := writeBytes(&buf, msg.Payload); err != nil {
+		t.Fatalf("writeBytes(payload) error = %v", err)
+	}
+	payload := buf.Bytes()
+	payload[12] = msg.ChannelType
 	return payload
 }
