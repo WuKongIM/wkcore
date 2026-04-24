@@ -164,7 +164,6 @@ func newThreeNodeConversationSyncHarness(t *testing.T) *threeNodeAppHarness {
 		cfg.Cluster.DialTimeout = 2 * time.Second
 		cfg.Cluster.PoolSize = 1
 		cfg.API.ListenAddr = apiAddrs[nodeID]
-		cfg.Conversation.SyncEnabled = true
 		cfg.Gateway.Listeners = []gateway.ListenerOptions{
 			binding.TCPWKProto("tcp-wkproto", gatewayAddrs[nodeID]),
 		}

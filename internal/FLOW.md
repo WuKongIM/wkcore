@@ -339,6 +339,7 @@ conversation.App.Sync(ctx, query):
      facts.LoadLatestMessages(ctx, keys):
      → 本地 Channel: cluster.Status → cluster.Fetch(lastSeq, limit=1)
      → 远程 Channel (ErrStaleMeta): 查 ChannelRuntimeMeta → nodeClient RPC
+     → `conversation_facts` 目标节点若本地 `Status/Fetch` 命中 `ErrStaleMeta`，会先 `RefreshChannelMeta` 再重试一次本地读取
      → 支持 batch 优化: LoadLatestConversationMessages
   ⑤ 构建视图:
      buildSyncConversationView:
@@ -378,7 +379,7 @@ handleRecvAck(ctx, pkt):
 | `delivery_ack` | → remote | access/node/delivery_ack_rpc.go | 转发 RecvAck 到投递所在节点 |
 | `delivery_offline` | → remote | access/node/delivery_offline_rpc.go | 通知离线消息处理 |
 | `presence` | → slot leader | access/node/presence_rpc.go | 权威路由注册/注销/心跳 |
-| `conversation_facts` | → channel leader | access/node/conversation_facts_rpc.go | 远程加载会话最新/最近消息 |
+| `conversation_facts` | → channel leader | access/node/conversation_facts_rpc.go | 远程加载会话最新/最近消息；命中 `ErrStaleMeta` 时先刷新 channel meta 再重试一次本地读取 |
 | `channel_append` | → channel leader | access/node/channel_append_rpc.go | 非 Leader 副本将 Durable Append 转发到 Channel Leader；leader 若仍在 replica reconcile（`CommitReady=false`）会返回 `ErrNotReady` |
 
 ## 7. 错误处理

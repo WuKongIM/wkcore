@@ -544,7 +544,6 @@ func TestConversationSyncMapsLegacyRequestToUsecaseQuery(t *testing.T) {
 	}
 	srv := New(Options{
 		Conversations:            conversations,
-		ConversationSyncEnabled:  true,
 		ConversationDefaultLimit: 200,
 		ConversationMaxLimit:     500,
 	})
@@ -575,7 +574,6 @@ func TestConversationSyncMapsLegacyRequestToUsecaseQuery(t *testing.T) {
 func TestConversationSyncRejectsInvalidLastMsgSeqs(t *testing.T) {
 	srv := New(Options{
 		Conversations:            &recordingConversationUsecase{},
-		ConversationSyncEnabled:  true,
 		ConversationDefaultLimit: 200,
 		ConversationMaxLimit:     500,
 	})
@@ -624,7 +622,6 @@ func TestConversationSyncReturnsLegacyArrayResponse(t *testing.T) {
 	}
 	srv := New(Options{
 		Conversations:            conversations,
-		ConversationSyncEnabled:  true,
 		ConversationDefaultLimit: 200,
 		ConversationMaxLimit:     500,
 	})
@@ -639,10 +636,9 @@ func TestConversationSyncReturnsLegacyArrayResponse(t *testing.T) {
 	require.JSONEq(t, `[{"channel_id":"u2","channel_type":1,"unread":2,"timestamp":123,"last_msg_seq":7,"last_client_msg_no":"c1","offset_msg_seq":0,"readed_to_msg_seq":5,"version":999,"recents":[{"header":{"no_persist":1,"red_dot":1,"sync_once":1},"setting":3,"message_id":88,"message_idstr":"88","client_msg_no":"c1","message_seq":7,"from_uid":"u1","channel_id":"u2","channel_type":1,"expire":60,"timestamp":123,"payload":"aGVsbG8="}]}]`, rec.Body.String())
 }
 
-func TestConversationSyncReturns503WhenSyncGateDisabled(t *testing.T) {
+func TestConversationSyncIgnoresLegacySyncGate(t *testing.T) {
 	srv := New(Options{
 		Conversations:            &recordingConversationUsecase{},
-		ConversationSyncEnabled:  false,
 		ConversationDefaultLimit: 200,
 		ConversationMaxLimit:     500,
 	})
@@ -653,8 +649,8 @@ func TestConversationSyncReturns503WhenSyncGateDisabled(t *testing.T) {
 
 	srv.Engine().ServeHTTP(rec, req)
 
-	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
-	require.JSONEq(t, `{"error":"conversation sync not enabled"}`, rec.Body.String())
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `[]`, rec.Body.String())
 }
 
 type recordingMessageUsecase struct {

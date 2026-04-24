@@ -24,7 +24,6 @@ import (
 func TestAppConversationSyncReturnsLegacyConversationAfterSend(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.API.ListenAddr = "127.0.0.1:0"
-	cfg.Conversation.SyncEnabled = true
 
 	app, err := New(cfg)
 	require.NoError(t, err)

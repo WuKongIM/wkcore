@@ -113,6 +113,46 @@ func TestLoadRecentConversationMessagesTreatsNotReadyAsEmpty(t *testing.T) {
 	require.Nil(t, msgs)
 }
 
+func TestConversationFactsRPCRefreshesStaleMetaForBatchRecentLoads(t *testing.T) {
+	log := &refreshableConversationFactsLog{
+		status: channel.ChannelRuntimeStatus{CommittedSeq: 7},
+		fetch: channel.FetchResult{Messages: []channel.Message{{
+			ChannelID:   "g1",
+			ChannelType: 2,
+			MessageSeq:  7,
+		}}},
+	}
+	refresher := &refreshingConversationFactsMetaRefresher{
+		meta: channel.Meta{ID: channel.ChannelID{ID: "g1", Type: 2}},
+		onRefresh: func() {
+			log.markRefreshed()
+		},
+	}
+	adapter := New(Options{
+		ChannelLog:  log,
+		ChannelMeta: refresher,
+	})
+
+	body := mustMarshal(t, conversationFactsRequest{
+		Op: conversationFactsOpRecent,
+		Keys: []conversationFactsChannelKey{
+			newConversationFactsChannelKey(channel.ChannelID{ID: "g1", Type: 2}),
+		},
+		Limit:    1,
+		MaxBytes: 1024,
+	})
+
+	respBody, err := adapter.handleConversationFactsRPC(context.Background(), body)
+	require.NoError(t, err)
+
+	resp, err := decodeConversationFactsResponse(respBody)
+	require.NoError(t, err)
+	require.Equal(t, []channel.ChannelID{{ID: "g1", Type: 2}}, refresher.calls)
+	require.Len(t, resp.Entries, 1)
+	require.Len(t, resp.Entries[0].Messages, 1)
+	require.Equal(t, uint64(7), resp.Entries[0].Messages[0].MessageSeq)
+}
+
 type notReadyConversationFactsLog struct{}
 
 func (notReadyConversationFactsLog) Status(channel.ChannelID) (channel.ChannelRuntimeStatus, error) {
@@ -125,4 +165,47 @@ func (notReadyConversationFactsLog) Fetch(context.Context, channel.FetchRequest)
 
 func (notReadyConversationFactsLog) Append(context.Context, channel.AppendRequest) (channel.AppendResult, error) {
 	return channel.AppendResult{}, channel.ErrNotReady
+}
+
+type refreshableConversationFactsLog struct {
+	status    channel.ChannelRuntimeStatus
+	fetch     channel.FetchResult
+	refreshed bool
+}
+
+func (l *refreshableConversationFactsLog) Status(channel.ChannelID) (channel.ChannelRuntimeStatus, error) {
+	if !l.refreshed {
+		return channel.ChannelRuntimeStatus{}, channel.ErrStaleMeta
+	}
+	return l.status, nil
+}
+
+func (l *refreshableConversationFactsLog) Fetch(context.Context, channel.FetchRequest) (channel.FetchResult, error) {
+	if !l.refreshed {
+		return channel.FetchResult{}, channel.ErrStaleMeta
+	}
+	return l.fetch, nil
+}
+
+func (l *refreshableConversationFactsLog) Append(context.Context, channel.AppendRequest) (channel.AppendResult, error) {
+	return channel.AppendResult{}, nil
+}
+
+func (l *refreshableConversationFactsLog) markRefreshed() {
+	l.refreshed = true
+}
+
+type refreshingConversationFactsMetaRefresher struct {
+	meta      channel.Meta
+	err       error
+	calls     []channel.ChannelID
+	onRefresh func()
+}
+
+func (r *refreshingConversationFactsMetaRefresher) RefreshChannelMeta(_ context.Context, id channel.ChannelID) (channel.Meta, error) {
+	r.calls = append(r.calls, id)
+	if r.onRefresh != nil {
+		r.onRefresh()
+	}
+	return r.meta, r.err
 }

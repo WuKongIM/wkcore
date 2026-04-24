@@ -2,16 +2,15 @@
 
 ## Goal
 
-在开启 `/conversation/sync` 之前，先完成 `UserConversationState` backfill、抽样校验和开关检查，避免未回填用户直接切流。
+在默认开放 `/conversation/sync` 之前，先完成 `UserConversationState` backfill、抽样校验，避免未回填用户直接承接同步流量。
 
 ## Preconditions
 
 - 当前部署形态按“单节点集群”或多节点集群统一处理
-- `Conversation.SyncEnabled=false`
 - 新版本已经开始写入：
   - `UserConversationState`
   - `ChannelUpdateLog`
-- 若是新部署且不存在历史数据，可跳过 backfill，直接进入抽样校验和 gate 检查
+- 若是新部署且不存在历史数据，可跳过 backfill，直接进入抽样校验
 
 ## Backfill Source Priority
 
@@ -55,12 +54,11 @@
 ## ChannelUpdateLog Policy
 
 - `ChannelUpdateLog` 不要求全历史 backfill
-- 只要求在 cutover 后持续正常累积新消息的频道更新索引
-- 若抽样发现 cutover 后新消息未写入 `ChannelUpdateLog`，必须先修复 projector/flush，再考虑开 gate
+- 只要求在上线后持续正常累积新消息的频道更新索引
+- 若抽样发现上线后新消息未写入 `ChannelUpdateLog`，必须先修复 projector/flush，再允许对外提供 `/conversation/sync`
 
 ## Cutover Gate
-
-只有同时满足以下条件，才允许把 `Conversation.SyncEnabled` 切为 `true`：
+只有同时满足以下条件，才允许上线默认开放的 `/conversation/sync`：
 
 1. `UserConversationState` backfill 已完成
 2. 抽样校验通过
@@ -69,8 +67,7 @@
 
 若任一条件不满足：
 
-- 保持 `Conversation.SyncEnabled=false`
-- 不允许对外切流 `/conversation/sync`
+- 不允许对外提供 `/conversation/sync`
 
 ## Sampling Checklist
 
@@ -92,26 +89,25 @@
 
 ## Rollout Steps
 
-1. 保持 `Conversation.SyncEnabled=false` 部署新版本
+1. 部署新版本
 2. 执行 `UserConversationState` backfill
 3. 完成抽样校验
-4. 观察 cutover 后新消息是否正常写入 `ChannelUpdateLog`
-5. 小流量开启 `Conversation.SyncEnabled=true`
-6. 观察 `/conversation/sync` 错误率、返回量和延迟
-7. 全量开启
+4. 观察上线后新消息是否正常写入 `ChannelUpdateLog`
+5. 验证 `/conversation/sync` 错误率、返回量和延迟
+6. 持续观察并确认稳定
 
 ## Failure Handling
 
-若出现以下任一情况，立即保持或切回 `Conversation.SyncEnabled=false`：
+若出现以下任一情况，立即停止对外暴露 `/conversation/sync` 或回滚到不包含该接口的稳定版本：
 
 - backfill 未完成
 - 抽样用户 `UserConversationState` 行数明显缺失
 - `active_at` 明显异常，working set 结果大面积为空
-- cutover 后 `ChannelUpdateLog` 未正常累积
+- 上线后 `ChannelUpdateLog` 未正常累积
 - `/conversation/sync` brand-new 请求结果异常为空或异常过量
 
 处理原则：
 
 - 先修复数据或 projector/flush 链路
 - 重新执行抽样校验
-- 校验再次通过后才能重试开 gate
+- 校验再次通过后才能重新开放 `/conversation/sync`

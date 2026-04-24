@@ -39,7 +39,6 @@ type Options struct {
 	Messages                 MessageUsecase
 	Users                    UserUsecase
 	Conversations            ConversationUsecase
-	ConversationSyncEnabled  bool
 	ConversationDefaultLimit int
 	ConversationMaxLimit     int
 	MetricsHandler           http.Handler
@@ -64,7 +63,6 @@ type Server struct {
 	messages                 MessageUsecase
 	users                    UserUsecase
 	conversations            ConversationUsecase
-	conversationSyncEnabled  bool
 	conversationDefaultLimit int
 	conversationMaxLimit     int
 	metricsHandler           http.Handler
@@ -96,7 +94,6 @@ func New(opts Options) *Server {
 		messages:                 opts.Messages,
 		users:                    opts.Users,
 		conversations:            opts.Conversations,
-		conversationSyncEnabled:  opts.ConversationSyncEnabled,
 		conversationDefaultLimit: defaultLimit,
 		conversationMaxLimit:     maxLimit,
 		metricsHandler:           opts.MetricsHandler,

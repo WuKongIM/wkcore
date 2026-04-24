@@ -8,8 +8,8 @@ import (
 )
 
 func (s *Server) handleConversationSync(c *gin.Context) {
-	if s == nil || !s.conversationSyncEnabled {
-		writeJSONError(c, http.StatusServiceUnavailable, "conversation sync not enabled")
+	if s == nil {
+		writeJSONError(c, http.StatusServiceUnavailable, "server not available")
 		return
 	}
 

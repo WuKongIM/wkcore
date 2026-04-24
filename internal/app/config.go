@@ -228,7 +228,6 @@ type ManagerPermissionConfig struct {
 }
 
 type ConversationConfig struct {
-	SyncEnabled           bool
 	ColdThreshold         time.Duration
 	ActiveScanLimit       int
 	ChannelProbeBatchSize int

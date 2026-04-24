@@ -181,7 +181,7 @@ func build(cfg Config) (_ *App, err error) {
 			TombstoneTTL:    time.Minute,
 			CleanupInterval: time.Minute,
 		},
-		Now: time.Now,
+		Now:    time.Now,
 		Logger: app.logger.Named("channel.runtime"),
 	})
 	if err != nil {
@@ -349,7 +349,6 @@ func build(cfg Config) (_ *App, err error) {
 			Messages:                 app.messageApp,
 			Users:                    userApp,
 			Conversations:            app.conversationApp,
-			ConversationSyncEnabled:  cfg.Conversation.SyncEnabled,
 			ConversationDefaultLimit: cfg.Conversation.SyncDefaultLimit,
 			ConversationMaxLimit:     cfg.Conversation.SyncMaxLimit,
 			MetricsHandler:           app.metricsHandler(),

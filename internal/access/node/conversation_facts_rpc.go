@@ -105,12 +105,12 @@ func (a *Adapter) handleConversationFactsRPC(ctx context.Context, body []byte) (
 			case conversationFactsOpLatest:
 				var msg channel.Message
 				var ok bool
-				msg, ok, err = loadLatestConversationMessage(ctx, a.channelLog, key, req.MaxBytes)
+				msg, ok, err = a.loadLatestConversationFact(ctx, key, req.MaxBytes)
 				if ok {
 					entry.Messages = []channel.Message{msg}
 				}
 			case conversationFactsOpRecent:
-				entry.Messages, err = loadRecentConversationMessages(ctx, a.channelLog, key, req.Limit, req.MaxBytes)
+				entry.Messages, err = a.loadRecentConversationFacts(ctx, key, req.Limit, req.MaxBytes)
 			default:
 				return nil, fmt.Errorf("access/node: unknown conversation facts op %q", req.Op)
 			}
@@ -133,12 +133,12 @@ func (a *Adapter) handleConversationFactsRPC(ctx context.Context, body []byte) (
 	case conversationFactsOpLatest:
 		var msg channel.Message
 		var ok bool
-		msg, ok, err = loadLatestConversationMessage(ctx, a.channelLog, key, req.MaxBytes)
+		msg, ok, err = a.loadLatestConversationFact(ctx, key, req.MaxBytes)
 		if ok {
 			messages = []channel.Message{msg}
 		}
 	case conversationFactsOpRecent:
-		messages, err = loadRecentConversationMessages(ctx, a.channelLog, key, req.Limit, req.MaxBytes)
+		messages, err = a.loadRecentConversationFacts(ctx, key, req.Limit, req.MaxBytes)
 	default:
 		return nil, fmt.Errorf("access/node: unknown conversation facts op %q", req.Op)
 	}
@@ -152,6 +152,35 @@ func (a *Adapter) handleConversationFactsRPC(ctx context.Context, body []byte) (
 		Status:   rpcStatusOK,
 		Messages: messages,
 	})
+}
+
+func (a *Adapter) loadLatestConversationFact(ctx context.Context, id channel.ChannelID, maxBytes int) (channel.Message, bool, error) {
+	msg, ok, err := loadLatestConversationMessage(ctx, a.channelLog, id, maxBytes)
+	if !errors.Is(err, channel.ErrStaleMeta) {
+		return msg, ok, err
+	}
+	if _, refreshErr := a.refreshConversationFactsMeta(ctx, id); refreshErr != nil {
+		return channel.Message{}, false, refreshErr
+	}
+	return loadLatestConversationMessage(ctx, a.channelLog, id, maxBytes)
+}
+
+func (a *Adapter) loadRecentConversationFacts(ctx context.Context, id channel.ChannelID, limit, maxBytes int) ([]channel.Message, error) {
+	messages, err := loadRecentConversationMessages(ctx, a.channelLog, id, limit, maxBytes)
+	if !errors.Is(err, channel.ErrStaleMeta) {
+		return messages, err
+	}
+	if _, refreshErr := a.refreshConversationFactsMeta(ctx, id); refreshErr != nil {
+		return nil, refreshErr
+	}
+	return loadRecentConversationMessages(ctx, a.channelLog, id, limit, maxBytes)
+}
+
+func (a *Adapter) refreshConversationFactsMeta(ctx context.Context, id channel.ChannelID) (channel.Meta, error) {
+	if a == nil || a.channelMeta == nil {
+		return channel.Meta{}, channel.ErrStaleMeta
+	}
+	return a.channelMeta.RefreshChannelMeta(ctx, id)
 }
 
 func loadLatestConversationMessage(ctx context.Context, cluster ChannelLog, id channel.ChannelID, maxBytes int) (channel.Message, bool, error) {
