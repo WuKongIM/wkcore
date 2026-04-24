@@ -80,36 +80,22 @@ func encodeMessageFamilies(row messageRow) ([]byte, []byte, error) {
 		payloadHash = hashMessagePayload(row.Payload)
 	}
 
-	primary := make([]byte, 0, 128)
-	primary = append(primary, messageFamilyCodecVersion)
-	primary = appendFamilyColumn(primary, messageColumnIDMessageID, encodeFamilyUintBytes(row.MessageID))
-	primary = appendFamilyColumn(primary, messageColumnIDFramerFlags, encodeFamilyUintBytes(uint64(row.FramerFlags)))
-	primary = appendFamilyColumn(primary, messageColumnIDSetting, encodeFamilyUintBytes(uint64(row.Setting)))
-	primary = appendFamilyColumn(primary, messageColumnIDStreamFlag, encodeFamilyUintBytes(uint64(row.StreamFlag)))
-	primary = appendFamilyColumn(primary, messageColumnIDMsgKey, []byte(row.MsgKey))
-	primary = appendFamilyColumn(primary, messageColumnIDExpire, encodeFamilyUintBytes(uint64(row.Expire)))
-	primary = appendFamilyColumn(primary, messageColumnIDClientSeq, encodeFamilyUintBytes(row.ClientSeq))
-	primary = appendFamilyColumn(primary, messageColumnIDClientMsgNo, []byte(row.ClientMsgNo))
-	primary = appendFamilyColumn(primary, messageColumnIDStreamNo, []byte(row.StreamNo))
-	primary = appendFamilyColumn(primary, messageColumnIDStreamID, encodeFamilyUintBytes(row.StreamID))
-	primary = appendFamilyColumn(primary, messageColumnIDTimestamp, encodeFamilyIntBytes(int64(row.Timestamp)))
-	primary = appendFamilyColumn(primary, messageColumnIDChannelID, []byte(row.ChannelID))
-	primary = appendFamilyColumn(primary, messageColumnIDChannelType, encodeFamilyUintBytes(uint64(row.ChannelType)))
-	primary = appendFamilyColumn(primary, messageColumnIDTopic, []byte(row.Topic))
-	primary = appendFamilyColumn(primary, messageColumnIDFromUID, []byte(row.FromUID))
-	primary = appendFamilyColumn(primary, messageColumnIDPayloadHash, encodeFamilyUintBytes(payloadHash))
-
-	payload := []byte{messageFamilyCodecVersion}
-	payload = appendFamilyColumn(payload, messageColumnIDPayload, row.Payload)
-	return primary, payload, nil
+	families, err := encodeMessageFamilyPayloads(row, payloadHash)
+	if err != nil {
+		return nil, nil, err
+	}
+	return families[0], families[1], nil
 }
 
 func decodeMessageFamilies(messageSeq uint64, primary []byte, payload []byte) (messageRow, error) {
 	row := messageRow{MessageSeq: messageSeq}
-	if err := decodeMessageFamilyInto(&row, primary); err != nil {
+	if len(MessageTable.Families) != 2 {
+		return messageRow{}, channel.ErrInvalidArgument
+	}
+	if err := decodeMessageFamilyInto(&row, MessageTable.Families[0], primary); err != nil {
 		return messageRow{}, err
 	}
-	if err := decodeMessageFamilyInto(&row, payload); err != nil {
+	if err := decodeMessageFamilyInto(&row, MessageTable.Families[1], payload); err != nil {
 		return messageRow{}, err
 	}
 	if row.MessageID == 0 {
@@ -118,7 +104,67 @@ func decodeMessageFamilies(messageSeq uint64, primary []byte, payload []byte) (m
 	return row, nil
 }
 
-func decodeMessageFamilyInto(row *messageRow, payload []byte) error {
+func encodeMessageFamilyPayloads(row messageRow, payloadHash uint64) ([][]byte, error) {
+	if len(MessageTable.Families) != 2 {
+		return nil, channel.ErrInvalidArgument
+	}
+	families := make([][]byte, 0, len(MessageTable.Families))
+	for _, family := range MessageTable.Families {
+		encoded := []byte{messageFamilyCodecVersion}
+		for _, columnID := range family.ColumnIDs {
+			value, err := encodeMessageFamilyColumnValue(row, payloadHash, columnID)
+			if err != nil {
+				return nil, err
+			}
+			encoded = appendFamilyColumn(encoded, columnID, value)
+		}
+		families = append(families, encoded)
+	}
+	return families, nil
+}
+
+func encodeMessageFamilyColumnValue(row messageRow, payloadHash uint64, columnID uint16) ([]byte, error) {
+	switch columnID {
+	case messageColumnIDMessageID:
+		return encodeFamilyUintBytes(row.MessageID), nil
+	case messageColumnIDFramerFlags:
+		return encodeFamilyUintBytes(uint64(row.FramerFlags)), nil
+	case messageColumnIDSetting:
+		return encodeFamilyUintBytes(uint64(row.Setting)), nil
+	case messageColumnIDStreamFlag:
+		return encodeFamilyUintBytes(uint64(row.StreamFlag)), nil
+	case messageColumnIDMsgKey:
+		return []byte(row.MsgKey), nil
+	case messageColumnIDExpire:
+		return encodeFamilyUintBytes(uint64(row.Expire)), nil
+	case messageColumnIDClientSeq:
+		return encodeFamilyUintBytes(row.ClientSeq), nil
+	case messageColumnIDClientMsgNo:
+		return []byte(row.ClientMsgNo), nil
+	case messageColumnIDStreamNo:
+		return []byte(row.StreamNo), nil
+	case messageColumnIDStreamID:
+		return encodeFamilyUintBytes(row.StreamID), nil
+	case messageColumnIDTimestamp:
+		return encodeFamilyIntBytes(int64(row.Timestamp)), nil
+	case messageColumnIDChannelID:
+		return []byte(row.ChannelID), nil
+	case messageColumnIDChannelType:
+		return encodeFamilyUintBytes(uint64(row.ChannelType)), nil
+	case messageColumnIDTopic:
+		return []byte(row.Topic), nil
+	case messageColumnIDFromUID:
+		return []byte(row.FromUID), nil
+	case messageColumnIDPayloadHash:
+		return encodeFamilyUintBytes(payloadHash), nil
+	case messageColumnIDPayload:
+		return row.Payload, nil
+	default:
+		return nil, channel.ErrInvalidArgument
+	}
+}
+
+func decodeMessageFamilyInto(row *messageRow, family ColumnFamilyDesc, payload []byte) error {
 	if len(payload) == 0 {
 		return nil
 	}
@@ -145,6 +191,10 @@ func decodeMessageFamilyInto(row *messageRow, payload []byte) error {
 
 		value := payload[:length]
 		payload = payload[length:]
+
+		if !familyHasColumn(family, uint16(columnID)) {
+			continue
+		}
 
 		switch uint16(columnID) {
 		case messageColumnIDMessageID:
@@ -244,6 +294,15 @@ func decodeMessageFamilyInto(row *messageRow, payload []byte) error {
 		}
 	}
 	return nil
+}
+
+func familyHasColumn(family ColumnFamilyDesc, columnID uint16) bool {
+	for _, candidate := range family.ColumnIDs {
+		if candidate == columnID {
+			return true
+		}
+	}
+	return false
 }
 
 func encodeMessageIDIndexValue(messageSeq uint64) []byte {

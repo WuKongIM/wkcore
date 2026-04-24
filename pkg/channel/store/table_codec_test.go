@@ -155,6 +155,47 @@ func TestIdempotencyIndexValueRoundTripAndRejectsCorrupt(t *testing.T) {
 	require.ErrorIs(t, err, channel.ErrCorruptValue)
 }
 
+func TestMessageFamilyEncodingFollowsCatalogFamilyColumns(t *testing.T) {
+	originalPrimary := append([]uint16(nil), MessageTable.Families[0].ColumnIDs...)
+	originalPayload := append([]uint16(nil), MessageTable.Families[1].ColumnIDs...)
+	defer func() {
+		MessageTable.Families[0].ColumnIDs = originalPrimary
+		MessageTable.Families[1].ColumnIDs = originalPayload
+	}()
+
+	MessageTable.Families[0].ColumnIDs = []uint16{
+		messageColumnIDClientMsgNo,
+		messageColumnIDMessageID,
+		messageColumnIDTopic,
+		messageColumnIDPayloadHash,
+	}
+	MessageTable.Families[1].ColumnIDs = []uint16{
+		messageColumnIDPayload,
+	}
+
+	row := messageRow{
+		MessageSeq:  9,
+		MessageID:   42,
+		ClientMsgNo: "c-1",
+		Topic:       "topic",
+		Payload:     []byte("hello"),
+		PayloadHash: 123,
+	}
+
+	primary, payload, err := encodeMessageFamilies(row)
+	require.NoError(t, err)
+	require.Equal(t, MessageTable.Families[0].ColumnIDs, decodeTestFamilyColumnIDs(t, primary))
+	require.Equal(t, MessageTable.Families[1].ColumnIDs, decodeTestFamilyColumnIDs(t, payload))
+
+	decoded, err := decodeMessageFamilies(row.MessageSeq, primary, payload)
+	require.NoError(t, err)
+	require.Equal(t, row.MessageID, decoded.MessageID)
+	require.Equal(t, row.ClientMsgNo, decoded.ClientMsgNo)
+	require.Equal(t, row.Topic, decoded.Topic)
+	require.Equal(t, row.PayloadHash, decoded.PayloadHash)
+	require.Equal(t, row.Payload, decoded.Payload)
+}
+
 func appendTestBytesColumn(dst []byte, columnID uint16, value []byte) []byte {
 	dst = binary.AppendUvarint(dst, uint64(columnID))
 	dst = binary.AppendUvarint(dst, uint64(len(value)))
@@ -175,4 +216,20 @@ func decodeTestFamilyField(t *testing.T, payload []byte, offset int) (uint64, ui
 
 	value := append([]byte(nil), payload[offset:offset+int(length)]...)
 	return columnID, length, value, offset + int(length)
+}
+
+func decodeTestFamilyColumnIDs(t *testing.T, payload []byte) []uint16 {
+	t.Helper()
+
+	require.NotEmpty(t, payload)
+	require.Equal(t, expectedMessageFamilyCodecVersion, payload[0])
+
+	offset := 1
+	var ids []uint16
+	for offset < len(payload) {
+		columnID, _, _, next := decodeTestFamilyField(t, payload, offset)
+		ids = append(ids, uint16(columnID))
+		offset = next
+	}
+	return ids
 }
