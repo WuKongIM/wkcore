@@ -1,7 +1,6 @@
 package store
 
 import (
-	"bytes"
 	"math"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
@@ -18,12 +17,7 @@ type LogRecord struct {
 type pendingLogAppend struct {
 	base    uint64
 	nextLEO uint64
-	entries []logBatchEntry
-}
-
-type logBatchEntry struct {
-	key   []byte
-	value []byte
+	rows    []messageRow
 }
 
 func (s *ChannelStore) validate() error {
@@ -53,7 +47,7 @@ func (s *ChannelStore) appendRecordsWithCommit(records []channel.Record, commitO
 	if err != nil {
 		return 0, err
 	}
-	if len(pending.entries) == 0 {
+	if len(pending.rows) == 0 {
 		return pending.base, nil
 	}
 
@@ -68,7 +62,7 @@ func (s *ChannelStore) appendRecordsWithCommit(records []channel.Record, commitO
 	batch := s.engine.db.NewBatch()
 	defer batch.Close()
 
-	if err := pending.build(batch); err != nil {
+	if err := pending.build(batch, s.messageTable()); err != nil {
 		s.failPendingWrite()
 		return 0, err
 	}
@@ -96,19 +90,22 @@ func (s *ChannelStore) prepareAppendLocked(records []channel.Record) (pendingLog
 		return pendingLogAppend{base: base}, nil
 	}
 
-	s.writeInProgress.Store(true)
-	pending := pendingLogAppend{
-		base:    base,
-		nextLEO: base + uint64(len(records)),
-		entries: make([]logBatchEntry, 0, len(records)),
-	}
+	rows := make([]messageRow, 0, len(records))
 	for i, record := range records {
-		pending.entries = append(pending.entries, logBatchEntry{
-			key:   encodeLogRecordKey(s.key, base+uint64(i)),
-			value: append([]byte(nil), record.Payload...),
-		})
+		row, err := messageRowFromRecordPayload(record.Payload)
+		if err != nil {
+			return pendingLogAppend{}, err
+		}
+		row.MessageSeq = base + uint64(i) + 1
+		rows = append(rows, row)
 	}
-	return pending, nil
+
+	s.writeInProgress.Store(true)
+	return pendingLogAppend{
+		base:    base,
+		nextLEO: base + uint64(len(rows)),
+		rows:    rows,
+	}, nil
 }
 
 func (s *ChannelStore) appendWithCoordinatorLocked(pending pendingLogAppend) error {
@@ -119,7 +116,7 @@ func (s *ChannelStore) appendWithCoordinatorLocked(pending pendingLogAppend) err
 	return coordinator.submit(commitRequest{
 		channelKey: s.key,
 		build: func(writeBatch *pebble.Batch) error {
-			return pending.build(writeBatch)
+			return pending.build(writeBatch, s.messageTable())
 		},
 		publish: func() error {
 			s.publishDurableWrite(pending.nextLEO)
@@ -128,32 +125,23 @@ func (s *ChannelStore) appendWithCoordinatorLocked(pending pendingLogAppend) err
 	})
 }
 
-func (p pendingLogAppend) build(writeBatch *pebble.Batch) error {
-	for _, entry := range p.entries {
-		if err := writeBatch.Set(entry.key, entry.value, pebble.NoSync); err != nil {
-			return err
-		}
-	}
-	return nil
+func (p pendingLogAppend) build(writeBatch *pebble.Batch, table *messageTable) error {
+	return table.append(writeBatch, p.rows)
 }
 
 func (s *ChannelStore) Read(from uint64, maxBytes int) ([]channel.Record, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
-	if maxBytes <= 0 {
+	if maxBytes <= 0 || from == math.MaxUint64 {
 		return nil, nil
 	}
 
-	records := make([]channel.Record, 0, logScanInitialCapacity)
-	_, err := s.engine.scanOffsets(s.key, from, maxLogScanLimit(), maxBytes, func(_ uint64, payload []byte) error {
-		records = append(records, channel.Record{Payload: payload, SizeBytes: len(payload)})
-		return nil
-	})
+	rows, err := s.messageTable().scanBySeq(from+1, maxLogScanLimit(), maxBytes)
 	if err != nil {
 		return nil, err
 	}
-	return records, nil
+	return rowsToRecords(rows)
 }
 
 func (s *ChannelStore) ReadOffsets(fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
@@ -209,26 +197,13 @@ func (s *ChannelStore) leoLocked() (uint64, error) {
 		return s.leo.Load(), nil
 	}
 
-	prefix := encodeLogPrefix(s.key)
-	iter, err := s.engine.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: keyUpperBound(prefix)})
+	maxSeq, err := s.messageTable().maxSeq()
 	if err != nil {
 		return 0, err
 	}
-	defer iter.Close()
-
-	if !iter.Last() {
-		s.leo.Store(0)
-		s.loaded.Store(true)
-		return 0, nil
-	}
-	offset, err := decodeLogRecordOffset(iter.Key(), prefix)
-	if err != nil {
-		return 0, err
-	}
-	next := offset + 1
-	s.leo.Store(next)
+	s.leo.Store(maxSeq)
 	s.loaded.Store(true)
-	return next, nil
+	return maxSeq, nil
 }
 
 func (s *ChannelStore) Truncate(to uint64) error {
@@ -252,10 +227,9 @@ func (s *ChannelStore) Truncate(to uint64) error {
 	s.mu.Unlock()
 	defer s.writeInProgress.Store(false)
 
-	prefix := encodeLogPrefix(s.key)
 	batch := s.engine.db.NewBatch()
 	defer batch.Close()
-	if err := batch.DeleteRange(encodeLogRecordKey(s.key, to), keyUpperBound(prefix), pebble.NoSync); err != nil {
+	if err := s.messageTable().truncateFromSeq(batch, to+1); err != nil {
 		return err
 	}
 	if err := batch.Commit(pebble.Sync); err != nil {
@@ -292,19 +266,15 @@ func (e *Engine) ReadReverse(channelKey channel.ChannelKey, fromOffset uint64, l
 }
 
 func (e *Engine) readOffsets(channelKey channel.ChannelKey, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
-	if limit <= 0 || maxBytes <= 0 {
+	if limit <= 0 || maxBytes <= 0 || fromOffset == math.MaxUint64 {
 		return nil, nil
 	}
 
-	out := make([]LogRecord, 0, minInt(limit, logScanInitialCapacity))
-	_, err := e.scanOffsets(channelKey, fromOffset, limit, maxBytes, func(offset uint64, payload []byte) error {
-		out = append(out, LogRecord{Offset: offset, Payload: payload})
-		return nil
-	})
+	rows, err := (&messageTable{channelKey: channelKey, db: e.db}).scanBySeq(fromOffset+1, limit, maxBytes)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	return rowsToLogRecords(rows)
 }
 
 func (e *Engine) readOffsetsReverse(channelKey channel.ChannelKey, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
@@ -312,86 +282,39 @@ func (e *Engine) readOffsetsReverse(channelKey channel.ChannelKey, fromOffset ui
 		return nil, nil
 	}
 
-	prefix := encodeLogPrefix(channelKey)
-	iter, err := e.db.NewIter(&pebble.IterOptions{
-		LowerBound: prefix,
-		UpperBound: keyUpperBound(prefix),
-	})
+	fromSeq := uint64(math.MaxUint64)
+	if fromOffset < math.MaxUint64 {
+		fromSeq = fromOffset + 1
+	}
+	rows, err := (&messageTable{channelKey: channelKey, db: e.db}).scanBySeqReverse(fromSeq, limit, maxBytes)
 	if err != nil {
 		return nil, err
 	}
-	defer iter.Close()
+	return rowsToLogRecords(rows)
+}
 
-	seekOffset := fromOffset
-	if seekOffset < math.MaxUint64 {
-		seekOffset++
-	}
-	valid := iter.SeekLT(encodeLogRecordKey(channelKey, seekOffset))
-	if !valid {
-		return nil, nil
-	}
-
-	out := make([]LogRecord, 0, minInt(limit, logScanInitialCapacity))
-	total := 0
-	for ; valid && len(out) < limit; valid = iter.Prev() {
-		if !bytes.HasPrefix(iter.Key(), prefix) {
-			break
-		}
-		offset, err := decodeLogRecordOffset(iter.Key(), prefix)
+func rowsToRecords(rows []messageRow) ([]channel.Record, error) {
+	records := make([]channel.Record, 0, len(rows))
+	for _, row := range rows {
+		record, err := row.toRecord()
 		if err != nil {
 			return nil, err
 		}
-		payload := append([]byte(nil), iter.Value()...)
-		size := len(payload)
-		if len(out) > 0 && total+size > maxBytes {
-			break
-		}
-		out = append(out, LogRecord{Offset: offset, Payload: payload})
-		total += size
+		records = append(records, record)
 	}
-	if err := iter.Error(); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return records, nil
 }
 
-func (e *Engine) scanOffsets(channelKey channel.ChannelKey, fromOffset uint64, limit int, maxBytes int, visit func(offset uint64, payload []byte) error) (int, error) {
-	if limit <= 0 || maxBytes <= 0 {
-		return 0, nil
-	}
-
-	prefix := encodeLogPrefix(channelKey)
-	iter, err := e.db.NewIter(&pebble.IterOptions{
-		LowerBound: encodeLogRecordKey(channelKey, fromOffset),
-		UpperBound: keyUpperBound(prefix),
-	})
-	if err != nil {
-		return 0, err
-	}
-	defer iter.Close()
-
-	total := 0
-	count := 0
-	for valid := iter.First(); valid && count < limit; valid = iter.Next() {
-		if !bytes.HasPrefix(iter.Key(), prefix) {
-			break
-		}
-		offset, err := decodeLogRecordOffset(iter.Key(), prefix)
+func rowsToLogRecords(rows []messageRow) ([]LogRecord, error) {
+	records := make([]LogRecord, 0, len(rows))
+	for _, row := range rows {
+		record, err := row.toRecord()
 		if err != nil {
-			return count, err
+			return nil, err
 		}
-		payload := append([]byte(nil), iter.Value()...)
-		size := len(payload)
-		if count > 0 && total+size > maxBytes {
-			break
-		}
-		if err := visit(offset, payload); err != nil {
-			return count, err
-		}
-		count++
-		total += size
+		records = append(records, LogRecord{Offset: row.MessageSeq - 1, Payload: record.Payload})
 	}
-	return count, nil
+	return records, nil
 }
 
 func maxLogScanLimit() int {

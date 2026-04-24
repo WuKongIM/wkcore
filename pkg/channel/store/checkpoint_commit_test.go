@@ -123,7 +123,8 @@ func runChannelStoreCheckpointCoordinatorIndependence(t *testing.T) {
 
 	appendDone := make(chan appendResult, 1)
 	go func() {
-		base, err := st.Append([]channel.Record{{Payload: []byte("one"), SizeBytes: len("one")}})
+		payload := mustEncodeStoreMessage(t, channel.Message{MessageID: 1, ClientMsgNo: "commit", FromUID: "u1", ChannelID: st.id.ID, ChannelType: st.id.Type, Payload: []byte("one")})
+		base, err := st.Append([]channel.Record{{Payload: payload, SizeBytes: len(payload)}})
 		appendDone <- appendResult{base: base, err: err}
 	}()
 

@@ -4,32 +4,33 @@ import (
 	"testing"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/stretchr/testify/require"
 )
 
-func TestChannelStoreAppendAndRead(t *testing.T) {
+func TestChannelStoreAppendPersistsStructuredRowsAndCompatibilityRead(t *testing.T) {
 	st := newTestChannelStore(t)
-
-	base, err := st.Append([]channel.Record{
-		{Payload: []byte("one"), SizeBytes: 3},
-		{Payload: []byte("two"), SizeBytes: 3},
+	payload := mustEncodeStoreMessage(t, channel.Message{
+		MessageID:   11,
+		ClientMsgNo: "client-1",
+		FromUID:     "u1",
+		ChannelID:   "c1",
+		ChannelType: 1,
+		Payload:     []byte("one"),
 	})
-	if err != nil {
-		t.Fatalf("Append() error = %v", err)
-	}
-	if base != 0 {
-		t.Fatalf("base = %d, want 0", base)
-	}
+
+	base, err := st.Append([]channel.Record{{Payload: payload, SizeBytes: len(payload)}})
+	require.NoError(t, err)
+	require.Equal(t, uint64(0), base)
+
+	row, ok, err := getStoredMessageRow(t, st, 1)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, uint64(11), row.MessageID)
 
 	records, err := st.Read(0, 1024)
-	if err != nil {
-		t.Fatalf("Read() error = %v", err)
-	}
-	if len(records) != 2 {
-		t.Fatalf("len(records) = %d, want 2", len(records))
-	}
-	if string(records[1].Payload) != "two" {
-		t.Fatalf("records[1].Payload = %q, want %q", records[1].Payload, "two")
-	}
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	require.Equal(t, uint64(11), mustDecodeStoreMessage(t, records[0].Payload).MessageID)
 }
 
 func TestEngineReadScopesByChannelKeyAndBudget(t *testing.T) {
@@ -39,7 +40,15 @@ func TestEngineReadScopesByChannelKeyAndBudget(t *testing.T) {
 	mustAppendRecords(t, first, []string{"one", "two"})
 	mustAppendRecords(t, second, []string{"zzz"})
 
-	records, err := engine.Read(first.key, 0, 10, len("one"))
+	budget := len(mustEncodeStoreMessage(t, channel.Message{
+		MessageID:   1,
+		ClientMsgNo: "client-1",
+		FromUID:     "u1",
+		ChannelID:   "c1",
+		ChannelType: 1,
+		Payload:     []byte("one"),
+	}))
+	records, err := engine.Read(first.key, 0, 10, budget)
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
@@ -50,10 +59,12 @@ func TestEngineReadScopesByChannelKeyAndBudget(t *testing.T) {
 
 func TestChannelStoreLEOTracksAppendAndTruncate(t *testing.T) {
 	st := newTestChannelStore(t)
+	firstPayload := mustEncodeStoreMessage(t, channel.Message{MessageID: 1, ClientMsgNo: "m1", FromUID: "u1", ChannelID: "c1", ChannelType: 1, Payload: []byte("one")})
+	secondPayload := mustEncodeStoreMessage(t, channel.Message{MessageID: 2, ClientMsgNo: "m2", FromUID: "u1", ChannelID: "c1", ChannelType: 1, Payload: []byte("two")})
 
 	if _, err := st.Append([]channel.Record{
-		{Payload: []byte("one"), SizeBytes: 3},
-		{Payload: []byte("two"), SizeBytes: 3},
+		{Payload: firstPayload, SizeBytes: len(firstPayload)},
+		{Payload: secondPayload, SizeBytes: len(secondPayload)},
 	}); err != nil {
 		t.Fatalf("Append() error = %v", err)
 	}
@@ -68,7 +79,8 @@ func TestChannelStoreLEOTracksAppendAndTruncate(t *testing.T) {
 		t.Fatalf("LEO() after truncate = %d, want 1", got)
 	}
 
-	base, err := st.Append([]channel.Record{{Payload: []byte("three"), SizeBytes: 5}})
+	thirdPayload := mustEncodeStoreMessage(t, channel.Message{MessageID: 3, ClientMsgNo: "m3", FromUID: "u1", ChannelID: "c1", ChannelType: 1, Payload: []byte("three")})
+	base, err := st.Append([]channel.Record{{Payload: thirdPayload, SizeBytes: len(thirdPayload)}})
 	if err != nil {
 		t.Fatalf("Append(after truncate) error = %v", err)
 	}
@@ -118,7 +130,49 @@ func TestChannelStoreSyncPreservesTrimmedLogAcrossRestart(t *testing.T) {
 	if len(records) != 1 {
 		t.Fatalf("len(records) = %d, want 1", len(records))
 	}
-	if string(records[0].Payload) != "one" {
-		t.Fatalf("records[0].Payload = %q, want %q", records[0].Payload, "one")
+	if got := string(mustDecodeStoreMessage(t, records[0].Payload).Payload); got != "one" {
+		t.Fatalf("decoded payload = %q, want %q", got, "one")
 	}
+}
+
+func TestChannelStoreTruncateRemovesRowsAndIndexes(t *testing.T) {
+	st := newTestChannelStore(t)
+
+	firstPayload := mustEncodeStoreMessage(t, channel.Message{MessageID: 21, ClientMsgNo: "same", FromUID: "u1", ChannelID: "c1", ChannelType: 1, Payload: []byte("one")})
+	secondPayload := mustEncodeStoreMessage(t, channel.Message{MessageID: 22, ClientMsgNo: "same", FromUID: "u2", ChannelID: "c1", ChannelType: 1, Payload: []byte("two")})
+
+	_, err := st.Append([]channel.Record{
+		{Payload: firstPayload, SizeBytes: len(firstPayload)},
+		{Payload: secondPayload, SizeBytes: len(secondPayload)},
+	})
+	require.NoError(t, err)
+
+	row, ok, err := getStoredMessageRow(t, st, 2)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, uint64(22), row.MessageID)
+
+	seq, ok, err := getStoredMessageIDIndexSeq(t, st, 22)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, uint64(2), seq)
+
+	hit, ok, err := getStoredIdempotencyHit(t, st, "u2", "same")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, uint64(2), hit.MessageSeq)
+
+	require.NoError(t, st.Truncate(1))
+
+	_, ok, err = getStoredMessageRow(t, st, 2)
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	_, ok, err = getStoredMessageIDIndexSeq(t, st, 22)
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	_, ok, err = getStoredIdempotencyHit(t, st, "u2", "same")
+	require.NoError(t, err)
+	require.False(t, ok)
 }

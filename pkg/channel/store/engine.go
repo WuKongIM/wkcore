@@ -80,9 +80,10 @@ func (e *Engine) ForChannel(key channel.ChannelKey, id channel.ChannelID) *Chann
 		return st
 	}
 	st := &ChannelStore{
-		engine: e,
-		key:    key,
-		id:     id,
+		engine:   e,
+		key:      key,
+		id:       id,
+		messages: messageTable{channelKey: key, db: e.db},
 	}
 	e.stores[key] = st
 	return st

@@ -23,7 +23,8 @@ func TestChannelStoreAppendUsesCommitCoordinatorAcrossChannels(t *testing.T) {
 		go func(st *ChannelStore) {
 			ready <- struct{}{}
 			<-start
-			base, err := st.Append([]channel.Record{{Payload: []byte(st.id.ID), SizeBytes: len(st.id.ID)}})
+			payload := mustEncodeStoreMessage(t, channel.Message{MessageID: 1, ClientMsgNo: "commit", FromUID: "u1", ChannelID: st.id.ID, ChannelType: st.id.Type, Payload: []byte(st.id.ID)})
+			base, err := st.Append([]channel.Record{{Payload: payload, SizeBytes: len(payload)}})
 			results <- appendResult{base: base, err: err}
 		}(st)
 	}
@@ -68,7 +69,8 @@ func TestChannelStoreAppendBlocksUntilSyncCompletes(t *testing.T) {
 
 	done := make(chan appendResult, 1)
 	go func() {
-		base, err := st.Append([]channel.Record{{Payload: []byte("one"), SizeBytes: len("one")}})
+		payload := mustEncodeStoreMessage(t, channel.Message{MessageID: 1, ClientMsgNo: "commit", FromUID: "u1", ChannelID: st.id.ID, ChannelType: st.id.Type, Payload: []byte("one")})
+		base, err := st.Append([]channel.Record{{Payload: payload, SizeBytes: len(payload)}})
 		done <- appendResult{base: base, err: err}
 	}()
 
@@ -136,7 +138,8 @@ func TestChannelStoreAppendLEOStaysHiddenUntilPublishCompletes(t *testing.T) {
 
 	done := make(chan appendResult, 1)
 	go func() {
-		base, err := st.Append([]channel.Record{{Payload: []byte("one"), SizeBytes: len("one")}})
+		payload := mustEncodeStoreMessage(t, channel.Message{MessageID: 1, ClientMsgNo: "commit", FromUID: "u1", ChannelID: st.id.ID, ChannelType: st.id.Type, Payload: []byte("one")})
+		base, err := st.Append([]channel.Record{{Payload: payload, SizeBytes: len(payload)}})
 		done <- appendResult{base: base, err: err}
 	}()
 
@@ -191,7 +194,8 @@ func TestChannelStoreAppendBatchFailureFailsAllWaiters(t *testing.T) {
 		go func(st *ChannelStore) {
 			ready <- struct{}{}
 			<-start
-			base, err := st.Append([]channel.Record{{Payload: []byte(st.id.ID), SizeBytes: len(st.id.ID)}})
+			payload := mustEncodeStoreMessage(t, channel.Message{MessageID: 1, ClientMsgNo: "commit", FromUID: "u1", ChannelID: st.id.ID, ChannelType: st.id.Type, Payload: []byte(st.id.ID)})
+			base, err := st.Append([]channel.Record{{Payload: payload, SizeBytes: len(payload)}})
 			results <- appendResult{base: base, err: err}
 		}(st)
 	}

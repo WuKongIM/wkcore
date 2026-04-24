@@ -27,7 +27,8 @@ func TestCommitCoordinatorBatchesMultipleGroupsIntoSinglePebbleSync(t *testing.T
 		go func(st *ChannelStore) {
 			ready <- struct{}{}
 			<-start
-			base, err := st.Append([]channel.Record{{Payload: []byte(st.id.ID), SizeBytes: len(st.id.ID)}})
+			payload := mustEncodeStoreMessage(t, channel.Message{MessageID: 1, ClientMsgNo: "commit", FromUID: "u1", ChannelID: st.id.ID, ChannelType: st.id.Type, Payload: []byte(st.id.ID)})
+			base, err := st.Append([]channel.Record{{Payload: payload, SizeBytes: len(payload)}})
 			if err == nil {
 				baseCh <- base
 			}
