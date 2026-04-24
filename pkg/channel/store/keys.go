@@ -6,6 +6,13 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 )
 
+const (
+	channelSystemTableID      uint32 = TableIDMessage
+	channelSystemIDCheckpoint uint16 = 1
+	channelSystemIDHistory    uint16 = 2
+	channelSystemIDSnapshot   uint16 = 3
+)
+
 func encodeLogPrefix(channelKey channel.ChannelKey) []byte {
 	return encodeKeyspacePrefix(keyspaceLog, channelKey)
 }
@@ -16,11 +23,11 @@ func encodeLogRecordKey(channelKey channel.ChannelKey, offset uint64) []byte {
 }
 
 func encodeCheckpointKey(channelKey channel.ChannelKey) []byte {
-	return encodeKeyspacePrefix(keyspaceCheckpoint, channelKey)
+	return encodeTableSystemKey(channelKey, channelSystemTableID, channelSystemIDCheckpoint)
 }
 
 func encodeHistoryPrefix(channelKey channel.ChannelKey) []byte {
-	return encodeKeyspacePrefix(keyspaceHistory, channelKey)
+	return encodeTableSystemPrefix(channelKey, channelSystemTableID, channelSystemIDHistory)
 }
 
 func encodeHistoryKey(channelKey channel.ChannelKey, startOffset uint64) []byte {
@@ -29,11 +36,11 @@ func encodeHistoryKey(channelKey channel.ChannelKey, startOffset uint64) []byte 
 }
 
 func encodeSnapshotKey(channelKey channel.ChannelKey) []byte {
-	return encodeKeyspacePrefix(keyspaceSnapshot, channelKey)
+	return encodeTableSystemKey(channelKey, channelSystemTableID, channelSystemIDSnapshot)
 }
 
 func encodeIdempotencyPrefix(channelKey channel.ChannelKey) []byte {
-	return encodeKeyspacePrefix(keyspaceIdempotency, channelKey)
+	return encodeTableIndexPrefix(channelKey, TableIDMessage, messageIndexIDFromUIDClientMsgNo)
 }
 
 func encodeIdempotencyKey(channelKey channel.ChannelKey, key channel.IdempotencyKey) []byte {

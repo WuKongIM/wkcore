@@ -16,7 +16,7 @@ func (s *ChannelStore) PutIdempotency(key channel.IdempotencyKey, entry channel.
 	if err := s.validateIdempotencyKey(key); err != nil {
 		return err
 	}
-	if err := s.engine.db.Set(encodeIdempotencyKey(s.key, key), encodeIdempotencyEntry(entry), pebble.Sync); err != nil {
+	if err := s.engine.db.Set(encodeIdempotencyKey(s.key, key), encodeStoredIdempotencyValue(entry, 0), pebble.Sync); err != nil {
 		return err
 	}
 	s.recordDurableCommit()
@@ -36,7 +36,7 @@ func (s *ChannelStore) GetIdempotency(key channel.IdempotencyKey) (channel.Idemp
 	}
 	defer closer.Close()
 
-	entry, err := decodeIdempotencyEntry(value)
+	entry, _, err := decodeStoredIdempotencyValue(value)
 	if err != nil {
 		return channel.IdempotencyEntry{}, false, err
 	}
@@ -61,14 +61,19 @@ func (s *ChannelStore) SnapshotIdempotency(offset uint64) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		entry, err := decodeIdempotencyEntry(iter.Value())
+		entry, payloadHash, err := decodeStoredIdempotencyValue(iter.Value())
 		if err != nil {
 			return nil, err
 		}
 		if entry.Offset >= offset {
 			continue
 		}
-		entries = append(entries, stateSnapshotEntry{FromUID: key.FromUID, ClientMsgNo: key.ClientMsgNo, Entry: entry})
+		entries = append(entries, stateSnapshotEntry{
+			FromUID:     key.FromUID,
+			ClientMsgNo: key.ClientMsgNo,
+			Entry:       entry,
+			PayloadHash: payloadHash,
+		})
 	}
 	if err := iter.Error(); err != nil {
 		return nil, err
@@ -99,7 +104,7 @@ func (s *ChannelStore) RestoreIdempotency(snapshot []byte) error {
 			FromUID:     entry.FromUID,
 			ClientMsgNo: entry.ClientMsgNo,
 		}
-		if err := batch.Set(encodeIdempotencyKey(s.key, key), encodeIdempotencyEntry(entry.Entry), pebble.NoSync); err != nil {
+		if err := batch.Set(encodeIdempotencyKey(s.key, key), encodeStoredIdempotencyValue(entry.Entry, entry.PayloadHash), pebble.NoSync); err != nil {
 			return err
 		}
 	}
@@ -177,7 +182,7 @@ func (s *ChannelStore) writeCommitted(writeBatch *pebble.Batch, checkpoint chann
 		if message.entry.Offset >= checkpoint.HW {
 			return channel.ErrInvalidArgument
 		}
-		if err := writeBatch.Set(encodeIdempotencyKey(s.key, message.key), encodeIdempotencyEntry(message.entry), pebble.NoSync); err != nil {
+		if err := writeBatch.Set(encodeIdempotencyKey(s.key, message.key), encodeStoredIdempotencyValue(message.entry, 0), pebble.NoSync); err != nil {
 			return err
 		}
 	}

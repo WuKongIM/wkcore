@@ -64,10 +64,14 @@ func encodeTableIndexPrefix(channelKey channel.ChannelKey, tableID uint32, index
 	return binary.BigEndian.AppendUint16(key, indexID)
 }
 
-func encodeTableSystemKey(channelKey channel.ChannelKey, tableID uint32, systemID uint16) []byte {
+func encodeTableSystemPrefix(channelKey channel.ChannelKey, tableID uint32, systemID uint16) []byte {
 	key := encodeKeyspacePrefix(keyspaceTableSystem, channelKey)
 	key = binary.BigEndian.AppendUint32(key, tableID)
 	return binary.BigEndian.AppendUint16(key, systemID)
+}
+
+func encodeTableSystemKey(channelKey channel.ChannelKey, tableID uint32, systemID uint16) []byte {
+	return encodeTableSystemPrefix(channelKey, tableID, systemID)
 }
 
 func encodeMessageFamilies(row messageRow) ([]byte, []byte, error) {

@@ -51,7 +51,7 @@ func TestChannelStoreApplyFetchPersistsCommittedIdempotencyForExistingAndNewReco
 	require.Equal(t, uint64(1), current.Offset)
 }
 
-func TestCommitCommittedUsesExplicitPreviousCommitHW(t *testing.T) {
+func TestStoreApplyFetchKeepsStructuredIdempotencyAcrossExplicitPreviousCommitHW(t *testing.T) {
 	id := channel.ChannelID{ID: "c1", Type: 1}
 	st := openTestChannelStore(t, channel.ChannelKey("channel/1/c1"), id)
 
@@ -71,13 +71,16 @@ func TestCommitCommittedUsesExplicitPreviousCommitHW(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, ok, err := st.GetIdempotency(channel.IdempotencyKey{
+	legacy, ok, err := st.GetIdempotency(channel.IdempotencyKey{
 		ChannelID:   id,
 		FromUID:     "u1",
 		ClientMsgNo: "m1",
 	})
 	require.NoError(t, err)
-	require.False(t, ok, "records below explicit previous committed HW must not be replayed from checkpoint lag")
+	require.True(t, ok)
+	require.Equal(t, uint64(11), legacy.MessageID)
+	require.Equal(t, uint64(1), legacy.MessageSeq)
+	require.Equal(t, uint64(0), legacy.Offset)
 
 	current, ok, err := st.GetIdempotency(channel.IdempotencyKey{
 		ChannelID:   id,
@@ -89,6 +92,42 @@ func TestCommitCommittedUsesExplicitPreviousCommitHW(t *testing.T) {
 	require.Equal(t, uint64(12), current.MessageID)
 	require.Equal(t, uint64(2), current.MessageSeq)
 	require.Equal(t, uint64(1), current.Offset)
+}
+
+func TestStoreApplyFetchPreservesLeaderSequenceAfterTruncate(t *testing.T) {
+	id := channel.ChannelID{ID: "c1", Type: 1}
+	st := openTestChannelStore(t, channel.ChannelKey("channel/1/c1"), id)
+
+	initial := []channel.Record{
+		{Payload: mustEncodeStoreMessage(t, channel.Message{MessageID: 21, ClientMsgNo: "m1", FromUID: "u1", ChannelID: id.ID, ChannelType: id.Type, Payload: []byte("one")}), SizeBytes: 1},
+		{Payload: mustEncodeStoreMessage(t, channel.Message{MessageID: 22, ClientMsgNo: "m2", FromUID: "u1", ChannelID: id.ID, ChannelType: id.Type, Payload: []byte("two")}), SizeBytes: 1},
+		{Payload: mustEncodeStoreMessage(t, channel.Message{MessageID: 23, ClientMsgNo: "m3", FromUID: "u1", ChannelID: id.ID, ChannelType: id.Type, Payload: []byte("three")}), SizeBytes: 1},
+	}
+	_, err := st.Append(initial)
+	require.NoError(t, err)
+
+	require.NoError(t, st.Truncate(1))
+
+	nextLEO, err := st.StoreApplyFetch(channel.ApplyFetchStoreRequest{
+		Records: []channel.Record{
+			{Payload: mustEncodeStoreMessage(t, channel.Message{MessageID: 24, ClientMsgNo: "m4", FromUID: "u1", ChannelID: id.ID, ChannelType: id.Type, Payload: []byte("four")}), SizeBytes: 1},
+			{Payload: mustEncodeStoreMessage(t, channel.Message{MessageID: 25, ClientMsgNo: "m5", FromUID: "u1", ChannelID: id.ID, ChannelType: id.Type, Payload: []byte("five")}), SizeBytes: 1},
+		},
+		PreviousCommittedHW: 1,
+		Checkpoint:          &channel.Checkpoint{Epoch: 4, HW: 3},
+	})
+	require.NoError(t, err)
+	require.Equal(t, uint64(3), nextLEO)
+
+	second, ok, err := st.GetMessageBySeq(2)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, uint64(24), second.MessageID)
+
+	third, ok, err := st.GetMessageBySeq(3)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, uint64(25), third.MessageID)
 }
 
 func mustEncodeApplyFetchMessagePayload(t *testing.T, messageID uint64, fromUID, clientMsgNo, body string) []byte {

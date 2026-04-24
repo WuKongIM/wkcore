@@ -146,3 +146,37 @@ func TestChannelStoreRoundTripsFullIdempotencyStateAtCurrentOffset(t *testing.T)
 		t.Fatalf("restored second entry = %+v, want %+v", got, secondEntry)
 	}
 }
+
+func TestGetIdempotencyUsesUniqueIndexWithoutRawLogReplay(t *testing.T) {
+	st := openTestChannelStore(t, channel.ChannelKey("channel/1/u1"), channel.ChannelID{ID: "u1", Type: 1})
+	id := channel.ChannelID{ID: "u1", Type: 1}
+
+	payload := mustEncodeStoreMessage(t, channel.Message{
+		MessageID:   31,
+		ClientMsgNo: "m1",
+		FromUID:     "sender-1",
+		ChannelID:   id.ID,
+		ChannelType: id.Type,
+		Payload:     []byte("one"),
+	})
+	_, err := st.Append([]channel.Record{{Payload: payload, SizeBytes: len(payload)}})
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	got, ok, err := st.GetIdempotency(channel.IdempotencyKey{
+		ChannelID:   id,
+		FromUID:     "sender-1",
+		ClientMsgNo: "m1",
+	})
+	if err != nil {
+		t.Fatalf("GetIdempotency() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected idempotency entry from structured unique index")
+	}
+	want := channel.IdempotencyEntry{MessageID: 31, MessageSeq: 1, Offset: 0}
+	if got != want {
+		t.Fatalf("idempotency entry = %+v, want %+v", got, want)
+	}
+}
