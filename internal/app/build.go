@@ -28,6 +28,7 @@ import (
 	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
 	channeltransport "github.com/WuKongIM/WuKongIM/pkg/channel/transport"
 	raftcluster "github.com/WuKongIM/WuKongIM/pkg/cluster"
+	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	obsmetrics "github.com/WuKongIM/WuKongIM/pkg/metrics"
 	raftstorage "github.com/WuKongIM/WuKongIM/pkg/raftlog"
 	metafsm "github.com/WuKongIM/WuKongIM/pkg/slot/fsm"
@@ -101,6 +102,12 @@ func build(cfg Config) (_ *App, err error) {
 			}
 			app.channelMetaSync.scheduleSlotLeaderRefresh(multiraft.SlotID(slotID))
 		},
+		OnNodeStatusChange: func(nodeID uint64, _ controllermeta.NodeStatus, to controllermeta.NodeStatus) {
+			if app.channelMetaSync == nil {
+				return
+			}
+			app.channelMetaSync.UpdateNodeLiveness(nodeID, to)
+		},
 	}
 	if app.metrics != nil {
 		clusterObserver = mergeClusterObserverHooks(clusterObserver, clusterMetricsObserver{metrics: app.metrics}.Hooks())
@@ -159,9 +166,11 @@ func build(cfg Config) (_ *App, err error) {
 		localNode:       cfg.Node.ID,
 		refreshInterval: time.Second,
 	}
+	replicaFactory := newChannelReplicaFactory(app.channelLogDB, channel.NodeID(cfg.Node.ID), nil, cfg.Cluster.AppendGroupCommitMaxWait, cfg.Cluster.AppendGroupCommitMaxRecords, cfg.Cluster.AppendGroupCommitMaxBytes, app.logger.Named("channel"))
+	replicaFactory.onStateChange = app.channelMetaSync.enqueueLocalReplicaStateChange
 	app.isrRuntime, err = channelruntime.New(channelruntime.Config{
 		LocalNode:                        channel.NodeID(cfg.Node.ID),
-		ReplicaFactory:                   newChannelReplicaFactory(app.channelLogDB, channel.NodeID(cfg.Node.ID), nil, cfg.Cluster.AppendGroupCommitMaxWait, cfg.Cluster.AppendGroupCommitMaxRecords, cfg.Cluster.AppendGroupCommitMaxBytes, app.logger.Named("channel")),
+		ReplicaFactory:                   replicaFactory,
 		GenerationStore:                  newMemoryGenerationStore(),
 		Activator:                        app.channelMetaSync,
 		Transport:                        app.isrTransport,
@@ -187,6 +196,7 @@ func build(cfg Config) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: create channel runtime: %w", err)
 	}
+	app.channelMetaSync.localRuntime = app.isrRuntime
 	app.channelLog, err = newAppChannelCluster(app.channelLogDB, app.isrRuntime, app.isrTransport, messageIDs, cfg.Node.ID, app.logger)
 	if err != nil {
 		return nil, fmt.Errorf("app: create channel cluster: %w", err)
@@ -196,6 +206,28 @@ func build(cfg Config) (_ *App, err error) {
 	app.store = metastore.New(app.cluster, app.db)
 	app.nodeClient = accessnode.NewClient(app.cluster)
 	app.channelLog.remoteAppender = app.nodeClient
+	repairProbeClient, err := channeltransport.NewProbeClient(channeltransport.ProbeClientOptions{
+		Client:     app.dataPlaneClient,
+		RPCTimeout: cfg.Cluster.DataPlaneRPCTimeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("app: create channel repair probe client: %w", err)
+	}
+	channelLeaderEvaluator := &channelLeaderPromotionEvaluator{
+		db:        app.channelLogDB,
+		localNode: cfg.Node.ID,
+		probe:     repairProbeClient,
+	}
+	channelLeaderRepairer := &channelLeaderRepairer{
+		store:       app.store,
+		cluster:     app.cluster,
+		remote:      app.nodeClient,
+		evaluator:   channelLeaderEvaluator,
+		localNode:   cfg.Node.ID,
+		now:         time.Now,
+		needsRepair: app.channelMetaSync.needsLeaderRepair,
+	}
+	app.channelMetaSync.repairer = channelLeaderRepairer
 	app.conversationProjector = conversationusecase.NewProjector(conversationusecase.ProjectorOptions{
 		Store:              app.store,
 		FlushInterval:      cfg.Conversation.FlushInterval,
@@ -284,19 +316,21 @@ func build(cfg Config) (_ *App, err error) {
 		nodeClient:   app.nodeClient,
 	}
 	app.nodeAccess = accessnode.New(accessnode.Options{
-		Cluster:          app.cluster,
-		Presence:         app.presenceApp,
-		Online:           onlineRegistry,
-		GatewayBootID:    app.gatewayBootID,
-		LocalNodeID:      cfg.Node.ID,
-		ChannelLog:       app.channelLog,
-		ChannelLogDB:     app.channelLogDB,
-		ChannelMeta:      app.channelMetaSync,
-		DeliverySubmit:   committedDispatcher,
-		DeliveryAck:      app.deliveryApp,
-		DeliveryOffline:  app.deliveryApp,
-		DeliveryAckIndex: app.deliveryAcks,
-		Logger:           app.logger.Named("access.node"),
+		Cluster:               app.cluster,
+		Presence:              app.presenceApp,
+		Online:                onlineRegistry,
+		GatewayBootID:         app.gatewayBootID,
+		LocalNodeID:           cfg.Node.ID,
+		ChannelLog:            app.channelLog,
+		ChannelLogDB:          app.channelLogDB,
+		ChannelMeta:           app.channelMetaSync,
+		DeliverySubmit:        committedDispatcher,
+		DeliveryAck:           app.deliveryApp,
+		DeliveryOffline:       app.deliveryApp,
+		DeliveryAckIndex:      app.deliveryAcks,
+		ChannelLeaderRepair:   channelLeaderRepairer,
+		ChannelLeaderEvaluate: channelLeaderEvaluator,
+		Logger:                app.logger.Named("access.node"),
 	})
 	app.messageApp = message.New(message.Options{
 		IdentityStore:       app.store,
@@ -987,6 +1021,14 @@ func mergeClusterObserverHooks(left, right raftcluster.ObserverHooks) raftcluste
 			}
 			if right.OnLeaderChange != nil {
 				right.OnLeaderChange(slotID, from, to)
+			}
+		},
+		OnNodeStatusChange: func(nodeID uint64, from, to controllermeta.NodeStatus) {
+			if left.OnNodeStatusChange != nil {
+				left.OnNodeStatusChange(nodeID, from, to)
+			}
+			if right.OnNodeStatusChange != nil {
+				right.OnNodeStatusChange(nodeID, from, to)
 			}
 		},
 	}

@@ -12,10 +12,12 @@ import (
 )
 
 const (
-	rpcStatusOK        = "ok"
-	rpcStatusNotLeader = "not_leader"
-	rpcStatusNoLeader  = "no_leader"
-	rpcStatusNoSlot    = "no_group"
+	rpcStatusOK              = "ok"
+	rpcStatusNotLeader       = "not_leader"
+	rpcStatusNoLeader        = "no_leader"
+	rpcStatusNoSlot          = "no_group"
+	rpcStatusRejected        = "rejected"
+	rpcStatusNoSafeCandidate = "no_safe_candidate"
 
 	presenceOpRegister        = "register"
 	presenceOpUnregister      = "unregister"
@@ -179,25 +181,31 @@ func (a *Adapter) handleApplyAction(ctx context.Context, req presenceRPCRequest)
 }
 
 func (a *Adapter) handleAuthoritativeRPC(slotID multiraft.SlotID) ([]byte, bool, error) {
-	if a.cluster == nil || slotID == 0 {
+	status, leaderID, handled := a.authoritativeRPCStatus(slotID)
+	if !handled {
 		return nil, false, nil
+	}
+	body, encodeErr := encodePresenceResponse(presenceRPCResponse{
+		Status:   status,
+		LeaderID: leaderID,
+	})
+	return body, true, encodeErr
+}
+
+func (a *Adapter) authoritativeRPCStatus(slotID multiraft.SlotID) (string, uint64, bool) {
+	if a.cluster == nil || slotID == 0 {
+		return "", 0, false
 	}
 	leaderID, err := a.cluster.LeaderOf(slotID)
 	switch {
 	case errors.Is(err, raftcluster.ErrSlotNotFound):
-		body, encodeErr := encodePresenceResponse(presenceRPCResponse{Status: rpcStatusNoSlot})
-		return body, true, encodeErr
+		return rpcStatusNoSlot, 0, true
 	case err != nil:
-		body, encodeErr := encodePresenceResponse(presenceRPCResponse{Status: rpcStatusNoLeader})
-		return body, true, encodeErr
+		return rpcStatusNoLeader, 0, true
 	case !a.cluster.IsLocal(leaderID):
-		body, encodeErr := encodePresenceResponse(presenceRPCResponse{
-			Status:   rpcStatusNotLeader,
-			LeaderID: uint64(leaderID),
-		})
-		return body, true, encodeErr
+		return rpcStatusNotLeader, uint64(leaderID), true
 	default:
-		return nil, false, nil
+		return "", 0, false
 	}
 }
 

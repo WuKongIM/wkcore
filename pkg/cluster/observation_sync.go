@@ -450,3 +450,44 @@ func sortObservationDelta(resp *observationDeltaResponse) {
 	sort.Slice(resp.DeletedTasks, func(i, j int) bool { return resp.DeletedTasks[i] < resp.DeletedTasks[j] })
 	sort.Slice(resp.DeletedRuntimeSlots, func(i, j int) bool { return resp.DeletedRuntimeSlots[i] < resp.DeletedRuntimeSlots[j] })
 }
+
+type observationNodeStatusChange struct {
+	nodeID uint64
+	from   controllermeta.NodeStatus
+	to     controllermeta.NodeStatus
+}
+
+func cloneObservationNodesByID(nodes map[uint64]controllermeta.ClusterNode) map[uint64]controllermeta.ClusterNode {
+	if len(nodes) == 0 {
+		return nil
+	}
+	cloned := make(map[uint64]controllermeta.ClusterNode, len(nodes))
+	for nodeID, node := range nodes {
+		cloned[nodeID] = node
+	}
+	return cloned
+}
+
+func diffObservationNodeStatuses(before, after map[uint64]controllermeta.ClusterNode) []observationNodeStatusChange {
+	if len(after) == 0 {
+		return nil
+	}
+	changes := make([]observationNodeStatusChange, 0, len(after))
+	for nodeID, node := range after {
+		prev, ok := before[nodeID]
+		if ok && prev.Status == node.Status {
+			continue
+		}
+		from := controllermeta.NodeStatusUnknown
+		if ok {
+			from = prev.Status
+		}
+		changes = append(changes, observationNodeStatusChange{
+			nodeID: nodeID,
+			from:   from,
+			to:     node.Status,
+		})
+	}
+	sort.Slice(changes, func(i, j int) bool { return changes[i].nodeID < changes[j].nodeID })
+	return changes
+}

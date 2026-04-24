@@ -22,6 +22,7 @@ var (
 	ErrMessageNotFound         = errors.New("channel: message not found")
 	ErrInvalidFetchArgument    = errors.New("channel: invalid fetch argument")
 	ErrInvalidFetchBudget      = errors.New("channel: invalid fetch budget")
+	ErrNoSafeChannelLeader     = errors.New("channel: no safe leader candidate")
 	ErrCorruptState            = errors.New("channel: corrupt state")
 	ErrEmptyState              = errors.New("channel: empty state")
 	ErrCorruptValue            = errors.New("channel: corrupt value")

@@ -10,10 +10,10 @@
 | 子包 | 入口/核心类型 | 职责 |
 |------|-------------|------|
 | `handler/` | `handler.New()` → `Service` | 请求校验、幂等去重、DurableMessage 编解码、消息序列号管理 |
-| `replica/` | `replica.NewReplica()` → `Replica` | 副本状态机：Group Commit 追加、HW 推进、分歧检测、角色转换、恢复 |
+| `replica/` | `replica.NewReplica()` → `Replica` | 副本状态机：Group Commit 追加、HW 推进、分歧检测、角色转换、恢复；并提供 dry-run leader promotion evaluator |
 | `runtime/` | `runtime.Build()` → `Runtime` | 频道生命周期管理、复制调度（三优先级）、leader/follower lane 状态、 多级背压、墓碑清理 |
 | `store/` | `store.NewEngine()` → `Engine` | Pebble KV：日志、检查点、Epoch 历史、幂等表持久化 |
-| `transport/` | `transport.Build()` | steady-state `LongPollFetch`、辅助 `Fetch`，以及始终独立保留的 `ReconcileProbe` RPC |
+| `transport/` | `transport.Build()` | steady-state `LongPollFetch`、辅助 `Fetch`，始终独立保留的 `ReconcileProbe` RPC，以及供控制面 leader-repair 复用的同步 `ProbeClient` |
 
 ## 3. 对外接口
 
@@ -106,6 +106,22 @@ Reconcile Probe（启动 / leader transfer 后的 provisional 收敛）:
   ⑤ 持久化新的 Checkpoint，推进 `CheckpointHW`，最后把 `CommitReady` 置为 true
 ```
 
+```
+Promotion Dry-run（供 app 侧权威 leader repair 选主）:
+  ① 当 app 侧判断权威 `ChannelRuntimeMeta.Leader` 缺失 / 已死 / 不在副本集时，
+     slot leader 会向 ISR 候选副本发 `channel_leader_evaluate` RPC
+  ② 候选副本从 `channel/store` 加载本地 durable view：
+     `EpochHistory` / `LEO` / `CheckpointHW` / `OffsetEpoch`
+  ③ 若需要 peer proof，则通过 `transport/probe_client.go` 复用 `ReconcileProbe` RPC
+     向其他 ISR 副本直连拉取 proof；这条外部 probe 会带 `Generation=0`
+  ④ `replica/promotion_evaluator.go` 基于 durable view + proof 计算：
+     `ProjectedSafeHW` / `ProjectedTruncateTo` / `CommitReadyNow` / `CanLead`
+     - 候选副本必须先拥有本地 durable state；冷空副本不会因为 peer proof 存在就被提升
+     - 只有真实收到的 quorum proof 才计入 `MinISR`；缺失 proof 不会再被本地 `HW` 隐式补票
+  ⑤ app 层再根据报告排序并持久化新的 `ChannelRuntimeMeta.Leader`；
+     这一步只决定“谁最安全”，真正切主后的 runtime reconcile 仍按正常 leader promotion 流程执行
+```
+
 ### 5.4 角色转换
 
 入口: `replica/replica.go`
@@ -172,9 +188,13 @@ Idempotency (0x14): prefix + key + fromUID + msgNo — 幂等条目
 - **Cross-channel durable batching**: `store/commit.go` 使用 200µs 窗口跨频道合并 Pebble durable 写入；Leader 的 synced Append 和 Follower 的 ApplyFetch 都走同一个 coordinator。单频道的 `writeMu` 仍然串行，且 sync 完成前不会发布新的 LEO。
 - **Checkpoint 不再阻塞 sendack**: leader 在 quorum commit 后先完成 Append waiter，Checkpoint 持久化走后台 coalescing；若 checkpoint 写盘长期失败，当前实现还缺少显式 health / metrics 暴露。
 - **leader reconcile 先区分“需要 peer 证明”与“只差本地 checkpoint”**: 若 leader transfer 后只是 `CheckpointHW < HW`、本地没有 `LEO > HW` 的 provisional tail，则会直接做本地 reconcile，不等待 peer probe；若已经拿到足以证明本地 tail 全量 quorum-safe 的 proof，也不会继续卡在离线 ISR peer 上。
-- **Transport RPC 分片**: steady-state lane poll 按 `laneID` 路由，保证同一 `(peer,lane)` 有序；辅助 `Fetch` / `ReconcileProbe` 继续按 FNV-64a(ChannelKey) 路由。见 `transport/session.go`。
+- **Transport RPC 分片**: steady-state lane poll 按 `laneID` 路由，保证同一 `(peer,lane)` 有序；辅助 `Fetch` / `ReconcileProbe` 继续按 FNV-64a(ChannelKey) 路由；app 侧同步 `ProbeClient` 也复用同一个 `ReconcileProbe` service。见 `transport/session.go` / `transport/probe_client.go`。
 - **Leader lane session 是固定规模资源**: ready queue / parked waiter 的规模与 `peer * laneCount` 成正比，不会退化成 per-channel timer / goroutine。
 - **复制 ingress 允许一次按 key 激活重试**: `ServeFetch` / `ServeReconcileProbe` 遇到 runtime miss 时会先走 activator 按 `ChannelKey` 拉权威 meta、确保本地 runtime，再重试一次；它不是后台全量预热。
+- **`ServeReconcileProbe` 允许外部 `Generation=0` 探测**: runtime 内部 steady-state / reconcile session 仍会携带具体 generation 做匹配；而 app 侧 leader-repair dry-run 走同步 `ProbeClient` 时允许 `Generation=0`，服务端返回当前 generation，避免因为本地 runtime 代次未知而拿不到 proof。
 - **lane retry 是唯一 steady-state 恢复节奏**: steady-state lane poll 的恢复 backoff 由 `(peer,lane)` timer 驱动；`ReconcileProbe` 仍是独立恢复协议。
 - **leader append 会主动叫醒冷 follower**: long-poll 打开后，leader 本地 append 会把尚未被 lane session 跟踪的复制目标补一个 `ReconcileProbe`，避免 follower 必须依赖启动全量预热才能开始拉取。
 - **`cursorDelta` 是唯一 steady-state ACK**: follower 不再单独发送 `ProgressAck`；复制进度通过下一条 lane poll 回传给 leader。
+- **promotion evaluator 看的是 quorum-safe prefix，不是“谁的 LEO 最大”**: dry-run 评估优先依据 quorum proofs 计算 `ProjectedSafeHW` / `ProjectedTruncateTo`，必要时会拒绝拥有更长但不安全尾巴的副本；app 层选主只能从持久化 ISR 中挑候选，不能把 stale replica 选成新 leader。
+- **promotion evaluator 不给缺失 proof 补票**: 只有本地 durable view + 实际收到的 peer proof 才能组成 `MinISR`；缺 proof 时会直接返回 `insufficient_quorum`，避免把本地 `HW` 当成隐式多数派证明。
+- **promotion evaluator 不会提升冷空副本**: 若候选本地没有任何 durable state（没有 epoch lineage / offset / checkpoint），即使其他 ISR 有 proof 也会返回 `candidate_missing_state`。

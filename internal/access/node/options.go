@@ -44,6 +44,16 @@ type ChannelMetaRefresher interface {
 	RefreshChannelMeta(ctx context.Context, id channel.ChannelID) (channel.Meta, error)
 }
 
+// ChannelLeaderRepairer repairs a channel leader on the authoritative slot leader.
+type ChannelLeaderRepairer interface {
+	RepairChannelLeaderAuthoritative(ctx context.Context, req ChannelLeaderRepairRequest) (ChannelLeaderRepairResult, error)
+}
+
+// ChannelLeaderEvaluator evaluates whether the local replica can safely lead.
+type ChannelLeaderEvaluator interface {
+	EvaluateChannelLeaderCandidate(ctx context.Context, req ChannelLeaderEvaluateRequest) (ChannelLeaderPromotionReport, error)
+}
+
 type DeliveryAck interface {
 	AckRoute(ctx context.Context, cmd message.RouteAckCommand) error
 }
@@ -53,37 +63,41 @@ type DeliveryOffline interface {
 }
 
 type Options struct {
-	Cluster          Cluster
-	Presence         Presence
-	Online           online.Registry
-	GatewayBootID    uint64
-	LocalNodeID      uint64
-	ChannelLog       ChannelLog
-	ChannelLogDB     *channelstore.Engine
-	DeliverySubmit   DeliverySubmit
-	DeliveryAck      DeliveryAck
-	DeliveryOffline  DeliveryOffline
-	ChannelMeta      ChannelMetaRefresher
-	DeliveryAckIndex *deliveryruntime.AckIndex
-	Codec            codec.Protocol
-	Logger           wklog.Logger
+	Cluster               Cluster
+	Presence              Presence
+	Online                online.Registry
+	GatewayBootID         uint64
+	LocalNodeID           uint64
+	ChannelLog            ChannelLog
+	ChannelLogDB          *channelstore.Engine
+	DeliverySubmit        DeliverySubmit
+	DeliveryAck           DeliveryAck
+	DeliveryOffline       DeliveryOffline
+	ChannelMeta           ChannelMetaRefresher
+	ChannelLeaderRepair   ChannelLeaderRepairer
+	ChannelLeaderEvaluate ChannelLeaderEvaluator
+	DeliveryAckIndex      *deliveryruntime.AckIndex
+	Codec                 codec.Protocol
+	Logger                wklog.Logger
 }
 
 type Adapter struct {
-	cluster          Cluster
-	presence         Presence
-	online           online.Registry
-	gatewayBootID    uint64
-	localNodeID      uint64
-	channelLog       ChannelLog
-	channelLogDB     *channelstore.Engine
-	deliverySubmit   DeliverySubmit
-	deliveryAck      DeliveryAck
-	deliveryOffline  DeliveryOffline
-	channelMeta      ChannelMetaRefresher
-	deliveryAckIndex *deliveryruntime.AckIndex
-	codec            codec.Protocol
-	logger           wklog.Logger
+	cluster               Cluster
+	presence              Presence
+	online                online.Registry
+	gatewayBootID         uint64
+	localNodeID           uint64
+	channelLog            ChannelLog
+	channelLogDB          *channelstore.Engine
+	deliverySubmit        DeliverySubmit
+	deliveryAck           DeliveryAck
+	deliveryOffline       DeliveryOffline
+	channelMeta           ChannelMetaRefresher
+	channelLeaderRepair   ChannelLeaderRepairer
+	channelLeaderEvaluate ChannelLeaderEvaluator
+	deliveryAckIndex      *deliveryruntime.AckIndex
+	codec                 codec.Protocol
+	logger                wklog.Logger
 }
 
 func New(opts Options) *Adapter {
@@ -94,20 +108,22 @@ func New(opts Options) *Adapter {
 		opts.Logger = wklog.NewNop()
 	}
 	adapter := &Adapter{
-		cluster:          opts.Cluster,
-		presence:         opts.Presence,
-		online:           opts.Online,
-		gatewayBootID:    opts.GatewayBootID,
-		localNodeID:      opts.LocalNodeID,
-		channelLog:       opts.ChannelLog,
-		channelLogDB:     opts.ChannelLogDB,
-		deliverySubmit:   opts.DeliverySubmit,
-		deliveryAck:      opts.DeliveryAck,
-		deliveryOffline:  opts.DeliveryOffline,
-		channelMeta:      opts.ChannelMeta,
-		deliveryAckIndex: opts.DeliveryAckIndex,
-		codec:            opts.Codec,
-		logger:           opts.Logger,
+		cluster:               opts.Cluster,
+		presence:              opts.Presence,
+		online:                opts.Online,
+		gatewayBootID:         opts.GatewayBootID,
+		localNodeID:           opts.LocalNodeID,
+		channelLog:            opts.ChannelLog,
+		channelLogDB:          opts.ChannelLogDB,
+		deliverySubmit:        opts.DeliverySubmit,
+		deliveryAck:           opts.DeliveryAck,
+		deliveryOffline:       opts.DeliveryOffline,
+		channelMeta:           opts.ChannelMeta,
+		channelLeaderRepair:   opts.ChannelLeaderRepair,
+		channelLeaderEvaluate: opts.ChannelLeaderEvaluate,
+		deliveryAckIndex:      opts.DeliveryAckIndex,
+		codec:                 opts.Codec,
+		logger:                opts.Logger,
 	}
 	if opts.Cluster != nil && opts.Cluster.RPCMux() != nil {
 		opts.Cluster.RPCMux().Handle(presenceRPCServiceID, adapter.handlePresenceRPC)
@@ -118,6 +134,8 @@ func New(opts Options) *Adapter {
 		opts.Cluster.RPCMux().Handle(conversationFactsRPCServiceID, adapter.handleConversationFactsRPC)
 		opts.Cluster.RPCMux().Handle(channelAppendRPCServiceID, adapter.handleChannelAppendRPC)
 		opts.Cluster.RPCMux().Handle(channelMessagesRPCServiceID, adapter.handleChannelMessagesRPC)
+		opts.Cluster.RPCMux().Handle(channelLeaderRepairRPCServiceID, adapter.handleChannelLeaderRepairRPC)
+		opts.Cluster.RPCMux().Handle(channelLeaderEvaluateRPCServiceID, adapter.handleChannelLeaderEvaluateRPC)
 	}
 	return adapter
 }

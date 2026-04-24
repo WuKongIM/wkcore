@@ -108,6 +108,15 @@ func (s *Store) UpsertChannelRuntimeMeta(ctx context.Context, meta metadb.Channe
 	return proposeWithHashSlot(ctx, s.cluster, slotID, hashSlot, cmd)
 }
 
+// UpsertChannelRuntimeMetaIfLocalLeader persists runtime metadata only when the
+// current slot leader is local to this process.
+func (s *Store) UpsertChannelRuntimeMetaIfLocalLeader(ctx context.Context, meta metadb.ChannelRuntimeMeta) error {
+	slotID := s.cluster.SlotForKey(meta.ChannelID)
+	hashSlot := hashSlotForKey(s.cluster, meta.ChannelID)
+	cmd := metafsm.EncodeUpsertChannelRuntimeMetaCommand(meta)
+	return proposeLocalWithHashSlot(ctx, s.cluster, slotID, hashSlot, cmd)
+}
+
 func (s *Store) GetChannelRuntimeMeta(ctx context.Context, channelID string, channelType int64) (metadb.ChannelRuntimeMeta, error) {
 	slotID := s.cluster.SlotForKey(channelID)
 	hashSlot := hashSlotForKey(s.cluster, channelID)

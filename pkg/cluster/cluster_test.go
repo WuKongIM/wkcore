@@ -2248,6 +2248,74 @@ func TestSlowSyncLoopRecoversDroppedHint(t *testing.T) {
 	}
 }
 
+func TestSyncObservationDeltaInvokesOnNodeStatusChangeForNodeDiff(t *testing.T) {
+	cluster := newUnitObservationTestCluster(t)
+
+	var (
+		gotNode uint64
+		gotFrom controllermeta.NodeStatus
+		gotTo   controllermeta.NodeStatus
+		calls   int
+	)
+	cluster.obs = ObserverHooks{
+		OnNodeStatusChange: func(nodeID uint64, from, to controllermeta.NodeStatus) {
+			calls++
+			gotNode = nodeID
+			gotFrom = from
+			gotTo = to
+		},
+	}
+
+	agent := &slotAgent{
+		cluster: cluster,
+		client: fakeControllerClient{
+			fetchObservationDeltaFn: func(context.Context, observationDeltaRequest) (observationDeltaResponse, error) {
+				return observationDeltaResponse{
+					LeaderID:         2,
+					LeaderGeneration: 1,
+					Revisions:        observationRevisions{Nodes: 2},
+					Nodes: []controllermeta.ClusterNode{{
+						NodeID:         9,
+						Addr:           "127.0.0.1:7009",
+						Status:         controllermeta.NodeStatusDead,
+						CapacityWeight: 1,
+					}},
+				}, nil
+			},
+		},
+	}
+	agent.observationState = observationAppliedState{
+		LeaderID:         2,
+		LeaderGeneration: 1,
+		Nodes: map[uint64]controllermeta.ClusterNode{
+			9: {
+				NodeID:         9,
+				Addr:           "127.0.0.1:7009",
+				Status:         controllermeta.NodeStatusAlive,
+				CapacityWeight: 1,
+			},
+		},
+		Revisions: observationRevisions{Nodes: 1},
+	}
+
+	if err := agent.SyncObservationDelta(context.Background(), observationHint{}); err != nil {
+		t.Fatalf("SyncObservationDelta() error = %v", err)
+	}
+
+	if calls != 1 {
+		t.Fatalf("OnNodeStatusChange() calls = %d, want 1", calls)
+	}
+	if gotNode != 9 {
+		t.Fatalf("OnNodeStatusChange() nodeID = %d, want 9", gotNode)
+	}
+	if gotFrom != controllermeta.NodeStatusAlive || gotTo != controllermeta.NodeStatusDead {
+		t.Fatalf("OnNodeStatusChange() from=%v to=%v, want %v->%v", gotFrom, gotTo, controllermeta.NodeStatusAlive, controllermeta.NodeStatusDead)
+	}
+	if got, ok := agent.appliedObservationNodes(); !ok || len(got) != 1 || got[0].Status != controllermeta.NodeStatusDead {
+		t.Fatalf("appliedObservationNodes() = %+v, ok=%v, want node 9 dead", got, ok)
+	}
+}
+
 func TestWakeReconcileOnceLeavesMigrationProgressToDedicatedLoop(t *testing.T) {
 	cluster := newUnitObservationTestCluster(t)
 
