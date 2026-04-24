@@ -28,6 +28,7 @@ func TestEncodeMessageFamiliesUsesVersionedColumnLengthWireFormat(t *testing.T) 
 	row := messageRow{
 		MessageSeq:  9,
 		MessageID:   42,
+		FramerFlags: 3,
 		ClientMsgNo: "c-1",
 		FromUID:     "u1",
 		ChannelID:   "room",
@@ -40,6 +41,16 @@ func TestEncodeMessageFamiliesUsesVersionedColumnLengthWireFormat(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, expectedMessageFamilyCodecVersion, primary[0])
 	require.Equal(t, expectedMessageFamilyCodecVersion, payload[0])
+
+	columnID, encodedLen, value, next := decodeTestFamilyField(t, primary, 1)
+	require.Equal(t, uint64(messageColumnIDMessageID), columnID)
+	require.Equal(t, uint64(len(encodeFamilyUintBytes(row.MessageID))), encodedLen)
+	require.Equal(t, encodeFamilyUintBytes(row.MessageID), value)
+
+	columnID, encodedLen, value, _ = decodeTestFamilyField(t, primary, next)
+	require.Equal(t, uint64(messageColumnIDFramerFlags), columnID)
+	require.Equal(t, uint64(len(encodeFamilyUintBytes(uint64(row.FramerFlags)))), encodedLen)
+	require.Equal(t, encodeFamilyUintBytes(uint64(row.FramerFlags)), value)
 }
 
 func TestDecodeMessageFamiliesSkipsUnknownColumns(t *testing.T) {
@@ -71,4 +82,20 @@ func appendTestBytesColumn(dst []byte, columnID uint16, value []byte) []byte {
 	dst = binary.AppendUvarint(dst, uint64(columnID))
 	dst = binary.AppendUvarint(dst, uint64(len(value)))
 	return append(dst, value...)
+}
+
+func decodeTestFamilyField(t *testing.T, payload []byte, offset int) (uint64, uint64, []byte, int) {
+	t.Helper()
+
+	columnID, n := binary.Uvarint(payload[offset:])
+	require.Positive(t, n)
+	offset += n
+
+	length, n := binary.Uvarint(payload[offset:])
+	require.Positive(t, n)
+	offset += n
+	require.GreaterOrEqual(t, len(payload[offset:]), int(length))
+
+	value := append([]byte(nil), payload[offset:offset+int(length)]...)
+	return columnID, length, value, offset + int(length)
 }

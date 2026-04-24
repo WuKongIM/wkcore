@@ -65,7 +65,7 @@ func encodeMessageFamilies(row messageRow) ([]byte, []byte, error) {
 
 	payloadHash := row.PayloadHash
 	if payloadHash == 0 {
-		payloadHash = hashMessagePayload(row.Payload)
+		payloadHash = channel.DurableMessagePayloadHash(row.Payload)
 	}
 
 	primary := make([]byte, 0, 128)
@@ -251,7 +251,7 @@ func encodeIdempotencyIndexValue(row messageRow) ([]byte, error) {
 	}
 	payloadHash := row.PayloadHash
 	if payloadHash == 0 {
-		payloadHash = hashMessagePayload(row.Payload)
+		payloadHash = channel.DurableMessagePayloadHash(row.Payload)
 	}
 	value := make([]byte, 0, 24)
 	value = binary.BigEndian.AppendUint64(value, row.MessageSeq)
