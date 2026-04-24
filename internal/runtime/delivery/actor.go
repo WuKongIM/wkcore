@@ -15,7 +15,6 @@ type actor struct {
 	lane            ActorLane
 	activityCount   int
 	nextDispatchSeq uint64
-	reorder         map[uint64]CommittedEnvelope
 	inflight        map[uint64]*InflightMessage
 	completed       map[uint64]struct{}
 	completedOrder  []uint64
@@ -26,7 +25,6 @@ func newActor(shard *shard, key ChannelKey) *actor {
 	return &actor{
 		shard:      shard,
 		key:        key,
-		reorder:    make(map[uint64]CommittedEnvelope),
 		inflight:   make(map[uint64]*InflightMessage),
 		completed:  make(map[uint64]struct{}),
 		lastActive: shard.manager.clock.Now().UnixNano(),
@@ -46,15 +44,10 @@ func (a *actor) handleStartDispatch(ctx context.Context, env CommittedEnvelope) 
 	case env.MessageSeq < a.nextDispatchSeq:
 		return a.dispatchLate(ctx, env)
 	case env.MessageSeq > a.nextDispatchSeq:
-		a.reorder[env.MessageSeq] = cloneEnvelope(env)
-		return nil
+		return a.dispatchObserved(ctx, env)
 	default:
 	}
-	if err := a.dispatch(ctx, env); err != nil {
-		return err
-	}
-	a.nextDispatchSeq++
-	return a.flushReady(ctx)
+	return a.dispatchObserved(ctx, env)
 }
 
 func (a *actor) handleRouteAck(ctx context.Context, event RouteAcked) error {
@@ -63,7 +56,9 @@ func (a *actor) handleRouteAck(ctx context.Context, event RouteAcked) error {
 	if msg == nil {
 		return nil
 	}
-	a.finishRoute(msg, event.Route)
+	if err := a.finishRoute(ctx, msg, event.Route); err != nil {
+		return err
+	}
 	return a.resumeResolvable(ctx)
 }
 
@@ -73,7 +68,9 @@ func (a *actor) handleRouteOffline(ctx context.Context, event RouteOffline) erro
 	if msg == nil {
 		return nil
 	}
-	a.finishRoute(msg, event.Route)
+	if err := a.finishRoute(ctx, msg, event.Route); err != nil {
+		return err
+	}
 	return a.resumeResolvable(ctx)
 }
 
@@ -108,6 +105,14 @@ func (a *actor) dispatch(ctx context.Context, env CommittedEnvelope) error {
 	return a.resumeResolvable(ctx)
 }
 
+func (a *actor) dispatchObserved(ctx context.Context, env CommittedEnvelope) error {
+	if err := a.dispatch(ctx, env); err != nil {
+		return err
+	}
+	a.nextDispatchSeq = env.MessageSeq + 1
+	return nil
+}
+
 func (a *actor) resolvePages(ctx context.Context, msg *InflightMessage) error {
 	for !msg.ResolveDone {
 		remaining := a.routeBudgetRemaining()
@@ -135,8 +140,7 @@ func (a *actor) resolvePages(ctx context.Context, msg *InflightMessage) error {
 		}
 	}
 	if msg.PendingRouteCnt == 0 {
-		a.rememberCompleted(msg.MessageID)
-		delete(a.inflight, msg.MessageID)
+		a.completeMessage(msg.MessageID)
 	}
 	return nil
 }
@@ -190,7 +194,7 @@ func (a *actor) resumeMessage(ctx context.Context, msg *InflightMessage) (bool, 
 	if !msg.ResolveBegun {
 		token, err := a.shard.manager.resolver.BeginResolve(ctx, a.key, msg.Envelope)
 		if err != nil {
-			return a.handleResolveFailure(msg)
+			return a.handleResolveFailure(ctx, msg)
 		}
 		msg.ResolveToken = token
 		msg.ResolveBegun = true
@@ -198,7 +202,7 @@ func (a *actor) resumeMessage(ctx context.Context, msg *InflightMessage) (bool, 
 	msg.ResolveRetryAt = time.Time{}
 
 	if err := a.resolvePages(ctx, msg); err != nil {
-		return a.handleResolveFailure(msg)
+		return a.handleResolveFailure(ctx, msg)
 	}
 
 	progressed := !beforeBegun && msg.ResolveBegun
@@ -208,15 +212,14 @@ func (a *actor) resumeMessage(ctx context.Context, msg *InflightMessage) (bool, 
 	return progressed, nil
 }
 
-func (a *actor) handleResolveFailure(msg *InflightMessage) (bool, error) {
+func (a *actor) handleResolveFailure(_ context.Context, msg *InflightMessage) (bool, error) {
 	nextAttempt := msg.ResolveAttempt + 1
 	delay, ok := a.shard.nextRetryDelay(nextAttempt)
 	if !ok {
 		msg.ResolveDone = true
 		msg.ResolveRetryAt = time.Time{}
 		if msg.PendingRouteCnt == 0 {
-			a.rememberCompleted(msg.MessageID)
-			delete(a.inflight, msg.MessageID)
+			a.completeMessage(msg.MessageID)
 		}
 		return true, nil
 	}
@@ -226,10 +229,9 @@ func (a *actor) handleResolveFailure(msg *InflightMessage) (bool, error) {
 }
 
 func (a *actor) dispatchLate(ctx context.Context, env CommittedEnvelope) error {
-	// A recreated actor can observe a later committed seq before an earlier one.
-	// We cannot rebuild the earlier realtime envelope from channel history because
-	// the durable log does not retain the full RECV frame metadata, so the safest
-	// best-effort behavior is to deliver it late instead of silently dropping it.
+	// preferLocal routing allows each node to observe only a sparse subset of the
+	// global channel sequence, so a lower seq can legitimately arrive after a
+	// higher locally observed one. Deliver it late instead of stalling forever.
 	return a.dispatch(ctx, env)
 }
 
@@ -261,7 +263,9 @@ func (a *actor) applyPush(ctx context.Context, msg *InflightMessage, routes []Ro
 		a.scheduleRetry(msg, route, attempt)
 	}
 	for _, route := range result.Dropped {
-		a.finishRoute(msg, route)
+		if err := a.finishRoute(ctx, msg, route); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -277,9 +281,9 @@ func (a *actor) ensureRouteState(msg *InflightMessage, route RouteKey) *RouteDel
 	return state
 }
 
-func (a *actor) finishRoute(msg *InflightMessage, route RouteKey) {
+func (a *actor) finishRoute(_ context.Context, msg *InflightMessage, route RouteKey) error {
 	if _, ok := msg.Routes[route]; !ok {
-		return
+		return nil
 	}
 	delete(msg.Routes, route)
 	if msg.PendingRouteCnt > 0 {
@@ -287,9 +291,9 @@ func (a *actor) finishRoute(msg *InflightMessage, route RouteKey) {
 	}
 	a.shard.manager.ackIdx.Remove(route.SessionID, msg.MessageID)
 	if msg.PendingRouteCnt == 0 && msg.ResolveDone {
-		a.rememberCompleted(msg.MessageID)
-		delete(a.inflight, msg.MessageID)
+		a.completeMessage(msg.MessageID)
 	}
+	return nil
 }
 
 func (a *actor) scheduleRetry(msg *InflightMessage, route RouteKey, attempt int) {
@@ -307,22 +311,13 @@ func (a *actor) scheduleRetry(msg *InflightMessage, route RouteKey, attempt int)
 	})
 }
 
-func (a *actor) flushReady(ctx context.Context) error {
-	for {
-		env, ok := a.reorder[a.nextDispatchSeq]
-		if !ok {
-			return nil
-		}
-		delete(a.reorder, a.nextDispatchSeq)
-		if err := a.dispatch(ctx, env); err != nil {
-			return err
-		}
-		a.nextDispatchSeq++
-	}
+func (a *actor) completeMessage(messageID uint64) {
+	a.rememberCompleted(messageID)
+	delete(a.inflight, messageID)
 }
 
 func (a *actor) isIdle(nowUnixNano int64, idleTimeout int64) bool {
-	if len(a.reorder) > 0 || len(a.inflight) > 0 {
+	if len(a.inflight) > 0 {
 		return false
 	}
 	return nowUnixNano-a.lastActive >= idleTimeout

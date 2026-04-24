@@ -17,6 +17,7 @@ import (
 	deliveryusecase "github.com/WuKongIM/WuKongIM/internal/usecase/delivery"
 	messageusecase "github.com/WuKongIM/WuKongIM/internal/usecase/message"
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
+	channelhandler "github.com/WuKongIM/WuKongIM/pkg/channel/handler"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
@@ -825,6 +826,98 @@ func TestThreeNodeAppGroupChannelRealtimeDeliveryUsesStoredSubscribers(t *testin
 	require.Equal(t, "slot-sender", recvB.FromUID)
 }
 
+func TestThreeNodeAppPersonRealtimeDeliveryAfterIdleLeaseExpiry(t *testing.T) {
+	harness := newThreeNodeAppHarnessWithConfigMutator(t, func(cfg *Config) {
+		cfg.Cluster.PoolSize = 0
+		cfg.Cluster.DataPlanePoolSize = 1
+		cfg.Cluster.DataPlaneMaxFetchInflight = 2
+		cfg.Cluster.DataPlaneMaxPendingFetch = 2
+	})
+	ownerID := harness.waitForStableLeader(t, 1)
+	owner := harness.apps[ownerID]
+	senderNode := harness.apps[ownerID%3+1]
+	recipientNode := harness.apps[(ownerID+1)%3+1]
+
+	senderUID := "idle-realtime-sender"
+	recipientUID := "idle-realtime-recipient"
+	channelID := deliveryusecase.EncodePersonChannel(senderUID, recipientUID)
+	id := channel.ChannelID{ID: channelID, Type: frame.ChannelTypePerson}
+
+	senderConn := connectMultinodeWKProtoClient(t, senderNode, senderUID, senderUID+"-device")
+	recipientConn := connectMultinodeWKProtoClient(t, recipientNode, recipientUID, recipientUID+"-device")
+
+	sendAppWKProtoFrame(t, senderConn, &frame.SendPacket{
+		ChannelID:   recipientUID,
+		ChannelType: id.Type,
+		ClientSeq:   1,
+		ClientMsgNo: "idle-realtime-bootstrap-1",
+		Payload:     []byte("hello before idle"),
+	})
+
+	sendack, ok := readAppWKProtoFrameWithin(t, senderConn, multinodeAppReadTimeout).(*frame.SendackPacket)
+	require.True(t, ok)
+	require.Equal(t, frame.ReasonSuccess, sendack.ReasonCode)
+
+	recv, ok := readAppWKProtoFrameWithin(t, recipientConn, multinodeAppReadTimeout).(*frame.RecvPacket)
+	require.True(t, ok)
+	require.Equal(t, senderUID, recv.FromUID)
+	require.Equal(t, sendack.MessageID, recv.MessageID)
+	require.Equal(t, sendack.MessageSeq, recv.MessageSeq)
+
+	initialMeta := waitForAuthoritativeChannelRuntimeMeta(t, owner, id, 5*time.Second)
+	require.Eventually(t, func() bool {
+		routes, err := owner.presenceApp.EndpointsByUID(context.Background(), recipientUID)
+		if err != nil {
+			return false
+		}
+		for _, route := range routes {
+			if route.NodeID == recipientNode.cfg.Node.ID && route.SessionID != 0 {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		meta, err := owner.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
+		if err != nil {
+			return false
+		}
+		return meta.LeaseUntilMS > 0 && meta.LeaseUntilMS < time.Now().UnixMilli()
+	}, time.Until(time.UnixMilli(initialMeta.LeaseUntilMS).Add(5*time.Second)), 50*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		routes, err := owner.presenceApp.EndpointsByUID(context.Background(), recipientUID)
+		if err != nil {
+			return false
+		}
+		for _, route := range routes {
+			if route.NodeID == recipientNode.cfg.Node.ID && route.SessionID != 0 {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond)
+
+	sendAppWKProtoFrame(t, senderConn, &frame.SendPacket{
+		ChannelID:   recipientUID,
+		ChannelType: id.Type,
+		ClientSeq:   2,
+		ClientMsgNo: "idle-realtime-after-expiry-1",
+		Payload:     []byte("hello after idle expiry"),
+	})
+
+	sendack, ok = readAppWKProtoFrameWithin(t, senderConn, multinodeAppReadTimeout).(*frame.SendackPacket)
+	require.True(t, ok)
+	require.Equal(t, frame.ReasonSuccess, sendack.ReasonCode)
+
+	recv, ok = readAppWKProtoFrameWithin(t, recipientConn, multinodeAppReadTimeout).(*frame.RecvPacket)
+	require.True(t, ok, idleRealtimeDeliveryState(t, harness, owner, senderNode, recipientNode, id, senderUID, recipientUID, sendack.MessageSeq))
+	require.Equal(t, senderUID, recv.FromUID)
+	require.Equal(t, sendack.MessageID, recv.MessageID)
+	require.Equal(t, sendack.MessageSeq, recv.MessageSeq)
+}
+
 func TestThreeNodeAppHotGroupDoesNotBlockNormalGroupDelivery(t *testing.T) {
 	harness := newThreeNodeAppHarness(t)
 	ownerID := harness.waitForStableLeader(t, 1)
@@ -1115,4 +1208,82 @@ func TestThreeNodeAppHarnessUsesExplicitDataPlaneConcurrency(t *testing.T) {
 		require.Equal(t, 16, app.cfg.Cluster.DataPlaneMaxFetchInflight)
 		require.Equal(t, 16, app.cfg.Cluster.DataPlaneMaxPendingFetch)
 	}
+}
+
+func waitForAuthoritativeChannelRuntimeMeta(t *testing.T, app *App, id channel.ChannelID, timeout time.Duration) metadb.ChannelRuntimeMeta {
+	t.Helper()
+
+	var meta metadb.ChannelRuntimeMeta
+	require.Eventually(t, func() bool {
+		current, err := app.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
+		if err != nil {
+			return false
+		}
+		meta = current
+		return meta.LeaseUntilMS > 0
+	}, timeout, 20*time.Millisecond)
+	return meta
+}
+
+func idleRealtimeDeliveryState(
+	t *testing.T,
+	harness *threeNodeAppHarness,
+	owner, senderNode, recipientNode *App,
+	id channel.ChannelID,
+	senderUID, recipientUID string,
+	wantSeq uint64,
+) string {
+	t.Helper()
+
+	var b bytes.Buffer
+
+	meta, err := owner.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
+	if err != nil {
+		fmt.Fprintf(&b, "owner meta error: %v\n", err)
+	} else {
+		fmt.Fprintf(&b, "owner meta: leader=%d leader_epoch=%d channel_epoch=%d lease_until_ms=%d replicas=%v isr=%v\n",
+			meta.Leader, meta.LeaderEpoch, meta.ChannelEpoch, meta.LeaseUntilMS, meta.Replicas, meta.ISR)
+	}
+
+	for _, uid := range []string{senderUID, recipientUID} {
+		routes, routeErr := owner.presenceApp.EndpointsByUID(context.Background(), uid)
+		if routeErr != nil {
+			fmt.Fprintf(&b, "presence %s error: %v\n", uid, routeErr)
+			continue
+		}
+		fmt.Fprintf(&b, "presence %s routes: %+v\n", uid, routes)
+	}
+
+	key := channelhandler.KeyFromChannelID(id)
+	for _, app := range harness.orderedApps() {
+		handle, ok := app.ISRRuntime().Channel(key)
+		if !ok {
+			fmt.Fprintf(&b, "node %d runtime missing for %s\n", app.cfg.Node.ID, key)
+			continue
+		}
+		state := handle.Status()
+		localMeta := handle.Meta()
+		fmt.Fprintf(&b, "node %d runtime: role=%d leader=%d epoch=%d leader_epoch=%d commit_ready=%t hw=%d leo=%d lease_until=%s replicas=%v isr=%v\n",
+			app.cfg.Node.ID,
+			state.Role,
+			state.Leader,
+			state.Epoch,
+			localMeta.LeaderEpoch,
+			state.CommitReady,
+			state.HW,
+			state.LEO,
+			localMeta.LeaseUntil.UTC().Format(time.RFC3339Nano),
+			localMeta.Replicas,
+			localMeta.ISR,
+		)
+		msg, loadErr := channelhandler.LoadMsg(channelStoreForID(app.ChannelLogDB(), id), state.HW, wantSeq)
+		if loadErr != nil {
+			fmt.Fprintf(&b, "node %d load seq %d error: %v\n", app.cfg.Node.ID, wantSeq, loadErr)
+			continue
+		}
+		fmt.Fprintf(&b, "node %d seq %d payload=%q\n", app.cfg.Node.ID, wantSeq, string(msg.Payload))
+	}
+
+	fmt.Fprintf(&b, "sender node=%d recipient node=%d owner node=%d\n", senderNode.cfg.Node.ID, recipientNode.cfg.Node.ID, owner.cfg.Node.ID)
+	return b.String()
 }

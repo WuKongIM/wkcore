@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	accessnode "github.com/WuKongIM/WuKongIM/internal/access/node"
@@ -14,6 +15,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 var (
@@ -29,6 +31,7 @@ const (
 type asyncCommittedDispatcher struct {
 	localNodeID uint64
 	preferLocal bool
+	logger      wklog.Logger
 	channelLog  interface {
 		Status(id channel.ChannelID) (channel.ChannelRuntimeStatus, error)
 	}
@@ -54,10 +57,12 @@ func (d asyncCommittedDispatcher) SubmitCommitted(ctx context.Context, env deliv
 
 func (d asyncCommittedDispatcher) routeCommitted(ctx context.Context, env deliveryruntime.CommittedEnvelope) {
 	if d.preferLocal {
+		d.logCommittedRoute(env, "prefer_local", d.localNodeID, nil)
 		d.submitLocal(ctx, env)
 		return
 	}
 	if d.channelLog == nil {
+		d.logCommittedRoute(env, "no_channel_log", d.localNodeID, nil)
 		d.submitLocal(ctx, env)
 		return
 	}
@@ -70,20 +75,50 @@ func (d asyncCommittedDispatcher) routeCommitted(ctx context.Context, env delive
 		if err == nil && status.Leader != 0 {
 			ownerNodeID := uint64(status.Leader)
 			if ownerNodeID == d.localNodeID {
+				d.logCommittedRoute(env, "local_owner", ownerNodeID, nil)
 				d.submitLocal(ctx, env)
 				return
 			}
 			if d.nodeClient != nil {
 				if err := d.nodeClient.SubmitCommitted(ctx, ownerNodeID, env); err == nil {
+					d.logCommittedRoute(env, "remote_owner", ownerNodeID, nil)
 					return
+				} else {
+					d.logCommittedRoute(env, "remote_owner_submit_failed", ownerNodeID, err)
 				}
 			}
+		} else if err != nil {
+			d.logCommittedRoute(env, "status_failed", 0, err)
 		}
 		if attempt < committedRouteRetryAttempts-1 {
 			time.Sleep(time.Duration(attempt+1) * committedRouteRetryBackoff)
 		}
 	}
+	d.logCommittedRoute(env, "conversation_fallback", 0, nil)
 	d.submitConversationFallback(ctx, env)
+}
+
+func (d asyncCommittedDispatcher) logCommittedRoute(env deliveryruntime.CommittedEnvelope, stage string, ownerNodeID uint64, err error) {
+	if d.logger == nil {
+		return
+	}
+	fields := []wklog.Field{
+		wklog.Event("delivery.diag.committed_route"),
+		wklog.String("stage", stage),
+		wklog.String("channelID", env.ChannelID),
+		wklog.Int("channelType", int(env.ChannelType)),
+		wklog.Uint64("messageID", env.MessageID),
+		wklog.Uint64("messageSeq", env.MessageSeq),
+	}
+	if ownerNodeID != 0 {
+		fields = append(fields, wklog.Uint64("ownerNodeID", ownerNodeID))
+	}
+	if err != nil {
+		fields = append(fields, wklog.Error(err))
+		d.logger.Warn("committed message routing observed failure", fields...)
+		return
+	}
+	d.logger.Info("committed message routed", fields...)
 }
 
 func (d asyncCommittedDispatcher) submitLocal(ctx context.Context, env deliveryruntime.CommittedEnvelope) {
@@ -110,6 +145,7 @@ type localDeliveryResolver struct {
 	subscribers deliveryusecase.SubscriberResolver
 	authority   presence.Authoritative
 	pageSize    int
+	logger      wklog.Logger
 }
 
 type localResolveToken struct {
@@ -190,14 +226,33 @@ func (r localDeliveryResolver) ResolvePage(ctx context.Context, token any, curso
 		}
 
 		expanded := make([]deliveryruntime.RouteKey, 0, len(uids))
+		missing := make([]string, 0, len(uids))
 		for _, uid := range uids {
-			for _, route := range endpointsByUID[uid] {
+			routes := endpointsByUID[uid]
+			if len(routes) == 0 {
+				missing = append(missing, uid)
+			}
+			for _, route := range routes {
 				expanded = append(expanded, deliveryruntime.RouteKey{
 					UID:       route.UID,
 					NodeID:    route.NodeID,
 					BootID:    route.BootID,
 					SessionID: route.SessionID,
 				})
+			}
+		}
+		if r.logger != nil {
+			fields := []wklog.Field{
+				wklog.Event("delivery.diag.resolve_page"),
+				wklog.String("cursor", cursor),
+				wklog.Int("uids", len(uids)),
+				wklog.Int("routes", len(expanded)),
+			}
+			if len(missing) > 0 {
+				fields = append(fields, wklog.String("missingUIDs", strings.Join(missing, ",")))
+				r.logger.Warn("delivery resolver found missing authoritative endpoints", fields...)
+			} else {
+				r.logger.Info("delivery resolver expanded authoritative endpoints", fields...)
 			}
 		}
 		if len(expanded) == 0 {
@@ -223,6 +278,7 @@ type localDeliveryPush struct {
 	online        online.Registry
 	localNodeID   uint64
 	gatewayBootID uint64
+	logger        wklog.Logger
 }
 
 func (p localDeliveryPush) Push(_ context.Context, cmd deliveryruntime.PushCommand) (deliveryruntime.PushResult, error) {
@@ -262,6 +318,18 @@ func (p localDeliveryPush) pushEnvelope(env deliveryruntime.CommittedEnvelope, r
 			result.Accepted = append(result.Accepted, route)
 		}
 	}
+	if p.logger != nil {
+		p.logger.Info("local delivery push finished",
+			wklog.Event("delivery.diag.local_push"),
+			wklog.String("channelID", env.ChannelID),
+			wklog.Int("channelType", int(env.ChannelType)),
+			wklog.Uint64("messageID", env.MessageID),
+			wklog.Uint64("messageSeq", env.MessageSeq),
+			wklog.Int("accepted", len(result.Accepted)),
+			wklog.Int("retryable", len(result.Retryable)),
+			wklog.Int("dropped", len(result.Dropped)),
+		)
+	}
 	return result
 }
 
@@ -270,6 +338,7 @@ type distributedDeliveryPush struct {
 	local       localDeliveryPush
 	client      *accessnode.Client
 	codec       codec.Protocol
+	logger      wklog.Logger
 }
 
 func (p distributedDeliveryPush) Push(ctx context.Context, cmd deliveryruntime.PushCommand) (deliveryruntime.PushResult, error) {
@@ -319,8 +388,36 @@ func (p distributedDeliveryPush) Push(ctx context.Context, cmd deliveryruntime.P
 				Frame:       append([]byte(nil), frameBytes...),
 			})
 			if err != nil {
+				if p.logger != nil {
+					p.logger.Warn("remote delivery push failed",
+						wklog.Event("delivery.diag.remote_push"),
+						wklog.String("channelID", cmd.Envelope.ChannelID),
+						wklog.Int("channelType", int(cmd.Envelope.ChannelType)),
+						wklog.Uint64("messageID", cmd.Envelope.MessageID),
+						wklog.Uint64("messageSeq", cmd.Envelope.MessageSeq),
+						wklog.Uint64("targetNodeID", nodeID),
+						wklog.String("uid", uid),
+						wklog.Int("routes", len(routes)),
+						wklog.Error(err),
+					)
+				}
 				result.Retryable = append(result.Retryable, routes...)
 				continue
+			}
+			if p.logger != nil {
+				p.logger.Info("remote delivery push finished",
+					wklog.Event("delivery.diag.remote_push"),
+					wklog.String("channelID", cmd.Envelope.ChannelID),
+					wklog.Int("channelType", int(cmd.Envelope.ChannelType)),
+					wklog.Uint64("messageID", cmd.Envelope.MessageID),
+					wklog.Uint64("messageSeq", cmd.Envelope.MessageSeq),
+					wklog.Uint64("targetNodeID", nodeID),
+					wklog.String("uid", uid),
+					wklog.Int("routes", len(routes)),
+					wklog.Int("accepted", len(resp.Accepted)),
+					wklog.Int("retryable", len(resp.Retryable)),
+					wklog.Int("dropped", len(resp.Dropped)),
+				)
 			}
 			result.Accepted = append(result.Accepted, resp.Accepted...)
 			result.Retryable = append(result.Retryable, resp.Retryable...)

@@ -47,6 +47,9 @@ directory tree.
 
 - Full suite: `go test -tags=e2e ./test/e2e/... -count=1`
 - For focused work, run the target scenario package directly.
+- When a scenario needs custom artifact roots or node config overrides for
+  debugging, pass `test/e2e/suite` options directly to
+  `StartSingleNodeCluster(...)` or `StartThreeNodeCluster(...)`.
 
 ## Catalog
 
@@ -56,3 +59,4 @@ directory tree.
 | `message` | `test/e2e/message/cross_node_closure` | Prove a three-node cluster can deliver one person-channel message when sender and recipient are connected to different follower nodes. | `go test -tags=e2e ./test/e2e/message/cross_node_closure -count=1` |
 | `message` | `test/e2e/message/slot_leader_failover` | Prove cross-node delivery survives a slot leader failover after both clients are already connected on follower nodes. | `go test -tags=e2e ./test/e2e/message/slot_leader_failover -count=1` |
 | `message` | `test/e2e/message/expired_leader_lease` | Reproduce the current cross-node delivery failure after channel runtime metadata is observed with an expired leader lease. | `go test -tags=e2e ./test/e2e/message/expired_leader_lease -count=1` |
+| `message` | `test/e2e/message/idle_cross_node_delivery_timeout` | Reproduce the current cross-node delivery timeout after one bootstrap message sits idle until the channel runtime leader lease expires. | `go test -tags=e2e ./test/e2e/message/idle_cross_node_delivery_timeout -count=1` |

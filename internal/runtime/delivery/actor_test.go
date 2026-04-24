@@ -9,14 +9,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestActorBuffersOutOfOrderEnvelopeAndDispatchesInSequence(t *testing.T) {
+func TestActorDeliversHigherObservedSequenceImmediatelyAndLaterLowerSequenceAsLate(t *testing.T) {
 	runtime, _, pusher := newTestManager()
 
 	require.NoError(t, runtime.Submit(context.Background(), testEnvelope(1, 1)))
 	require.NoError(t, runtime.Submit(context.Background(), testEnvelope(3, 3)))
 	require.NoError(t, runtime.Submit(context.Background(), testEnvelope(2, 2)))
 
-	require.Equal(t, []uint64{1, 2, 3}, pusher.pushedSeqs())
+	require.Equal(t, []uint64{1, 3, 2}, pusher.pushedSeqs())
 }
 
 func TestActorBindsAckIndexOnlyForAcceptedRoutes(t *testing.T) {
@@ -155,6 +155,30 @@ func TestActorDispatchesLateLowerSequenceInsteadOfDroppingIt(t *testing.T) {
 	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-first-gap", frame.ChannelTypeGroup, 208, 8, "late")))
 
 	require.Equal(t, []uint64{9, 8}, pusher.pushedSeqs())
+}
+
+func TestActorDispatchesSparseObservedSequenceWithoutWaitingForMissingGap(t *testing.T) {
+	runtime, _, pusher := newTestManager()
+	runtime.resolver.(*stubResolver).routesByChannel["g-sparse"] = []RouteKey{
+		testRoute("u2", 1, 11, 2),
+	}
+
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-sparse", frame.ChannelTypeGroup, 301, 1, "one")))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-sparse", frame.ChannelTypeGroup, 302, 2, "two")))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-sparse", frame.ChannelTypeGroup, 304, 4, "four")))
+
+	require.Equal(t, []uint64{1, 2, 4}, pusher.pushedSeqs())
+}
+
+func TestActorDispatchesSparseObservedSequenceWhileEarlierMessageIsStillInflight(t *testing.T) {
+	runtime, _, pusher := newTestManager()
+	runtime.resolver.(*stubResolver).routesByChannel["g-sparse-buffered"] = []RouteKey{
+		testRoute("u2", 1, 11, 2),
+	}
+
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-sparse-buffered", frame.ChannelTypeGroup, 401, 1, "one")))
+	require.NoError(t, runtime.Submit(context.Background(), testEnvelopeFor("g-sparse-buffered", frame.ChannelTypeGroup, 404, 4, "four")))
+	require.Equal(t, []uint64{1, 4}, pusher.pushedSeqs())
 }
 
 func TestActorSuppressesDuplicateLateLowerSequenceAfterCompletion(t *testing.T) {

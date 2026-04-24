@@ -420,8 +420,9 @@ handleRecvAck(ctx, pkt):
 - **active-slot leader watcher 只盯热 slot**: `channelMetaSync.Start()` 现在只轮询当前热本地 runtime 所在的 physical slot leader；检测到 slot leader 变化后，仅刷新该 slot 下已激活 channel 的权威 `ChannelRuntimeMeta` 并重新 apply。除非这次 reread 发现权威 leader 已缺失/失效，否则不会改写 channel leader。
 - **runtime-meta bootstrap 与续租职责已拆开**: runtime-meta 的 bootstrap 仍依赖 `SlotForKey`、Slot peers 和当前 Slot leader；后续 refresh/reconcile 只负责当前 Channel Leader 的 lease 续租，不再把 leader / replicas / ISR 重新投影成 Slot 拓扑。通用读路径仍保持纯读取语义，写路径和主动同步路径负责把权威运行时元数据补齐并续租。
 - **Refresh 热路径只读 node liveness cache**: `RefreshChannelMeta()` 不会每次发消息都直接查 controller；它先看本地 `nodeLiveness` cache。cache 由 `ObserverHooks.OnNodeStatusChange` 驱动更新：controller leader 走 committed `NodeStatusUpdate`，其他节点走 `SyncObservationDelta()` 的 `delta.Nodes` diff，但 app 层统一只消费这一个 hook。
-- **asyncCommittedDispatcher 的 preferLocal**: 已提交消息优先在本地节点投递。如果本节点不是 Channel Leader，会通过 nodeClient RPC 转发。这避免了所有投递都经过 Leader 的瓶颈。
+- **asyncCommittedDispatcher 的 preferLocal**: 已提交消息直接进入本地 delivery runtime；后续由 `distributedDeliveryPush` 按在线 route 把远端会话转成 node RPC push，不再先把整条已提交消息转发到 Channel Leader。这避免所有实时投递都绕经 Leader。
 - **投递 Actor 按 Channel 隔离**: 每个 Channel 有独立的 Actor，通过 shard 分片减少锁竞争。Actor 空闲超过 1 分钟会被回收。
+- **投递 Actor 不等待全局连续 MessageSeq**: `preferLocal` 下每个节点只能看到该 Channel 全局序列的一个稀疏子集（例如只看到 1、3、5…）。Actor 现在按“本节点已观察到的提交流”推进；更高的本地已观察 seq 会立即进入解析/推送，之后若更低 seq 才到达，则按 late delivery best-effort 补发，而不是为了等待永远不会在本节点出现的全局 gap 一直卡住实时投递。
 - **投递重试有上限**: 默认重试延迟 [500ms, 1s, 2s]，最大重试次数 = len(retryDelays)+1 = 4 次。超过后消息进入离线处理。
 - **AckIndex 是投递确认的关键**: `AckIndex.Bind` 在 Push 时建立 SessionID+MessageID → Channel+Route 的映射，RecvAck 通过此映射找到对应的投递 Actor。Session 关闭时 `LookupSession` 批量处理所有未确认消息。
 - **Presence 权威路由通过 Raft**: `RegisterAuthoritative` 是一次 Raft Propose，写入 Slot Leader 的状态机。这保证了多节点场景下设备踢出的一致性。

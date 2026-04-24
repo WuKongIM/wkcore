@@ -130,6 +130,26 @@ func (r *channelLeaderRepairer) RepairChannelLeaderAuthoritative(ctx context.Con
 				currentReason = reason
 			}
 		}
+		if shouldRenewExpiredLeaderLease(latest, currentReason) {
+			updated := latest
+			updated.LeaseUntilMS = r.currentTime().Add(channelMetaBootstrapLease).UnixMilli()
+			if err := r.store.UpsertChannelRuntimeMetaIfLocalLeader(ctx, updated); err != nil {
+				return nil, err
+			}
+			authoritative, err := r.store.GetChannelRuntimeMeta(ctx, req.ChannelID.ID, int64(req.ChannelID.Type))
+			if err != nil {
+				return nil, err
+			}
+			if r.applyAuthoritative != nil {
+				if err := r.applyAuthoritative(authoritative); err != nil {
+					return nil, err
+				}
+			}
+			return accessnode.ChannelLeaderRepairResult{
+				Meta:    authoritative,
+				Changed: true,
+			}, nil
+		}
 
 		best, err := r.selectLeaderCandidate(ctx, latest, currentReason)
 		if err != nil {
@@ -141,7 +161,9 @@ func (r *channelLeaderRepairer) RepairChannelLeaderAuthoritative(ctx context.Con
 
 		updated := latest
 		updated.Leader = best.NodeID
-		updated.LeaderEpoch++
+		if updated.Leader != latest.Leader {
+			updated.LeaderEpoch++
+		}
 		updated.LeaseUntilMS = r.currentTime().Add(channelMetaBootstrapLease).UnixMilli()
 		if err := r.store.UpsertChannelRuntimeMetaIfLocalLeader(ctx, updated); err != nil {
 			return nil, err
@@ -170,10 +192,33 @@ func (r *channelLeaderRepairer) RepairChannelLeaderAuthoritative(ctx context.Con
 	return result, nil
 }
 
+func shouldRenewExpiredLeaderLease(meta metadb.ChannelRuntimeMeta, reason string) bool {
+	return reason == channel.LeaderRepairReasonLeaderLeaseExpired.String() &&
+		meta.Leader != 0 &&
+		containsUint64(meta.Replicas, meta.Leader)
+}
+
 func (r *channelLeaderRepairer) selectLeaderCandidate(ctx context.Context, meta metadb.ChannelRuntimeMeta, reason string) (accessnode.ChannelLeaderPromotionReport, error) {
 	var best accessnode.ChannelLeaderPromotionReport
 	var firstErr error
+	preferCurrentLeader := reason == channel.LeaderRepairReasonLeaderLeaseExpired.String() && meta.Leader != 0
+	if preferCurrentLeader {
+		report, err := r.evaluateLeaderCandidate(ctx, meta.Leader, meta, reason)
+		if err != nil {
+			firstErr = err
+		} else {
+			if report.NodeID == 0 {
+				report.NodeID = meta.Leader
+			}
+			if (report.ChannelEpoch == 0 || report.ChannelEpoch == meta.ChannelEpoch) && report.CanLead {
+				return report, nil
+			}
+		}
+	}
 	for _, replicaID := range meta.ISR {
+		if preferCurrentLeader && replicaID == meta.Leader {
+			continue
+		}
 		if replicaID == 0 || r.shouldSkipRepairCandidate(meta, reason, replicaID) {
 			continue
 		}
@@ -209,8 +254,7 @@ func (r *channelLeaderRepairer) selectLeaderCandidate(ctx context.Context, meta 
 func (r *channelLeaderRepairer) shouldSkipRepairCandidate(meta metadb.ChannelRuntimeMeta, reason string, replicaID uint64) bool {
 	switch reason {
 	case channel.LeaderRepairReasonLeaderDead.String(),
-		channel.LeaderRepairReasonLeaderDraining.String(),
-		channel.LeaderRepairReasonLeaderLeaseExpired.String():
+		channel.LeaderRepairReasonLeaderDraining.String():
 		return replicaID == meta.Leader
 	default:
 		return false
@@ -238,8 +282,7 @@ func (r *channelLeaderRepairer) currentTime() time.Time {
 func evaluationMetaForRepair(meta metadb.ChannelRuntimeMeta, reason string) metadb.ChannelRuntimeMeta {
 	switch reason {
 	case channel.LeaderRepairReasonLeaderDead.String(),
-		channel.LeaderRepairReasonLeaderDraining.String(),
-		channel.LeaderRepairReasonLeaderLeaseExpired.String():
+		channel.LeaderRepairReasonLeaderDraining.String():
 	default:
 		return meta
 	}

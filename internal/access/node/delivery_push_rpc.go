@@ -7,6 +7,7 @@ import (
 	deliveryruntime "github.com/WuKongIM/WuKongIM/internal/runtime/delivery"
 	"github.com/WuKongIM/WuKongIM/internal/runtime/online"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 type deliveryPushRequest struct {
@@ -62,6 +63,20 @@ func (a *Adapter) handleDeliveryPushRPC(ctx context.Context, body []byte) ([]byt
 			}
 			resp.Accepted = append(resp.Accepted, route)
 		}
+	}
+	if a.logger != nil {
+		a.logger.Info("delivery push rpc finished",
+			wklog.Event("delivery.diag.push_rpc"),
+			wklog.String("channelID", req.ChannelID),
+			wklog.Int("channelType", int(req.ChannelType)),
+			wklog.Uint64("messageID", req.MessageID),
+			wklog.Uint64("messageSeq", req.MessageSeq),
+			wklog.Uint64("ownerNodeID", req.OwnerNodeID),
+			wklog.Int("routes", len(req.Routes)),
+			wklog.Int("accepted", len(resp.Accepted)),
+			wklog.Int("retryable", len(resp.Retryable)),
+			wklog.Int("dropped", len(resp.Dropped)),
+		)
 	}
 	return encodeDeliveryPushResponse(resp)
 }

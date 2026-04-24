@@ -1647,6 +1647,48 @@ func TestSessionLongPollMembershipChangeSchedulesAffectedLane(t *testing.T) {
 	})
 }
 
+func TestSessionLongPollLeaseOnlyMetaUpdateKeepsExistingLaneManager(t *testing.T) {
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.LongPollLaneCount = 4
+		cfg.LongPollMaxWait = time.Millisecond
+		cfg.LongPollMaxBytes = 64 * 1024
+		cfg.LongPollMaxChannels = 64
+		cfg.FollowerReplicationRetryInterval = time.Hour
+	})
+
+	meta := testMetaLocal(26021, 4, 2, []core.NodeID{1, 2, 3})
+	meta.LeaseUntil = time.Unix(1_700_000_000, 0).UTC()
+	mustEnsureLocal(t, env.runtime, meta)
+
+	manager, ok := env.runtime.laneManager(2)
+	require.True(t, ok)
+	laneID := manager.LaneFor(meta.Key)
+
+	req, ok := manager.NextRequest(laneID)
+	require.True(t, ok)
+	require.Equal(t, LanePollOpOpen, req.Op)
+	require.True(t, manager.ApplyResponse(LanePollResponseEnvelope{
+		LaneID:       laneID,
+		Status:       LanePollStatusOK,
+		SessionID:    901,
+		SessionEpoch: 7,
+	}))
+
+	renewed := meta
+	renewed.LeaseUntil = meta.LeaseUntil.Add(30 * time.Second)
+	require.NoError(t, env.runtime.ApplyMeta(renewed))
+
+	nextManager, ok := env.runtime.laneManager(2)
+	require.True(t, ok)
+	require.Same(t, manager, nextManager)
+
+	req, ok = nextManager.NextRequest(laneID)
+	require.True(t, ok)
+	require.Equal(t, LanePollOpPoll, req.Op)
+	require.Equal(t, uint64(901), req.SessionID)
+	require.Equal(t, uint64(7), req.SessionEpoch)
+}
+
 func TestSessionLongPollNeedResetForcesFullOpen(t *testing.T) {
 	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
 		cfg.LongPollLaneCount = 4

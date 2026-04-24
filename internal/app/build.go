@@ -296,6 +296,7 @@ func build(cfg Config) (_ *App, err error) {
 		Resolver: localDeliveryResolver{
 			subscribers: subscriberResolver,
 			authority:   authorityClient,
+			logger:      app.logger.Named("delivery.resolve"),
 		},
 		Push: distributedDeliveryPush{
 			localNodeID: cfg.Node.ID,
@@ -303,8 +304,10 @@ func build(cfg Config) (_ *App, err error) {
 				online:        onlineRegistry,
 				localNodeID:   cfg.Node.ID,
 				gatewayBootID: app.gatewayBootID,
+				logger:        app.logger.Named("delivery.push.local"),
 			},
 			client: app.nodeClient,
+			logger: app.logger.Named("delivery.push.remote"),
 		},
 	})
 	app.deliveryApp = deliveryusecase.New(deliveryusecase.Options{
@@ -314,6 +317,7 @@ func build(cfg Config) (_ *App, err error) {
 	committedDispatcher := asyncCommittedDispatcher{
 		localNodeID:  cfg.Node.ID,
 		preferLocal:  true,
+		logger:       app.logger.Named("delivery.route"),
 		channelLog:   app.channelLog,
 		delivery:     app.deliveryApp,
 		conversation: app.conversationProjector,

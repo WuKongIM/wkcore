@@ -7,6 +7,7 @@ import (
 	"time"
 
 	core "github.com/WuKongIM/WuKongIM/pkg/channel"
+	"github.com/WuKongIM/WuKongIM/pkg/wklog"
 )
 
 const lanePollProtocolVersion = 1
@@ -329,10 +330,30 @@ func (r *runtime) syncFollowerLaneMembership(previous *core.Meta, next core.Meta
 	if !r.longPollEnabled() {
 		return
 	}
+	if previous != nil &&
+		previous.Leader != 0 &&
+		previous.Leader != r.cfg.LocalNode &&
+		next.Leader != 0 &&
+		next.Leader == previous.Leader {
+		manager := r.ensureLaneManager(next.Leader)
+		laneID := manager.LaneFor(next.Key)
+		if manager.UpsertChannel(next.Key, next.Epoch) {
+			r.scheduleLaneDispatch(next.Leader, laneID)
+		}
+		return
+	}
 	if previous != nil && previous.Leader != 0 && previous.Leader != r.cfg.LocalNode {
 		if manager, ok := r.laneManager(previous.Leader); ok {
 			laneID := manager.LaneFor(previous.Key)
 			if manager.RemoveChannel(previous.Key) {
+				r.cfg.Logger.Warn("follower lane membership removed",
+					wklog.Event("repl.diag.lane_membership_removed"),
+					wklog.Uint64("prevLeader", uint64(previous.Leader)),
+					wklog.Uint64("nextLeader", uint64(next.Leader)),
+					wklog.String("channelKey", string(previous.Key)),
+					wklog.Uint64("prevEpoch", previous.Epoch),
+					wklog.Uint64("nextEpoch", next.Epoch),
+				)
 				if manager.Empty() {
 					r.deleteLaneManager(previous.Leader)
 				} else {

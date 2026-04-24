@@ -97,6 +97,46 @@ func TestStartThreeNodeClusterWritesThreeNodeScopedConfigs(t *testing.T) {
 	}
 }
 
+func TestStartThreeNodeClusterWritesCustomNodeLogDirsIntoConfigs(t *testing.T) {
+	t.Setenv("WK_E2E_BINARY", writeFakeNodeBinary(t))
+
+	logRoot := filepath.Join(t.TempDir(), "cluster-logs")
+	workspaceRoot := filepath.Join(t.TempDir(), "cluster-artifacts")
+	suite := New(t)
+	cluster := suite.StartThreeNodeCluster(
+		WithWorkspaceRootDir(workspaceRoot),
+		WithNodeLogRootDir(logRoot),
+	)
+
+	for _, node := range cluster.Nodes {
+		require.Equal(t, workspaceRoot, filepath.Dir(filepath.Dir(node.Spec.RootDir)))
+		require.Equal(t, filepath.Join(logRoot, filepath.Base(filepath.Dir(node.Spec.RootDir)), nodeDirName(node.Spec.ID)), node.Spec.LogDir)
+		require.DirExists(t, node.Spec.LogDir)
+
+		cfg, err := os.ReadFile(node.Spec.ConfigPath)
+		require.NoError(t, err)
+		require.Contains(t, string(cfg), "WK_LOG_DIR="+node.Spec.LogDir)
+	}
+}
+
+func TestStartThreeNodeClusterAppliesNodeConfigOverrides(t *testing.T) {
+	t.Setenv("WK_E2E_BINARY", writeFakeNodeBinary(t))
+
+	suite := New(t)
+	cluster := suite.StartThreeNodeCluster(
+		WithNodeConfigOverrides(2, map[string]string{
+			"WK_MANAGER_AUTH_ON": "true",
+			"WK_LOG_LEVEL":       "debug",
+		}),
+	)
+
+	node := cluster.MustNode(2)
+	cfg, err := os.ReadFile(node.Spec.ConfigPath)
+	require.NoError(t, err)
+	require.Contains(t, string(cfg), "WK_MANAGER_AUTH_ON=true")
+	require.Contains(t, string(cfg), "WK_LOG_LEVEL=debug")
+}
+
 func writeFakeNodeBinary(t *testing.T) string {
 	t.Helper()
 

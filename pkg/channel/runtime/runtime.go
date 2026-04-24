@@ -365,6 +365,10 @@ func (r *runtime) evictInvalidPeerSessions(peers []core.NodeID) {
 		if r.peerReferencedByAnyChannel(peer) {
 			continue
 		}
+		r.cfg.Logger.Warn("follower lane manager evicted after peer invalidation",
+			wklog.Event("repl.diag.lane_manager_evict"),
+			wklog.Uint64("peer", uint64(peer)),
+		)
 		r.deleteLaneManager(peer)
 		session, ok := r.sessions.evict(peer)
 		if !ok {
