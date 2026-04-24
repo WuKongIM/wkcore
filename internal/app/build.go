@@ -219,12 +219,16 @@ func build(cfg Config) (_ *App, err error) {
 		probe:     repairProbeClient,
 	}
 	channelLeaderRepairer := &channelLeaderRepairer{
-		store:       app.store,
-		cluster:     app.cluster,
-		remote:      app.nodeClient,
-		evaluator:   channelLeaderEvaluator,
-		localNode:   cfg.Node.ID,
-		now:         time.Now,
+		store:     app.store,
+		cluster:   app.cluster,
+		remote:    app.nodeClient,
+		evaluator: channelLeaderEvaluator,
+		localNode: cfg.Node.ID,
+		now:       time.Now,
+		applyAuthoritative: func(meta metadb.ChannelRuntimeMeta) error {
+			_, err := app.channelMetaSync.applyAuthoritativeMeta(meta)
+			return err
+		},
 		needsRepair: app.channelMetaSync.needsLeaderRepair,
 	}
 	app.channelMetaSync.repairer = channelLeaderRepairer

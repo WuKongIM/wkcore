@@ -44,14 +44,15 @@ type channelLeaderLocalEvaluator interface {
 }
 
 type channelLeaderRepairer struct {
-	store       channelRuntimeMetaStore
-	cluster     channelLeaderRepairCluster
-	remote      channelLeaderRepairRemote
-	evaluator   channelLeaderLocalEvaluator
-	localNode   uint64
-	now         func() time.Time
-	needsRepair func(meta metadb.ChannelRuntimeMeta) (bool, string)
-	sf          singleflight.Group
+	store              channelRuntimeMetaStore
+	cluster            channelLeaderRepairCluster
+	remote             channelLeaderRepairRemote
+	evaluator          channelLeaderLocalEvaluator
+	localNode          uint64
+	now                func() time.Time
+	applyAuthoritative func(metadb.ChannelRuntimeMeta) error
+	needsRepair        func(meta metadb.ChannelRuntimeMeta) (bool, string)
+	sf                 singleflight.Group
 }
 
 func (r *channelLeaderRepairer) RepairIfNeeded(ctx context.Context, meta metadb.ChannelRuntimeMeta, reason string) (metadb.ChannelRuntimeMeta, bool, error) {
@@ -149,6 +150,11 @@ func (r *channelLeaderRepairer) RepairChannelLeaderAuthoritative(ctx context.Con
 		if err != nil {
 			return nil, err
 		}
+		if r.applyAuthoritative != nil {
+			if err := r.applyAuthoritative(authoritative); err != nil {
+				return nil, err
+			}
+		}
 		return accessnode.ChannelLeaderRepairResult{
 			Meta:    authoritative,
 			Changed: true,
@@ -171,7 +177,7 @@ func (r *channelLeaderRepairer) selectLeaderCandidate(ctx context.Context, meta 
 		if replicaID == 0 || r.shouldSkipRepairCandidate(meta, reason, replicaID) {
 			continue
 		}
-		report, err := r.evaluateLeaderCandidate(ctx, replicaID, meta)
+		report, err := r.evaluateLeaderCandidate(ctx, replicaID, meta, reason)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -202,15 +208,17 @@ func (r *channelLeaderRepairer) selectLeaderCandidate(ctx context.Context, meta 
 
 func (r *channelLeaderRepairer) shouldSkipRepairCandidate(meta metadb.ChannelRuntimeMeta, reason string, replicaID uint64) bool {
 	switch reason {
-	case channel.LeaderRepairReasonLeaderDead.String(), channel.LeaderRepairReasonLeaderDraining.String():
+	case channel.LeaderRepairReasonLeaderDead.String(),
+		channel.LeaderRepairReasonLeaderDraining.String(),
+		channel.LeaderRepairReasonLeaderLeaseExpired.String():
 		return replicaID == meta.Leader
 	default:
 		return false
 	}
 }
 
-func (r *channelLeaderRepairer) evaluateLeaderCandidate(ctx context.Context, nodeID uint64, meta metadb.ChannelRuntimeMeta) (accessnode.ChannelLeaderPromotionReport, error) {
-	req := accessnode.ChannelLeaderEvaluateRequest{Meta: meta}
+func (r *channelLeaderRepairer) evaluateLeaderCandidate(ctx context.Context, nodeID uint64, meta metadb.ChannelRuntimeMeta, reason string) (accessnode.ChannelLeaderPromotionReport, error) {
+	req := accessnode.ChannelLeaderEvaluateRequest{Meta: evaluationMetaForRepair(meta, reason)}
 	if nodeID == r.localNode && r.evaluator != nil {
 		return r.evaluator.EvaluateChannelLeaderCandidate(ctx, req)
 	}
@@ -225,6 +233,35 @@ func (r *channelLeaderRepairer) currentTime() time.Time {
 		return r.now().UTC()
 	}
 	return time.Now().UTC()
+}
+
+func evaluationMetaForRepair(meta metadb.ChannelRuntimeMeta, reason string) metadb.ChannelRuntimeMeta {
+	switch reason {
+	case channel.LeaderRepairReasonLeaderDead.String(),
+		channel.LeaderRepairReasonLeaderDraining.String(),
+		channel.LeaderRepairReasonLeaderLeaseExpired.String():
+	default:
+		return meta
+	}
+
+	if meta.Leader == 0 || len(meta.ISR) == 0 {
+		return meta
+	}
+
+	trimmedISR := make([]uint64, 0, len(meta.ISR))
+	for _, replicaID := range meta.ISR {
+		if replicaID == meta.Leader {
+			continue
+		}
+		trimmedISR = append(trimmedISR, replicaID)
+	}
+	if len(trimmedISR) == 0 {
+		return meta
+	}
+
+	trimmed := meta
+	trimmed.ISR = trimmedISR
+	return trimmed
 }
 
 func observedRepairEpochsStale(req accessnode.ChannelLeaderRepairRequest, latest metadb.ChannelRuntimeMeta) bool {

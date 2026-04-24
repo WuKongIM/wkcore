@@ -4,6 +4,7 @@ package cross_node_closure
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -47,26 +48,64 @@ func TestCrossNodeClosure(t *testing.T) {
 	require.NoError(t, err, cluster.DumpDiagnostics())
 	require.True(t, ok, cluster.DumpDiagnostics())
 
+	for i := 1; i <= 10; i++ {
+		sendAndRequireCrossNodeRecv(
+			t,
+			cluster,
+			sender,
+			recipient,
+			"u1",
+			"u2",
+			fmt.Sprintf("e2e-msg-3n-u1-to-u2-%02d", i),
+			uint64(i),
+			[]byte(fmt.Sprintf("hello u2 from u1 #%02d", i)),
+		)
+	}
+	for i := 1; i <= 10; i++ {
+		sendAndRequireCrossNodeRecv(
+			t,
+			cluster,
+			recipient,
+			sender,
+			"u2",
+			"u1",
+			fmt.Sprintf("e2e-msg-3n-u2-to-u1-%02d", i),
+			uint64(i),
+			[]byte(fmt.Sprintf("hello u1 from u2 #%02d", i)),
+		)
+	}
+}
+
+func sendAndRequireCrossNodeRecv(
+	t *testing.T,
+	cluster *suite.StartedCluster,
+	sender, recipient *suite.WKProtoClient,
+	senderUID, recipientUID, clientMsgNo string,
+	clientSeq uint64,
+	payload []byte,
+) {
+	t.Helper()
+
 	require.NoError(t, sender.SendFrame(&frame.SendPacket{
-		ChannelID:   "u2",
+		ChannelID:   recipientUID,
 		ChannelType: frame.ChannelTypePerson,
-		ClientSeq:   1,
-		ClientMsgNo: "e2e-msg-3n-1",
-		Payload:     []byte("hello across three nodes"),
+		ClientSeq:   clientSeq,
+		ClientMsgNo: clientMsgNo,
+		Payload:     payload,
 	}))
 
 	sendack, err := sender.ReadSendAck()
-	require.NoError(t, err)
+	require.NoError(t, err, cluster.DumpDiagnostics())
 	require.Equal(t, frame.ReasonSuccess, sendack.ReasonCode)
 	require.NotZero(t, sendack.MessageID)
 	require.NotZero(t, sendack.MessageSeq)
 
 	recv, err := recipient.ReadRecv()
-	require.NoError(t, err)
-	require.Equal(t, "u1", recv.FromUID)
-	require.Equal(t, "u1", recv.ChannelID)
+	require.NoError(t, err, cluster.DumpDiagnostics())
+	require.Equal(t, senderUID, recv.FromUID)
+	require.Equal(t, senderUID, recv.ChannelID)
 	require.Equal(t, frame.ChannelTypePerson, recv.ChannelType)
-	require.Equal(t, []byte("hello across three nodes"), recv.Payload)
+	require.Equal(t, payload, recv.Payload)
 	require.Equal(t, sendack.MessageID, recv.MessageID)
 	require.Equal(t, sendack.MessageSeq, recv.MessageSeq)
 

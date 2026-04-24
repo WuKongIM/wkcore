@@ -139,23 +139,21 @@ func (s *channelMetaSync) needsLeaderRepair(meta metadb.ChannelRuntimeMeta) (boo
 		return true, channel.LeaderRepairReasonLeaderNotReplica.String()
 	}
 	status, ok := s.nodeLivenessStatus(meta.Leader)
-	if !ok {
-		if reason := s.localRuntimeLeaderRepairReason(meta); reason != "" {
-			return true, reason
+	if ok {
+		switch status {
+		case controllermeta.NodeStatusDead:
+			return true, channel.LeaderRepairReasonLeaderDead.String()
+		case controllermeta.NodeStatusDraining:
+			return true, channel.LeaderRepairReasonLeaderDraining.String()
 		}
-		return false, ""
 	}
-	switch status {
-	case controllermeta.NodeStatusDead:
-		return true, channel.LeaderRepairReasonLeaderDead.String()
-	case controllermeta.NodeStatusDraining:
-		return true, channel.LeaderRepairReasonLeaderDraining.String()
-	default:
-		if reason := s.localRuntimeLeaderRepairReason(meta); reason != "" {
-			return true, reason
-		}
-		return false, ""
+	if reason := s.localRuntimeLeaderRepairReason(meta); reason != "" {
+		return true, reason
 	}
+	if runtimeMetaLeaseNeedsRenewal(meta.LeaseUntilMS, s.now().UTC(), 0) {
+		return true, channel.LeaderRepairReasonLeaderLeaseExpired.String()
+	}
+	return false, ""
 }
 
 func (s *channelMetaSync) localRuntimeLeaderRepairReason(meta metadb.ChannelRuntimeMeta) string {

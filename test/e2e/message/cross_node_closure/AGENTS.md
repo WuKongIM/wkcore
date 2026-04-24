@@ -4,7 +4,7 @@ This file is for agents working on `test/e2e/message/cross_node_closure`.
 
 ## Purpose
 
-Prove a real three-node cluster can deliver one person-channel message when the sender and recipient connect to different follower nodes.
+Prove a real three-node cluster can deliver ten person-channel messages in each direction when both users connect to different follower nodes.
 
 ## Cluster Shape
 
@@ -16,11 +16,13 @@ One real three-node cluster with slot topology discovered through `/manager/slot
 2. Wait for every node to satisfy the ready contract.
 3. Resolve slot `1` topology through the manager API.
 4. Connect `u1` and `u2` to two different follower nodes.
-5. Observe `Send`, `SendAck`, `Recv`, and `RecvAck`.
+5. Send ten person-channel messages from `u1 -> u2`.
+6. Send ten person-channel messages from `u2 -> u1`.
+7. Observe `Send`, `SendAck`, `Recv`, and `RecvAck`.
 
 ## Observable Outcome
 
-The sender receives a successful `SendAck`, and the recipient receives the same payload and message identifiers across nodes.
+Each user receives ten successful `SendAck` packets for its outbound sends, and each peer receives the same ten payloads and message identifiers across nodes.
 
 ## Failure Diagnostics
 

@@ -64,6 +64,49 @@ func TestChannelMetaSyncRefreshRepairsDeadLeaderViaSlotLeader(t *testing.T) {
 	require.Equal(t, "leader_dead", repairer.calls[0].reason)
 }
 
+func TestChannelMetaSyncRefreshRepairsExpiredLeaderLeaseViaSlotLeader(t *testing.T) {
+	id := channel.ChannelID{ID: "repair-expired-lease", Type: 1}
+	expired := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 9,
+		LeaderEpoch:  7,
+		Replicas:     []uint64{2, 3, 4},
+		ISR:          []uint64{2, 3, 4},
+		Leader:       3,
+		MinISR:       2,
+		Status:       uint8(channel.StatusActive),
+		LeaseUntilMS: time.Now().Add(-time.Second).UnixMilli(),
+	}
+	repaired := expired
+	repaired.Leader = 4
+	repaired.LeaderEpoch = 8
+	repaired.LeaseUntilMS = time.Now().Add(time.Minute).UnixMilli()
+	source := &fakeChannelMetaSource{
+		get: map[channel.ChannelID]metadb.ChannelRuntimeMeta{
+			id: expired,
+		},
+	}
+	cluster := &fakeChannelMetaCluster{}
+	repairer := &stubChannelMetaRepairer{
+		meta:    repaired,
+		changed: true,
+	}
+	syncer := &channelMetaSync{
+		source:    source,
+		cluster:   cluster,
+		localNode: 2,
+		repairer:  repairer,
+	}
+
+	got, err := syncer.RefreshChannelMeta(context.Background(), id)
+
+	require.NoError(t, err)
+	require.Equal(t, channel.NodeID(4), got.Leader)
+	require.Len(t, repairer.calls, 1)
+	require.Equal(t, "leader_lease_expired", repairer.calls[0].reason)
+}
+
 func TestChannelMetaSyncRefreshReturnsErrNoSafeChannelLeaderWhenRepairHasNoCandidate(t *testing.T) {
 	id := channel.ChannelID{ID: "repair-none", Type: 1}
 	source := &fakeChannelMetaSource{
@@ -266,6 +309,209 @@ func TestChannelLeaderRepairerSelectsCandidateWithHighestProjectedSafeHW(t *test
 	require.Equal(t, dead.Replicas, source.upserts[0].Replicas)
 	require.Equal(t, dead.ISR, source.upserts[0].ISR)
 	require.Equal(t, now.Add(channelMetaBootstrapLease).UnixMilli(), source.upserts[0].LeaseUntilMS)
+}
+
+func TestChannelLeaderRepairerSkipsExpiredLeaderCandidateDuringRepair(t *testing.T) {
+	now := time.UnixMilli(1_700_001_111_000).UTC()
+	id := channel.ChannelID{ID: "repair-expired-skip", Type: 1}
+	expired := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 11,
+		LeaderEpoch:  7,
+		Replicas:     []uint64{2, 4},
+		ISR:          []uint64{4, 2},
+		Leader:       4,
+		MinISR:       2,
+		Status:       uint8(channel.StatusActive),
+		LeaseUntilMS: now.Add(-time.Second).UnixMilli(),
+	}
+	repaired := expired
+	repaired.Leader = 2
+	repaired.LeaderEpoch = 8
+	repaired.LeaseUntilMS = now.Add(channelMetaBootstrapLease).UnixMilli()
+	source := &fakeChannelMetaSource{
+		getResults: []fakeChannelMetaGetResult{
+			{meta: expired},
+			{meta: repaired},
+		},
+	}
+	remote := &stubChannelLeaderRepairRemote{
+		evaluateByNode: map[uint64]accessnode.ChannelLeaderPromotionReport{
+			2: {
+				NodeID:              2,
+				Exists:              true,
+				ChannelEpoch:        expired.ChannelEpoch,
+				LocalLEO:            10,
+				LocalCheckpointHW:   10,
+				LocalOffsetEpoch:    4,
+				ProjectedSafeHW:     10,
+				ProjectedTruncateTo: 10,
+				CanLead:             true,
+			},
+		},
+	}
+	repairer := &channelLeaderRepairer{
+		store:     source,
+		localNode: 9,
+		now:       func() time.Time { return now },
+		needsRepair: func(meta metadb.ChannelRuntimeMeta) (bool, string) {
+			return meta.Leader == 4, "leader_lease_expired"
+		},
+		remote: remote,
+	}
+
+	got, err := repairer.RepairChannelLeaderAuthoritative(context.Background(), accessnode.ChannelLeaderRepairRequest{
+		ChannelID:            id,
+		ObservedChannelEpoch: expired.ChannelEpoch,
+		ObservedLeaderEpoch:  expired.LeaderEpoch,
+		Reason:               "leader_lease_expired",
+	})
+
+	require.NoError(t, err)
+	require.True(t, got.Changed)
+	require.Len(t, remote.evaluateCalls, 1)
+	require.Equal(t, uint64(2), remote.evaluateCalls[0].nodeID)
+}
+
+func TestChannelLeaderRepairerExcludesExpiredLeaderFromEvaluationMeta(t *testing.T) {
+	now := time.UnixMilli(1_700_001_112_000).UTC()
+	id := channel.ChannelID{ID: "repair-expired-meta", Type: 1}
+	expired := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 11,
+		LeaderEpoch:  7,
+		Replicas:     []uint64{2, 4, 5},
+		ISR:          []uint64{4, 2, 5},
+		Leader:       4,
+		MinISR:       2,
+		Status:       uint8(channel.StatusActive),
+		LeaseUntilMS: now.Add(-time.Second).UnixMilli(),
+	}
+	repaired := expired
+	repaired.Leader = 2
+	repaired.LeaderEpoch = 8
+	repaired.LeaseUntilMS = now.Add(channelMetaBootstrapLease).UnixMilli()
+	source := &fakeChannelMetaSource{
+		getResults: []fakeChannelMetaGetResult{
+			{meta: expired},
+			{meta: repaired},
+		},
+	}
+	remote := &stubChannelLeaderRepairRemote{
+		evaluateByNode: map[uint64]accessnode.ChannelLeaderPromotionReport{
+			2: {
+				NodeID:              2,
+				Exists:              true,
+				ChannelEpoch:        expired.ChannelEpoch,
+				LocalLEO:            10,
+				LocalCheckpointHW:   10,
+				LocalOffsetEpoch:    4,
+				ProjectedSafeHW:     10,
+				ProjectedTruncateTo: 10,
+				CanLead:             true,
+			},
+			5: {
+				NodeID:              5,
+				Exists:              true,
+				ChannelEpoch:        expired.ChannelEpoch,
+				LocalLEO:            9,
+				LocalCheckpointHW:   9,
+				LocalOffsetEpoch:    4,
+				ProjectedSafeHW:     9,
+				ProjectedTruncateTo: 9,
+				CanLead:             true,
+			},
+		},
+	}
+	repairer := &channelLeaderRepairer{
+		store:     source,
+		localNode: 9,
+		now:       func() time.Time { return now },
+		needsRepair: func(meta metadb.ChannelRuntimeMeta) (bool, string) {
+			return meta.Leader == 4, "leader_lease_expired"
+		},
+		remote: remote,
+	}
+
+	_, err := repairer.RepairChannelLeaderAuthoritative(context.Background(), accessnode.ChannelLeaderRepairRequest{
+		ChannelID:            id,
+		ObservedChannelEpoch: expired.ChannelEpoch,
+		ObservedLeaderEpoch:  expired.LeaderEpoch,
+		Reason:               "leader_lease_expired",
+	})
+
+	require.NoError(t, err)
+	require.NotEmpty(t, remote.evaluateCalls)
+	require.Equal(t, []uint64{2, 5}, remote.evaluateCalls[0].req.Meta.ISR)
+}
+
+func TestChannelLeaderRepairerAppliesAuthoritativeMetaLocallyAfterRepair(t *testing.T) {
+	now := time.UnixMilli(1_700_001_113_000).UTC()
+	id := channel.ChannelID{ID: "repair-apply-local", Type: 1}
+	dead := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 11,
+		LeaderEpoch:  7,
+		Replicas:     []uint64{2, 4, 5},
+		ISR:          []uint64{2, 4, 5},
+		Leader:       5,
+		MinISR:       2,
+		Status:       uint8(channel.StatusActive),
+	}
+	repaired := dead
+	repaired.Leader = 4
+	repaired.LeaderEpoch = 8
+	repaired.LeaseUntilMS = now.Add(channelMetaBootstrapLease).UnixMilli()
+	source := &fakeChannelMetaSource{
+		getResults: []fakeChannelMetaGetResult{
+			{meta: dead},
+			{meta: repaired},
+		},
+	}
+	remote := &stubChannelLeaderRepairRemote{
+		evaluateByNode: map[uint64]accessnode.ChannelLeaderPromotionReport{
+			4: {
+				NodeID:              4,
+				Exists:              true,
+				ChannelEpoch:        dead.ChannelEpoch,
+				LocalLEO:            12,
+				LocalCheckpointHW:   11,
+				LocalOffsetEpoch:    4,
+				ProjectedSafeHW:     11,
+				ProjectedTruncateTo: 11,
+				CanLead:             true,
+			},
+		},
+	}
+	var applied []metadb.ChannelRuntimeMeta
+	repairer := &channelLeaderRepairer{
+		store:     source,
+		localNode: 9,
+		now:       func() time.Time { return now },
+		needsRepair: func(meta metadb.ChannelRuntimeMeta) (bool, string) {
+			return meta.Leader == 5, "leader_dead"
+		},
+		remote: remote,
+		applyAuthoritative: func(meta metadb.ChannelRuntimeMeta) error {
+			applied = append(applied, meta)
+			return nil
+		},
+	}
+
+	got, err := repairer.RepairChannelLeaderAuthoritative(context.Background(), accessnode.ChannelLeaderRepairRequest{
+		ChannelID:            id,
+		ObservedChannelEpoch: dead.ChannelEpoch,
+		ObservedLeaderEpoch:  dead.LeaderEpoch,
+		Reason:               "leader_dead",
+	})
+
+	require.NoError(t, err)
+	require.True(t, got.Changed)
+	require.Len(t, applied, 1)
+	require.Equal(t, repaired, applied[0])
 }
 
 func TestChannelLeaderRepairerRoutesRepairToRemoteSlotLeader(t *testing.T) {

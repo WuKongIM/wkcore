@@ -4,11 +4,12 @@ package channel
 type LeaderRepairReason string
 
 const (
-	LeaderRepairReasonLeaderMissing    LeaderRepairReason = "leader_missing"
-	LeaderRepairReasonLeaderNotReplica LeaderRepairReason = "leader_not_replica"
-	LeaderRepairReasonLeaderDead       LeaderRepairReason = "leader_dead"
-	LeaderRepairReasonLeaderDraining   LeaderRepairReason = "leader_draining"
-	LeaderRepairReasonLeaderDrift      LeaderRepairReason = "leader_drift"
+	LeaderRepairReasonLeaderMissing      LeaderRepairReason = "leader_missing"
+	LeaderRepairReasonLeaderNotReplica   LeaderRepairReason = "leader_not_replica"
+	LeaderRepairReasonLeaderLeaseExpired LeaderRepairReason = "leader_lease_expired"
+	LeaderRepairReasonLeaderDead         LeaderRepairReason = "leader_dead"
+	LeaderRepairReasonLeaderDraining     LeaderRepairReason = "leader_draining"
+	LeaderRepairReasonLeaderDrift        LeaderRepairReason = "leader_drift"
 )
 
 func (r LeaderRepairReason) String() string {
