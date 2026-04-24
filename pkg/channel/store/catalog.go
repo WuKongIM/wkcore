@@ -148,7 +148,7 @@ var MessageTable = &TableDesc{
 		{
 			ID:        messageIndexIDClientMsgNo,
 			Name:      "idx_client_msg_no",
-			ColumnIDs: []uint16{messageColumnIDClientMsgNo},
+			ColumnIDs: []uint16{messageColumnIDClientMsgNo, messageColumnIDMessageSeq},
 		},
 		{
 			ID:        messageIndexIDFromUIDClientMsgNo,
