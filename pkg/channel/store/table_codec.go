@@ -46,6 +46,18 @@ func encodeTableStateKey(channelKey channel.ChannelKey, tableID uint32, primaryK
 	return binary.BigEndian.AppendUint16(key, familyID)
 }
 
+func decodeTableStateKey(key []byte, channelKey channel.ChannelKey, tableID uint32) (uint64, uint16, error) {
+	prefix := encodeTableStatePrefix(channelKey, tableID)
+	if len(key) != len(prefix)+10 {
+		return 0, 0, channel.ErrCorruptValue
+	}
+	if string(key[:len(prefix)]) != string(prefix) {
+		return 0, 0, channel.ErrCorruptValue
+	}
+	rest := key[len(prefix):]
+	return binary.BigEndian.Uint64(rest[:8]), binary.BigEndian.Uint16(rest[8:10]), nil
+}
+
 func encodeTableIndexPrefix(channelKey channel.ChannelKey, tableID uint32, indexID uint16) []byte {
 	key := encodeKeyspacePrefix(keyspaceTableIndex, channelKey)
 	key = binary.BigEndian.AppendUint32(key, tableID)

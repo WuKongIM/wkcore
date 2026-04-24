@@ -1,9 +1,9 @@
 package store
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
+	"io"
 	"testing"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
@@ -132,7 +132,7 @@ func TestMessageRowFromRecordPayloadDecodesSharedCompatibilityCodec(t *testing.T
 		Payload:     []byte("hello"),
 	}
 
-	payload := mustEncodeCompatibilityRecordPayload(t, msg, hashMessagePayload(msg.Payload))
+	payload := makeCompatibilityRecordPayload(t, msg, hashMessagePayload(msg.Payload))
 
 	row, err := messageRowFromRecordPayload(payload)
 	require.NoError(t, err)
@@ -224,27 +224,134 @@ func TestMessageRowToRecordRoundTripPreservesHeaderLayout(t *testing.T) {
 	require.Equal(t, row.Timestamp, int32(binary.BigEndian.Uint32(record.Payload[33:37])))
 }
 
-func mustEncodeCompatibilityRecordPayload(t *testing.T, msg channel.Message, payloadHash uint64) []byte {
+func TestMessageRowToRecordEncodesExactLegacyFieldOrderAndLengths(t *testing.T) {
+	row := messageRow{
+		MessageID:   42,
+		FramerFlags: encodeMessageRowFramerFlags(frame.Framer{NoPersist: true, End: true}),
+		Setting:     uint8(frame.SettingReceiptEnabled),
+		StreamFlag:  uint8(frame.StreamFlagIng),
+		MsgKey:      "k-1",
+		Expire:      60,
+		ClientSeq:   7,
+		ClientMsgNo: "c-1",
+		StreamNo:    "s-1",
+		StreamID:    88,
+		Timestamp:   99,
+		ChannelID:   "room",
+		ChannelType: 1,
+		Topic:       "topic",
+		FromUID:     "u1",
+		Payload:     []byte("hello"),
+		PayloadHash: 123,
+	}
+
+	record, err := row.toRecord()
+	require.NoError(t, err)
+
+	offset := channel.DurableMessageHeaderSize
+	offset = assertRecordField(t, record.Payload, offset, []byte(row.MsgKey))
+	offset = assertRecordField(t, record.Payload, offset, []byte(row.ClientMsgNo))
+	offset = assertRecordField(t, record.Payload, offset, []byte(row.StreamNo))
+	offset = assertRecordField(t, record.Payload, offset, []byte(row.ChannelID))
+	offset = assertRecordField(t, record.Payload, offset, []byte(row.Topic))
+	offset = assertRecordField(t, record.Payload, offset, []byte(row.FromUID))
+	offset = assertRecordField(t, record.Payload, offset, row.Payload)
+	require.Equal(t, len(record.Payload), offset)
+	require.Equal(t, row.PayloadHash, binary.BigEndian.Uint64(record.Payload[37:45]))
+}
+
+func TestMessageRowFromRecordPayloadDecodesExactLegacyWireLayout(t *testing.T) {
+	payload := makeCompatibilityRecordPayload(t, channel.Message{
+		MessageID:   42,
+		Framer:      frame.Framer{NoPersist: true, End: true},
+		Setting:     frame.SettingReceiptEnabled,
+		MsgKey:      "k-1",
+		Expire:      60,
+		ClientSeq:   7,
+		ClientMsgNo: "c-1",
+		StreamNo:    "s-1",
+		StreamID:    88,
+		StreamFlag:  frame.StreamFlagIng,
+		Timestamp:   99,
+		ChannelID:   "room",
+		ChannelType: 1,
+		Topic:       "topic",
+		FromUID:     "u1",
+		Payload:     []byte("hello"),
+	}, 123)
+
+	row, err := messageRowFromRecordPayload(payload)
+	require.NoError(t, err)
+	require.Equal(t, uint64(42), row.MessageID)
+	require.Equal(t, encodeMessageRowFramerFlags(frame.Framer{NoPersist: true, End: true}), row.FramerFlags)
+	require.Equal(t, uint8(frame.SettingReceiptEnabled), row.Setting)
+	require.Equal(t, uint8(frame.StreamFlagIng), row.StreamFlag)
+	require.Equal(t, "k-1", row.MsgKey)
+	require.Equal(t, uint32(60), row.Expire)
+	require.Equal(t, uint64(7), row.ClientSeq)
+	require.Equal(t, "c-1", row.ClientMsgNo)
+	require.Equal(t, "s-1", row.StreamNo)
+	require.Equal(t, uint64(88), row.StreamID)
+	require.Equal(t, int32(99), row.Timestamp)
+	require.Equal(t, "room", row.ChannelID)
+	require.Equal(t, uint8(1), row.ChannelType)
+	require.Equal(t, "topic", row.Topic)
+	require.Equal(t, "u1", row.FromUID)
+	require.Equal(t, []byte("hello"), row.Payload)
+	require.Equal(t, uint64(123), row.PayloadHash)
+}
+
+func TestMessageRowFromRecordPayloadRejectsTruncatedLengthPrefixedField(t *testing.T) {
+	payload := makeCompatibilityRecordPayload(t, channel.Message{
+		MessageID:   42,
+		ClientMsgNo: "c-1",
+		ChannelID:   "room",
+		FromUID:     "u1",
+		Payload:     []byte("hello"),
+	}, 123)
+	truncated := append([]byte(nil), payload[:len(payload)-2]...)
+
+	_, err := messageRowFromRecordPayload(truncated)
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+}
+
+func makeCompatibilityRecordPayload(t *testing.T, msg channel.Message, payloadHash uint64) []byte {
 	t.Helper()
 
-	var buf bytes.Buffer
-	require.NoError(t, buf.WriteByte(channel.DurableMessageCodecVersion))
-	require.NoError(t, binary.Write(&buf, binary.BigEndian, msg.MessageID))
-	require.NoError(t, buf.WriteByte(encodeMessageRowFramerFlags(msg.Framer)))
-	require.NoError(t, buf.WriteByte(byte(msg.Setting)))
-	require.NoError(t, buf.WriteByte(byte(msg.StreamFlag)))
-	require.NoError(t, buf.WriteByte(msg.ChannelType))
-	require.NoError(t, binary.Write(&buf, binary.BigEndian, msg.Expire))
-	require.NoError(t, binary.Write(&buf, binary.BigEndian, msg.ClientSeq))
-	require.NoError(t, binary.Write(&buf, binary.BigEndian, msg.StreamID))
-	require.NoError(t, binary.Write(&buf, binary.BigEndian, msg.Timestamp))
-	require.NoError(t, binary.Write(&buf, binary.BigEndian, payloadHash))
-	require.NoError(t, writeRecordString(&buf, msg.MsgKey))
-	require.NoError(t, writeRecordString(&buf, msg.ClientMsgNo))
-	require.NoError(t, writeRecordString(&buf, msg.StreamNo))
-	require.NoError(t, writeRecordString(&buf, msg.ChannelID))
-	require.NoError(t, writeRecordString(&buf, msg.Topic))
-	require.NoError(t, writeRecordString(&buf, msg.FromUID))
-	require.NoError(t, writeRecordBytes(&buf, msg.Payload))
-	return buf.Bytes()
+	payload := []byte{channel.DurableMessageCodecVersion}
+	payload = binary.BigEndian.AppendUint64(payload, msg.MessageID)
+	payload = append(payload, encodeMessageRowFramerFlags(msg.Framer))
+	payload = append(payload, byte(msg.Setting))
+	payload = append(payload, byte(msg.StreamFlag))
+	payload = append(payload, msg.ChannelType)
+	payload = binary.BigEndian.AppendUint32(payload, msg.Expire)
+	payload = binary.BigEndian.AppendUint64(payload, msg.ClientSeq)
+	payload = binary.BigEndian.AppendUint64(payload, msg.StreamID)
+	payload = binary.BigEndian.AppendUint32(payload, uint32(msg.Timestamp))
+	payload = binary.BigEndian.AppendUint64(payload, payloadHash)
+	payload = appendRecordField(payload, []byte(msg.MsgKey))
+	payload = appendRecordField(payload, []byte(msg.ClientMsgNo))
+	payload = appendRecordField(payload, []byte(msg.StreamNo))
+	payload = appendRecordField(payload, []byte(msg.ChannelID))
+	payload = appendRecordField(payload, []byte(msg.Topic))
+	payload = appendRecordField(payload, []byte(msg.FromUID))
+	payload = appendRecordField(payload, msg.Payload)
+	return payload
+}
+
+func assertRecordField(t *testing.T, payload []byte, offset int, want []byte) int {
+	t.Helper()
+
+	require.GreaterOrEqual(t, len(payload[offset:]), 4)
+	length := int(binary.BigEndian.Uint32(payload[offset : offset+4]))
+	offset += 4
+	require.Equal(t, len(want), length)
+	require.GreaterOrEqual(t, len(payload[offset:]), length)
+	require.Equal(t, want, payload[offset:offset+length])
+	return offset + length
+}
+
+func appendRecordField(dst []byte, value []byte) []byte {
+	dst = binary.BigEndian.AppendUint32(dst, uint32(len(value)))
+	return append(dst, value...)
 }
