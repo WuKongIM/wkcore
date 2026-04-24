@@ -112,6 +112,28 @@ func TestMessagesFromLogRecordsPreserveActualOffsets(t *testing.T) {
 	}
 }
 
+func TestLoadMsgUsesStructuredSequenceLookup(t *testing.T) {
+	st := &fakeSequenceReadStore{
+		bySeq: map[uint64]core.Message{
+			2: {MessageID: 12, MessageSeq: 2, Payload: []byte("two")},
+		},
+	}
+
+	msg, err := loadMsgFromStore(st, 2, 2)
+	if err != nil {
+		t.Fatalf("loadMsgFromStore() error = %v", err)
+	}
+	if msg.MessageID != 12 || msg.MessageSeq != 2 {
+		t.Fatalf("message = %+v", msg)
+	}
+	if st.getCalls != 1 {
+		t.Fatalf("GetMessageBySeq() calls = %d, want 1", st.getCalls)
+	}
+	if st.listCalls != 0 {
+		t.Fatalf("ListMessagesBySeq() calls = %d, want 0", st.listCalls)
+	}
+}
+
 func mustEncodeMessagePayload(t *testing.T, msg core.Message) []byte {
 	t.Helper()
 	payload, err := encodeMessage(msg)
@@ -119,4 +141,21 @@ func mustEncodeMessagePayload(t *testing.T, msg core.Message) []byte {
 		t.Fatalf("encodeMessage() error = %v", err)
 	}
 	return payload
+}
+
+type fakeSequenceReadStore struct {
+	bySeq     map[uint64]core.Message
+	getCalls  int
+	listCalls int
+}
+
+func (f *fakeSequenceReadStore) GetMessageBySeq(seq uint64) (core.Message, bool, error) {
+	f.getCalls++
+	msg, ok := f.bySeq[seq]
+	return msg, ok, nil
+}
+
+func (f *fakeSequenceReadStore) ListMessagesBySeq(fromSeq uint64, limit int, maxBytes int, reverse bool) ([]core.Message, error) {
+	f.listCalls++
+	return nil, nil
 }

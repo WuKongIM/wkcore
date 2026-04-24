@@ -27,26 +27,6 @@ func TestAppendUsesRuntimeKeyAndReturnsMessageSeq(t *testing.T) {
 		if err != nil {
 			return core.CommitResult{}, err
 		}
-		for i, record := range records {
-			view, err := decodeMessageView(record.Payload)
-			if err != nil {
-				return core.CommitResult{}, err
-			}
-			if view.Message.ClientMsgNo == "" {
-				continue
-			}
-			if err := store.PutIdempotency(core.IdempotencyKey{
-				ChannelID:   id,
-				FromUID:     view.Message.FromUID,
-				ClientMsgNo: view.Message.ClientMsgNo,
-			}, core.IdempotencyEntry{
-				MessageID:  view.Message.MessageID,
-				MessageSeq: base + uint64(i) + 1,
-				Offset:     base + uint64(i),
-			}); err != nil {
-				return core.CommitResult{}, err
-			}
-		}
 		handle.status.HW = base + uint64(len(records))
 		return core.CommitResult{BaseOffset: base, NextCommitHW: handle.status.HW, RecordCount: len(records)}, nil
 	}
@@ -271,6 +251,38 @@ func TestAppendReturnsExistingEntryOnIdempotentRetry(t *testing.T) {
 	}
 }
 
+func TestAppendIdempotencyHitReturnsStoredMessageFromUniqueIndex(t *testing.T) {
+	key := core.IdempotencyKey{
+		ChannelID:   core.ChannelID{ID: "room-1", Type: 2},
+		FromUID:     "u1",
+		ClientMsgNo: "m1",
+	}
+	store := &fakeAppendLookupStore{
+		hit:       core.IdempotencyEntry{MessageID: 11, MessageSeq: 7, Offset: 6},
+		hitHash:   hashPayload([]byte("payload")),
+		lookupOK:  true,
+		message:   core.Message{MessageID: 11, MessageSeq: 7, Payload: []byte("payload"), FromUID: "u1", ClientMsgNo: "m1"},
+		messageOK: true,
+	}
+
+	result, ok, err := resolveIdempotentAppendFromStore(store, key, core.Message{Payload: []byte("payload")})
+	if err != nil {
+		t.Fatalf("resolveIdempotentAppendFromStore() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected idempotency hit")
+	}
+	if result.MessageID != 11 || result.MessageSeq != 7 {
+		t.Fatalf("result = %+v", result)
+	}
+	if store.lookupCalls != 1 {
+		t.Fatalf("LookupIdempotency() calls = %d, want 1", store.lookupCalls)
+	}
+	if store.messageCalls != 1 {
+		t.Fatalf("GetMessageBySeq() calls = %d, want 1", store.messageCalls)
+	}
+}
+
 func TestAppendReturnsErrProtocolUpgradeRequiredForLegacyClientOnU64Channel(t *testing.T) {
 	id := core.ChannelID{ID: "room-1", Type: 2}
 	svc, _, _ := newAppendService(t, id)
@@ -375,26 +387,6 @@ func newAppendService(t *testing.T, id core.ChannelID) (Service, *fakeRuntime, *
 		if err != nil {
 			return core.CommitResult{}, err
 		}
-		for i, record := range records {
-			view, err := decodeMessageView(record.Payload)
-			if err != nil {
-				return core.CommitResult{}, err
-			}
-			if view.Message.ClientMsgNo == "" {
-				continue
-			}
-			if err := st.PutIdempotency(core.IdempotencyKey{
-				ChannelID:   id,
-				FromUID:     view.Message.FromUID,
-				ClientMsgNo: view.Message.ClientMsgNo,
-			}, core.IdempotencyEntry{
-				MessageID:  view.Message.MessageID,
-				MessageSeq: base + uint64(i) + 1,
-				Offset:     base + uint64(i),
-			}); err != nil {
-				return core.CommitResult{}, err
-			}
-		}
 		handle.status.HW = base + uint64(len(records))
 		return core.CommitResult{BaseOffset: base, NextCommitHW: handle.status.HW, RecordCount: len(records)}, nil
 	}
@@ -423,6 +415,28 @@ func newAppendService(t *testing.T, id core.ChannelID) (Service, *fakeRuntime, *
 		t.Fatalf("ApplyMeta() error = %v", err)
 	}
 	return svc, rt, engine
+}
+
+type fakeAppendLookupStore struct {
+	hit          core.IdempotencyEntry
+	hitHash      uint64
+	lookupOK     bool
+	lookupCalls  int
+	lookupErr    error
+	message      core.Message
+	messageOK    bool
+	messageCalls int
+	messageErr   error
+}
+
+func (f *fakeAppendLookupStore) LookupIdempotency(key core.IdempotencyKey) (core.IdempotencyEntry, uint64, bool, error) {
+	f.lookupCalls++
+	return f.hit, f.hitHash, f.lookupOK, f.lookupErr
+}
+
+func (f *fakeAppendLookupStore) GetMessageBySeq(seq uint64) (core.Message, bool, error) {
+	f.messageCalls++
+	return f.message, f.messageOK, f.messageErr
 }
 
 func openTestEngine(tb testing.TB) *store.Engine {

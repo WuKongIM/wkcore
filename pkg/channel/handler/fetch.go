@@ -49,25 +49,30 @@ func (s *service) Fetch(_ context.Context, req channel.FetchRequest) (channel.Fe
 		return channel.FetchResult{NextSeq: startSeq, CommittedSeq: committedSeq}, nil
 	}
 
-	records, err := s.cfg.Store.Read(key, startSeq-1, req.Limit, req.MaxBytes)
+	st := s.cfg.Store.ForChannel(key, req.ChannelID)
+	return fetchMessagesFromStore(st, committedSeq, startSeq, req.Limit, req.MaxBytes)
+}
+
+type fetchMessageStore interface {
+	ListMessagesBySeq(fromSeq uint64, limit int, maxBytes int, reverse bool) ([]channel.Message, error)
+}
+
+func fetchMessagesFromStore(st fetchMessageStore, committedSeq, startSeq uint64, limit int, maxBytes int) (channel.FetchResult, error) {
+	messages, err := st.ListMessagesBySeq(startSeq, limit, maxBytes, false)
 	if err != nil {
 		return channel.FetchResult{}, err
 	}
 	result := channel.FetchResult{
-		Messages:     make([]channel.Message, 0, minInt(len(records), req.Limit)),
+		Messages:     make([]channel.Message, 0, minInt(len(messages), limit)),
 		NextSeq:      startSeq,
 		CommittedSeq: committedSeq,
 	}
-	for _, record := range records {
-		if record.Offset >= state.HW {
+	for _, msg := range messages {
+		if msg.MessageSeq > committedSeq {
 			break
 		}
-		msg, err := decodeMessageRecord(record)
-		if err != nil {
-			return channel.FetchResult{}, err
-		}
 		result.Messages = append(result.Messages, msg)
-		result.NextSeq = record.Offset + 2
+		result.NextSeq = msg.MessageSeq + 1
 	}
 	return result, nil
 }

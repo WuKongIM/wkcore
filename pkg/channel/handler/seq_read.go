@@ -9,23 +9,28 @@ import (
 
 const seqReadChunkLimit = 256
 
+type seqReadStore interface {
+	GetMessageBySeq(seq uint64) (channel.Message, bool, error)
+	ListMessagesBySeq(fromSeq uint64, limit int, maxBytes int, reverse bool) ([]channel.Message, error)
+}
+
 func LoadMsg(st *store.ChannelStore, committedHW, seq uint64) (channel.Message, error) {
+	return loadMsgFromStore(st, committedHW, seq)
+}
+
+func loadMsgFromStore(st seqReadStore, committedHW, seq uint64) (channel.Message, error) {
 	if committedHW == 0 || seq == 0 {
 		return channel.Message{}, channel.ErrInvalidArgument
 	}
 	if seq > committedHW {
 		return channel.Message{}, channel.ErrMessageNotFound
 	}
-	records, err := st.ReadOffsets(seq-1, 1, math.MaxInt)
+	msg, ok, err := st.GetMessageBySeq(seq)
 	if err != nil {
 		return channel.Message{}, err
 	}
-	if len(records) == 0 {
+	if !ok {
 		return channel.Message{}, channel.ErrMessageNotFound
-	}
-	msg, err := decodeMessageRecord(records[0])
-	if err != nil {
-		return channel.Message{}, err
 	}
 	return msg, nil
 }
@@ -47,7 +52,7 @@ func LoadNextRangeMsgs(st *store.ChannelStore, committedHW, startSeq, endSeq uin
 	if startSeq > maxSeq {
 		return nil, nil
 	}
-	return loadRangeMsgs(st, startSeq, maxSeq, limit)
+	return loadRangeMsgsFromStore(st, startSeq, maxSeq, limit)
 }
 
 func LoadPrevRangeMsgs(st *store.ChannelStore, committedHW, startSeq, endSeq uint64, limit int) ([]channel.Message, error) {
@@ -80,10 +85,10 @@ func LoadPrevRangeMsgs(st *store.ChannelStore, committedHW, startSeq, endSeq uin
 	if maxSeq < minSeq {
 		return nil, nil
 	}
-	return loadRangeMsgs(st, minSeq, maxSeq, limit)
+	return loadRangeMsgsFromStore(st, minSeq, maxSeq, limit)
 }
 
-func loadRangeMsgs(st *store.ChannelStore, startSeq, endSeq uint64, limit int) ([]channel.Message, error) {
+func loadRangeMsgsFromStore(st seqReadStore, startSeq, endSeq uint64, limit int) ([]channel.Message, error) {
 	if startSeq > endSeq {
 		return nil, nil
 	}
@@ -92,31 +97,32 @@ func loadRangeMsgs(st *store.ChannelStore, startSeq, endSeq uint64, limit int) (
 	remaining := limit
 	for nextSeq <= endSeq {
 		batchLimit := nextSeqReadBatchLimit(nextSeq, endSeq, remaining)
-		records, err := st.ReadOffsets(nextSeq-1, batchLimit, math.MaxInt)
+		batch, err := st.ListMessagesBySeq(nextSeq, batchLimit, math.MaxInt, false)
 		if err != nil {
 			return nil, err
 		}
-		if len(records) == 0 {
+		if len(batch) == 0 {
 			return msgs, nil
 		}
-		decoded, err := messagesFromLogRecords(records, endSeq, remaining)
-		if err != nil {
-			return nil, err
-		}
-		if len(decoded) == 0 {
-			return msgs, nil
-		}
-		msgs = append(msgs, decoded...)
-		nextSeq = decoded[len(decoded)-1].MessageSeq + 1
-		if remaining > 0 {
-			remaining -= len(decoded)
-			if remaining <= 0 {
+
+		lastSeq := uint64(0)
+		for _, msg := range batch {
+			if msg.MessageSeq > endSeq {
 				return msgs, nil
 			}
+			msgs = append(msgs, msg)
+			lastSeq = msg.MessageSeq
+			if remaining > 0 {
+				remaining--
+				if remaining == 0 {
+					return msgs, nil
+				}
+			}
 		}
-		if len(records) < batchLimit || len(decoded) < len(records) {
+		if lastSeq == 0 || len(batch) < batchLimit {
 			return msgs, nil
 		}
+		nextSeq = lastSeq + 1
 	}
 	return msgs, nil
 }

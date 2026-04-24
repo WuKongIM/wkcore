@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"errors"
-	"math"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 )
@@ -44,27 +43,18 @@ func (s *service) Append(ctx context.Context, req channel.AppendRequest) (channe
 	draft.ChannelType = req.ChannelID.Type
 
 	store := s.cfg.Store.ForChannel(key, req.ChannelID)
-	if draft.ClientMsgNo != "" {
+	if draft.FromUID != "" && draft.ClientMsgNo != "" {
 		idKey := channel.IdempotencyKey{
 			ChannelID:   req.ChannelID,
 			FromUID:     draft.FromUID,
 			ClientMsgNo: draft.ClientMsgNo,
 		}
-		entry, ok, err := store.GetIdempotency(idKey)
+		result, ok, err := resolveIdempotentAppendFromStore(store, idKey, draft)
 		if err != nil {
 			return channel.AppendResult{}, err
 		}
 		if ok {
-			view, err := s.loadMessageViewAtOffset(key, entry.Offset)
-			if err != nil {
-				return channel.AppendResult{}, err
-			}
-			if view.PayloadHash != hashPayload(draft.Payload) {
-				return channel.AppendResult{}, channel.ErrIdempotencyConflict
-			}
-			msg := view.Message
-			msg.MessageSeq = entry.MessageSeq
-			return channel.AppendResult{MessageID: msg.MessageID, MessageSeq: msg.MessageSeq, Message: msg}, nil
+			return result, nil
 		}
 	}
 	if meta.Features.MessageSeqFormat == channel.MessageSeqFormatLegacyU32 && state.HW >= maxLegacyMessageSeq {
@@ -108,13 +98,29 @@ func (s *service) Append(ctx context.Context, req channel.AppendRequest) (channe
 	return channel.AppendResult{MessageID: committed.MessageID, MessageSeq: messageSeq, Message: committed}, nil
 }
 
-func (s *service) loadMessageViewAtOffset(key channel.ChannelKey, offset uint64) (messageView, error) {
-	records, err := s.cfg.Store.Read(key, offset, 1, math.MaxInt)
+type appendIdempotencyStore interface {
+	LookupIdempotency(key channel.IdempotencyKey) (channel.IdempotencyEntry, uint64, bool, error)
+	GetMessageBySeq(seq uint64) (channel.Message, bool, error)
+}
+
+func resolveIdempotentAppendFromStore(store appendIdempotencyStore, key channel.IdempotencyKey, draft channel.Message) (channel.AppendResult, bool, error) {
+	entry, payloadHash, ok, err := store.LookupIdempotency(key)
 	if err != nil {
-		return messageView{}, err
+		return channel.AppendResult{}, false, err
 	}
-	if len(records) == 0 {
-		return messageView{}, channel.ErrStaleMeta
+	if !ok {
+		return channel.AppendResult{}, false, nil
 	}
-	return decodeMessageView(records[0].Payload)
+	if payloadHash != hashPayload(draft.Payload) {
+		return channel.AppendResult{}, true, channel.ErrIdempotencyConflict
+	}
+	msg, ok, err := store.GetMessageBySeq(entry.MessageSeq)
+	if err != nil {
+		return channel.AppendResult{}, true, err
+	}
+	if !ok {
+		return channel.AppendResult{}, true, channel.ErrStaleMeta
+	}
+	msg.MessageSeq = entry.MessageSeq
+	return channel.AppendResult{MessageID: msg.MessageID, MessageSeq: msg.MessageSeq, Message: msg}, true, nil
 }
