@@ -20,6 +20,7 @@ type controllerHost struct {
 	raftDB       *raftstorage.DB
 	sm           *slotcontroller.StateMachine
 	service      *controllerraft.Service
+	obs          ObserverHooks
 	observations *observationCache
 	// syncState tracks leader-local observation revisions and delta-ready snapshots.
 	syncState *observationSyncState
@@ -88,6 +89,7 @@ func newControllerHost(cfg Config, layer *transportLayer) (*controllerHost, erro
 		meta:            meta,
 		raftDB:          logDB,
 		sm:              sm,
+		obs:             cfg.Observer,
 		observations:    newObservationCache(),
 		syncState:       newObservationSyncState(),
 		hintClient:      layer.fwdClient,
@@ -537,6 +539,7 @@ func (h *controllerHost) handleCommittedCommand(cmd slotcontroller.Command) {
 	if h == nil {
 		return
 	}
+	nodeStatusChanges := h.committedNodeStatusChanges(cmd)
 	if shouldRefreshHashSlotSnapshot(cmd) {
 		// Invalidate immediately; leader reads must fall back until reload completes.
 		h.clearHashSlotTableSnapshot()
@@ -553,11 +556,97 @@ func (h *controllerHost) handleCommittedCommand(cmd slotcontroller.Command) {
 	if h.healthScheduler != nil {
 		h.healthScheduler.handleCommittedCommand(cmd)
 	}
+	h.emitCommittedNodeStatusChanges(nodeStatusChanges)
 	switch cmd.Kind {
 	case slotcontroller.CommandKindNodeStatusUpdate, slotcontroller.CommandKindOperatorRequest:
 		h.refreshWarmupReady()
 	}
 	h.markPlannerDirty()
+}
+
+type committedNodeStatusChange struct {
+	nodeID uint64
+	from   controllermeta.NodeStatus
+}
+
+func (h *controllerHost) committedNodeStatusChanges(cmd slotcontroller.Command) []committedNodeStatusChange {
+	if h == nil || h.obs.OnNodeStatusChange == nil || h.LeaderID() != h.localNode {
+		return nil
+	}
+	switch cmd.Kind {
+	case slotcontroller.CommandKindNodeStatusUpdate:
+		if cmd.NodeStatusUpdate == nil {
+			return nil
+		}
+		changes := make([]committedNodeStatusChange, 0, len(cmd.NodeStatusUpdate.Transitions))
+		for _, transition := range cmd.NodeStatusUpdate.Transitions {
+			changes = append(changes, committedNodeStatusChange{
+				nodeID: transition.NodeID,
+				from:   h.nodeStatusBeforeCommit(transition.NodeID, transition.ExpectedStatus),
+			})
+		}
+		return changes
+	case slotcontroller.CommandKindOperatorRequest:
+		if cmd.Op == nil || cmd.Op.NodeID == 0 {
+			return nil
+		}
+		return []committedNodeStatusChange{{
+			nodeID: cmd.Op.NodeID,
+			from:   h.nodeStatusBeforeCommit(cmd.Op.NodeID, nil),
+		}}
+	default:
+		return nil
+	}
+}
+
+func (h *controllerHost) nodeStatusBeforeCommit(nodeID uint64, fallback *controllermeta.NodeStatus) controllermeta.NodeStatus {
+	if h == nil || nodeID == 0 {
+		return controllermeta.NodeStatusUnknown
+	}
+	if h.healthScheduler != nil {
+		if mirrored, ok := h.healthScheduler.mirroredNode(nodeID); ok {
+			return mirrored.Status
+		}
+	}
+	if fallback != nil {
+		return *fallback
+	}
+	return controllermeta.NodeStatusUnknown
+}
+
+func (h *controllerHost) nodeStatusAfterCommit(nodeID uint64) (controllermeta.NodeStatus, bool) {
+	if h == nil || nodeID == 0 {
+		return controllermeta.NodeStatusUnknown, false
+	}
+	if h.healthScheduler != nil {
+		if mirrored, ok := h.healthScheduler.mirroredNode(nodeID); ok {
+			return mirrored.Status, true
+		}
+	}
+	if h.meta == nil {
+		return controllermeta.NodeStatusUnknown, false
+	}
+	node, err := h.meta.GetNode(context.Background(), nodeID)
+	if err != nil {
+		return controllermeta.NodeStatusUnknown, false
+	}
+	return node.Status, true
+}
+
+func (h *controllerHost) emitCommittedNodeStatusChanges(changes []committedNodeStatusChange) {
+	if h == nil || len(changes) == 0 || h.obs.OnNodeStatusChange == nil || h.LeaderID() != h.localNode {
+		return
+	}
+	for _, change := range changes {
+		to, ok := h.nodeStatusAfterCommit(change.nodeID)
+		if !ok {
+			continue
+		}
+		if change.from == to && change.from != controllermeta.NodeStatusUnknown {
+			continue
+		}
+		h.obs.OnNodeStatusChange(change.nodeID, change.from, to)
+	}
 }
 
 func (h *controllerHost) plannerWakeChannel() <-chan struct{} {
@@ -649,23 +738,14 @@ func (h *controllerHost) warmupNodeMirror(term uint64) {
 	if err != nil {
 		return
 	}
-	nodeMirror := make(map[uint64]controllermeta.ClusterNode, len(nodes))
-	for _, node := range nodes {
-		if node.NodeID == 0 {
-			continue
-		}
-		nodeMirror[node.NodeID] = node
-	}
 	s := h.healthScheduler
 	if !h.isLocalLeaderTerm(term) {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !h.isTerm(term) {
 		return
 	}
-	s.nodeMirror = nodeMirror
+	s.primeFromNodes(nodes)
 }
 
 func (h *controllerHost) enqueueHashSlotTableReload(term uint64) {

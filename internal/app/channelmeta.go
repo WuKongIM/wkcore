@@ -11,9 +11,11 @@ import (
 	channelreplica "github.com/WuKongIM/WuKongIM/pkg/channel/replica"
 	channelruntime "github.com/WuKongIM/WuKongIM/pkg/channel/runtime"
 	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
+	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/wklog"
+	"golang.org/x/sync/singleflight"
 )
 
 type channelMetaSource interface {
@@ -37,6 +39,7 @@ type channelReplicaFactory struct {
 	appendGroupCommitMaxWait    time.Duration
 	appendGroupCommitMaxRecords int
 	appendGroupCommitMaxBytes   int
+	onStateChange               func(channel.ChannelKey)
 	logger                      wklog.Logger
 }
 
@@ -54,13 +57,21 @@ type channelMetaSync struct {
 	refreshInterval time.Duration
 
 	mu           sync.Mutex
+	runCtx       context.Context
 	cancel       context.CancelFunc
 	done         chan struct{}
+	refreshWG    sync.WaitGroup
+	stateChanges chan channel.ChannelKey
 	appliedLocal map[channel.ChannelKey]struct{}
 	appliedSlots map[multiraft.SlotID]int
 	slotLeaders  map[multiraft.SlotID]multiraft.NodeID
 	cache        channelActivationCache
 	pendingSlots map[multiraft.SlotID]struct{}
+	dirtySlots   map[multiraft.SlotID]struct{}
+	nodeLiveness map[uint64]controllermeta.NodeStatus
+	localRuntime channel.HandlerRuntime
+	livenessSF   singleflight.Group
+	repairer     channelMetaRepairer
 
 	lastHashSlotTableVersion uint64
 }
@@ -96,6 +107,15 @@ func newChannelReplicaFactory(db *channelstore.Engine, localNode channel.NodeID,
 
 func (f *channelReplicaFactory) New(cfg channelruntime.ChannelConfig) (channelreplica.Replica, error) {
 	store := f.db.ForChannel(cfg.ChannelKey, cfg.Meta.ID)
+	onStateChange := cfg.OnReplicaStateChange
+	if f.onStateChange != nil {
+		onStateChange = func() {
+			if cfg.OnReplicaStateChange != nil {
+				cfg.OnReplicaStateChange()
+			}
+			f.onStateChange(cfg.ChannelKey)
+		}
+	}
 	return channelreplica.NewReplica(channelreplica.ReplicaConfig{
 		LocalNode:                   f.localNode,
 		LogStore:                    store,
@@ -108,7 +128,7 @@ func (f *channelReplicaFactory) New(cfg channelruntime.ChannelConfig) (channelre
 		AppendGroupCommitMaxRecords: f.appendGroupCommitMaxRecords,
 		AppendGroupCommitMaxBytes:   f.appendGroupCommitMaxBytes,
 		Logger:                      f.logger,
-		OnStateChange:               cfg.OnReplicaStateChange,
+		OnStateChange:               onStateChange,
 	})
 }
 
@@ -158,12 +178,16 @@ func (s *channelMetaSync) Start() error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	s.runCtx = ctx
 	s.cancel = cancel
 	s.done = done
+	s.stateChanges = make(chan channel.ChannelKey, 128)
 	interval := s.refreshInterval
 	s.mu.Unlock()
 
 	go s.watchActiveSlotLeaders(ctx, interval, done)
+	s.refreshWG.Add(1)
+	go s.watchLocalReplicaStateChanges(ctx)
 	return nil
 }
 
@@ -182,14 +206,17 @@ func (s *channelMetaSync) stop(cleanup bool) error {
 	s.mu.Lock()
 	cancel := s.cancel
 	done := s.done
+	s.runCtx = nil
 	s.cancel = nil
 	s.done = nil
+	s.stateChanges = nil
 	s.mu.Unlock()
 	if cancel == nil {
 		return s.cleanupAppliedLocal()
 	}
 	cancel()
 	<-done
+	s.refreshWG.Wait()
 	if !cleanup {
 		return nil
 	}
@@ -238,13 +265,13 @@ func (s *channelMetaSync) applyLocalMeta(meta metadb.ChannelRuntimeMeta) (channe
 
 func (s *channelMetaSync) reconcileChannelRuntimeMeta(ctx context.Context, meta metadb.ChannelRuntimeMeta) (metadb.ChannelRuntimeMeta, error) {
 	if s == nil || s.bootstrap == nil {
-		return meta, nil
+		return s.maybeRepairChannelRuntimeMeta(ctx, meta)
 	}
-	reconciled, _, err := s.bootstrap.ReconcileChannelRuntimeMeta(ctx, meta, s.leaseRenewLeadTime())
+	reconciled, _, err := s.bootstrap.RenewChannelLeaderLease(ctx, meta, s.localNode, s.leaseRenewLeadTime())
 	if err != nil {
 		return metadb.ChannelRuntimeMeta{}, err
 	}
-	return reconciled, nil
+	return s.maybeRepairChannelRuntimeMeta(ctx, reconciled)
 }
 
 func (s *channelMetaSync) leaseRenewLeadTime() time.Duration {
@@ -252,6 +279,24 @@ func (s *channelMetaSync) leaseRenewLeadTime() time.Duration {
 		return time.Second
 	}
 	return s.refreshInterval
+}
+
+func (s *channelMetaSync) maybeRepairChannelRuntimeMeta(ctx context.Context, meta metadb.ChannelRuntimeMeta) (metadb.ChannelRuntimeMeta, error) {
+	if s == nil || s.repairer == nil {
+		return meta, nil
+	}
+	if meta.Leader != 0 {
+		s.warmNodeLiveness(ctx, meta.Leader)
+	}
+	need, reason := s.needsLeaderRepair(meta)
+	if !need {
+		return meta, nil
+	}
+	repaired, _, err := s.repairer.RepairIfNeeded(ctx, meta, reason)
+	if err != nil {
+		return metadb.ChannelRuntimeMeta{}, err
+	}
+	return repaired, nil
 }
 
 func (s *channelMetaSync) observeHashSlotTableVersion() {

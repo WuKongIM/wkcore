@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/WuKongIM/WuKongIM/pkg/transport"
 	"github.com/WuKongIM/WuKongIM/pkg/wklog"
@@ -96,6 +97,7 @@ type ObserverHooks struct {
 	OnTaskResult         func(slotID uint32, kind string, result string)
 	OnHashSlotMigration  func(hashSlot uint16, source, target multiraft.SlotID, result string)
 	OnLeaderChange       func(slotID uint32, from, to multiraft.NodeID)
+	OnNodeStatusChange   func(nodeID uint64, from, to controllermeta.NodeStatus)
 }
 
 type NodeConfig struct {

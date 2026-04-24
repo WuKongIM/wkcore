@@ -953,7 +953,7 @@ func (r *runtime) ServeReconcileProbe(ctx context.Context, req ReconcileProbeReq
 	if err != nil {
 		return ReconcileProbeResponseEnvelope{}, err
 	}
-	if ch.gen != req.Generation {
+	if req.Generation != 0 && ch.gen != req.Generation {
 		return ReconcileProbeResponseEnvelope{}, ErrGenerationMismatch
 	}
 
@@ -966,7 +966,7 @@ func (r *runtime) ServeReconcileProbe(ctx context.Context, req ReconcileProbeReq
 	return ReconcileProbeResponseEnvelope{
 		ChannelKey:   req.ChannelKey,
 		Epoch:        state.Epoch,
-		Generation:   req.Generation,
+		Generation:   ch.gen,
 		ReplicaID:    r.cfg.LocalNode,
 		OffsetEpoch:  state.OffsetEpoch,
 		LogEndOffset: state.LEO,

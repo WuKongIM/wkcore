@@ -14,6 +14,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	channelhandler "github.com/WuKongIM/WuKongIM/pkg/channel/handler"
 	channelstore "github.com/WuKongIM/WuKongIM/pkg/channel/store"
+	controllermeta "github.com/WuKongIM/WuKongIM/pkg/controller/meta"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/codec"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
@@ -90,6 +91,8 @@ func TestThreeNodeAppSendAckSurvivesLeaderCrashWithPendingCheckpoint(t *testing.
 
 	blocked.shutdown(t)
 	harness.stopNode(t, leaderID)
+	harness.waitForLeaderChange(t, 1, leaderID)
+	observeDeadLeaderOnRunningApps(harness, leaderID)
 
 	result := <-sendackCh
 	require.NoError(t, result.err, "expected sendack before leader crash while checkpoint durability was still pending")
@@ -98,7 +101,7 @@ func TestThreeNodeAppSendAckSurvivesLeaderCrashWithPendingCheckpoint(t *testing.
 	require.Equal(t, frame.ReasonSuccess, sendack.ReasonCode)
 
 	for _, app := range harness.runningApps() {
-		msg := waitForAppCommittedMessage(t, app, id, sendack.MessageSeq, 2*time.Second)
+		msg := waitForAppCommittedMessage(t, app, id, sendack.MessageSeq, 5*time.Second)
 		require.Equal(t, []byte("survive pending checkpoint"), msg.Payload)
 		require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
 	}
@@ -138,9 +141,10 @@ func TestThreeNodeAppSendAckSurvivesLeaderRestartAfterPendingCheckpointReconcile
 
 	newLeaderID := harness.waitForLeaderChange(t, 1, leaderID)
 	require.NotZero(t, newLeaderID)
+	observeDeadLeaderOnRunningApps(harness, leaderID)
 
 	for _, app := range harness.runningApps() {
-		msg := waitForAppCommittedMessage(t, app, id, sendack.MessageSeq, 2*time.Second)
+		msg := waitForAppCommittedMessage(t, app, id, sendack.MessageSeq, 5*time.Second)
 		require.Equal(t, []byte("reconcile after restart"), msg.Payload)
 		require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
 	}
@@ -205,7 +209,7 @@ func TestMultiNodeColdFollowerActivatesAfterLeaderAppend(t *testing.T) {
 	require.Equal(t, sendack.MessageSeq, msg.MessageSeq)
 }
 
-func TestLeaderFailoverRefreshesLocalChannelMetaWithoutPeriodicScan(t *testing.T) {
+func TestLeaderFailoverRefreshesLocalChannelMetaAfterDeadLeaderObservation(t *testing.T) {
 	harness := newThreeNodeAppHarness(t)
 	leaderID := harness.waitForStableLeader(t, 1)
 	leader := harness.apps[leaderID]
@@ -229,7 +233,29 @@ func TestLeaderFailoverRefreshesLocalChannelMetaWithoutPeriodicScan(t *testing.T
 	newLeaderID := harness.waitForLeaderChange(t, 1, leaderID)
 	newLeader := harness.apps[newLeaderID]
 
-	waitForAppCommittedMessage(t, newLeader, id, sendack.MessageSeq, 5*time.Second)
+	observeDeadLeaderOnRunningApps(harness, leaderID)
+	waitForAppCommittedMessage(t, newLeader, id, sendack.MessageSeq, 10*time.Second)
+	var refreshed channel.Meta
+	var lastErr error
+	require.Eventually(t, func() bool {
+		observeDeadLeaderOnRunningApps(harness, leaderID)
+		meta, err := newLeader.channelMetaSync.RefreshChannelMeta(context.Background(), id)
+		if err != nil {
+			lastErr = err
+			return false
+		}
+		lastErr = nil
+		refreshed = meta
+		return meta.Leader != 0 && meta.Leader != channel.NodeID(leaderID)
+	}, 10*time.Second, 100*time.Millisecond, "lastMeta=%+v lastErr=%v", refreshed, lastErr)
+	require.NotZero(t, refreshed.Leader)
+	require.NotEqual(t, channel.NodeID(leaderID), refreshed.Leader)
+	require.True(t, containsNodeID(refreshed.ISR, refreshed.Leader))
+
+	authoritative, err := newLeader.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
+	require.NoError(t, err)
+	require.Equal(t, uint64(refreshed.Leader), authoritative.Leader)
+	require.NotEqual(t, leaderID, authoritative.Leader)
 
 	key := channelhandler.KeyFromChannelID(id)
 	require.Eventually(t, func() bool {
@@ -237,14 +263,89 @@ func TestLeaderFailoverRefreshesLocalChannelMetaWithoutPeriodicScan(t *testing.T
 		if !ok {
 			return false
 		}
-		return handle.Meta().Leader == channel.NodeID(newLeaderID)
+		return handle.Meta().Leader == refreshed.Leader
 	}, 5*time.Second, 50*time.Millisecond)
+}
+
+func TestLeaderDrainRefreshesLocalChannelMetaAfterDrainingObservation(t *testing.T) {
+	harness := newThreeNodeAppHarness(t)
+	leaderID := harness.waitForStableLeader(t, 1)
+	leader := harness.apps[leaderID]
+
+	id := pendingCheckpointChannelID("meta-drain-sender", "meta-drain-recipient")
+	conn := connectMultinodeWKProtoClient(t, leader, "meta-drain-sender", "meta-drain-device")
+	sendAppWKProtoFrame(t, conn, &frame.SendPacket{
+		ChannelID:   "meta-drain-recipient",
+		ChannelType: id.Type,
+		ClientSeq:   1,
+		ClientMsgNo: "meta-drain-1",
+		Payload:     []byte("refresh draining leader meta"),
+	})
+
+	sendack, err := readPendingCheckpointSendack(conn, 5*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, frame.ReasonSuccess, sendack.ReasonCode)
+	require.NoError(t, conn.Close())
+
+	for _, app := range harness.runningApps() {
+		msg := waitForAppCommittedMessage(t, app, id, sendack.MessageSeq, 10*time.Second)
+		require.Equal(t, []byte("refresh draining leader meta"), msg.Payload)
+	}
+
+	observeDrainingLeaderOnRunningApps(harness, leaderID)
+	var refreshed channel.Meta
+	var lastErr error
+	require.Eventually(t, func() bool {
+		observeDrainingLeaderOnRunningApps(harness, leaderID)
+		meta, err := leader.channelMetaSync.RefreshChannelMeta(context.Background(), id)
+		if err != nil {
+			lastErr = err
+			return false
+		}
+		lastErr = nil
+		refreshed = meta
+		return meta.Leader != 0 && meta.Leader != channel.NodeID(leaderID)
+	}, 10*time.Second, 100*time.Millisecond, "lastMeta=%+v lastErr=%v", refreshed, lastErr)
+	require.NotZero(t, refreshed.Leader)
+	require.NotEqual(t, channel.NodeID(leaderID), refreshed.Leader)
+	require.True(t, containsNodeID(refreshed.ISR, refreshed.Leader))
+
+	authoritative, err := leader.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
+	require.NoError(t, err)
+	require.Equal(t, uint64(refreshed.Leader), authoritative.Leader)
+	require.NotEqual(t, leaderID, authoritative.Leader)
+
+	key := channelhandler.KeyFromChannelID(id)
+	for _, app := range harness.runningApps() {
+		app := app
+		require.Eventually(t, func() bool {
+			handle, ok := app.ISRRuntime().Channel(key)
+			if !ok {
+				return false
+			}
+			return handle.Meta().Leader == refreshed.Leader
+		}, 5*time.Second, 50*time.Millisecond)
+	}
 }
 
 func pendingCheckpointChannelID(senderUID, recipientUID string) channel.ChannelID {
 	return channel.ChannelID{
 		ID:   deliveryusecase.EncodePersonChannel(senderUID, recipientUID),
 		Type: frame.ChannelTypePerson,
+	}
+}
+
+func observeDrainingLeaderOnRunningApps(harness *threeNodeAppHarness, leaderID uint64) {
+	observeNodeStatusOnRunningApps(harness, leaderID, controllermeta.NodeStatusDraining)
+}
+
+func observeDeadLeaderOnRunningApps(harness *threeNodeAppHarness, leaderID uint64) {
+	observeNodeStatusOnRunningApps(harness, leaderID, controllermeta.NodeStatusDead)
+}
+
+func observeNodeStatusOnRunningApps(harness *threeNodeAppHarness, nodeID uint64, status controllermeta.NodeStatus) {
+	for _, app := range harness.runningApps() {
+		app.channelMetaSync.UpdateNodeLiveness(nodeID, status)
 	}
 }
 

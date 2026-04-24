@@ -788,6 +788,37 @@ func (c *Cluster) ProposeWithHashSlot(ctx context.Context, slotID multiraft.Slot
 	return proposeErr
 }
 
+// ProposeLocalWithHashSlot submits a command only when the current slot leader is local.
+// It never forwards proposals to a remote leader.
+func (c *Cluster) ProposeLocalWithHashSlot(ctx context.Context, slotID multiraft.SlotID, hashSlot uint16, cmd []byte) error {
+	if c.stopped.Load() {
+		return transport.ErrStopped
+	}
+	if c.router == nil || c.runtime == nil {
+		return ErrNotStarted
+	}
+	leaderID, err := c.router.LeaderOf(slotID)
+	if err != nil {
+		return err
+	}
+	if !c.router.IsLocal(leaderID) {
+		return ErrNotLeader
+	}
+	payload := encodeProposalPayload(hashSlot, cmd)
+	future, err := c.runtime.Propose(ctx, slotID, payload)
+	if err != nil {
+		if errors.Is(err, multiraft.ErrNotLeader) {
+			return ErrNotLeader
+		}
+		return err
+	}
+	_, err = future.Wait(ctx)
+	if errors.Is(err, multiraft.ErrNotLeader) {
+		return ErrNotLeader
+	}
+	return err
+}
+
 func observerElapsed(start time.Time) time.Duration {
 	elapsed := time.Since(start)
 	if elapsed <= 0 {

@@ -66,7 +66,7 @@ API.Server() / RPCMux() / Discovery() / RPCService(ctx, nodeID, slotID, serviceI
 | `runtimeState` | runtime_state.go | 运行时状态：slotID → 当前 peers 映射（线程安全） |
 | `runtimeObservationReporter` | runtime_observation_reporter.go | 节点侧 runtime 增量上报器：mirror / dirtyViews / closedSlots / needFullSync |
 | `observationCache` | observation_cache.go | leader-local 观测缓存：节点心跳 + `runtimeViewsByNode` 聚合视图 + TTL 淘汰 |
-| `ObserverHooks` | config.go:71 | 可观测钩子：OnControllerCall / OnControllerDecision / OnReconcileStep / OnForwardPropose / OnSlotEnsure / OnTaskResult / OnHashSlotMigration / OnLeaderChange |
+| `ObserverHooks` | config.go:71 | 可观测钩子：OnControllerCall / OnControllerDecision / OnReconcileStep / OnForwardPropose / OnSlotEnsure / OnTaskResult / OnHashSlotMigration / OnLeaderChange / OnNodeStatusChange |
 
 ## 5. 核心流程
 
@@ -163,6 +163,9 @@ heartbeatOnce(ctx):
        steady-state heartbeat 不再夹带 per-slot RuntimeView
        heartbeat 返回的 HashSlotTable 优先读 `controllerHost` 的 leader-local snapshot
        snapshot miss 时才 fallback `controllerMeta.LoadHashSlotTable()`
+     → 当 `nodeHealthScheduler` 触发 `NodeStatusUpdate` 并被 controller leader 提交后，
+       `controllerHost.handleCommittedCommand()` 会通过 `ObserverHooks.OnNodeStatusChange`
+       向上游发布 node status 变更
 
 runtimeObservationLoop 每 ObservationRuntimeScanInterval (默认1s) 执行:
 
@@ -190,6 +193,8 @@ wakeReconcileLoop（signalLoop，收到 hint 时立即执行）:
      → applyObservationDelta:
         - 更新 follower 本地 assignments / tasks / nodes / runtime views cache
         - 记录本次 delta 的 scoped reconcile slots（若 delta 不含 nodes 变化）
+        - 对 `delta.Nodes` 做状态 diff；除 controller leader 外的节点都通过
+          `ObserverHooks.OnNodeStatusChange` 感知 node status 变更
      → `agent.ApplyAssignments(ctx)` → `reconciler.Tick(ctx)` [见 5.4]
      → `observeHashSlotMigrations(ctx)` [见 5.7]
 
@@ -438,7 +443,9 @@ Delta 转发 (运行时):
 - **Controller metadata 读快路径**: leader-local `controllerMetadataSnapshot` 缓存 Nodes / Assignments / Tasks。planner、调和器本地 leader helper、以及 leader 侧 `list_assignments` / `list_nodes` / `list_tasks` / `get_task` 都优先读 clean snapshot；只要 snapshot dirty / cold 就必须回落到 Pebble-backed `controllerMeta`。
 - **节点健康改为 deadline 驱动**: steady-state 不再由 `controllerTickOnce()` 提案 `EvaluateTimeouts`；leader 本地 `nodeHealthScheduler` 只在 Alive/Suspect/Dead 边沿变化时提案 `NodeStatusUpdate`。
 - **节点健康 mirror 只反映 committed state**: `nodeHealthScheduler` 对 repeated Alive observation 优先读本地 durable node mirror；mirror miss 才 `GetNode()`。mirror 通过 leader change 全量 reload 和 committed command 增量 refresh 维护，不直接信任 proposal payload。
+- **NodeStatus 观察链路有且仅有两条**: controller leader 通过 committed `NodeStatusUpdate` / operator command 触发 `OnNodeStatusChange`；其他节点则只通过 `SyncObservationDelta()` 里的 `delta.Nodes` diff 触发同一个 hook，避免 app 层维护两套分支逻辑。
 - **新 leader 先 warmup 再规划**: leader change 会清空旧 observation，等待 fresh observation 后再恢复 Repair/Rebalance 规划，避免把“暂时未观测到”误判为节点故障。
+- **controller leader warmup 会重挂 node-health deadline**: 新 controller leader 读取 metadata snapshot / node mirror 时，不只是恢复 `nodeMirror`，还会基于持久化的 `LastHeartbeatAt` 重新挂回 suspect/dead timer。这样即使故障节点正好是旧 controller leader，dead 检测也不会因为 leader failover 而永久停在 `Alive`。
 - **调和器任务执行权**: 并非所有节点都执行任务。`shouldExecuteTask` 逻辑: Repair/Rebalance 优先 SourceNode 执行，SourceNode 不可用时由 Leader 执行；其他任务由 DesiredPeers 中最小 alive NodeID 执行。错配会导致任务不执行。
 - **源 Slot 保护**: 当 Repair/Rebalance 任务的 SourceNode == 本节点时，即使该 Slot 不在 `desiredLocalSlots` 中，调和器也会保护它不被关闭（`protectedSourceSlots`），否则 changeConfig/RemoveVoter 发送不出去。
 - **ensureLocal 三条路径**: 有 HardState → Open；无 HardState+bootstrapAuthorized → Bootstrap；无 HardState+hasRuntimeView → Open 等 Leader 添加。混淆条件会导致 Slot 无法加入集群或重复 Bootstrap。

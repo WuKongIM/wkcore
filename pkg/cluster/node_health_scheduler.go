@@ -263,6 +263,101 @@ func (s *nodeHealthScheduler) reloadAllNodes(ctx context.Context) error {
 	return nil
 }
 
+type healthDeadlineSpec struct {
+	nodeID     uint64
+	generation uint64
+	status     controllermeta.NodeStatus
+	evaluated  time.Time
+}
+
+func (s *nodeHealthScheduler) primeFromNodes(nodes []controllermeta.ClusterNode) {
+	if s == nil {
+		return
+	}
+
+	now := s.cfg.now()
+	nodeMirror := make(map[uint64]controllermeta.ClusterNode, len(nodes))
+	deadlines := make([]healthDeadlineSpec, 0, len(nodes)*2)
+
+	s.mu.Lock()
+	for _, state := range s.nodes {
+		if state.suspectTimer != nil {
+			state.suspectTimer.Stop()
+		}
+		if state.deadTimer != nil {
+			state.deadTimer.Stop()
+		}
+	}
+	s.nodes = make(map[uint64]*nodeHealthState, len(nodes))
+	for _, node := range nodes {
+		if node.NodeID == 0 {
+			continue
+		}
+		nodeMirror[node.NodeID] = node
+		if node.Status != controllermeta.NodeStatusAlive && node.Status != controllermeta.NodeStatusSuspect {
+			continue
+		}
+		observedAt := node.LastHeartbeatAt
+		if observedAt.IsZero() {
+			observedAt = now
+		}
+		state := &nodeHealthState{
+			observation: nodeObservation{
+				NodeID:         node.NodeID,
+				Addr:           node.Addr,
+				ObservedAt:     observedAt,
+				CapacityWeight: node.CapacityWeight,
+			},
+			generation: 1,
+		}
+		if node.Status == controllermeta.NodeStatusAlive && s.cfg.suspectTimeout > 0 {
+			state.suspectAt = observedAt.Add(s.cfg.suspectTimeout)
+			deadlines = append(deadlines, healthDeadlineSpec{
+				nodeID:     node.NodeID,
+				generation: state.generation,
+				status:     controllermeta.NodeStatusSuspect,
+				evaluated:  state.suspectAt,
+			})
+		}
+		if s.cfg.deadTimeout > 0 {
+			state.deadAt = observedAt.Add(s.cfg.deadTimeout)
+			deadlines = append(deadlines, healthDeadlineSpec{
+				nodeID:     node.NodeID,
+				generation: state.generation,
+				status:     controllermeta.NodeStatusDead,
+				evaluated:  state.deadAt,
+			})
+		}
+		s.nodes[node.NodeID] = state
+	}
+	s.nodeMirror = nodeMirror
+	s.mu.Unlock()
+
+	for _, spec := range deadlines {
+		spec := spec
+		delay := spec.evaluated.Sub(now)
+		timer := s.cfg.afterFunc(delay, func() {
+			s.handleDeadline(spec.nodeID, spec.generation, spec.status, spec.evaluated)
+		})
+		s.mu.Lock()
+		state, ok := s.nodes[spec.nodeID]
+		if !ok || state.generation != spec.generation {
+			s.mu.Unlock()
+			timer.Stop()
+			continue
+		}
+		switch spec.status {
+		case controllermeta.NodeStatusSuspect:
+			state.suspectTimer = timer
+		case controllermeta.NodeStatusDead:
+			state.deadTimer = timer
+		default:
+			timer.Stop()
+		}
+		s.mu.Unlock()
+	}
+}
+
 func (s *nodeHealthScheduler) proposeStatusTransition(observation nodeObservation, desired controllermeta.NodeStatus, evaluatedAt time.Time) {
 	if s == nil || s.cfg.propose == nil || s.cfg.loadNode == nil {
 		return

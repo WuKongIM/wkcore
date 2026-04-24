@@ -19,6 +19,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
 	metadb "github.com/WuKongIM/WuKongIM/pkg/slot/meta"
+	"github.com/WuKongIM/WuKongIM/pkg/slot/multiraft"
 	"github.com/stretchr/testify/require"
 )
 
@@ -71,6 +72,111 @@ func TestAppManagedSlotStartupAllowsSubsetAssignmentsPerNode(t *testing.T) {
 		}
 		return true
 	}, 10*time.Second, 50*time.Millisecond)
+}
+
+func TestSlotLeaderChangeDoesNotDriftHealthyChannelLeader(t *testing.T) {
+	harness := newThreeNodeManagedAppHarness(t)
+	slotID := uint64(1)
+	slotLeaderID := harness.waitForStableLeader(t, slotID)
+	channelLeaderID := slotLeaderID%3 + 1
+	targetSlotLeaderID := channelLeaderID%3 + 1
+	slotLeader := harness.apps[slotLeaderID]
+	id := channel.ChannelID{
+		ID:   fmt.Sprintf("slot-leader-stable-%d", time.Now().UnixNano()),
+		Type: frame.ChannelTypeGroup,
+	}
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 21,
+		LeaderEpoch:  13,
+		Replicas:     []uint64{1, 2, 3},
+		ISR:          []uint64{1, 2, 3},
+		Leader:       channelLeaderID,
+		MinISR:       2,
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
+	}
+
+	require.NoError(t, slotLeader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
+	for _, app := range harness.orderedApps() {
+		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), id)
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, slotLeader.Cluster().TransferSlotLeader(context.Background(), uint32(slotID), multiraft.NodeID(targetSlotLeaderID)))
+	require.Equal(t, targetSlotLeaderID, harness.waitForLeaderChange(t, slotID, slotLeaderID))
+
+	require.Never(t, func() bool {
+		got, err := slotLeader.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
+		return err == nil && got.Leader != channelLeaderID
+	}, 3*time.Second, 100*time.Millisecond)
+
+	for _, app := range harness.runningApps() {
+		got, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), id)
+		require.NoError(t, err)
+		require.Equal(t, channel.NodeID(channelLeaderID), got.Leader)
+	}
+}
+
+func TestDeadChannelLeaderRepairPersistsAcrossRestart(t *testing.T) {
+	harness := newThreeNodeManagedAppHarness(t)
+	slotID := uint64(1)
+	slotLeaderID := harness.waitForStableLeader(t, slotID)
+	channelLeaderID := slotLeaderID%3 + 1
+	slotLeader := harness.apps[slotLeaderID]
+	id := channel.ChannelID{
+		ID:   fmt.Sprintf("dead-channel-repair-%d", time.Now().UnixNano()),
+		Type: frame.ChannelTypeGroup,
+	}
+	meta := metadb.ChannelRuntimeMeta{
+		ChannelID:    id.ID,
+		ChannelType:  int64(id.Type),
+		ChannelEpoch: 31,
+		LeaderEpoch:  14,
+		Replicas:     []uint64{1, 2, 3},
+		ISR:          []uint64{1, 2, 3},
+		Leader:       channelLeaderID,
+		MinISR:       2,
+		Status:       uint8(channel.StatusActive),
+		Features:     uint64(channel.MessageSeqFormatLegacyU32),
+		LeaseUntilMS: time.Now().Add(time.Minute).UnixMilli(),
+	}
+
+	require.NoError(t, slotLeader.Store().UpsertChannelRuntimeMeta(context.Background(), meta))
+	for _, app := range harness.orderedApps() {
+		_, err := app.channelMetaSync.RefreshChannelMeta(context.Background(), id)
+		require.NoError(t, err)
+	}
+
+	harness.stopNode(t, channelLeaderID)
+
+	var repairedLeader uint64
+	require.Eventually(t, func() bool {
+		got, err := slotLeader.channelMetaSync.RefreshChannelMeta(context.Background(), id)
+		if err != nil || got.Leader == 0 || uint64(got.Leader) == channelLeaderID {
+			return false
+		}
+		repairedLeader = uint64(got.Leader)
+		return true
+	}, 25*time.Second, 100*time.Millisecond)
+
+	require.NotZero(t, repairedLeader)
+	require.NotEqual(t, channelLeaderID, repairedLeader)
+
+	require.Eventually(t, func() bool {
+		got, err := slotLeader.Store().GetChannelRuntimeMeta(context.Background(), id.ID, int64(id.Type))
+		return err == nil && got.Leader == repairedLeader && got.LeaderEpoch == meta.LeaderEpoch+1
+	}, 5*time.Second, 100*time.Millisecond)
+
+	restarted := harness.restartNode(t, channelLeaderID)
+	harness.waitForStableLeader(t, slotID)
+
+	require.Eventually(t, func() bool {
+		got, err := restarted.channelMetaSync.RefreshChannelMeta(context.Background(), id)
+		return err == nil && uint64(got.Leader) == repairedLeader
+	}, 10*time.Second, 100*time.Millisecond)
 }
 
 func TestThreeNodeAppGatewaySendUsesDurableCommitWithMinISR2(t *testing.T) {

@@ -101,13 +101,22 @@ func (a *slotAgent) SyncObservationDelta(ctx context.Context, hint observationHi
 	}
 
 	a.observationMu.Lock()
+	beforeNodes := cloneObservationNodesByID(a.observationState.Nodes)
 	applyObservationDelta(&a.observationState, delta)
+	nodeStatusChanges := diffObservationNodeStatuses(beforeNodes, a.observationState.Nodes)
 	a.pendingReconcileScope = requestedSlotSet(reconcileScopeFromObservationDelta(delta))
 	assignments := sortedObservationAssignments(a.observationState.Assignments)
 	a.observationMu.Unlock()
 
 	if a.cache != nil {
 		a.cache.SetAssignments(assignments)
+	}
+	if a.cluster != nil && !a.cluster.isLocalControllerLeader() {
+		if hook := a.cluster.obs.OnNodeStatusChange; hook != nil {
+			for _, change := range nodeStatusChanges {
+				hook(change.nodeID, change.from, change.to)
+			}
+		}
 	}
 	return nil
 }

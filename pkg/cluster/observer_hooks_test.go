@@ -205,6 +205,95 @@ func TestObserverHooksOnControllerDecision(t *testing.T) {
 	}
 }
 
+func TestControllerLeaderHandleCommittedCommandInvokesOnNodeStatusChange(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.ControllerReplicaN = 1
+	cfg.SlotReplicaN = 1
+	cfg.Nodes = []NodeConfig{{NodeID: cfg.NodeID, Addr: "127.0.0.1:0"}}
+	cfg.ControllerMetaPath = filepath.Join(t.TempDir(), "controller-meta")
+	cfg.ControllerRaftPath = filepath.Join(t.TempDir(), "controller-raft")
+
+	var (
+		gotNode uint64
+		gotFrom controllermeta.NodeStatus
+		gotTo   controllermeta.NodeStatus
+		calls   int
+	)
+	cfg.Observer = ObserverHooks{
+		OnNodeStatusChange: func(nodeID uint64, from, to controllermeta.NodeStatus) {
+			calls++
+			gotNode = nodeID
+			gotFrom = from
+			gotTo = to
+		},
+	}
+
+	discovery := NewStaticDiscovery(cfg.Nodes)
+	layer := newTransportLayer(cfg, discovery, nil)
+	requireNoErr(t, layer.Start(
+		"127.0.0.1:0",
+		func([]byte) {},
+		func(context.Context, []byte) ([]byte, error) { return nil, nil },
+		func(context.Context, []byte) ([]byte, error) { return nil, nil },
+		func(context.Context, []byte) ([]byte, error) { return nil, nil },
+	))
+	t.Cleanup(layer.Stop)
+
+	cfg.Nodes[0].Addr = layer.server.Listener().Addr().String()
+	host, err := newControllerHost(cfg, layer)
+	if err != nil {
+		t.Fatalf("newControllerHost() error = %v", err)
+	}
+	requireNoErr(t, host.Start(context.Background()))
+	t.Cleanup(host.Stop)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for host.LeaderID() != cfg.NodeID && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if host.LeaderID() != cfg.NodeID {
+		t.Fatalf("controllerHost.LeaderID() = %d, want %d", host.LeaderID(), cfg.NodeID)
+	}
+
+	host.healthScheduler.mirrorNode(controllermeta.ClusterNode{
+		NodeID: 7,
+		Addr:   "127.0.0.1:7007",
+		Status: controllermeta.NodeStatusAlive,
+	})
+	requireNoErr(t, host.meta.UpsertNode(context.Background(), controllermeta.ClusterNode{
+		NodeID:          7,
+		Addr:            "127.0.0.1:7007",
+		Status:          controllermeta.NodeStatusDead,
+		LastHeartbeatAt: time.Now(),
+		CapacityWeight:  1,
+	}))
+
+	alive := controllermeta.NodeStatusAlive
+	host.handleCommittedCommand(slotcontroller.Command{
+		Kind: slotcontroller.CommandKindNodeStatusUpdate,
+		NodeStatusUpdate: &slotcontroller.NodeStatusUpdate{
+			Transitions: []slotcontroller.NodeStatusTransition{{
+				NodeID:         7,
+				NewStatus:      controllermeta.NodeStatusDead,
+				ExpectedStatus: &alive,
+				EvaluatedAt:    time.Now(),
+				Addr:           "127.0.0.1:7007",
+				CapacityWeight: 1,
+			}},
+		},
+	})
+
+	if calls != 1 {
+		t.Fatalf("OnNodeStatusChange() calls = %d, want 1", calls)
+	}
+	if gotNode != 7 {
+		t.Fatalf("OnNodeStatusChange() nodeID = %d, want 7", gotNode)
+	}
+	if gotFrom != controllermeta.NodeStatusAlive || gotTo != controllermeta.NodeStatusDead {
+		t.Fatalf("OnNodeStatusChange() from=%v to=%v, want %v->%v", gotFrom, gotTo, controllermeta.NodeStatusAlive, controllermeta.NodeStatusDead)
+	}
+}
+
 func TestObserverHooksOnReconcileStep(t *testing.T) {
 	sentinel := errors.New("reconcile step failed")
 	var (

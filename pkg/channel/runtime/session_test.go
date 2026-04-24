@@ -9,6 +9,7 @@ import (
 
 	core "github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/channel/replica"
+	"github.com/stretchr/testify/require"
 )
 
 func testChannelKey(groupID uint64) core.ChannelKey {
@@ -2180,6 +2181,39 @@ func TestSessionServeReconcileProbeActivatesMissingChannelOnce(t *testing.T) {
 	if resp.OffsetEpoch != 4 || resp.LogEndOffset != 7 || resp.CheckpointHW != 5 {
 		t.Fatalf("unexpected probe response state: %+v", resp)
 	}
+}
+
+func TestSessionServeReconcileProbeAllowsExternalProbeWithoutGeneration(t *testing.T) {
+	activator := &recordingActivator{}
+	env := newSessionTestEnvWithConfig(t, func(cfg *Config) {
+		cfg.Activator = activator
+	})
+	meta := testMetaLocal(2606, 6, 1, []core.NodeID{1, 2})
+
+	activator.fn = func(context.Context, core.ChannelKey, ActivationSource) (core.Meta, error) {
+		if err := env.runtime.EnsureChannel(meta); err != nil {
+			t.Fatalf("EnsureChannel(%q) error = %v", meta.Key, err)
+		}
+		replica := env.factory.replicas[len(env.factory.replicas)-1]
+		replica.mu.Lock()
+		replica.state.LEO = 9
+		replica.state.OffsetEpoch = 6
+		replica.state.CheckpointHW = 8
+		replica.mu.Unlock()
+		return meta, nil
+	}
+
+	resp, err := env.runtime.ServeReconcileProbe(context.Background(), ReconcileProbeRequestEnvelope{
+		ChannelKey: meta.Key,
+		Epoch:      meta.Epoch,
+		Generation: 0,
+		ReplicaID:  2,
+	})
+	require.NoError(t, err)
+	require.Equal(t, meta.Key, resp.ChannelKey)
+	require.Equal(t, meta.Epoch, resp.Epoch)
+	require.Equal(t, uint64(9), resp.LogEndOffset)
+	require.Equal(t, uint64(8), resp.CheckpointHW)
 }
 
 func TestSessionServeFetchWaitsForReplicaStateChangeBeforeReturningRecords(t *testing.T) {

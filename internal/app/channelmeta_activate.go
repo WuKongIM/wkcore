@@ -98,6 +98,7 @@ func (s *channelMetaSync) applyAuthoritativeMeta(meta metadb.ChannelRuntimeMeta)
 		s.mu.Lock()
 		s.trackAppliedLocalKeyLocked(rootMeta.Key)
 		s.mu.Unlock()
+		s.scheduleLeaderRepairForMeta(rootMeta)
 		return rootMeta, nil
 	}
 	if err := s.removeLocalRuntime(rootMeta.Key); err != nil {

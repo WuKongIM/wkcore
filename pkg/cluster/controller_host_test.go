@@ -137,6 +137,54 @@ func TestControllerHostLeaderChangeReloadsNodeMirrorOnLocalLeadership(t *testing
 	}
 }
 
+func TestControllerHostLeaderChangeReloadsNodeMirrorAndRearmsHealthDeadlines(t *testing.T) {
+	_, host, _ := newTestLocalControllerCluster(t, false)
+	now := time.Unix(1710000000, 0)
+	var timers []*recordingHealthTimer
+	host.healthScheduler.cfg.now = func() time.Time { return now }
+	host.healthScheduler.cfg.afterFunc = func(delay time.Duration, fn func()) healthTimer {
+		timer := &recordingHealthTimer{delay: delay, fn: fn}
+		timers = append(timers, timer)
+		return timer
+	}
+	setControllerHostNodeMirrorLoadFn(host, func(context.Context) ([]controllermeta.ClusterNode, error) {
+		return []controllermeta.ClusterNode{{
+			NodeID:          7,
+			Addr:            "127.0.0.1:7007",
+			Status:          controllermeta.NodeStatusAlive,
+			LastHeartbeatAt: now.Add(-9 * time.Second),
+			CapacityWeight:  1,
+		}}, nil
+	})
+
+	host.handleLeaderChange(2, host.localNode)
+
+	deadline := time.Now().Add(time.Second)
+	for len(timers) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := len(timers); got != 2 {
+		t.Fatalf("warmup health timers = %d, want 2", got)
+	}
+
+	var sawImmediateSuspect bool
+	var sawDeadAfterOneSecond bool
+	for _, timer := range timers {
+		if timer.delay <= 0 {
+			sawImmediateSuspect = true
+		}
+		if timer.delay == time.Second {
+			sawDeadAfterOneSecond = true
+		}
+	}
+	if !sawImmediateSuspect {
+		t.Fatal("warmup health timers missing immediate suspect deadline")
+	}
+	if !sawDeadAfterOneSecond {
+		t.Fatal("warmup health timers missing dead deadline rearm")
+	}
+}
+
 func TestControllerHostLeaderAcquireClearsHashSlotSnapshotBeforeWarmup(t *testing.T) {
 	_, host, _ := newTestLocalControllerCluster(t, false)
 

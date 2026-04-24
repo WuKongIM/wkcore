@@ -31,6 +31,21 @@ func (f *fakeHashSlotProposer) ProposeWithHashSlot(_ context.Context, slotID mul
 	return nil
 }
 
+type fakeLocalHashSlotProposer struct {
+	called   bool
+	slotID   multiraft.SlotID
+	hashSlot uint16
+	cmd      []byte
+}
+
+func (f *fakeLocalHashSlotProposer) ProposeLocalWithHashSlot(_ context.Context, slotID multiraft.SlotID, hashSlot uint16, cmd []byte) error {
+	f.called = true
+	f.slotID = slotID
+	f.hashSlot = hashSlot
+	f.cmd = append([]byte(nil), cmd...)
+	return nil
+}
+
 type fakeProposer struct {
 	called bool
 	slotID multiraft.SlotID
@@ -69,4 +84,19 @@ func TestProposeWithHashSlotFallsBackToPropose(t *testing.T) {
 	require.True(t, proposer.called)
 	require.Equal(t, multiraft.SlotID(9), proposer.slotID)
 	require.Equal(t, []byte("cmd"), proposer.cmd)
+}
+
+func TestProposeLocalWithHashSlotUsesOptionalInterface(t *testing.T) {
+	proposer := &fakeLocalHashSlotProposer{}
+	err := proposeLocalWithHashSlot(context.Background(), proposer, 9, 3, []byte("cmd"))
+	require.NoError(t, err)
+	require.True(t, proposer.called)
+	require.Equal(t, multiraft.SlotID(9), proposer.slotID)
+	require.Equal(t, uint16(3), proposer.hashSlot)
+	require.Equal(t, []byte("cmd"), proposer.cmd)
+}
+
+func TestProposeLocalWithHashSlotWithoutSupportReturnsError(t *testing.T) {
+	err := proposeLocalWithHashSlot(context.Background(), struct{}{}, 9, 3, []byte("cmd"))
+	require.Error(t, err)
 }
