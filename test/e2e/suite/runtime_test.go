@@ -27,6 +27,18 @@ func TestNewWorkspaceCreatesNodeScopedLogDirPaths(t *testing.T) {
 	require.Equal(t, filepath.Join(workspace.RootDir, "node-1", "logs"), workspace.NodeLogDir(1))
 }
 
+func TestSuiteConstructorPreservesWorkspaceLayout(t *testing.T) {
+	fakeBinary := writeFakeNodeBinary(t)
+	t.Setenv("WK_E2E_BINARY", fakeBinary)
+
+	suite := New(t)
+
+	require.Equal(t, fakeBinary, suite.binaryPath)
+	require.DirExists(t, suite.workspace.RootDir)
+	require.Equal(t, filepath.Join(suite.workspace.RootDir, "node-1"), suite.workspace.NodeRootDir(1))
+	require.Equal(t, filepath.Join(suite.workspace.RootDir, "node-1", "data"), suite.workspace.NodeDataDir(1))
+}
+
 func TestStartedClusterNodeLookupByID(t *testing.T) {
 	cluster := StartedCluster{
 		Nodes: []StartedNode{
@@ -67,9 +79,9 @@ func TestStartedClusterDumpDiagnosticsIncludesReadyzAndSlotBodies(t *testing.T) 
 }
 
 func TestStartThreeNodeClusterWritesThreeNodeScopedConfigs(t *testing.T) {
-	binaryPath := writeFakeNodeBinary(t)
+	t.Setenv("WK_E2E_BINARY", writeFakeNodeBinary(t))
 
-	suite := New(t, binaryPath)
+	suite := New(t)
 	cluster := suite.StartThreeNodeCluster()
 
 	require.Len(t, cluster.Nodes, 3)

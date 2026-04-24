@@ -50,9 +50,12 @@ func NewWorkspace(t *testing.T) Workspace {
 	return workspace
 }
 
-// New creates a phase-1 suite using the prebuilt production binary.
-func New(t *testing.T, binaryPath string) *Suite {
+// New creates a test-scoped suite and resolves the production binary on demand.
+func New(t *testing.T) *Suite {
 	t.Helper()
+
+	binaryPath, err := resolveBinaryPath()
+	require.NoError(t, err)
 
 	return &Suite{
 		t:          t,
@@ -120,7 +123,9 @@ func (s *Suite) StartThreeNodeCluster() *StartedCluster {
 
 	s.t.Cleanup(func() {
 		for i := len(cluster.Nodes) - 1; i >= 0; i-- {
-			require.NoError(s.t, cluster.Nodes[i].Process.Stop())
+			if cluster.Nodes[i].Process != nil {
+				require.NoError(s.t, cluster.Nodes[i].Process.Stop())
+			}
 		}
 	})
 
@@ -191,6 +196,18 @@ func (c *StartedCluster) MustNode(nodeID uint64) *StartedNode {
 // GatewayAddr returns the public WKProto listen address for the started node.
 func (n *StartedNode) GatewayAddr() string {
 	return n.Spec.GatewayAddr
+}
+
+// Stop terminates the started node process and detaches it from future cleanup.
+func (n *StartedNode) Stop() error {
+	if n == nil || n.Process == nil {
+		return nil
+	}
+	err := n.Process.Stop()
+	if err == nil {
+		n.Process = nil
+	}
+	return err
 }
 
 func (s *Suite) singleNodeSpec(nodeID uint64, ports PortSet) NodeSpec {

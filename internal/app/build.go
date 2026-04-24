@@ -239,6 +239,18 @@ func build(cfg Config) (_ *App, err error) {
 	})
 	authorityClient.local = app.presenceApp
 	app.presenceWorker = newPresenceWorker(app.presenceApp, 0)
+	app.presenceWorker.activeSlotIDs = func() []uint64 {
+		slots := onlineRegistry.ActiveSlots()
+		out := make([]uint64, 0, len(slots))
+		for _, slot := range slots {
+			out = append(out, slot.SlotID)
+		}
+		return out
+	}
+	app.presenceWorker.leaderOf = func(slotID uint64) (uint64, error) {
+		leaderID, err := app.cluster.LeaderOf(multiraft.SlotID(slotID))
+		return uint64(leaderID), err
+	}
 	app.deliveryAcks = deliveryruntime.NewAckIndex()
 	subscriberResolver := deliveryusecase.NewSubscriberResolver(deliveryusecase.SubscriberResolverOptions{
 		Store: app.store,

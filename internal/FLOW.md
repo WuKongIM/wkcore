@@ -312,6 +312,10 @@ Presence 心跳 (后台):
   presenceWorker 周期执行:
     → presenceApp.HeartbeatAuthoritative(ctx)
     → 续租权威路由 lease
+  active slot 的 Slot Leader 发生变化时:
+    → presenceWorker 立即补一次 HeartbeatOnce
+    → 若新 leader 返回 route digest mismatch
+       → ReplayAuthoritative 重新灌入当前节点该 slot 的 active routes
 ```
 
 ### 5.8 会话同步

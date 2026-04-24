@@ -117,6 +117,70 @@ func (c *StartedCluster) ResolveSlotTopology(ctx context.Context, slotID uint32)
 	}
 }
 
+// WaitForSlotLeaderChange waits until the slot reports a new leader with quorum.
+func (c *StartedCluster) WaitForSlotLeaderChange(ctx context.Context, slotID uint32, previousLeaderID uint64) (SlotTopology, error) {
+	if c == nil {
+		return SlotTopology{}, fmt.Errorf("started cluster is nil")
+	}
+
+	ticker := time.NewTicker(readyPollInterval)
+	defer ticker.Stop()
+
+	var lastErr error
+	for {
+		for _, node := range c.Nodes {
+			if node.Process == nil {
+				continue
+			}
+
+			detail, body, err := FetchSlotDetail(ctx, node, slotID)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			c.lastSlotBodies[slotID] = string(body)
+			if detail.SlotID != slotID {
+				lastErr = fmt.Errorf("slot %d leader change: got slot %d", slotID, detail.SlotID)
+				continue
+			}
+			if detail.Runtime.LeaderID == 0 {
+				lastErr = fmt.Errorf("slot %d leader change: missing leader", slotID)
+				continue
+			}
+			if detail.Runtime.LeaderID == previousLeaderID {
+				lastErr = fmt.Errorf("slot %d leader change: leader still %d", slotID, previousLeaderID)
+				continue
+			}
+			if !detail.Runtime.HasQuorum {
+				lastErr = fmt.Errorf("slot %d leader change: quorum not ready", slotID)
+				continue
+			}
+
+			followers := make([]uint64, 0, len(detail.Runtime.CurrentPeers))
+			for _, nodeID := range detail.Runtime.CurrentPeers {
+				if nodeID != detail.Runtime.LeaderID {
+					followers = append(followers, nodeID)
+				}
+			}
+			return SlotTopology{
+				SlotID:          detail.SlotID,
+				LeaderNodeID:    detail.Runtime.LeaderID,
+				FollowerNodeIDs: followers,
+				RawBody:         string(body),
+			}, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			if lastErr == nil {
+				lastErr = fmt.Errorf("slot %d leader change unavailable", slotID)
+			}
+			return SlotTopology{}, lastErr
+		case <-ticker.C:
+		}
+	}
+}
+
 func fetchHTTPBody(ctx context.Context, addr, path string) ([]byte, error) {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
