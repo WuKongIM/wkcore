@@ -12,6 +12,7 @@ The web app now includes the first authenticated manager shell flow:
 - `/login` authenticates against `POST /manager/login`
 - protected routes require a valid persisted JWT session
 - `VITE_API_BASE_URL` optionally overrides the default same-origin `/manager/*` base
+- container deployments can set `WK_WEB_API_URL` to change the nginx `/manager/` proxy target, defaulting to `http://wk-node1:5301`
 - UI copy currently supports `en` and `zh-CN`
 - locale selection order is persisted `localStorage` value -> browser language -> default `en`
 - users can switch languages from the login page and the authenticated shell topbar

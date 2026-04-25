@@ -57,6 +57,8 @@ services:
     restart: unless-stopped
     depends_on:
       - wk-node1
+    environment:
+      WK_WEB_API_URL: ${WK_WEB_API_URL:-http://wk-node1:5301}
     ports:
       - "18080:80"
 
