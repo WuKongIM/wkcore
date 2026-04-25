@@ -13,15 +13,6 @@ const (
 	channelSystemIDSnapshot   uint16 = 3
 )
 
-func encodeLogPrefix(channelKey channel.ChannelKey) []byte {
-	return encodeKeyspacePrefix(keyspaceLog, channelKey)
-}
-
-func encodeLogRecordKey(channelKey channel.ChannelKey, offset uint64) []byte {
-	key := encodeLogPrefix(channelKey)
-	return binary.BigEndian.AppendUint64(key, offset)
-}
-
 func encodeCheckpointKey(channelKey channel.ChannelKey) []byte {
 	return encodeTableSystemKey(channelKey, channelSystemTableID, channelSystemIDCheckpoint)
 }
@@ -39,18 +30,15 @@ func encodeSnapshotKey(channelKey channel.ChannelKey) []byte {
 	return encodeTableSystemKey(channelKey, channelSystemTableID, channelSystemIDSnapshot)
 }
 
-func encodeIdempotencyPrefix(channelKey channel.ChannelKey) []byte {
+func encodeIdempotencyIndexPrefix(channelKey channel.ChannelKey) []byte {
 	return encodeTableIndexPrefix(channelKey, TableIDMessage, messageIndexIDFromUIDClientMsgNo)
 }
 
-func encodeIdempotencyKey(channelKey channel.ChannelKey, key channel.IdempotencyKey) []byte {
-	encoded := encodeIdempotencyPrefix(channelKey)
-	encoded = appendKeyString(encoded, key.FromUID)
-	encoded = appendKeyString(encoded, key.ClientMsgNo)
-	return encoded
+func encodeIdempotencyIndexKey(channelKey channel.ChannelKey, key channel.IdempotencyKey) []byte {
+	return encodeMessageIdempotencyIndexKey(channelKey, key.FromUID, key.ClientMsgNo)
 }
 
-func decodeIdempotencyKey(raw []byte, prefix []byte) (channel.IdempotencyKey, error) {
+func decodeIdempotencyIndexKey(raw []byte, prefix []byte) (channel.IdempotencyKey, error) {
 	if len(raw) < len(prefix) || string(raw[:len(prefix)]) != string(prefix) {
 		return channel.IdempotencyKey{}, channel.ErrCorruptValue
 	}
@@ -68,11 +56,4 @@ func decodeIdempotencyKey(raw []byte, prefix []byte) (channel.IdempotencyKey, er
 		return channel.IdempotencyKey{}, channel.ErrCorruptValue
 	}
 	return channel.IdempotencyKey{FromUID: fromUID, ClientMsgNo: clientMsgNo}, nil
-}
-
-func decodeLogRecordOffset(key []byte, prefix []byte) (uint64, error) {
-	if len(key) != len(prefix)+8 {
-		return 0, channel.ErrCorruptValue
-	}
-	return binary.BigEndian.Uint64(key[len(prefix):]), nil
 }

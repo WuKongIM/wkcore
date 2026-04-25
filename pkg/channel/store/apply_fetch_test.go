@@ -28,16 +28,16 @@ func TestChannelStoreApplyFetchPersistsCommittedIdempotencyForExistingAndNewReco
 	})
 	require.NoError(t, err)
 
-	legacy, ok, err := st.GetIdempotency(channel.IdempotencyKey{
+	entry, ok, err := st.GetIdempotency(channel.IdempotencyKey{
 		ChannelID:   id,
 		FromUID:     "u1",
 		ClientMsgNo: "m1",
 	})
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.Equal(t, uint64(11), legacy.MessageID)
-	require.Equal(t, uint64(1), legacy.MessageSeq)
-	require.Equal(t, uint64(0), legacy.Offset)
+	require.Equal(t, uint64(11), entry.MessageID)
+	require.Equal(t, uint64(1), entry.MessageSeq)
+	require.Equal(t, uint64(0), entry.Offset)
 
 	current, ok, err := st.GetIdempotency(channel.IdempotencyKey{
 		ChannelID:   id,
@@ -71,16 +71,16 @@ func TestStoreApplyFetchKeepsStructuredIdempotencyAcrossExplicitPreviousCommitHW
 	})
 	require.NoError(t, err)
 
-	legacy, ok, err := st.GetIdempotency(channel.IdempotencyKey{
+	entry, ok, err := st.GetIdempotency(channel.IdempotencyKey{
 		ChannelID:   id,
 		FromUID:     "u1",
 		ClientMsgNo: "m1",
 	})
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.Equal(t, uint64(11), legacy.MessageID)
-	require.Equal(t, uint64(1), legacy.MessageSeq)
-	require.Equal(t, uint64(0), legacy.Offset)
+	require.Equal(t, uint64(11), entry.MessageID)
+	require.Equal(t, uint64(1), entry.MessageSeq)
+	require.Equal(t, uint64(0), entry.Offset)
 
 	current, ok, err := st.GetIdempotency(channel.IdempotencyKey{
 		ChannelID:   id,

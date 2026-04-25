@@ -161,7 +161,7 @@ func TestChannelStoreAppendSkipsOptionalIndexesWhenClientMsgNoEmpty(t *testing.T
 	require.NoError(t, err)
 	require.False(t, ok)
 
-	_, ok, err = getStoredIdempotencyHit(t, st, "u1", "")
+	_, ok, err = getIndexedIdempotencyHit(t, st, "u1", "")
 	require.NoError(t, err)
 	require.False(t, ok)
 }

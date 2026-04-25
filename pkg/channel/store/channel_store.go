@@ -8,7 +8,7 @@ import (
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 )
 
-// ChannelStore owns the channel-scoped durable state and compatibility views.
+// ChannelStore owns the channel-scoped durable state and compatibility adapters.
 type ChannelStore struct {
 	engine   *Engine
 	key      channel.ChannelKey

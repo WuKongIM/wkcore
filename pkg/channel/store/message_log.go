@@ -43,7 +43,7 @@ func (s *ChannelStore) appendRecordsWithCommit(records []channel.Record, commitO
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	pending, err := s.prepareAppendLocked(records)
+	pending, err := s.prepareCompatibilityAppendLocked(records)
 	if err != nil {
 		return 0, err
 	}
@@ -78,7 +78,7 @@ func (s *ChannelStore) appendRecordsWithCommit(records []channel.Record, commitO
 	return pending.base, nil
 }
 
-func (s *ChannelStore) prepareAppendLocked(records []channel.Record) (pendingLogAppend, error) {
+func (s *ChannelStore) prepareCompatibilityAppendLocked(records []channel.Record) (pendingLogAppend, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -90,14 +90,9 @@ func (s *ChannelStore) prepareAppendLocked(records []channel.Record) (pendingLog
 		return pendingLogAppend{base: base}, nil
 	}
 
-	rows := make([]messageRow, 0, len(records))
-	for i, record := range records {
-		row, err := messageRowFromRecordPayload(record.Payload)
-		if err != nil {
-			return pendingLogAppend{}, err
-		}
-		row.MessageSeq = base + uint64(i) + 1
-		rows = append(rows, row)
+	rows, err := structuredRowsFromCompatibilityRecords(base+1, records)
+	if err != nil {
+		return pendingLogAppend{}, err
 	}
 
 	s.writeInProgress.Store(true)
@@ -141,7 +136,7 @@ func (s *ChannelStore) Read(from uint64, maxBytes int) ([]channel.Record, error)
 	if err != nil {
 		return nil, err
 	}
-	return rowsToRecords(rows)
+	return compatibilityRecordsFromRows(rows)
 }
 
 func (s *ChannelStore) ReadOffsets(fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
@@ -274,7 +269,7 @@ func (e *Engine) readOffsets(channelKey channel.ChannelKey, fromOffset uint64, l
 	if err != nil {
 		return nil, err
 	}
-	return rowsToLogRecords(rows)
+	return logRecordsFromStructuredRows(rows)
 }
 
 func (e *Engine) readOffsetsReverse(channelKey channel.ChannelKey, fromOffset uint64, limit int, maxBytes int) ([]LogRecord, error) {
@@ -290,31 +285,7 @@ func (e *Engine) readOffsetsReverse(channelKey channel.ChannelKey, fromOffset ui
 	if err != nil {
 		return nil, err
 	}
-	return rowsToLogRecords(rows)
-}
-
-func rowsToRecords(rows []messageRow) ([]channel.Record, error) {
-	records := make([]channel.Record, 0, len(rows))
-	for _, row := range rows {
-		record, err := row.toRecord()
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, record)
-	}
-	return records, nil
-}
-
-func rowsToLogRecords(rows []messageRow) ([]LogRecord, error) {
-	records := make([]LogRecord, 0, len(rows))
-	for _, row := range rows {
-		record, err := row.toRecord()
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, LogRecord{Offset: row.MessageSeq - 1, Payload: record.Payload})
-	}
-	return records, nil
+	return logRecordsFromStructuredRows(rows)
 }
 
 func maxLogScanLimit() int {

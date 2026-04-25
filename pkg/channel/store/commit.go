@@ -307,7 +307,7 @@ func (s *ChannelStore) applyFetchedRecords(records []channel.Record, checkpoint 
 }
 
 func (s *ChannelStore) writeApplyFetchedRecords(writeBatch *pebble.Batch, base uint64, records []channel.Record, checkpoint *channel.Checkpoint) error {
-	rows, err := rowsFromApplyFetchRecords(base, records)
+	rows, err := structuredRowsFromCompatibilityRecords(base+1, records)
 	if err != nil {
 		return err
 	}
@@ -322,17 +322,4 @@ func (s *ChannelStore) writeApplyFetchedRecords(writeBatch *pebble.Batch, base u
 		}
 	}
 	return nil
-}
-
-func rowsFromApplyFetchRecords(base uint64, records []channel.Record) ([]messageRow, error) {
-	rows := make([]messageRow, 0, len(records))
-	for i, record := range records {
-		row, err := messageRowFromRecordPayload(record.Payload)
-		if err != nil {
-			return nil, err
-		}
-		row.MessageSeq = base + uint64(i) + 1
-		rows = append(rows, row)
-	}
-	return rows, nil
 }

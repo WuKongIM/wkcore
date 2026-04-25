@@ -16,7 +16,7 @@ func (s *ChannelStore) PutIdempotency(key channel.IdempotencyKey, entry channel.
 	if err := s.validateIdempotencyKey(key); err != nil {
 		return err
 	}
-	if err := s.engine.db.Set(encodeIdempotencyKey(s.key, key), encodeStoredIdempotencyValue(entry, 0), pebble.Sync); err != nil {
+	if err := s.engine.db.Set(encodeIdempotencyIndexKey(s.key, key), encodeIndexedIdempotencyEntryValue(entry, 0), pebble.Sync); err != nil {
 		return err
 	}
 	s.recordDurableCommit()
@@ -27,7 +27,7 @@ func (s *ChannelStore) GetIdempotency(key channel.IdempotencyKey) (channel.Idemp
 	if err := s.validateIdempotencyKey(key); err != nil {
 		return channel.IdempotencyEntry{}, false, err
 	}
-	value, closer, err := s.engine.db.Get(encodeIdempotencyKey(s.key, key))
+	value, closer, err := s.engine.db.Get(encodeIdempotencyIndexKey(s.key, key))
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {
 			return channel.IdempotencyEntry{}, false, nil
@@ -36,7 +36,7 @@ func (s *ChannelStore) GetIdempotency(key channel.IdempotencyKey) (channel.Idemp
 	}
 	defer closer.Close()
 
-	entry, _, err := decodeStoredIdempotencyValue(value)
+	entry, _, err := decodeIndexedIdempotencyEntryValue(value)
 	if err != nil {
 		return channel.IdempotencyEntry{}, false, err
 	}
@@ -48,7 +48,7 @@ func (s *ChannelStore) SnapshotIdempotency(offset uint64) ([]byte, error) {
 		return nil, err
 	}
 
-	prefix := encodeIdempotencyPrefix(s.key)
+	prefix := encodeIdempotencyIndexPrefix(s.key)
 	iter, err := s.engine.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: keyUpperBound(prefix)})
 	if err != nil {
 		return nil, err
@@ -57,11 +57,11 @@ func (s *ChannelStore) SnapshotIdempotency(offset uint64) ([]byte, error) {
 
 	entries := make([]stateSnapshotEntry, 0, 16)
 	for valid := iter.First(); valid; valid = iter.Next() {
-		key, err := decodeIdempotencyKey(iter.Key(), prefix)
+		key, err := decodeIdempotencyIndexKey(iter.Key(), prefix)
 		if err != nil {
 			return nil, err
 		}
-		entry, payloadHash, err := decodeStoredIdempotencyValue(iter.Value())
+		entry, payloadHash, err := decodeIndexedIdempotencyEntryValue(iter.Value())
 		if err != nil {
 			return nil, err
 		}
@@ -91,7 +91,7 @@ func (s *ChannelStore) RestoreIdempotency(snapshot []byte) error {
 		return err
 	}
 
-	prefix := encodeIdempotencyPrefix(s.key)
+	prefix := encodeIdempotencyIndexPrefix(s.key)
 	batch := s.engine.db.NewBatch()
 	defer batch.Close()
 
@@ -104,7 +104,7 @@ func (s *ChannelStore) RestoreIdempotency(snapshot []byte) error {
 			FromUID:     entry.FromUID,
 			ClientMsgNo: entry.ClientMsgNo,
 		}
-		if err := batch.Set(encodeIdempotencyKey(s.key, key), encodeStoredIdempotencyValue(entry.Entry, entry.PayloadHash), pebble.NoSync); err != nil {
+		if err := batch.Set(encodeIdempotencyIndexKey(s.key, key), encodeIndexedIdempotencyEntryValue(entry.Entry, entry.PayloadHash), pebble.NoSync); err != nil {
 			return err
 		}
 	}
@@ -182,7 +182,7 @@ func (s *ChannelStore) writeCommitted(writeBatch *pebble.Batch, checkpoint chann
 		if message.entry.Offset >= checkpoint.HW {
 			return channel.ErrInvalidArgument
 		}
-		if err := writeBatch.Set(encodeIdempotencyKey(s.key, message.key), encodeStoredIdempotencyValue(message.entry, 0), pebble.NoSync); err != nil {
+		if err := writeBatch.Set(encodeIdempotencyIndexKey(s.key, message.key), encodeIndexedIdempotencyEntryValue(message.entry, 0), pebble.NoSync); err != nil {
 			return err
 		}
 	}

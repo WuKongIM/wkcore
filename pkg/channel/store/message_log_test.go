@@ -219,7 +219,7 @@ func TestChannelStoreTruncateRemovesRowsAndIndexes(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, uint64(2), seq)
 
-	hit, ok, err := getStoredIdempotencyHit(t, st, "u2", "same")
+	hit, ok, err := getIndexedIdempotencyHit(t, st, "u2", "same")
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, uint64(2), hit.MessageSeq)
@@ -234,7 +234,7 @@ func TestChannelStoreTruncateRemovesRowsAndIndexes(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok)
 
-	_, ok, err = getStoredIdempotencyHit(t, st, "u2", "same")
+	_, ok, err = getIndexedIdempotencyHit(t, st, "u2", "same")
 	require.NoError(t, err)
 	require.False(t, ok)
 }

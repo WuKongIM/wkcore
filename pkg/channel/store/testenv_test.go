@@ -74,7 +74,7 @@ func mustAppendRecords(t *testing.T, st *ChannelStore, payloads []string) {
 func mustEncodeStoreMessage(tb testing.TB, msg channel.Message) []byte {
 	tb.Helper()
 
-	record, err := messageRowFromChannelMessage(msg).toRecord()
+	record, err := messageRowFromChannelMessage(msg).toCompatibilityRecord()
 	if err != nil {
 		tb.Fatalf("toRecord() error = %v", err)
 	}
@@ -84,9 +84,9 @@ func mustEncodeStoreMessage(tb testing.TB, msg channel.Message) []byte {
 func mustDecodeStoreMessage(tb testing.TB, payload []byte) channel.Message {
 	tb.Helper()
 
-	row, err := messageRowFromRecordPayload(payload)
+	row, err := decodeCompatibilityRecordPayload(payload)
 	if err != nil {
-		tb.Fatalf("messageRowFromRecordPayload() error = %v", err)
+		tb.Fatalf("decodeCompatibilityRecordPayload() error = %v", err)
 	}
 	return row.toChannelMessage()
 }
@@ -144,10 +144,10 @@ func getStoredClientMsgNoIndexSeq(tb testing.TB, st *ChannelStore, clientMsgNo s
 	return indexSeq, true, nil
 }
 
-func getStoredIdempotencyHit(tb testing.TB, st *ChannelStore, fromUID, clientMsgNo string) (messageIndexHit, bool, error) {
+func getIndexedIdempotencyHit(tb testing.TB, st *ChannelStore, fromUID, clientMsgNo string) (messageIndexHit, bool, error) {
 	tb.Helper()
 
-	value, ok, err := getDBValue(tb, st.engine.db, testEncodeIdempotencyIndexKey(st.key, fromUID, clientMsgNo))
+	value, ok, err := getDBValue(tb, st.engine.db, encodeMessageIdempotencyIndexKey(st.key, fromUID, clientMsgNo))
 	if err != nil || !ok {
 		return messageIndexHit{}, ok, err
 	}
@@ -248,10 +248,4 @@ func nilAsError(value any) error {
 func testEncodeMessageIDIndexKey(channelKey channel.ChannelKey, messageID uint64) []byte {
 	key := encodeTableIndexPrefix(channelKey, TableIDMessage, messageIndexIDMessageID)
 	return binary.BigEndian.AppendUint64(key, messageID)
-}
-
-func testEncodeIdempotencyIndexKey(channelKey channel.ChannelKey, fromUID, clientMsgNo string) []byte {
-	key := encodeTableIndexPrefix(channelKey, TableIDMessage, messageIndexIDFromUIDClientMsgNo)
-	key = appendKeyString(key, fromUID)
-	return appendKeyString(key, clientMsgNo)
 }

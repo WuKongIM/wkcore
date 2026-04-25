@@ -134,7 +134,7 @@ func TestMessageRowFromRecordPayloadDecodesSharedCompatibilityCodec(t *testing.T
 
 	payload := makeCompatibilityRecordPayload(t, msg, hashMessagePayload(msg.Payload))
 
-	row, err := messageRowFromRecordPayload(payload)
+	row, err := decodeCompatibilityRecordPayload(payload)
 	require.NoError(t, err)
 	payload[len(payload)-1] = 'x'
 
@@ -173,11 +173,11 @@ func TestMessageRowToRecordEncodesSharedCompatibilityCodec(t *testing.T) {
 		PayloadHash: 123,
 	}
 
-	record, err := row.toRecord()
+	record, err := row.toCompatibilityRecord()
 	require.NoError(t, err)
 	require.Equal(t, len(record.Payload), record.SizeBytes)
 
-	decoded, err := messageRowFromRecordPayload(record.Payload)
+	decoded, err := decodeCompatibilityRecordPayload(record.Payload)
 	require.NoError(t, err)
 	row.Payload[0] = 'x'
 
@@ -209,7 +209,7 @@ func TestMessageRowToRecordRoundTripPreservesHeaderLayout(t *testing.T) {
 		Payload:     []byte("hello"),
 	}
 
-	record, err := row.toRecord()
+	record, err := row.toCompatibilityRecord()
 	require.NoError(t, err)
 
 	require.Equal(t, channel.DurableMessageCodecVersion, record.Payload[0])
@@ -245,7 +245,7 @@ func TestMessageRowToRecordEncodesExactLegacyFieldOrderAndLengths(t *testing.T) 
 		PayloadHash: 123,
 	}
 
-	record, err := row.toRecord()
+	record, err := row.toCompatibilityRecord()
 	require.NoError(t, err)
 
 	offset := channel.DurableMessageHeaderSize
@@ -280,7 +280,7 @@ func TestMessageRowFromRecordPayloadDecodesExactLegacyWireLayout(t *testing.T) {
 		Payload:     []byte("hello"),
 	}, 123)
 
-	row, err := messageRowFromRecordPayload(payload)
+	row, err := decodeCompatibilityRecordPayload(payload)
 	require.NoError(t, err)
 	require.Equal(t, uint64(42), row.MessageID)
 	require.Equal(t, encodeMessageRowFramerFlags(frame.Framer{NoPersist: true, End: true}), row.FramerFlags)
@@ -311,7 +311,7 @@ func TestMessageRowFromRecordPayloadRejectsTruncatedLengthPrefixedField(t *testi
 	}, 123)
 	truncated := append([]byte(nil), payload[:len(payload)-2]...)
 
-	_, err := messageRowFromRecordPayload(truncated)
+	_, err := decodeCompatibilityRecordPayload(truncated)
 	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
 }
 

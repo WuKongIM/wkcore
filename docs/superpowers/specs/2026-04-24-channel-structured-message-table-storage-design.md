@@ -82,7 +82,7 @@
 - `message_row.go`：定义持久化行模型 `messageRow` 以及与 `channel.Message` / `channel.Record` 的转换。
 - `table_codec.go`：负责编码/解码表主键、列族值、索引键和值。
 - `message_table.go`：提供 message 表级别的 append/get/scan/truncate/index maintenance 能力。
-- `logstore.go`、`commit.go`：改为调用 message table，不再直接写 raw durable payload。
+- `message_log.go`、`commit.go`：改为调用 message table，不再直接写 raw durable payload。
 - `handler` 侧读取和查询逻辑直接走 message table / secondary indexes。
 
 磁盘上的 source of truth 是 `message` 表行，不再是原始 `[]byte` 日志值。
@@ -430,7 +430,7 @@ store 内部新增持久化行模型 `messageRow`。它与 `channel.Message` 接
 - `pkg/channel/store/message_row.go`
 - `pkg/channel/store/table_codec.go`
 - `pkg/channel/store/message_table.go`
-- `pkg/channel/store/logstore.go`
+- `pkg/channel/store/message_log.go`
 - `pkg/channel/store/commit.go`
 - `pkg/channel/store/keys.go`
 - `pkg/channel/store/idempotency.go`

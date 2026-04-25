@@ -1,11 +1,7 @@
 package store
 
 import (
-	"bytes"
-	"encoding/binary"
 	"hash/fnv"
-	"io"
-	"math"
 
 	"github.com/WuKongIM/WuKongIM/pkg/channel"
 	"github.com/WuKongIM/WuKongIM/pkg/protocol/frame"
@@ -89,142 +85,6 @@ func (r messageRow) toChannelMessage() channel.Message {
 	}
 }
 
-// messageRowFromRecordPayload decodes the legacy durable payload into a structured row.
-func messageRowFromRecordPayload(payload []byte) (messageRow, error) {
-	if len(payload) < channel.DurableMessageHeaderSize {
-		return messageRow{}, io.ErrUnexpectedEOF
-	}
-	if payload[0] != channel.DurableMessageCodecVersion {
-		return messageRow{}, channel.ErrCorruptValue
-	}
-
-	row := messageRow{
-		MessageID:   binary.BigEndian.Uint64(payload[1:9]),
-		FramerFlags: payload[9],
-		Setting:     payload[10],
-		StreamFlag:  payload[11],
-		ChannelType: payload[12],
-		Expire:      binary.BigEndian.Uint32(payload[13:17]),
-		ClientSeq:   binary.BigEndian.Uint64(payload[17:25]),
-		StreamID:    binary.BigEndian.Uint64(payload[25:33]),
-		Timestamp:   int32(binary.BigEndian.Uint32(payload[33:37])),
-		PayloadHash: binary.BigEndian.Uint64(payload[37:45]),
-	}
-	if row.MessageID == 0 {
-		return messageRow{}, channel.ErrCorruptValue
-	}
-
-	pos := channel.DurableMessageHeaderSize
-	msgKey, nextPos, err := readRecordSizedBytesView(payload, pos)
-	if err != nil {
-		return messageRow{}, err
-	}
-	clientMsgNo, nextPos, err := readRecordSizedBytesView(payload, nextPos)
-	if err != nil {
-		return messageRow{}, err
-	}
-	streamNo, nextPos, err := readRecordSizedBytesView(payload, nextPos)
-	if err != nil {
-		return messageRow{}, err
-	}
-	channelID, nextPos, err := readRecordSizedBytesView(payload, nextPos)
-	if err != nil {
-		return messageRow{}, err
-	}
-	topic, nextPos, err := readRecordSizedBytesView(payload, nextPos)
-	if err != nil {
-		return messageRow{}, err
-	}
-	fromUID, nextPos, err := readRecordSizedBytesView(payload, nextPos)
-	if err != nil {
-		return messageRow{}, err
-	}
-	body, _, err := readRecordSizedBytesView(payload, nextPos)
-	if err != nil {
-		return messageRow{}, err
-	}
-
-	row.MsgKey = string(msgKey)
-	row.ClientMsgNo = string(clientMsgNo)
-	row.StreamNo = string(streamNo)
-	row.ChannelID = string(channelID)
-	row.Topic = string(topic)
-	row.FromUID = string(fromUID)
-	row.Payload = append([]byte(nil), body...)
-	return row, nil
-}
-
-// toRecord encodes the structured row using the legacy durable message payload layout.
-func (r messageRow) toRecord() (channel.Record, error) {
-	if err := r.validate(); err != nil {
-		return channel.Record{}, err
-	}
-
-	payloadHash := r.PayloadHash
-	if payloadHash == 0 {
-		payloadHash = hashMessagePayload(r.Payload)
-	}
-
-	var buf bytes.Buffer
-	if err := buf.WriteByte(channel.DurableMessageCodecVersion); err != nil {
-		return channel.Record{}, err
-	}
-	if err := binary.Write(&buf, binary.BigEndian, r.MessageID); err != nil {
-		return channel.Record{}, err
-	}
-	if err := buf.WriteByte(r.FramerFlags); err != nil {
-		return channel.Record{}, err
-	}
-	if err := buf.WriteByte(r.Setting); err != nil {
-		return channel.Record{}, err
-	}
-	if err := buf.WriteByte(r.StreamFlag); err != nil {
-		return channel.Record{}, err
-	}
-	if err := buf.WriteByte(r.ChannelType); err != nil {
-		return channel.Record{}, err
-	}
-	if err := binary.Write(&buf, binary.BigEndian, r.Expire); err != nil {
-		return channel.Record{}, err
-	}
-	if err := binary.Write(&buf, binary.BigEndian, r.ClientSeq); err != nil {
-		return channel.Record{}, err
-	}
-	if err := binary.Write(&buf, binary.BigEndian, r.StreamID); err != nil {
-		return channel.Record{}, err
-	}
-	if err := binary.Write(&buf, binary.BigEndian, r.Timestamp); err != nil {
-		return channel.Record{}, err
-	}
-	if err := binary.Write(&buf, binary.BigEndian, payloadHash); err != nil {
-		return channel.Record{}, err
-	}
-	if err := writeRecordString(&buf, r.MsgKey); err != nil {
-		return channel.Record{}, err
-	}
-	if err := writeRecordString(&buf, r.ClientMsgNo); err != nil {
-		return channel.Record{}, err
-	}
-	if err := writeRecordString(&buf, r.StreamNo); err != nil {
-		return channel.Record{}, err
-	}
-	if err := writeRecordString(&buf, r.ChannelID); err != nil {
-		return channel.Record{}, err
-	}
-	if err := writeRecordString(&buf, r.Topic); err != nil {
-		return channel.Record{}, err
-	}
-	if err := writeRecordString(&buf, r.FromUID); err != nil {
-		return channel.Record{}, err
-	}
-	if err := writeRecordBytes(&buf, r.Payload); err != nil {
-		return channel.Record{}, err
-	}
-
-	payload := buf.Bytes()
-	return channel.Record{Payload: payload, SizeBytes: len(payload)}, nil
-}
-
 func (r messageRow) validate() error {
 	if r.MessageID == 0 {
 		return channel.ErrInvalidArgument
@@ -264,33 +124,6 @@ func decodeMessageRowFramerFlags(flags uint8) frame.Framer {
 		HasServerVersion: flags&messageRowFramerFlagHasServerVersion != 0,
 		End:              flags&messageRowFramerFlagEnd != 0,
 	}
-}
-
-func readRecordSizedBytesView(payload []byte, pos int) ([]byte, int, error) {
-	if len(payload)-pos < 4 {
-		return nil, pos, io.ErrUnexpectedEOF
-	}
-	size := int(binary.BigEndian.Uint32(payload[pos : pos+4]))
-	pos += 4
-	if len(payload)-pos < size {
-		return nil, pos, io.ErrUnexpectedEOF
-	}
-	return payload[pos : pos+size], pos + size, nil
-}
-
-func writeRecordString(buf *bytes.Buffer, value string) error {
-	return writeRecordBytes(buf, []byte(value))
-}
-
-func writeRecordBytes(buf *bytes.Buffer, value []byte) error {
-	if len(value) > math.MaxUint32 {
-		return channel.ErrInvalidArgument
-	}
-	if err := binary.Write(buf, binary.BigEndian, uint32(len(value))); err != nil {
-		return err
-	}
-	_, err := buf.Write(value)
-	return err
 }
 
 func hashMessagePayload(payload []byte) uint64 {

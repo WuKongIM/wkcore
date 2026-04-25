@@ -51,26 +51,7 @@ func decodeEpochPoint(value []byte) (channel.EpochPoint, error) {
 	}, nil
 }
 
-func encodeIdempotencyEntry(entry channel.IdempotencyEntry) []byte {
-	value := make([]byte, 0, 24)
-	value = binary.BigEndian.AppendUint64(value, entry.MessageID)
-	value = binary.BigEndian.AppendUint64(value, entry.MessageSeq)
-	value = binary.BigEndian.AppendUint64(value, entry.Offset)
-	return value
-}
-
-func decodeIdempotencyEntry(value []byte) (channel.IdempotencyEntry, error) {
-	if len(value) != 24 {
-		return channel.IdempotencyEntry{}, channel.ErrCorruptValue
-	}
-	return channel.IdempotencyEntry{
-		MessageID:  binary.BigEndian.Uint64(value[0:8]),
-		MessageSeq: binary.BigEndian.Uint64(value[8:16]),
-		Offset:     binary.BigEndian.Uint64(value[16:24]),
-	}, nil
-}
-
-func encodeStoredIdempotencyValue(entry channel.IdempotencyEntry, payloadHash uint64) []byte {
+func encodeIndexedIdempotencyEntryValue(entry channel.IdempotencyEntry, payloadHash uint64) []byte {
 	value := make([]byte, 0, 24)
 	value = binary.BigEndian.AppendUint64(value, entry.MessageSeq)
 	value = binary.BigEndian.AppendUint64(value, entry.MessageID)
@@ -78,7 +59,7 @@ func encodeStoredIdempotencyValue(entry channel.IdempotencyEntry, payloadHash ui
 	return value
 }
 
-func decodeStoredIdempotencyValue(value []byte) (channel.IdempotencyEntry, uint64, error) {
+func decodeIndexedIdempotencyEntryValue(value []byte) (channel.IdempotencyEntry, uint64, error) {
 	if len(value) != 24 {
 		return channel.IdempotencyEntry{}, 0, channel.ErrCorruptValue
 	}
@@ -100,7 +81,7 @@ func encodeStateSnapshot(entries []stateSnapshotEntry) []byte {
 	for _, entry := range entries {
 		payload = appendKeyString(payload, entry.FromUID)
 		payload = appendKeyString(payload, entry.ClientMsgNo)
-		payload = append(payload, encodeStoredIdempotencyValue(entry.Entry, entry.PayloadHash)...)
+		payload = append(payload, encodeIndexedIdempotencyEntryValue(entry.Entry, entry.PayloadHash)...)
 	}
 	return payload
 }
@@ -133,7 +114,7 @@ func decodeStateSnapshot(payload []byte) ([]stateSnapshotEntry, error) {
 		if len(rest) < 24 {
 			return nil, channel.ErrCorruptValue
 		}
-		entry, payloadHash, err := decodeStoredIdempotencyValue(rest[:24])
+		entry, payloadHash, err := decodeIndexedIdempotencyEntryValue(rest[:24])
 		if err != nil {
 			return nil, err
 		}

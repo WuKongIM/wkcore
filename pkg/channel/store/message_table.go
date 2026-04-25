@@ -184,7 +184,7 @@ func (t *messageTable) scanBySeq(fromSeq uint64, limit int, maxBytes int) ([]mes
 		if err != nil {
 			return nil, err
 		}
-		size, err := row.compatibilitySize()
+		size, err := row.compatibilityEncodedRecordSize()
 		if err != nil {
 			return nil, err
 		}
@@ -241,7 +241,7 @@ func (t *messageTable) scanBySeqReverse(fromSeq uint64, limit int, maxBytes int)
 		if err != nil {
 			return nil, err
 		}
-		size, err := row.compatibilitySize()
+		size, err := row.compatibilityEncodedRecordSize()
 		if err != nil {
 			return nil, err
 		}
@@ -502,8 +502,8 @@ func encodeMessageIdempotencyIndexKey(channelKey channel.ChannelKey, fromUID, cl
 	return appendKeyString(key, clientMsgNo)
 }
 
-func (r messageRow) compatibilitySize() (int, error) {
-	record, err := r.toRecord()
+func (r messageRow) compatibilityEncodedRecordSize() (int, error) {
+	record, err := r.toCompatibilityRecord()
 	if err != nil {
 		return 0, err
 	}

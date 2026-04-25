@@ -8,11 +8,6 @@ import (
 )
 
 const (
-	keyspaceLog         byte = 0x10
-	keyspaceCheckpoint  byte = 0x11
-	keyspaceHistory     byte = 0x12
-	keyspaceSnapshot    byte = 0x13
-	keyspaceIdempotency byte = 0x14
 	keyspaceTableState  byte = 0x15
 	keyspaceTableIndex  byte = 0x16
 	keyspaceTableSystem byte = 0x17
